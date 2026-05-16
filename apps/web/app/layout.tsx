@@ -21,7 +21,7 @@ const jbMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "AntFleet — trust substrate for autonomous code",
   description:
-    "Two independent frontier models review every PR. We post only what both flag, and pin each finding to a closing commit SHA.",
+    "AI code review with receipts. Agreement between independent frontier models is the trust gate; every closure is SHA-pinned to GitHub's event log.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
