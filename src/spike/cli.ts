@@ -16,6 +16,8 @@ export type SpikeArgs = {
   mode: AgreementModeName;
   /** Hard cost ceiling in USD. Default: $5. */
   costCeilingUsd: number;
+  /** Repo-relative corpus path, or null to use the built-in dogfood corpus. */
+  corpus: string | null;
 };
 
 export const DEFAULT_SPIKE_ARGS: SpikeArgs = {
@@ -23,6 +25,7 @@ export const DEFAULT_SPIKE_ARGS: SpikeArgs = {
   providers: null,
   mode: "unanimous",
   costCeilingUsd: 5,
+  corpus: null,
 };
 
 const MODE_NAMES: ReadonlySet<AgreementModeName> = new Set(["unanimous", "majority", "any"]);
@@ -81,6 +84,15 @@ export function parseSpikeArgs(argv: readonly string[]): SpikeArgs {
       i += 2;
       continue;
     }
+    if (arg === "--corpus") {
+      const raw = take("--corpus", i);
+      if (raw.length === 0) {
+        throw new FleetError(`--corpus path must be non-empty`, 2, "invalid-usage");
+      }
+      result.corpus = raw;
+      i += 2;
+      continue;
+    }
     if (arg === "--ceiling") {
       const raw = take("--ceiling", i);
       const parsed = Number.parseFloat(raw);
@@ -97,7 +109,7 @@ export function parseSpikeArgs(argv: readonly string[]): SpikeArgs {
     }
     if (arg === "--help" || arg === "-h") {
       throw new FleetError(
-        "usage: spike [--runs N] [--providers a,b,c] [--mode unanimous|majority|any] [--ceiling USD]",
+        "usage: spike [--runs N] [--providers a,b,c] [--mode unanimous|majority|any] [--ceiling USD] [--corpus PATH]",
         0,
         "usage",
       );

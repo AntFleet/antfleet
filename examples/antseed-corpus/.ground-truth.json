@@ -1,0 +1,42 @@
+[
+  {
+    "id": "BUG-018",
+    "category": "security",
+    "description": "Electron 31.x pin below CVE-2025-55305 fix line (ASAR integrity bypass).",
+    "file": "apps/desktop/package.json",
+    "lineStart": 1,
+    "lineEnd": 200
+  },
+  {
+    "id": "BUG-155",
+    "category": "security",
+    "description": "useApproveDiem requests maxUint256 allowance — unbounded DIEM approval to proxy.",
+    "file": "apps/diem-staking/src/lib/actions.ts",
+    "lineStart": 12,
+    "lineEnd": 23
+  },
+  {
+    "id": "BUG-156",
+    "category": "bug",
+    "description": "fetchDiemPrice* swallows errors with bare catch {} — loss of error signal.",
+    "file": "apps/diem-staking/src/lib/hooks.ts",
+    "lineStart": 19,
+    "lineEnd": 70
+  },
+  {
+    "id": "BUG-158",
+    "category": "performance",
+    "description": "useLatestDesktopDownload unauthenticated GitHub API call per render — no caching, rate-limit exposure.",
+    "file": "apps/website/src/lib/useLatestDesktopDownload.ts",
+    "lineStart": 164,
+    "lineEnd": 220
+  },
+  {
+    "id": "BUG-159",
+    "category": "data-loss",
+    "description": "fetchAndApplyMeteringStats uses Number() on 6-decimal USDC bigint strings — precision loss.",
+    "file": "apps/desktop/src/renderer/modules/chat.ts",
+    "lineStart": 745,
+    "lineEnd": 765
+  }
+]

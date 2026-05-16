@@ -38,11 +38,14 @@ import { parseSpikeArgs } from "../src/spike/cli.js";
 import { estimateRunCost, shouldAbortBeforeRun } from "../src/spike/cost.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const CORPUS_ROOT = resolve(ROOT, "examples/dogfood");
-const RESULTS_DIR = resolve(ROOT, "examples/dogfood-results");
+const DEFAULT_CORPUS = resolve(ROOT, "examples/dogfood");
 // v1 default stack: two independent frontier providers, unanimous agreement.
 // See ARCHITECTURE.md §Provider roster for why openrouter/codex are deferred.
 const DEFAULT_PROVIDERS = ["anthropic", "openai"] as const;
+// Source-file extensions the walker considers. Real-repo corpora include
+// JSON manifests (dep pins) and TSX/JSX components alongside TS; the dogfood
+// corpus is .ts-only so this is a superset, not a behavior change for it.
+const SOURCE_EXTENSIONS: readonly string[] = [".ts", ".tsx", ".js", ".jsx", ".json"];
 
 loadDotenv({ path: resolve(ROOT, ".env.local"), quiet: true });
 
@@ -55,7 +58,8 @@ type PlantedBug = {
   lineEnd: number;
 };
 
-const GROUND_TRUTH: PlantedBug[] = [
+/** Default (dogfood) ground truth used when a corpus does not ship its own. */
+const DOGFOOD_GROUND_TRUTH: PlantedBug[] = [
   {
     id: "null-deref-handler-welcome",
     category: "bug",
@@ -101,27 +105,49 @@ const GROUND_TRUTH: PlantedBug[] = [
   },
 ];
 
-async function listCorpusFiles(): Promise<string[]> {
+/**
+ * Load the ground truth for a corpus. A corpus may ship a `.ground-truth.json`
+ * file at its root (array of PlantedBug entries); if present it overrides the
+ * dogfood default. The file is gitignored alongside other ground-truth
+ * artifacts so a corpus can hold real-world bug data without committing it.
+ */
+async function loadGroundTruth(corpusRoot: string): Promise<PlantedBug[]> {
+  const path = join(corpusRoot, ".ground-truth.json");
+  try {
+    const raw = await readFile(path, "utf8");
+    return JSON.parse(raw) as PlantedBug[];
+  } catch {
+    return DOGFOOD_GROUND_TRUTH;
+  }
+}
+
+async function listCorpusFiles(corpusRoot: string): Promise<string[]> {
   const acc: string[] = [];
+  const skipDirs = new Set(["node_modules", "dist", "build", ".git", ".fleet"]);
   const walk = async (dir: string): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
+      // Skip dot-files (incl. corpus-local .ground-truth.json) and known
+      // build/output directories. The ground truth must never reach the LLM.
+      if (entry.name.startsWith(".") || skipDirs.has(entry.name)) {
+        continue;
+      }
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(full);
-      } else if (entry.name.endsWith(".ts")) {
+      } else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
         acc.push(full);
       }
     }
   };
-  await walk(join(CORPUS_ROOT, "src"));
+  await walk(corpusRoot);
   return acc.toSorted();
 }
 
-async function buildPrompt(files: string[]): Promise<string> {
+async function buildPrompt(corpusRoot: string, files: string[]): Promise<string> {
   const blocks: string[] = [];
   for (const file of files) {
-    const rel = relative(CORPUS_ROOT, file);
+    const rel = relative(corpusRoot, file);
     const contents = await readFile(file, "utf8");
     blocks.push(`--- ${rel}\n${contents}`);
   }
@@ -130,15 +156,15 @@ async function buildPrompt(files: string[]): Promise<string> {
 Return strict JSON only. No markdown fences.
 
 Project:
-${JSON.stringify({ name: "dogfood-corpus", root: CORPUS_ROOT }, null, 2)}
+${JSON.stringify({ name: "corpus", root: corpusRoot }, null, 2)}
 
 Feature:
 ${JSON.stringify(
     {
-      featureId: "dogfood",
-      title: "Dogfood corpus (full TypeScript repo)",
+      featureId: "corpus",
+      title: "Corpus (full TypeScript source)",
       kind: "library",
-      ownedFiles: files.map((f) => ({ path: relative(CORPUS_ROOT, f), reason: "owned" })),
+      ownedFiles: files.map((f) => ({ path: relative(corpusRoot, f), reason: "owned" })),
     },
     null,
     2,
@@ -186,10 +212,11 @@ ${blocks.join("\n\n")}`;
 
 async function resolveProvider(
   name: string,
+  corpusRoot: string,
 ): Promise<{ name: string; provider: Provider | null; reason: string }> {
   try {
     const provider = providerByName(name);
-    const status = await provider.check(CORPUS_ROOT);
+    const status = await provider.check(corpusRoot);
     return { name, provider, reason: sanitizeForReport(status) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -250,9 +277,9 @@ function matchesGroundTruth(finding: Finding, bug: PlantedBug): boolean {
   return false;
 }
 
-function caughtBugIds(findings: Finding[]): Set<string> {
+function caughtBugIds(findings: Finding[], groundTruth: PlantedBug[]): Set<string> {
   const caught = new Set<string>();
-  for (const bug of GROUND_TRUTH) {
+  for (const bug of groundTruth) {
     if (findings.some((f) => matchesGroundTruth(f, bug))) {
       caught.add(bug.id);
     }
@@ -304,13 +331,16 @@ async function runOne(args: {
   files: string[];
   providers: { name: string; provider: Provider }[];
   primaryMode: AgreementMode;
+  corpusRoot: string;
+  resultsDir: string;
+  groundTruth: PlantedBug[];
 }): Promise<RunResult> {
   const start = Date.now();
   const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
   const tasks = args.providers.map(async (p) => {
     const t0 = Date.now();
     try {
-      const output = await p.provider.review(CORPUS_ROOT, args.prompt, null);
+      const output = await p.provider.review(args.corpusRoot, args.prompt, null);
       return { name: p.name, output, error: null, ms: Date.now() - t0 } satisfies PerProviderResult;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -342,7 +372,7 @@ async function runOne(args: {
   }
   const primary = modes.find((m) => m.mode === args.primaryMode);
   const merged = mergeFindings(successful, args.primaryMode);
-  const agreedCaught = caughtBugIds(merged.agreed);
+  const agreedCaught = caughtBugIds(merged.agreed, args.groundTruth);
 
   // Materialize the actual stackedProvider so its instantiation path is exercised.
   if (successful.length >= 2) {
@@ -354,14 +384,15 @@ async function runOne(args: {
 
   // Per-run report
   const lines: string[] = [];
-  lines.push(`# Dogfood spike — run ${args.runIndex}/${args.totalRuns} — ${timestamp}`);
+  const corpusName = args.corpusRoot.split("/").pop() ?? "corpus";
+  lines.push(`# Fleet spike (${corpusName}) — run ${args.runIndex}/${args.totalRuns} — ${timestamp}`);
   lines.push("");
   lines.push(`- Mode: \`${args.primaryMode}\``);
   lines.push(
     `- Live providers: ${args.providers.map((p) => p.name).join(", ") || "(none)"} (${args.providers.length})`,
   );
   lines.push(`- Successful reviews: ${successful.length}/${args.providers.length}`);
-  lines.push(`- Planted bugs (ground truth): ${GROUND_TRUTH.length}`);
+  lines.push(`- Planted bugs (ground truth): ${args.groundTruth.length}`);
   lines.push("");
 
   lines.push("## Per-provider");
@@ -374,10 +405,10 @@ async function runOne(args: {
       lines.push("");
       continue;
     }
-    const caught = caughtBugIds(r.output.findings);
-    const missed = GROUND_TRUTH.filter((b) => !caught.has(b.id)).map((b) => b.id);
+    const caught = caughtBugIds(r.output.findings, args.groundTruth);
+    const missed = args.groundTruth.filter((b) => !caught.has(b.id)).map((b) => b.id);
     lines.push(`- findings: **${r.output.findings.length}**`);
-    lines.push(`- ground-truth caught (${caught.size}/${GROUND_TRUTH.length}): ${fmtSet(caught)}`);
+    lines.push(`- ground-truth caught (${caught.size}/${args.groundTruth.length}): ${fmtSet(caught)}`);
     lines.push(`- ground-truth missed: ${missed.length === 0 ? "(none)" : missed.toSorted().join(", ")}`);
     lines.push(`- candidate noise (findings not matching any planted bug): ${r.output.findings.length - caught.size}`);
     if (r.output.findings.length > 0) {
@@ -393,9 +424,9 @@ async function runOne(args: {
   lines.push("## Agreement modes");
   lines.push("");
   for (const m of modes) {
-    const caught = caughtBugIds(mergeFindings(successful, m.mode).agreed);
+    const caught = caughtBugIds(mergeFindings(successful, m.mode).agreed, args.groundTruth);
     const tag = m.mode === args.primaryMode ? " (primary)" : "";
-    lines.push(`- \`${m.mode}\`${tag}: ${m.agreedCount} agreed, ${m.disagreementCount} disagreements, caught ${caught.size}/${GROUND_TRUTH.length}`);
+    lines.push(`- \`${m.mode}\`${tag}: ${m.agreedCount} agreed, ${m.disagreementCount} disagreements, caught ${caught.size}/${args.groundTruth.length}`);
   }
   lines.push("");
 
@@ -412,7 +443,7 @@ async function runOne(args: {
     lines.push("");
   }
 
-  const reportPath = join(RESULTS_DIR, `run-${args.runIndex}-${timestamp}.md`);
+  const reportPath = join(args.resultsDir, `run-${args.runIndex}-${timestamp}.md`);
   await writeFile(reportPath, lines.join("\n"), "utf8");
 
   const estimatedCostUsd = estimateRunCost(args.providers.map((p) => p.name));
@@ -433,12 +464,16 @@ async function runOne(args: {
 
 async function main(): Promise<void> {
   const args = parseSpikeArgs(process.argv.slice(2));
-  await mkdir(RESULTS_DIR, { recursive: true });
-  const files = await listCorpusFiles();
-  const prompt = await buildPrompt(files);
+  const corpusRoot = args.corpus === null ? DEFAULT_CORPUS : resolve(ROOT, args.corpus);
+  const resultsDir = `${corpusRoot}-results`;
+  await mkdir(resultsDir, { recursive: true });
+  const files = await listCorpusFiles(corpusRoot);
+  const prompt = await buildPrompt(corpusRoot, files);
+  const groundTruth = await loadGroundTruth(corpusRoot);
 
-  console.error(`[spike] corpus root: ${CORPUS_ROOT}`);
-  console.error(`[spike] ${files.length} TypeScript file(s), prompt size: ${prompt.length} chars`);
+  console.error(`[spike] corpus root: ${corpusRoot}`);
+  console.error(`[spike] ${files.length} source file(s), prompt size: ${prompt.length} chars`);
+  console.error(`[spike] ground truth: ${groundTruth.length} bug(s)`);
   console.error(
     `[spike] runs=${args.runs}, mode=${args.mode}, ceiling=$${args.costCeilingUsd.toFixed(2)}`,
   );
@@ -448,7 +483,7 @@ async function main(): Promise<void> {
 
   const resolved = [];
   for (const name of targetNames) {
-    resolved.push(await resolveProvider(name));
+    resolved.push(await resolveProvider(name, corpusRoot));
   }
   const live = resolved
     .filter((r): r is { name: string; provider: Provider; reason: string } => r.provider !== null)
@@ -487,6 +522,9 @@ async function main(): Promise<void> {
       files,
       providers: live,
       primaryMode: args.mode,
+      corpusRoot,
+      resultsDir,
+      groundTruth,
     });
     runs.push(result);
     cumulativeCost += result.estimatedCostUsd;
@@ -494,7 +532,7 @@ async function main(): Promise<void> {
       `[spike] run ${i}/${args.runs} done in ${result.durationMs}ms (cumulative est. cost: $${cumulativeCost.toFixed(3)})`,
     );
     console.error(
-      `[spike]   wrote ${relative(ROOT, result.reportPath)} (agreed=${result.agreedCount}, caught=${result.agreedCaughtIds.length}/${GROUND_TRUTH.length})`,
+      `[spike]   wrote ${relative(ROOT, result.reportPath)} (agreed=${result.agreedCount}, caught=${result.agreedCaughtIds.length}/${groundTruth.length})`,
     );
   }
 

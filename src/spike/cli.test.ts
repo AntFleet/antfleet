@@ -80,6 +80,16 @@ describe("parseSpikeArgs", () => {
       providers: ["anthropic", "openrouter"],
       mode: "majority",
       costCeilingUsd: 2,
+      corpus: null,
     });
+  });
+
+  it("parses --corpus as a path", () => {
+    const args = parseSpikeArgs(["--corpus", "examples/antseed-corpus"]);
+    expect(args.corpus).toBe("examples/antseed-corpus");
+  });
+
+  it("rejects an empty --corpus value", () => {
+    expect(() => parseSpikeArgs(["--corpus", ""])).toThrow(/requires a value|non-empty/u);
   });
 });
