@@ -1,0 +1,1 @@
+ALTER TABLE "maintainer_reactions" ADD CONSTRAINT "maintainer_reactions_dedup" UNIQUE("review_id","finding_id","reaction_at","action_taken");

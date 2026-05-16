@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "./index";
-import { findingStatus, reviews, type NewReview } from "./schema";
+import {
+  findingStatus,
+  maintainerReactions,
+  reviews,
+  type NewMaintainerReaction,
+  type NewReview,
+} from "./schema";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -123,4 +129,28 @@ export async function markFindingClosed(args: {
     .update(findingStatus)
     .set(values)
     .where(eq(findingStatus.findingId, args.findingId));
+}
+
+// Mission 3 slice 3-4 — reaction polling DB helper. GitHub returns the full
+// list of reactions on every poll, so we accept that we'll re-attempt the
+// same rows repeatedly and let the unique index drop the duplicates. Returns
+// the count of rows actually inserted so the slice 3-5 cron handler can
+// report a meaningful "reactionsRecorded" counter.
+export async function recordMaintainerReactions(
+  rows: NewMaintainerReaction[],
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  const inserted = await db
+    .insert(maintainerReactions)
+    .values(rows)
+    .onConflictDoNothing({
+      target: [
+        maintainerReactions.reviewId,
+        maintainerReactions.findingId,
+        maintainerReactions.reactionAt,
+        maintainerReactions.actionTaken,
+      ],
+    })
+    .returning({ reactionId: maintainerReactions.reactionId });
+  return inserted.length;
 }

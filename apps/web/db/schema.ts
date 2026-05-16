@@ -6,6 +6,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -60,17 +61,34 @@ export const findingStatus = pgTable("finding_status", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const maintainerReactions = pgTable("maintainer_reactions", {
-  reactionId: uuid("reaction_id").primaryKey().defaultRandom(),
-  reviewId: uuid("review_id")
-    .notNull()
-    .references(() => reviews.reviewId, { onDelete: "cascade" }),
-  findingId: text("finding_id").notNull(),
-  actionTaken: text("action_taken").notNull(),
-  reactionAt: timestamp("reaction_at", { withTimezone: true }).notNull(),
-  maintainerComment: text("maintainer_comment"),
-  polledAt: timestamp("polled_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const maintainerReactions = pgTable(
+  "maintainer_reactions",
+  {
+    reactionId: uuid("reaction_id").primaryKey().defaultRandom(),
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => reviews.reviewId, { onDelete: "cascade" }),
+    findingId: text("finding_id").notNull(),
+    actionTaken: text("action_taken").notNull(),
+    reactionAt: timestamp("reaction_at", { withTimezone: true }).notNull(),
+    maintainerComment: text("maintainer_comment"),
+    polledAt: timestamp("polled_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // GitHub returns the full reaction list on every poll, so re-polling at
+  // 24h/7d/30d hits the same rows repeatedly. The unique key lets slice 3-4's
+  // recordMaintainerReactions use ON CONFLICT DO NOTHING for idempotent
+  // upserts. The four columns together are the natural identity of a
+  // reaction within the system: which review, which finding, when GitHub
+  // recorded it, and what it was.
+  (t) => [
+    unique("maintainer_reactions_dedup").on(
+      t.reviewId,
+      t.findingId,
+      t.reactionAt,
+      t.actionTaken,
+    ),
+  ],
+);
 
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
