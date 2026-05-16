@@ -1,0 +1,23 @@
+{
+  "id": "chatcmpl_synthetic_002",
+  "object": "chat.completion",
+  "created": 1747400001,
+  "model": "gpt-5",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "refusal": null,
+        "content": "this is not valid JSON {{"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 500,
+    "completion_tokens": 30,
+    "total_tokens": 530
+  }
+}

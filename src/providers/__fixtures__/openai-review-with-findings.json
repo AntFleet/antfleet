@@ -1,0 +1,23 @@
+{
+  "id": "chatcmpl_synthetic_001",
+  "object": "chat.completion",
+  "created": 1747400000,
+  "model": "gpt-5",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "refusal": null,
+        "content": "{\"findings\":[{\"title\":\"SQL injection via concatenation\",\"category\":\"security\",\"severity\":\"critical\",\"confidence\":\"high\",\"evidence\":[{\"path\":\"src/db.ts\",\"startLine\":17,\"endLine\":21,\"symbol\":\"getUserById\",\"quote\":\"`SELECT * FROM users WHERE id='${id}'`\"}],\"reasoning\":\"id is interpolated directly into the SQL string; any attacker-controlled id yields injection.\",\"reproduction\":\"Call getUserById(\\\"' OR '1'='1\\\").\",\"recommendation\":\"Use parameterized queries.\",\"whyTestsDoNotAlreadyCoverThis\":\"Tests only pass numeric ids.\",\"suggestedRegressionTest\":\"Pass a malicious string id and assert the query rejects it.\",\"minimumFixScope\":\"Replace template-literal SQL in src/db.ts:17 with a parameterized statement.\"}],\"inspected\":{\"files\":[\"src/db.ts\"],\"symbols\":[\"getUserById\"],\"notes\":[\"single hot path, no parameterization observed\"]}}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1400,
+    "completion_tokens": 250,
+    "total_tokens": 1650
+  }
+}

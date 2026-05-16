@@ -1,0 +1,27 @@
+{
+  "id": "msg_synthetic_002",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-7",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_synthetic_002",
+      "name": "submit_review",
+      "input": {
+        "findings": [],
+        "inspected": {
+          "files": ["src/clean.ts"],
+          "symbols": [],
+          "notes": ["no findings; behavior matches tests"]
+        }
+      }
+    }
+  ],
+  "usage": {
+    "input_tokens": 800,
+    "output_tokens": 60
+  }
+}

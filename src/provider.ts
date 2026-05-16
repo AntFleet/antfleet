@@ -12,6 +12,8 @@ import {
   revalidateOutputSchema,
 } from "./types.js";
 import { AgreementMode } from "./providers/agreement.js";
+import { anthropicProvider } from "./providers/anthropic.js";
+import { openaiProvider } from "./providers/openai.js";
 import { stackedProvider } from "./providers/stacked.js";
 
 export type Provider = {
@@ -31,6 +33,12 @@ export function providerByName(name: string): Provider {
   }
   if (name === "mock-fail") {
     return mockFailProvider;
+  }
+  if (name === "anthropic") {
+    return anthropicProvider;
+  }
+  if (name === "openai") {
+    return openaiProvider;
   }
   if (name === "stacked") {
     return buildStackedFromEnv();
@@ -222,7 +230,7 @@ function providerExitCode(stderr: string): number {
   return 1;
 }
 
-const reviewJsonSchema = {
+export const reviewJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["findings", "inspected"],
@@ -300,7 +308,7 @@ const reviewJsonSchema = {
   },
 };
 
-const revalidateJsonSchema = {
+export const revalidateJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["outcome", "reasoning", "commands"],
@@ -311,7 +319,7 @@ const revalidateJsonSchema = {
   },
 };
 
-const fixPlanJsonSchema = {
+export const fixPlanJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["summary", "findingIds", "plannedFiles", "risk", "steps", "validationCommands"],

@@ -1,0 +1,49 @@
+{
+  "id": "msg_synthetic_001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-7",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_synthetic_001",
+      "name": "submit_review",
+      "input": {
+        "findings": [
+          {
+            "title": "Null dereference in handler",
+            "category": "bug",
+            "severity": "high",
+            "confidence": "high",
+            "evidence": [
+              {
+                "path": "src/handler.ts",
+                "startLine": 42,
+                "endLine": 48,
+                "symbol": "handleRequest",
+                "quote": "user.profile.name"
+              }
+            ],
+            "reasoning": "user.profile may be null; accessing .name will throw at runtime.",
+            "reproduction": "Send a request from a user with no profile attached.",
+            "recommendation": "Guard with user.profile?.name ?? 'anonymous' before dereferencing.",
+            "whyTestsDoNotAlreadyCoverThis": "Existing tests only construct users with a profile.",
+            "suggestedRegressionTest": "Test handleRequest with a user that has profile=null.",
+            "minimumFixScope": "Add a null guard around line 42 in src/handler.ts."
+          }
+        ],
+        "inspected": {
+          "files": ["src/handler.ts"],
+          "symbols": ["handleRequest"],
+          "notes": ["reviewed entrypoint and one downstream call site"]
+        }
+      }
+    }
+  ],
+  "usage": {
+    "input_tokens": 1500,
+    "output_tokens": 220
+  }
+}
