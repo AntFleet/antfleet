@@ -10,36 +10,23 @@ This file is the resume sheet for the next session. It's transient — delete it
 
 ## What's done
 
-`AGENTS.md §4` has the full table — Missions 1 and 3 are complete. The end-to-end pipeline (webhook → 2-of-2 unanimous review → PR comment → finding lifecycle → daily sweep → closure receipts + reaction polling) is wired in code. **Two ops steps remain before the first scheduled cron run is meaningful** (these are not code, they're config — listed below).
+`AGENTS.md §4` has the full table — Missions 1 and 3 are complete. The end-to-end pipeline (webhook → 2-of-2 unanimous review → PR comment → finding lifecycle → daily sweep → closure receipts + reaction polling) is wired in code AND locally smoke-tested. The only ops gap remaining is the production deploy itself.
 
-## Ops debt to clear before the cron is fully live
+## Ops state (all local-smoke prerequisites cleared 2026-05-17)
 
-Not required to start Mission 4 — Mission 4 is the landing page / receipts page, entirely separable from the cron. But the cron won't do useful work until these land. Do these next time you touch Vercel/Neon, regardless of whether Mission 4 has started.
+1. ~~Apply pending Neon migrations~~ — **done via `db:push`.** Neon schema current as of `0003_high_maggott`. Future schema changes: use `pnpm -F @antfleet/web db:push`, NOT `db:migrate`. The repo's `__drizzle_migrations` tracking table on Neon is empty (original schema seeded via push), so `db:migrate` re-applies 0000 from scratch and fails with "relation already exists." Push diffs schema.ts against actual DB and applies only what's missing — non-destructive changes (column adds, constraint adds) auto-apply without prompts.
 
-1. ~~Apply pending Neon migrations~~ — **done.** Neon's schema is current as of `0003_high_maggott` (3 reviews coord columns + maintainer_reactions dedup unique constraint applied 2026-05-17 via `db:push`). Future schema changes: use `pnpm -F @antfleet/web db:push`, NOT `db:migrate`. The repo's `__drizzle_migrations` tracking table on Neon is empty (the original schema was seeded via push), so `db:migrate` will try to apply 0000 from scratch and fail with "relation already exists." Push diffs schema.ts against actual DB and applies only what's missing — non-destructive changes (column adds, constraint adds) auto-apply without prompts.
+2. ~~`CRON_SECRET` in Vercel env~~ — **done.** Set in Production + Development (same value mirrored to `apps/web/.env.local`). **Preview env skipped** — the Vercel project has no Git repository connected, so there are no preview branches to scope the var to. Re-add to Preview if/when the GitHub repo gets connected to Vercel.
 
-2. **Set `CRON_SECRET` in Vercel project env**:
-   ```bash
-   openssl rand -hex 32 | tr -d '\n' | pbcopy   # generate and copy
-   vercel env add CRON_SECRET production         # paste when prompted
-   vercel env add CRON_SECRET preview            # same value
-   ```
-   Add to `apps/web/.env.local` by hand (do NOT `vercel env pull` — see Things to avoid). The route 500s without it.
+3. ~~Backfill M3-1 smoke row's repo coords~~ — **done.** `review_id=83e79770-1869-4331-8690-b534a531d327` now has `installation_id=132854945`, `owner='Augustas11'`, `repo='krisskross_shops'`. The 4 open finding_status rows on that review are sweepable.
 
-3. **Backfill the M3-1 smoke row's repo coords** so it becomes sweepable (otherwise the only existing finding_status rows in Neon remain inert):
-   ```sql
-   UPDATE reviews
-      SET installation_id = 132854945,
-          owner = 'Augustas11',
-          repo = 'krisskross_shops'
-    WHERE review_id = '83e79770-1869-4331-8690-b534a531d327';
-   ```
+4. ~~Local smoke~~ — **done.** `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/sweep` returned `{swept:4, closed:0, reactionsRecorded:0, reviewsSkipped:0, errors:[], elapsedMs:7327}`. Auth gate: 401 on missing/wrong header. The cron pipeline works end-to-end against real Neon + real GitHub.
 
-4. **Smoke-test the cron** once the above three land:
-   ```bash
-   curl -H "Authorization: Bearer $CRON_SECRET" https://<preview-url>/api/cron/sweep
-   ```
-   Expect 200 with `{swept, closed, reactionsRecorded, reviewsSkipped, errors, elapsedMs}`. Errors are per-batch and don't fail the request — inspect `errors[]` if anything looks off.
+5. **Production deploy + cron activation — not done.** The Vercel project (`augstar-8472s-projects/antfleet-web`) has **no Git repository connected**, so `git push` does NOT trigger Vercel deployments. Options:
+   - **Connect the GitHub repo** in Vercel dashboard → Project Settings → Git → connect. Future `git push` to main auto-deploys. Then re-add `CRON_SECRET` to Preview env (ops #2 above).
+   - **Manual deploy**: `cd apps/web && vercel deploy --prod`. One-off; no auto-deploy.
+
+   The cron schedule (`apps/web/vercel.json`) only fires on **production** deployments — the first scheduled run is 06:00 UTC the day after the first production deploy.
 
 ## What's next: Mission 4
 
