@@ -16,9 +16,15 @@ import {
 } from "../types.js";
 
 const DEFAULT_MODEL = "claude-opus-4-7";
-// Raised from 8192 after Phase 0 verdict (WEEK1-VERDICT-V2.md): run 1 returned a
-// truncated tool_use on a 142k-char prompt. 16384 covers the largest review
-// outputs seen so far with headroom; raise again if truncation recurs.
+// History of this constant:
+//   8192 → 16384 (Phase 0 V2 verdict, 142k-char corpus, run 1 truncation)
+//   16384 → 32768 (Slice 4b.1 attempt) — REVERTED: the SDK guards any
+//   non-streaming call whose token budget could exceed 10 minutes and
+//   rejects in <5ms with "Streaming is required for operations that
+//   may take longer than 10 minutes". 32k tripped that guard.
+//   Back to 16384. Bigger outputs require switching the provider to
+//   the streaming API (client.messages.stream + finalMessage). Tracked
+//   as a separate follow-up to this slice.
 const MAX_TOKENS = 16384;
 
 export const anthropicProvider: Provider = {

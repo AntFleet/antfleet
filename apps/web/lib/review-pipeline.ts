@@ -31,6 +31,14 @@ export type ReviewBundle = {
   totalMs: number;
   estimatedCostUsd: number;
   agreementMode: AgreementMode;
+  // When fewer than the required number of providers succeed, the review is
+  // 'degraded' — agreement isn't real (a 1-of-1 'unanimous' is just one
+  // provider, not consensus). The pitch (b) language requires honest framing:
+  // we surface findings only when ≥2 frontier reviewers both flagged them.
+  // Degraded reviews still capture per-provider output for the audit trail
+  // but agreed is held at [].
+  degraded: boolean;
+  degradedReason: string | null;
 };
 
 // The v1 stack — locked in §6 of AGENTS.md. Same providers + model ids the
@@ -75,7 +83,15 @@ export async function reviewPR(args: {
     .filter((r): r is PerProviderResult & { output: ReviewOutput } => r.output !== null)
     .map((r) => ({ providerName: r.name, output: r.output }));
 
-  const merged = mergeFindings(successful, mode);
+  const requiredVoters = requiredVotersFor(mode, STACK.length);
+  const degraded = successful.length < requiredVoters;
+  const merged = degraded
+    ? { agreed: [], disagreements: [] as Disagreement[] }
+    : mergeFindings(successful, mode);
+  const degradedReason = degraded
+    ? `${successful.length}/${STACK.length} providers succeeded; ${mode} requires ${requiredVoters}`
+    : null;
+
   const modelIds = Object.fromEntries(STACK.map((p) => [p.name, p.modelId]));
 
   return {
@@ -86,5 +102,17 @@ export async function reviewPR(args: {
     totalMs,
     estimatedCostUsd: estimateRunCost(STACK.map((p) => p.name)),
     agreementMode: mode,
+    degraded,
+    degradedReason,
   };
+}
+
+// Voters required for a given agreement mode to be honest. mergeFindings'
+// internal threshold is computed against the count of successful inputs,
+// which means a 1-of-1 'unanimous' silently degrades to "what the surviving
+// provider said". We refuse to call that agreement.
+function requiredVotersFor(mode: AgreementMode, stackSize: number): number {
+  if (mode === "any") return 1;
+  if (mode === "majority") return Math.floor(stackSize / 2) + 1;
+  return stackSize; // unanimous
 }

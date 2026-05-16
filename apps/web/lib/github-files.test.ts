@@ -26,15 +26,15 @@ describe("filterReviewableFiles", () => {
     expect(result.map((f) => f.filename)).toEqual(["src/foo.ts", "config.json"]);
   });
 
-  it("caps the file count at MAX_FILES (20)", () => {
+  it("caps the file count at MAX_FILES (15)", () => {
     const many = Array.from({ length: 35 }, (_, i) => ({
       filename: `src/f${i}.ts`,
       status: "modified",
     }));
     const result = filterReviewableFiles(many);
-    expect(result).toHaveLength(20);
+    expect(result).toHaveLength(15);
     expect(result[0]?.filename).toBe("src/f0.ts");
-    expect(result[19]?.filename).toBe("src/f19.ts");
+    expect(result[14]?.filename).toBe("src/f14.ts");
   });
 
   it("accepts .ts, .tsx, .js, .jsx, .json", () => {
@@ -50,12 +50,12 @@ describe("filterReviewableFiles", () => {
 });
 
 describe("isWithinSizeLimit", () => {
-  it("accepts files <= 50KB", () => {
+  it("accepts files <= 20KB", () => {
     expect(isWithinSizeLimit(0)).toBe(true);
-    expect(isWithinSizeLimit(50 * 1024)).toBe(true);
+    expect(isWithinSizeLimit(20 * 1024)).toBe(true);
   });
-  it("rejects files > 50KB", () => {
-    expect(isWithinSizeLimit(50 * 1024 + 1)).toBe(false);
+  it("rejects files > 20KB", () => {
+    expect(isWithinSizeLimit(20 * 1024 + 1)).toBe(false);
     expect(isWithinSizeLimit(1_000_000)).toBe(false);
   });
 });
@@ -125,6 +125,31 @@ describe("fetchChangedFilesWith", () => {
       headSha: "head",
     });
     expect(result.map((f) => f.filename)).toEqual(["tiny.ts"]);
+  });
+
+  it("stops adding files once total content size hits MAX_TOTAL_PROMPT_BYTES", async () => {
+    // 10 files at exactly the per-file cap (20KB each) = 200KB. Budget is
+    // 150KB, so the 8th file would push us to 160KB > 150KB → break.
+    const files = Array.from({ length: 10 }, (_, i) => ({
+      filename: `src/f${i}.ts`,
+      status: "modified",
+      sha: `sha${i}`,
+    }));
+    const contentByPath = Object.fromEntries(
+      files.map((f) => [f.filename, { content: "x".repeat(20 * 1024) }]),
+    );
+    const octokit = mkOctokit({ files, contentByPath });
+    const result = await fetchChangedFilesWith(octokit, {
+      owner: "o",
+      repo: "r",
+      prNumber: 1,
+      headSha: "head",
+    });
+    expect(result).toHaveLength(7);
+    expect(result.map((f) => f.filename)).toEqual([
+      "src/f0.ts", "src/f1.ts", "src/f2.ts", "src/f3.ts",
+      "src/f4.ts", "src/f5.ts", "src/f6.ts",
+    ]);
   });
 
   it("skips entries that aren't of type file (e.g. submodule, dir)", async () => {

@@ -181,6 +181,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           mode: bundle.agreementMode,
           agreed: bundle.agreed,
           disagreements: bundle.disagreements,
+          degraded: bundle.degraded,
+          degradedReason: bundle.degradedReason,
         },
         timingMs: bundle.totalMs,
         costEstimatedUsd: bundle.estimatedCostUsd,
@@ -189,6 +191,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         reviewId,
         delivery,
         agreedCount: bundle.agreed.length,
+        degraded: bundle.degraded,
+        degradedReason: bundle.degradedReason,
         totalMs: bundle.totalMs,
         estimatedCostUsd: bundle.estimatedCostUsd,
         providerStatuses: bundle.perProvider.map((p) => ({

@@ -7,10 +7,15 @@ import { getInstallationToken } from "./github-app";
 const REVIEW_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".json"]);
 
 // AGENTS.md §9: "review changed files only — not whole repo". These caps keep
-// any one PR's prompt size within the bounds the spike runs validated. The
-// V2/V3 verdicts ran at ~142k-char prompts; this caps us roughly the same.
-const MAX_FILE_BYTES = 50 * 1024;
-const MAX_FILES = 20;
+// any one PR's prompt size within the V2/V3-validated zone (~142k-char
+// corpus). Slice 4b's first smoke at 20 files × 50KB triggered anthropic
+// tool_use truncation on the larger prompt; slice 4b.1 tightens the budget.
+const MAX_FILE_BYTES = 20 * 1024;
+const MAX_FILES = 15;
+// Hard ceiling on the combined size of file contents going into the prompt.
+// Roughly tracks spike's empirically-tested corpus size with headroom for
+// the prompt scaffolding and per-file `--- path\n` separators.
+const MAX_TOTAL_PROMPT_BYTES = 150 * 1024;
 
 export type ChangedFile = {
   filename: string;
@@ -84,6 +89,7 @@ export async function fetchChangedFilesWith(
   });
   const reviewable = filterReviewableFiles(list.data as PRFileListItem[]);
   const out: ChangedFile[] = [];
+  let totalBytes = 0;
   for (const f of reviewable) {
     const resp = await octokit.rest.repos.getContent({
       owner: args.owner,
@@ -97,6 +103,8 @@ export async function fetchChangedFilesWith(
     }
     const buf = Buffer.from(data.content, "base64");
     if (!isWithinSizeLimit(buf.byteLength)) continue;
+    if (totalBytes + buf.byteLength > MAX_TOTAL_PROMPT_BYTES) break;
+    totalBytes += buf.byteLength;
     out.push({
       filename: f.filename,
       contents: buf.toString("utf8"),
