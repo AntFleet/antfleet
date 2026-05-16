@@ -6,7 +6,13 @@ import { getChangedFiles } from "@/lib/github-files";
 import { reviewPR } from "@/lib/review-pipeline";
 import { formatPRComment, postPRComment } from "@/lib/pr-comment";
 import { logError, logInfo, logWarn } from "@/lib/log";
-import { hashRepo, recordReview, updateReview } from "@/db/queries";
+import {
+  hashRepo,
+  recordFindingStatuses,
+  recordReview,
+  setReviewComment,
+  updateReview,
+} from "@/db/queries";
 
 // node:crypto is Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
@@ -229,6 +235,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             commentUrl: posted.htmlUrl,
             findingCount: bundle.agreed.length,
           });
+          // Mission 3 lifecycle: persist the comment id + a row per agreed
+          // finding so Sweeper can reconcile later. Best-effort — DB write
+          // failure here doesn't undo the posted comment, but is loud in
+          // logs so Sweeper missing rows is easy to spot.
+          try {
+            await setReviewComment({
+              reviewId,
+              commentId: posted.id,
+              commentUrl: posted.htmlUrl,
+            });
+            const findingIds = await recordFindingStatuses(
+              reviewId,
+              bundle.agreed.map((f) => ({
+                title: f.title,
+                severity: f.severity,
+                category: f.category,
+              })),
+            );
+            logInfo("lifecycle.recorded", {
+              reviewId,
+              delivery,
+              findingIds,
+              commentId: posted.id,
+            });
+          } catch (lifecycleErr) {
+            const message =
+              lifecycleErr instanceof Error ? lifecycleErr.message : String(lifecycleErr);
+            logError("lifecycle.persist_failed", { reviewId, delivery, message });
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           // Comment failure does NOT fail the review. The DB row is still
