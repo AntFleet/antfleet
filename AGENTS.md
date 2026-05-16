@@ -123,7 +123,7 @@ Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule li
 | 4-1 | `cfcbf1e` | Tailwind v4 + Inter/JetBrains Mono via `next/font` + chrome (`SiteHeader`/`SiteFooter` in `layout.tsx`) + brand tokens in `globals.css` | ✓ |
 | 4-2 | `62acc77` | Landing page `/` — Hero/Proof/FeatureGrid/HowItWorks/Trust/CTA + `install-url` helper, architectural pitch per §15 | ✓ |
 | 4-3 | `12f0e56` | Public receipts page `/receipts` — server component (force-dynamic), `loadPublicReceiptsPage` count+list query, `lib/receipts` adapter (anonymized labels + relative time), empty/normal/truncated states | ✓ |
-| 4-4 | — | `/policy` page — data policy text + footer link | — |
+| 4-4 | `15a94a5` | `/policy` page — 7-section plain-English data policy + footer nav links to `/receipts` + `/policy` (replaces 4-1 placeholder) | ✓ |
 | 4-5 | — | Receipts page polish (pagination, last-updated stamp, anonymization) | — |
 
 **Next mission slice:** Mission 4 slice 4-2 (landing page hero + install button). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
