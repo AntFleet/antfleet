@@ -4,7 +4,7 @@
 
 This file is the canonical strategy + context document for AntFleet. A fresh session should be able to read this top-to-bottom (~15 minutes), then load `ARCHITECTURE.md` for technical context and `examples/dogfood-results/WEEK1-VERDICT.md` for empirical data, and pick up active work without additional briefing.
 
-**Last updated:** 2026-05-16 (post-Week-1 verdict, pre-Phase-0, brand-unified-as-AntFleet)
+**Last updated:** 2026-05-17 (Mission 4 in progress; §7.1 surface-choice + §8.1 cost-gap-bridge added)
 
 ## Naming hierarchy (read first if you've seen older docs)
 
@@ -218,6 +218,23 @@ Rationale: `examples/dogfood-results/WEEK1-VERDICT.md`.
 
 **Sequencing rule:** Can't open the network flywheel before the trust flywheel produces visible signal. Can't compound the data flywheel before meaningful review volume exists. Order is mechanical: trust (MVP→month 3) → data (months 3–9) → network (months 9–18) → agent marketplace (year 2+).
 
+### 7.1 Why GitHub App (not CLI) is the first surface
+
+The GitHub App is the **receipt factory**, not the product ceiling. The choice of first surface is dictated by what manufactures the moat, not by feature parity with competitors.
+
+| Surface | Output | Public? | Compounds into receipts? |
+|---|---|---|---|
+| **GitHub App / PR comment** | Comment + closing SHA | Yes — GitHub's immutable event log | Yes |
+| CLI (clawpatch-shape) | Private terminal output | No | No |
+| IDE / in-editor | Inline private suggestions | No | No |
+| Slack bot | Channel-scoped messages | Only to channel members | No |
+
+Only public, third-party-witnessed artifacts compound into the trust moat described in §18.2. A CLI is a viable later surface (Phase 3 specialist-member slot, or Phase 4 distribution play), but doing it first burns the only window we have to curate the receipt corpus while small enough to manually QA every finding.
+
+**Relationship to clawpatch:** clawpatch ships CLI-first because it's an OSS dev tool — its goal is single-developer ergonomics. AntFleet's goal is a third-party-witnessed trust artifact. Same review primitive, orthogonal business shape (see §16). We can ship a CLI later without re-strategizing.
+
+**Implication for scope:** do not split early effort across CLI / IDE / Slack / etc. PR comment is the only trust-manufacturing surface in Phase 1. Everything else is distribution and can wait until receipts exist to distribute.
+
 ---
 
 ## 8. The marketplace endgame — three earning paths
@@ -233,6 +250,25 @@ Rationale: `examples/dogfood-results/WEEK1-VERDICT.md`.
 **The eventual prize:** in a fully-built Antfeed, a specialist can write an agent in their spare time, upload it to the marketplace, and earn $4–8K/mo passively while the network of providers does the inference. Two-sided market with three supply sides (inference, agents, data) and one demand side (customers paying for review outcomes).
 
 **MVP is the door. The marketplace is the building behind the door.**
+
+### 8.1 Closing the cost gap between v1 (managed inference) and the marketplace endgame
+
+A free GitHub App that runs managed inference on our API keys has bad unit economics — on its own. The bridge from v1 to the §8 marketplace is a three-stage answer, and each stage has to be funded explicitly, not hoped into existence:
+
+**1. v1 (Phase 1–2): design partners eat the cost on purpose, capped.** Per §5 Phase 2, design partners are on a free tier with rate limits and no Stripe yet. The ~6 months of inference cost during this window is **trust-flywheel CAC, not COGS** — the deliverable is a curated receipt corpus, not revenue. If we can't fund this window from current runway, the strategy fails earlier than monetization is even on the table. Volume cap per design partner is a hard constraint, not a soft target.
+
+**2. v1.5 (Phase 3, months 3–6): Stripe usage billing + BYO-API in parallel.** Per §9, Stripe ships in v1.5 (usage-based: PR volume × providers used). Per §6, providers become customer-keyed at the same time — so two payment paths exist side-by-side:
+
+| Path | Customer pays | Inference cost flow | Fits |
+|---|---|---|---|
+| **Managed** | AntFleet markup on inference + flat platform fee | We pay providers, mark up to customer | Convenience-sensitive customers; small teams; security-team buyers who don't want key management |
+| **BYO-API** | Flat platform fee only (no inference markup) | Customer pays providers directly with their own keys | Cost-sensitive customers; orgs with existing enterprise inference contracts; clawpatch-shaped buyers |
+
+Both are legitimate and customers self-segment by sophistication. BYO-API is the clawpatch model and is non-negotiable for cost-sensitive enterprise buyers — refusing to offer it would surrender a real segment for no strategic gain.
+
+**3. v2+ (Phase 4, months 6–12): marketplace inverts the cost flow.** Once the receipt corpus proves *which provider/agent combinations produce non-hallucinated findings on which bug categories*, providers bid for distribution to high-acceptance PRs. The receipt corpus is the auction signal. Provider-side competition compresses managed-inference margin from "AntFleet eats cost" to "AntFleet takes a cut of provider-paid distribution fees." This is the structural answer to the unit economics, and it's why §15 says precision-not-coverage: coverage destroys receipt quality, which destroys the auction signal, which kills the marketplace.
+
+**Implication for Phase 1 decisions:** every choice in v1 should preserve receipt corpus quality, because the corpus is the asset that funds everything downstream. Cheaping out on the v1 review (e.g., dropping to a single model to save inference) saves cost now but destroys the trust artifact that v1.5 Stripe billing depends on — customers pay for the receipts, not the inference. Inference cost during the trust-flywheel window is the price of building the asset.
 
 ---
 
@@ -386,7 +422,17 @@ These will be answered by data over months, not declared now:
 
 **AntFleet** is the b2b product + marketplace brand. One word, capital-A capital-F. Aesthetic: Stripe + Linear (clean, numerical, receipts-forward, sans-serif, generous whitespace, monospace only for code blocks and SHAs). Voice: direct, technical, trustworthy. No marketing fluff.
 
-**Pitch (locked Phase 0, 2026-05-16):** "Two independent frontier models on every PR. We post only what both flag — and across 6 real-repo runs, zero hallucinated findings. Fewer-but-real bugs you wouldn't have written up yourself, each one pinned to a closing SHA." Do NOT pitch coverage or "we catch the bugs you knew about" — V2 + V3 data refuted that framing. Precision + receipts is the story.
+**Pitch (locked Phase 0, 2026-05-16; refined architectural frame 2026-05-17):**
+
+- **Headline (H1):** "Two independent frontier models on every PR."
+- **Subhead (architectural):** "AntFleet uses agreement between independent frontier models as the trust primitive — and pins every closed finding to a public, SHA-verifiable receipt on the PR that resolved it. Unlike single-model reviewers, the audit trail isn't in our database; it's on GitHub's event log, where anyone can check it."
+
+The architectural frame ("agreement is the trust primitive; receipts live on GitHub's event log") is required wherever copy describes the product. The behavioral frame ("we post only what both flag, ~0 hallucinations across 6 runs") is supporting evidence shown lower on the page (TrustSection / honest numbers), never as the lead.
+
+**Rules:**
+- Do NOT pitch coverage or "we catch the bugs you knew about" — V2 + V3 data refuted that framing (§18.9). Precision + receipts is the story.
+- Do NOT lead with behavioral lists. Clawpatch leads architecturally ("maps a repo into semantic work units, asks a provider..."); we must too. Behavioral claims belong in evidence sections with sourced numbers, not in the hero.
+- Do NOT use the phrase "cannot be faked retroactively." Only the GitHub-witnessed elements (timestamp, closing SHA, accumulation) are truly third-party-verifiable; semantic comment content is generated by our bot. Name what specifically is witnessed, never overclaim.
 
 **Antfeed** is the community / consumer brand — Colony Scout persona on X / Farcaster (lowercase, third-person, daily snapshots, no emojis, bare arrow CTAs). Discovery and social proof for the AntSeed ecosystem. Sibling brand to AntFleet, not parent or child.
 
@@ -466,6 +512,8 @@ If this file is ever rewritten or replaced, these specific points must survive v
 8. **Don't take builder-shaped design partners** ("write me a feature") until Phase 4 earliest. They distort the roadmap toward UX you can't win.
 
 9. **Pitch is (b): precision, not coverage.** V2 + V3 Phase 0 verdicts (6 runs of real-repo data) settled this. Two frontier models in unanimous mode catch *fewer* of a curated bug list than either model alone — that is the truth — but *what they agree on is real ~100% of the time*. The product promise is "fewer-but-real bugs you wouldn't have written up yourself," not "we catch the bugs you already knew about." Anyone tempted to revert the pitch to coverage-language should re-read `examples/antseed-corpus-results/WEEK1-VERDICT-V3.md` first.
+
+10. **GitHub App is the receipt factory, not the product ceiling. v1 managed-inference cost is design-partner CAC, not free-tier-forever.** Per §7.1, only PR comments + closing SHAs produce public, third-party-witnessed artifacts that compound into the moat — CLI/IDE/Slack don't. Per §8.1, free GitHub App + managed inference has bad unit economics on its own; the bridge is three-stage (v1 design-partner CAC → v1.5 Stripe + BYO-API parallel → v2 marketplace inverts the cost flow). Do not collapse stages and free-ship managed inference at scale, and do not refuse BYO-API on principle — both surrender real segments. CLI as a *later* surface is fine; CLI *instead of* the GitHub App burns the only window to curate the receipt corpus.
 
 ---
 
