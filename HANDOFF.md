@@ -3,7 +3,7 @@
 This file is the resume sheet for the next session. It's transient — delete it once Mission 3 is fully done and start a clean handoff for Mission 4.
 
 **Last session ended:** 2026-05-17, after Mission 3 slice 3-4.
-**Last commit:** `<this slice's commit hash>` (`feat(web): Mission 3 slice 3-4 — reaction polling primitives`)
+**Last commit:** `a63adde` (`feat(web): Mission 3 slice 3-4 — reaction polling primitives`)
 **Working tree:** clean (modulo this file + AGENTS.md §4 row flip committing alongside it).
 
 ---
