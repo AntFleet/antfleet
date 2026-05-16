@@ -14,6 +14,7 @@ import {
 import { AgreementMode } from "./providers/agreement.js";
 import { anthropicProvider } from "./providers/anthropic.js";
 import { openaiProvider } from "./providers/openai.js";
+import { openrouterProvider } from "./providers/openrouter.js";
 import { stackedProvider } from "./providers/stacked.js";
 
 export type Provider = {
@@ -39,6 +40,9 @@ export function providerByName(name: string): Provider {
   }
   if (name === "openai") {
     return openaiProvider;
+  }
+  if (name === "openrouter") {
+    return openrouterProvider;
   }
   if (name === "stacked") {
     return buildStackedFromEnv();

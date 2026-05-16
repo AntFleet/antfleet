@@ -1,0 +1,23 @@
+{
+  "id": "gen-synth-or-002",
+  "object": "chat.completion",
+  "created": 1747400501,
+  "model": "qwen/qwen-2.5-coder-32b-instruct",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "refusal": null,
+        "content": "```json\n{\"findings\":[],\"inspected\":{\"files\":[\"src/clean.ts\"],\"symbols\":[],\"notes\":[\"no issues observed\"]}}\n```"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 700,
+    "completion_tokens": 40,
+    "total_tokens": 740
+  }
+}

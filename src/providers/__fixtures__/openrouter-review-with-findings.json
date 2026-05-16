@@ -1,0 +1,23 @@
+{
+  "id": "gen-synth-or-001",
+  "object": "chat.completion",
+  "created": 1747400500,
+  "model": "deepseek/deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "refusal": null,
+        "content": "{\"findings\":[{\"title\":\"Read-modify-write race in bulkIncrement\",\"category\":\"concurrency\",\"severity\":\"high\",\"confidence\":\"high\",\"evidence\":[{\"path\":\"src/counter.ts\",\"startLine\":33,\"endLine\":44,\"symbol\":\"bulkIncrement\",\"quote\":\"Promise.all(tasks)\"}],\"reasoning\":\"All N tasks call increment() concurrently; each reads then writes the file without locking, so the final count loses updates.\",\"reproduction\":\"Call bulkIncrement(5) starting from count=0 and observe the final count is typically 1 or 2 rather than 5.\",\"recommendation\":\"Serialize the read-modify-write or use an atomic counter.\",\"whyTestsDoNotAlreadyCoverThis\":\"No test exercises concurrent invocations of bulkIncrement.\",\"suggestedRegressionTest\":\"Run bulkIncrement(N) from a known starting count and assert final count equals start+N.\",\"minimumFixScope\":\"Add a mutex (or a sequential for-await loop) in bulkIncrement around the existing increment() chain.\"}],\"inspected\":{\"files\":[\"src/counter.ts\"],\"symbols\":[\"bulkIncrement\",\"increment\"],\"notes\":[\"file lock semantics inspected; no advisory or OS-level locking present\"]}}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1300,
+    "completion_tokens": 240,
+    "total_tokens": 1540
+  }
+}
