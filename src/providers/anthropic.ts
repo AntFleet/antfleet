@@ -41,7 +41,7 @@ export const anthropicProvider: Provider = {
       schema: reviewJsonSchema,
       toolDescription: "Submit the structured review of the feature slice.",
     });
-    return reviewOutputSchema.parse(json);
+    return reviewOutputSchema.parse(tolerateReviewShape(json));
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Week 1: read-only. The provider produces a plan but does not apply it.
@@ -118,26 +118,57 @@ export function extractAnthropicToolOutput(
 
 /**
  * Claude Opus 4.7 intermittently wraps its tool-use payload in an extra
- * `{ input: {...} }` layer when called with `tool_choice: { type: "tool" }`
- * — observed in slice 4b.1 diagnostics where two consecutive calls with
- * identical prompts produced `input_keys=["input"]` once and the proper
- * `input_keys=["findings","inspected"]` the next. We unwrap defensively so
- * downstream Zod validation sees the same shape in either case.
+ * single-key layer when called with `tool_choice: { type: "tool" }`.
+ * Observed wrapper keys across slice 4b.1 / 4d diagnostics:
+ *   - `{ input: { findings, inspected } }`  (echoes the API field name)
+ *   - `{ review: { findings, inspected } }` (echoes the tool name stem)
+ * Same model, same prompt; the wrapper choice varies between calls.
  *
- * Heuristic: a single top-level key named `input` whose value is itself an
- * object. Any other shape passes through untouched.
+ * Heuristic: a single top-level key whose value is an object.
+ *
+ * Safe across all three of our tool schemas (review, fix, revalidate):
+ * each requires 2+ top-level fields, so a valid response can never have
+ * a single top-level key. Any single-key response must therefore be a
+ * wrapper layer. If we ever add a tool with a single-field schema, this
+ * heuristic needs revisiting.
  */
+/**
+ * Coerce malformed review responses into the shape reviewOutputSchema requires.
+ * Slice 4d real-PR diagnostics caught a third anthropic failure mode: Opus 4.7
+ * sometimes returns `inspected` as a free-form string summary instead of the
+ * structured `{ files, symbols, notes }`. Findings parses fine; only the audit-
+ * trail field is malformed. Coerce so findings survive and downstream agreement
+ * still has two voters.
+ *
+ * Only applies to review responses (fix/revalidate still strict). Findings
+ * stay untouched — that's the load-bearing field and we want to know if it
+ * comes back wrong.
+ */
+export function tolerateReviewShape(raw: unknown): unknown {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const obj = { ...(raw as Record<string, unknown>) };
+  const inspected = obj["inspected"];
+  const inspectedOk =
+    inspected !== null &&
+    typeof inspected === "object" &&
+    !Array.isArray(inspected);
+  if (!inspectedOk) {
+    obj["inspected"] = { files: [], symbols: [], notes: [] };
+  }
+  return obj;
+}
+
 function unwrapNestedInput(raw: unknown): unknown {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return raw;
   }
   const obj = raw as Record<string, unknown>;
   const keys = Object.keys(obj);
-  if (keys.length !== 1 || keys[0] !== "input") {
+  if (keys.length !== 1) {
     return raw;
   }
-  const inner = obj["input"];
-  if (inner === null || typeof inner !== "object") {
+  const inner = obj[keys[0]!];
+  if (inner === null || typeof inner !== "object" || Array.isArray(inner)) {
     return raw;
   }
   return inner;

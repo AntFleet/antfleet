@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
-import { anthropicProvider, extractAnthropicToolOutput } from "./anthropic.js";
+import { anthropicProvider, extractAnthropicToolOutput, tolerateReviewShape } from "./anthropic.js";
 import { reviewOutputSchema } from "../types.js";
 import { FleetError } from "../errors.js";
 
@@ -108,7 +108,35 @@ describe("extractAnthropicToolOutput", () => {
     expect(parsed.findings).toHaveLength(1);
   });
 
-  it("does not unwrap when the single key isn't 'input'", async () => {
+  it("unwraps the { review: {...} } wrapper variant Opus 4.7 also emits", async () => {
+    // Slice 4d real-PR diagnostic captured this second wrapper key — the model
+    // sometimes echoes the tool-name stem ("review" from "submit_review")
+    // instead of "input".
+    const fixture = await loadFixture("anthropic-review-with-findings.json");
+    const expected = (
+      fixture.content[0] as Extract<(typeof fixture.content)[number], { type: "tool_use" }>
+    ).input;
+    const wrapped: Anthropic.Messages.Message = {
+      ...fixture,
+      content: [
+        {
+          ...(fixture.content[0] as Extract<
+            (typeof fixture.content)[number],
+            { type: "tool_use" }
+          >),
+          input: { review: expected },
+        },
+      ],
+    };
+    const raw = extractAnthropicToolOutput(wrapped, "submit_review");
+    expect(raw).toEqual(expected);
+    const parsed = reviewOutputSchema.parse(raw);
+    expect(parsed.findings).toHaveLength(1);
+  });
+
+  it("does not unwrap when there are multiple top-level keys", async () => {
+    // A valid response (matching reviewJsonSchema) has >=2 top-level keys
+    // (findings + inspected). Anything multi-key must pass through.
     const fixture = await loadFixture("anthropic-review-with-findings.json");
     const decoy: Anthropic.Messages.Message = {
       ...fixture,
@@ -118,11 +146,72 @@ describe("extractAnthropicToolOutput", () => {
             (typeof fixture.content)[number],
             { type: "tool_use" }
           >),
-          input: { findings: [{ ok: true }] },
+          input: { findings: [{ ok: true }], inspected: { files: [] } },
         },
       ],
     };
     const raw = extractAnthropicToolOutput(decoy, "submit_review");
-    expect(raw).toEqual({ findings: [{ ok: true }] });
+    expect(raw).toEqual({ findings: [{ ok: true }], inspected: { files: [] } });
+  });
+
+  it("does not unwrap when the single-key value isn't an object", async () => {
+    const fixture = await loadFixture("anthropic-review-with-findings.json");
+    const decoy: Anthropic.Messages.Message = {
+      ...fixture,
+      content: [
+        {
+          ...(fixture.content[0] as Extract<
+            (typeof fixture.content)[number],
+            { type: "tool_use" }
+          >),
+          input: { findings: "not-an-object" },
+        },
+      ],
+    };
+    const raw = extractAnthropicToolOutput(decoy, "submit_review");
+    expect(raw).toEqual({ findings: "not-an-object" });
+  });
+});
+
+describe("tolerateReviewShape", () => {
+  it("coerces a string `inspected` to an empty audit shell so findings parse", async () => {
+    const fixture = await loadFixture("anthropic-review-with-findings.json");
+    const properInput = (
+      fixture.content[0] as Extract<(typeof fixture.content)[number], { type: "tool_use" }>
+    ).input as { findings: unknown[]; inspected: unknown };
+    const malformed = { findings: properInput.findings, inspected: "freeform summary text" };
+    expect(() => reviewOutputSchema.parse(malformed)).toThrow();
+    const tolerant = tolerateReviewShape(malformed);
+    const parsed = reviewOutputSchema.parse(tolerant);
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.inspected.files).toEqual([]);
+    expect(parsed.inspected.symbols).toEqual([]);
+    expect(parsed.inspected.notes).toEqual([]);
+  });
+
+  it("coerces missing `inspected` to an empty audit shell", () => {
+    const tolerant = tolerateReviewShape({ findings: [] }) as { inspected: unknown };
+    expect(tolerant.inspected).toEqual({ files: [], symbols: [], notes: [] });
+  });
+
+  it("coerces null `inspected` to an empty audit shell", () => {
+    const tolerant = tolerateReviewShape({ findings: [], inspected: null }) as {
+      inspected: unknown;
+    };
+    expect(tolerant.inspected).toEqual({ files: [], symbols: [], notes: [] });
+  });
+
+  it("leaves a well-formed `inspected` untouched", () => {
+    const proper = {
+      findings: [],
+      inspected: { files: ["src/a.ts"], symbols: ["foo"], notes: ["note"] },
+    };
+    expect(tolerateReviewShape(proper)).toEqual(proper);
+  });
+
+  it("passes through non-object inputs (e.g. null, arrays)", () => {
+    expect(tolerateReviewShape(null)).toBe(null);
+    expect(tolerateReviewShape([])).toEqual([]);
+    expect(tolerateReviewShape("string")).toBe("string");
   });
 });
