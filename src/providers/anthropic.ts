@@ -106,7 +106,7 @@ export function extractAnthropicToolOutput(
 ): unknown {
   for (const block of response.content) {
     if (block.type === "tool_use" && block.name === toolName) {
-      return block.input;
+      return unwrapNestedInput(block.input);
     }
   }
   throw new FleetError(
@@ -114,6 +114,33 @@ export function extractAnthropicToolOutput(
     8,
     "malformed-output",
   );
+}
+
+/**
+ * Claude Opus 4.7 intermittently wraps its tool-use payload in an extra
+ * `{ input: {...} }` layer when called with `tool_choice: { type: "tool" }`
+ * — observed in slice 4b.1 diagnostics where two consecutive calls with
+ * identical prompts produced `input_keys=["input"]` once and the proper
+ * `input_keys=["findings","inspected"]` the next. We unwrap defensively so
+ * downstream Zod validation sees the same shape in either case.
+ *
+ * Heuristic: a single top-level key named `input` whose value is itself an
+ * object. Any other shape passes through untouched.
+ */
+function unwrapNestedInput(raw: unknown): unknown {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return raw;
+  }
+  const obj = raw as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1 || keys[0] !== "input") {
+    return raw;
+  }
+  const inner = obj["input"];
+  if (inner === null || typeof inner !== "object") {
+    return raw;
+  }
+  return inner;
 }
 
 function requireApiKey(): string {

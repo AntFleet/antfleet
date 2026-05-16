@@ -84,4 +84,45 @@ describe("extractAnthropicToolOutput", () => {
       (fixture.content[0] as Extract<(typeof fixture.content)[number], { type: "tool_use" }>).input,
     );
   });
+
+  it("unwraps the intermittent { input: {...} } wrapper Opus 4.7 emits", async () => {
+    const fixture = await loadFixture("anthropic-review-with-findings.json");
+    const expected = (
+      fixture.content[0] as Extract<(typeof fixture.content)[number], { type: "tool_use" }>
+    ).input;
+    const wrapped: Anthropic.Messages.Message = {
+      ...fixture,
+      content: [
+        {
+          ...(fixture.content[0] as Extract<
+            (typeof fixture.content)[number],
+            { type: "tool_use" }
+          >),
+          input: { input: expected },
+        },
+      ],
+    };
+    const raw = extractAnthropicToolOutput(wrapped, "submit_review");
+    expect(raw).toEqual(expected);
+    const parsed = reviewOutputSchema.parse(raw);
+    expect(parsed.findings).toHaveLength(1);
+  });
+
+  it("does not unwrap when the single key isn't 'input'", async () => {
+    const fixture = await loadFixture("anthropic-review-with-findings.json");
+    const decoy: Anthropic.Messages.Message = {
+      ...fixture,
+      content: [
+        {
+          ...(fixture.content[0] as Extract<
+            (typeof fixture.content)[number],
+            { type: "tool_use" }
+          >),
+          input: { findings: [{ ok: true }] },
+        },
+      ],
+    };
+    const raw = extractAnthropicToolOutput(decoy, "submit_review");
+    expect(raw).toEqual({ findings: [{ ok: true }] });
+  });
 });
