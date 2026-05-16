@@ -103,7 +103,7 @@ When a decision changes, update this file. When an experiment runs, write a verd
 
 End-to-end demo working: GitHub PR → smee → localhost → 2-of-2 unanimous → markdown comment on the PR. Live evidence on `Augustas11/krisskross_shops` PR #1 (comments `#issuecomment-4466966392`, `#issuecomment-4467326988`, `#issuecomment-4467353797`).
 
-**Mission 3 — in progress:**
+**Mission 3 — complete (2026-05-16 → -17):**
 
 | Slice | Commit | Delivers | Status |
 |---|---|---|---|
@@ -112,9 +112,11 @@ End-to-end demo working: GitHub PR → smee → localhost → 2-of-2 unanimous �
 | 3-3 | `a9b842a` | `formatClosureReceipt` + extended `markFindingClosed` | ✓ |
 | 3-4 | `a63adde` | `pollReactions` + `mapToMaintainerReactions` + `recordMaintainerReactions` + dedup unique index migration `0002_lush_nighthawk` | ✓ |
 | 3-5 | `58043da` | `/api/cron/sweep` orchestrator + `runSweep` + `loadSweepWork`/`stampFindingPolled` + `sweep-data` JSONB extractors + reviews coord cols migration `0003_high_maggott` + webhook persists coords | ✓ |
-| 3-6 | — | `vercel.json` cron schedule | next |
+| 3-6 | _pending commit_ | `vercel.json` daily cron schedule (`0 6 * * *` → `/api/cron/sweep`) | ✓ |
 
-**Next mission:** Mission 3 slice 3-6 (`vercel.json` cron schedule + `CRON_SECRET` env). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
+Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule lives in `apps/web/vercel.json`; before the first scheduled run, Neon needs `pnpm -F @antfleet/web db:migrate` to apply migrations `0002` + `0003`, and `CRON_SECRET` must be set in the Vercel project env (production + preview).
+
+**Next mission:** Mission 4 — landing page + public receipts page + data policy (§9 MVP scope). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
 
 ---
 
