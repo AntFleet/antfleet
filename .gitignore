@@ -2,10 +2,14 @@ node_modules/
 dist/
 coverage/
 .omc/
+.env
+.env.local
+.env.*.local
 .fleet/runs/
 .fleet/findings/
 .fleet/patches/
 .fleet/reports/
 .fleet/locks/
 examples/dogfood-results/[0-9]*.md
+examples/dogfood-results/run-[0-9]*.md
 
