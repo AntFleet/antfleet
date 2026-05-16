@@ -122,7 +122,7 @@ Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule li
 |---|---|---|---|
 | 4-1 | `cfcbf1e` | Tailwind v4 + Inter/JetBrains Mono via `next/font` + chrome (`SiteHeader`/`SiteFooter` in `layout.tsx`) + brand tokens in `globals.css` | ✓ |
 | 4-2 | `62acc77` | Landing page `/` — Hero/Proof/FeatureGrid/HowItWorks/Trust/CTA + `install-url` helper, architectural pitch per §15 | ✓ |
-| 4-3 | — | Public receipts page `/receipts` — server component reading `finding_status` closed rows, live counter | — |
+| 4-3 | `12f0e56` | Public receipts page `/receipts` — server component (force-dynamic), `loadPublicReceiptsPage` count+list query, `lib/receipts` adapter (anonymized labels + relative time), empty/normal/truncated states | ✓ |
 | 4-4 | — | `/policy` page — data policy text + footer link | — |
 | 4-5 | — | Receipts page polish (pagination, last-updated stamp, anonymization) | — |
 
