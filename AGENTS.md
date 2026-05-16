@@ -120,7 +120,7 @@ Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule li
 
 | Slice | Commit | Delivers | Status |
 |---|---|---|---|
-| 4-1 | _pending commit_ | Tailwind v4 + Inter/JetBrains Mono via `next/font` + chrome (`SiteHeader`/`SiteFooter` in `layout.tsx`) + brand tokens in `globals.css` | ✓ |
+| 4-1 | `cfcbf1e` | Tailwind v4 + Inter/JetBrains Mono via `next/font` + chrome (`SiteHeader`/`SiteFooter` in `layout.tsx`) + brand tokens in `globals.css` | ✓ |
 | 4-2 | — | Landing page `/` — hero, install button, pitch (b) explainer per §15 | next |
 | 4-3 | — | Public receipts page `/receipts` — server component reading `finding_status` closed rows, live counter | — |
 | 4-4 | — | `/policy` page — data policy text + footer link | — |
