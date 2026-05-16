@@ -11,6 +11,8 @@ import {
   reviewOutputSchema,
   revalidateOutputSchema,
 } from "./types.js";
+import { AgreementMode } from "./providers/agreement.js";
+import { stackedProvider } from "./providers/stacked.js";
 
 export type Provider = {
   name: string;
@@ -30,7 +32,48 @@ export function providerByName(name: string): Provider {
   if (name === "mock-fail") {
     return mockFailProvider;
   }
+  if (name === "stacked") {
+    return buildStackedFromEnv();
+  }
   throw new FleetError(`unsupported provider: ${name}`, 2, "unsupported-provider");
+}
+
+function buildStackedFromEnv(): Provider {
+  const raw = process.env["FLEET_STACKED_PROVIDERS"] ?? "codex,mock";
+  const childNames = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (childNames.length === 0) {
+    throw new FleetError(
+      "FLEET_STACKED_PROVIDERS must list at least one provider",
+      2,
+      "invalid-config",
+    );
+  }
+  const agreementRaw = process.env["FLEET_STACKED_AGREEMENT"] ?? "unanimous";
+  if (!isAgreementMode(agreementRaw)) {
+    throw new FleetError(
+      `FLEET_STACKED_AGREEMENT must be unanimous|majority|any (got: ${agreementRaw})`,
+      2,
+      "invalid-config",
+    );
+  }
+  const children = childNames.map((n) => {
+    if (n === "stacked") {
+      throw new FleetError(
+        "stacked provider cannot nest stacked as a child",
+        2,
+        "invalid-config",
+      );
+    }
+    return providerByName(n);
+  });
+  return stackedProvider({ providers: children, agreement: agreementRaw });
+}
+
+function isAgreementMode(value: string): value is AgreementMode {
+  return value === "unanimous" || value === "majority" || value === "any";
 }
 
 const codexProvider: Provider = {
