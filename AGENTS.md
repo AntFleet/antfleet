@@ -40,7 +40,7 @@ When a decision changes, update this file. When an experiment runs, write a verd
 
 **One line:** AntFleet is the trust substrate for autonomous code work.
 
-**One paragraph:** AntFleet runs every PR through N independent frontier models from the Antfeed inference marketplace and posts only the findings they agree on. Every closed finding is pinned to a resolving commit SHA — the receipt that proves the audit was real. The same substrate later runs Sweeper (reconciles old findings), Patch Bot (writes the fix), and Security/Perf specialists — all from one webhook. The wedge is the marketplace under the hood: nobody else can stack N models cheaply enough to make agreement the trust primitive. The moat is the receipts: a public, growing, cryptographically-provable counter of AI-resolved findings.
+**One paragraph:** AntFleet runs every PR through N independent frontier models from the Antfeed inference marketplace and posts only the findings they agree on. **The value proposition is precision, not coverage.** When two independent frontier reviewers both flag the same code, 6 runs of real-repo data (V2 + V3 Phase 0 verdicts) show the finding is real ~100% of the time — zero hallucinated bugs in the agreement set. We don't promise to catch the bugs you already knew about; we surface fewer-but-real ones you wouldn't have written up yourself. Every closed finding is pinned to a resolving commit SHA — the receipt that proves the audit was real. The same substrate later runs Sweeper (reconciles old findings), Patch Bot (writes the fix), and Security/Perf specialists — all from one webhook. The wedge is the marketplace under the hood: nobody else can stack N models cheaply enough to make agreement the trust primitive. The moat is the receipts: a public, growing, cryptographically-provable counter of AI-resolved findings.
 
 ---
 
@@ -81,9 +81,13 @@ When a decision changes, update this file. When an experiment runs, write a verd
 | Majority-3 | 5.0 | 4.4/5 (88%) | Strong |
 | Any | 10.2 | 5.0/5 (100%) | Just union noise |
 
-**Locked decision from Week 1:** Drop DeepSeek/OpenRouter from default. Ship MVP with Anthropic + OpenAI in 2-provider unanimous mode (projected: ~80–100% recall, <1 noise/run). Receipts are the moat. Agreement is the quality gate.
+**Locked decision from Week 1:** Drop DeepSeek/OpenRouter from default. Ship MVP with Anthropic + OpenAI in 2-provider unanimous mode. Receipts are the moat. Agreement is the quality gate.
 
-**Next mission:** Phase 0 — lock 2-provider stack in code, sanity-check against real AntSeed codebase, produce `WEEK1-VERDICT-V2.md`.
+**Phase 0 verdict (V2 + V3, 2026-05-16):** Both **RED** on recall against the curated AntSeed ground truth (V2: 13%, V3: 7% matcher / 0% hand-scored clean). V3 ruled out the transport-truncation hypothesis (zero failures at `max_tokens=16384`, but recall dropped further as each provider produced more divergent findings). The signal-quality story is robust across both verdicts: **0% misidentifications in unanimous mode across 6 runs.** The stack does not hallucinate — it surfaces real bugs that don't always overlap a human's prioritized write-up list.
+
+**Locked decision from Phase 0 (2026-05-16):** Pitch **(b)** is the value proposition — "fewer-but-real bugs you wouldn't have written up yourself." Precision, not coverage. This aligns with the receipts-as-moat thesis (§18.2): every receipt is provably real, never required to align with any prior expectation. Phase 1 unlocked. Phase 0 RED verdict on recall is logged honestly per §12 and folded into the customer-visible pitch, not papered over.
+
+**Next mission:** Phase 1 — Mission 1 (GitHub App skeleton). See §5.
 
 ---
 
@@ -343,6 +347,8 @@ These will be answered by data over months, not declared now:
 
 **AntFleet** is the b2b product + marketplace brand. One word, capital-A capital-F. Aesthetic: Stripe + Linear (clean, numerical, receipts-forward, sans-serif, generous whitespace, monospace only for code blocks and SHAs). Voice: direct, technical, trustworthy. No marketing fluff.
 
+**Pitch (locked Phase 0, 2026-05-16):** "Two independent frontier models on every PR. We post only what both flag — and across 6 real-repo runs, zero hallucinated findings. Fewer-but-real bugs you wouldn't have written up yourself, each one pinned to a closing SHA." Do NOT pitch coverage or "we catch the bugs you knew about" — V2 + V3 data refuted that framing. Precision + receipts is the story.
+
 **Antfeed** is the community / consumer brand — Colony Scout persona on X / Farcaster (lowercase, third-person, daily snapshots, no emojis, bare arrow CTAs). Discovery and social proof for the AntSeed ecosystem. Sibling brand to AntFleet, not parent or child.
 
 **AntSeed** is the protocol layer. Not in AntFleet product surface. Not in landing page. Not in customer copy. Only in deep technical pages for crypto-native buyers (`/architecture` or `/marketplace/under-the-hood`).
@@ -380,7 +386,7 @@ If you're a fresh Claude session reading this for the first time:
 1. **Read this file** (you just did)
 2. **Read `ARCHITECTURE.md`** for technical surfaces and what's inherited from clawpatch
 3. **Read `examples/dogfood-results/WEEK1-VERDICT.md`** for the Week 1 empirical verdict
-4. **Read `examples/antseed-corpus-results/WEEK1-VERDICT-V2.md`** if Phase 0 has completed (real-repo verdict)
+4. **Read `examples/antseed-corpus-results/WEEK1-VERDICT-V2.md`** and **`WEEK1-VERDICT-V3.md`** for the Phase 0 real-repo verdicts
 5. **Check `git log --oneline -20`** for recent commits
 6. **Check `.env.local`** exists with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (gitignored; never log contents)
 
@@ -391,7 +397,8 @@ Then route to the active phase:
 | Phase 0 not yet run | Ask the user to run the Phase 0 autopilot mission |
 | Phase 0 GREEN | Proceed to Phase 1, Mission 1 (GitHub App skeleton) |
 | Phase 0 YELLOW | Tune prompts or slicer before Phase 1 |
-| Phase 0 RED | Strategy conversation, no more code |
+| Phase 0 RED, strategy not yet settled | Strategy conversation, no more code |
+| **Phase 0 RED, pitch (b) locked (current state)** | **Proceed to Phase 1, Mission 1 — the precision-not-coverage pitch absorbs RED honestly** |
 | Phase 1 in progress | Resume the active mission per `.fleet/mission-state.md` (if it exists) |
 | Phase 2+ | Read latest weekly metrics report in `state/metrics/` |
 
@@ -418,6 +425,8 @@ If this file is ever rewritten or replaced, these specific points must survive v
 7. **No CLI, no IDE, no in-editor anything.** PR webhook + comment + receipts page is the entire surface for v1. Editors are sticky-UX moats owned by entrenched players.
 
 8. **Don't take builder-shaped design partners** ("write me a feature") until Phase 4 earliest. They distort the roadmap toward UX you can't win.
+
+9. **Pitch is (b): precision, not coverage.** V2 + V3 Phase 0 verdicts (6 runs of real-repo data) settled this. Two frontier models in unanimous mode catch *fewer* of a curated bug list than either model alone — that is the truth — but *what they agree on is real ~100% of the time*. The product promise is "fewer-but-real bugs you wouldn't have written up yourself," not "we catch the bugs you already knew about." Anyone tempted to revert the pitch to coverage-language should re-read `examples/antseed-corpus-results/WEEK1-VERDICT-V3.md` first.
 
 ---
 
