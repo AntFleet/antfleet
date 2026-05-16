@@ -1,10 +1,20 @@
-# Antfeed Fleet — Project Substrate
+# AntFleet — Project Substrate
 
 > **Trust substrate for autonomous code work.** Multi-model verification. SHA-pinned receipts. Marketplace under the hood.
 
-This file is the canonical strategy + context document for Antfeed Fleet. A fresh session should be able to read this top-to-bottom (~15 minutes), then load `ARCHITECTURE.md` for technical context and `examples/dogfood-results/WEEK1-VERDICT.md` for empirical data, and pick up active work without additional briefing.
+This file is the canonical strategy + context document for AntFleet. A fresh session should be able to read this top-to-bottom (~15 minutes), then load `ARCHITECTURE.md` for technical context and `examples/dogfood-results/WEEK1-VERDICT.md` for empirical data, and pick up active work without additional briefing.
 
-**Last updated:** 2026-05-16 (post-Week-1 verdict, pre-Phase-0)
+**Last updated:** 2026-05-16 (post-Week-1 verdict, pre-Phase-0, brand-unified-as-AntFleet)
+
+## Naming hierarchy (read first if you've seen older docs)
+
+| Layer | Name | Role |
+|---|---|---|
+| Protocol | **AntSeed** | Underlying inference-payments protocol (external — we contribute, we don't own) |
+| Community / consumer | **Antfeed** | Colony Scout persona on X / Farcaster — marketplace discovery, daily snapshots, lowercase third-person voice |
+| Marketplace + product | **AntFleet** | The b2b product. The marketplace IS the product — a fleet of inference agents running on customer repos |
+
+"AntFleet" is the unified brand. Earlier internal drafts used "Antfeed Fleet" — that name is retired. "Antfeed" remains as the community brand for the marketplace discovery / Colony Scout social presence, but the product and marketplace substrate is AntFleet.
 
 ---
 
@@ -28,13 +38,13 @@ When a decision changes, update this file. When an experiment runs, write a verd
 
 ## 2. Vision
 
-**One line:** Antfeed Fleet is the trust substrate for autonomous code work.
+**One line:** AntFleet is the trust substrate for autonomous code work.
 
-**One paragraph:** Antfeed Fleet runs every PR through N independent frontier models from the Antfeed inference marketplace and posts only the findings they agree on. Every closed finding is pinned to a resolving commit SHA — the receipt that proves the audit was real. The same substrate later runs Sweeper (reconciles old findings), Patch Bot (writes the fix), and Security/Perf specialists — all from one webhook. The wedge is the marketplace under the hood: nobody else can stack N models cheaply enough to make agreement the trust primitive. The moat is the receipts: a public, growing, cryptographically-provable counter of AI-resolved findings.
+**One paragraph:** AntFleet runs every PR through N independent frontier models from the Antfeed inference marketplace and posts only the findings they agree on. Every closed finding is pinned to a resolving commit SHA — the receipt that proves the audit was real. The same substrate later runs Sweeper (reconciles old findings), Patch Bot (writes the fix), and Security/Perf specialists — all from one webhook. The wedge is the marketplace under the hood: nobody else can stack N models cheaply enough to make agreement the trust primitive. The moat is the receipts: a public, growing, cryptographically-provable counter of AI-resolved findings.
 
 ---
 
-## 3. What Antfeed Fleet IS / IS NOT
+## 3. What AntFleet IS / IS NOT
 
 **IS:**
 - A GitHub App that reviews PRs via multi-model agreement
@@ -161,7 +171,7 @@ Rationale: `examples/dogfood-results/WEEK1-VERDICT.md`.
 | **Data** | (Finding, agreement-state, resolution-SHA, reaction) tuples → routing intelligence + prompt tuning + evals | Compounding | 12–18 months |
 | **Network (marketplace)** | More providers compete → cheaper/better → more customers → more attractive to providers | Two-sided compounding | 18–36 months |
 
-**Disagreement is unique IP.** Nobody else has cross-model disagreement data on real customer code. This is the substrate for routing decisions, evals, and (eventually) calibration models. Anthropic has Claude's outputs. OpenAI has GPT's. Only Antfeed Fleet has "where these two disagree on real customer code, and which side was right."
+**Disagreement is unique IP.** Nobody else has cross-model disagreement data on real customer code. This is the substrate for routing decisions, evals, and (eventually) calibration models. Anthropic has Claude's outputs. OpenAI has GPT's. Only AntFleet has "where these two disagree on real customer code, and which side was right."
 
 **Sequencing rule:** Can't open the network flywheel before the trust flywheel produces visible signal. Can't compound the data flywheel before meaningful review volume exists. Order is mechanical: trust (MVP→month 3) → data (months 3–9) → network (months 9–18) → agent marketplace (year 2+).
 
@@ -331,11 +341,13 @@ These will be answered by data over months, not declared now:
 
 ## 15. Brand and positioning
 
-**Antfeed Fleet** is the b2b serious product brand. Aesthetic: Stripe + Linear (clean, numerical, receipts-forward, sans-serif, generous whitespace, monospace only for code blocks and SHAs).
+**AntFleet** is the b2b product + marketplace brand. One word, capital-A capital-F. Aesthetic: Stripe + Linear (clean, numerical, receipts-forward, sans-serif, generous whitespace, monospace only for code blocks and SHAs). Voice: direct, technical, trustworthy. No marketing fluff.
 
-**Antfeed** the marketplace stays as the underlying infrastructure brand (Colony Scout persona on X / Farcaster — lowercase, third-person, daily snapshots, no emojis, bare arrow CTAs).
+**Antfeed** is the community / consumer brand — Colony Scout persona on X / Farcaster (lowercase, third-person, daily snapshots, no emojis, bare arrow CTAs). Discovery and social proof for the AntSeed ecosystem. Sibling brand to AntFleet, not parent or child.
 
-**AntSeed** is the protocol. Not in product surface. Not in landing page. Not in customer copy. Only in deep technical pages for crypto-native buyers (`/architecture` or `/marketplace`).
+**AntSeed** is the protocol layer. Not in AntFleet product surface. Not in landing page. Not in customer copy. Only in deep technical pages for crypto-native buyers (`/architecture` or `/marketplace/under-the-hood`).
+
+**The three names are a family**, not a hierarchy: AntSeed (protocol) + Antfeed (community) + AntFleet (product). All share the "Ant" prefix as a brand signature. None is renamed or retired — they're three coordinated faces of the ecosystem.
 
 **Don't position against** Cursor, Devin, Snyk, CodeRabbit, Greptile, or any competitor by name. Position against the *absence* of trust infrastructure for autonomous code. "We're the first X" is a stronger frame than "we're a better Y."
 
@@ -388,6 +400,8 @@ Then route to the active phase:
 ## 18. Things to never lose
 
 If this file is ever rewritten or replaced, these specific points must survive verbatim:
+
+0. **The brand family is AntSeed + Antfeed + AntFleet, in that order of layering.** AntSeed = protocol (external). Antfeed = community/social brand. AntFleet = product + marketplace. One word, capital-A capital-F for AntFleet. Don't reintroduce "Antfeed Fleet" or other two-word variants — that name is retired.
 
 1. **DeepSeek/OpenRouter dropped from default for empirical reasons** — not because the marketplace thesis failed, but because price-stratified diversity isn't capability diversity on this corpus. The marketplace thesis remains live; the implementation just needs peer-tier providers.
 
