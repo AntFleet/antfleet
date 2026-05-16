@@ -19,3 +19,4 @@ examples/dogfood-results/[0-9]*.md
 # names the exact paths a contributor needs to populate locally.
 examples/antseed-corpus/apps/
 
+.vercel

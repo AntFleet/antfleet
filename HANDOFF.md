@@ -16,17 +16,17 @@ This file is the resume sheet for the next session. It's transient — delete it
 
 1. ~~Apply pending Neon migrations~~ — **done via `db:push`.** Neon schema current as of `0003_high_maggott`. Future schema changes: use `pnpm -F @antfleet/web db:push`, NOT `db:migrate`. The repo's `__drizzle_migrations` tracking table on Neon is empty (original schema seeded via push), so `db:migrate` re-applies 0000 from scratch and fails with "relation already exists." Push diffs schema.ts against actual DB and applies only what's missing — non-destructive changes (column adds, constraint adds) auto-apply without prompts.
 
-2. ~~`CRON_SECRET` in Vercel env~~ — **done.** Set in Production + Development (same value mirrored to `apps/web/.env.local`). **Preview env skipped** — the Vercel project has no Git repository connected, so there are no preview branches to scope the var to. Re-add to Preview if/when the GitHub repo gets connected to Vercel.
+2. ~~`CRON_SECRET` in Vercel env~~ — **done in Production + Development**, mirrored to `apps/web/.env.local`. **Preview env still skipped** — Vercel CLI 53.4.0 has a bug where `vercel env add CRON_SECRET preview --value <v> --yes` returns its own command as a "next step" suggestion and exits 0 without saving. Workaround: add via Vercel dashboard if/when smoke-testing preview URLs becomes useful. Cron only fires on production deployments, so this doesn't block the schedule.
 
 3. ~~Backfill M3-1 smoke row's repo coords~~ — **done.** `review_id=83e79770-1869-4331-8690-b534a531d327` now has `installation_id=132854945`, `owner='Augustas11'`, `repo='krisskross_shops'`. The 4 open finding_status rows on that review are sweepable.
 
 4. ~~Local smoke~~ — **done.** `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/sweep` returned `{swept:4, closed:0, reactionsRecorded:0, reviewsSkipped:0, errors:[], elapsedMs:7327}`. Auth gate: 401 on missing/wrong header. The cron pipeline works end-to-end against real Neon + real GitHub.
 
-5. **Production deploy + cron activation — not done.** The Vercel project (`augstar-8472s-projects/antfleet-web`) has **no Git repository connected**, so `git push` does NOT trigger Vercel deployments. Options:
-   - **Connect the GitHub repo** in Vercel dashboard → Project Settings → Git → connect. Future `git push` to main auto-deploys. Then re-add `CRON_SECRET` to Preview env (ops #2 above).
-   - **Manual deploy**: `cd apps/web && vercel deploy --prod`. One-off; no auto-deploy.
+5. ~~Vercel project Git connection~~ — **done.** `apps/web` (project `antfleet-web`) is now connected to `https://github.com/Augustas11/antfleet`. Future `git push` to `main` auto-deploys to production. Side effect: `.gitignore` at repo root now lists `.vercel` (Vercel CLI added this automatically when it briefly mis-linked at the root before being redirected to `apps/web/`). Defensive — kept.
 
-   The cron schedule (`apps/web/vercel.json`) only fires on **production** deployments — the first scheduled run is 06:00 UTC the day after the first production deploy.
+6. **Production deploy + cron activation — not done.** Next `git push origin main` triggers the first Vercel production build. The cron schedule (`apps/web/vercel.json`) starts firing once a production deployment exists — first scheduled run is 06:00 UTC the day after the first prod deploy. (For an immediate first deploy without waiting on a push, `cd apps/web && vercel deploy --prod`.)
+
+7. **Zombie Vercel project to clean up.** When Vercel CLI was first run from the repo root, it auto-created a spurious project named `antfleet` (separate from the real `antfleet-web`). It has no deployments, env vars, or domains attached and is harmless, but should be deleted from the Vercel dashboard (Projects → antfleet → Settings → Delete). The auto-deletion via `vercel project rm antfleet` was blocked by the agent's auto-mode classifier; user action needed.
 
 ## What's next: Mission 4
 
