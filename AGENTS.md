@@ -112,7 +112,7 @@ End-to-end demo working: GitHub PR → smee → localhost → 2-of-2 unanimous �
 | 3-3 | `a9b842a` | `formatClosureReceipt` + extended `markFindingClosed` | ✓ |
 | 3-4 | `a63adde` | `pollReactions` + `mapToMaintainerReactions` + `recordMaintainerReactions` + dedup unique index migration `0002_lush_nighthawk` | ✓ |
 | 3-5 | `58043da` | `/api/cron/sweep` orchestrator + `runSweep` + `loadSweepWork`/`stampFindingPolled` + `sweep-data` JSONB extractors + reviews coord cols migration `0003_high_maggott` + webhook persists coords | ✓ |
-| 3-6 | _pending commit_ | `vercel.json` daily cron schedule (`0 6 * * *` → `/api/cron/sweep`) | ✓ |
+| 3-6 | `75ff270` | `vercel.json` daily cron schedule (`0 6 * * *` → `/api/cron/sweep`) | ✓ |
 
 Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule lives in `apps/web/vercel.json`; before the first scheduled run, Neon needs `pnpm -F @antfleet/web db:migrate` to apply migrations `0002` + `0003`, and `CRON_SECRET` must be set in the Vercel project env (production + preview).
 

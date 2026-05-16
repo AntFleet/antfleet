@@ -3,7 +3,7 @@
 This file is the resume sheet for the next session. It's transient — delete it once Mission 4 is fully done and start a clean handoff for whatever follows.
 
 **Last session ended:** 2026-05-17, after Mission 3 closed.
-**Last commit:** `<this slice's commit hash — backfilled in a follow-up>` (`feat(web): Mission 3 slice 3-6 — vercel.json cron schedule + close Mission 3`)
+**Last commit:** `75ff270` (`feat(web): Mission 3 slice 3-6 — vercel.json cron schedule + close Mission 3`)
 **Working tree:** clean (modulo this file committing alongside the slice).
 
 ---
