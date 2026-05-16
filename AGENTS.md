@@ -116,7 +116,17 @@ End-to-end demo working: GitHub PR → smee → localhost → 2-of-2 unanimous �
 
 Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule lives in `apps/web/vercel.json`; before the first scheduled run, Neon needs `pnpm -F @antfleet/web db:migrate` to apply migrations `0002` + `0003`, and `CRON_SECRET` must be set in the Vercel project env (production + preview).
 
-**Next mission:** Mission 4 — landing page + public receipts page + data policy (§9 MVP scope). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
+**Mission 4 — in progress:**
+
+| Slice | Commit | Delivers | Status |
+|---|---|---|---|
+| 4-1 | _pending commit_ | Tailwind v4 + Inter/JetBrains Mono via `next/font` + chrome (`SiteHeader`/`SiteFooter` in `layout.tsx`) + brand tokens in `globals.css` | ✓ |
+| 4-2 | — | Landing page `/` — hero, install button, pitch (b) explainer per §15 | next |
+| 4-3 | — | Public receipts page `/receipts` — server component reading `finding_status` closed rows, live counter | — |
+| 4-4 | — | `/policy` page — data policy text + footer link | — |
+| 4-5 | — | Receipts page polish (pagination, last-updated stamp, anonymization) | — |
+
+**Next mission slice:** Mission 4 slice 4-2 (landing page hero + install button). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
 
 ---
 

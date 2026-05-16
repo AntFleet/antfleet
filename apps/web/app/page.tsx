@@ -1,14 +1,16 @@
 export default function Home() {
   return (
-    <main style={{ fontFamily: "system-ui, sans-serif", maxWidth: 720, margin: "4rem auto", padding: "0 1.5rem" }}>
-      <h1 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>AntFleet</h1>
-      <p style={{ color: "#555", marginBottom: "2rem" }}>
-        Two independent frontier models review every PR. We post only what both flag.
-        Each finding is pinned to a closing commit SHA — the receipt that proves the audit was real.
+    <div className="mx-auto max-w-3xl px-6 py-24">
+      <h1 className="text-4xl font-semibold tracking-tight text-[var(--color-ink)]">
+        AntFleet
+      </h1>
+      <p className="mt-4 text-lg leading-relaxed text-[var(--color-ink-muted)]">
+        Two independent frontier models review every PR. We post only what both
+        flag — and pin each finding to a closing commit SHA.
       </p>
-      <p style={{ color: "#888", fontSize: "0.9rem" }}>
-        Mission 1 skeleton. Receipts counter, install flow, and PR commenting land in subsequent missions.
+      <p className="mt-6 text-sm text-[var(--color-ink-subtle)]">
+        Chrome only. Hero, install button, and pitch land in slice 4-2.
       </p>
-    </main>
+    </div>
   );
 }
