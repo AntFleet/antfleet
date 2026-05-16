@@ -16,10 +16,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const rawBody = await req.text();
   const signature = req.headers.get("x-hub-signature-256");
   const delivery = req.headers.get("x-github-delivery");
-  const event = req.headers.get("x-github-event");
+  const githubEvent = req.headers.get("x-github-event");
 
   if (!verifyGitHubSignature(rawBody, signature, secret)) {
-    logWarn("webhook.signature_invalid", { delivery, event });
+    logWarn("webhook.signature_invalid", { delivery, githubEvent });
     return new NextResponse("invalid signature", { status: 401 });
   }
 
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     payload = JSON.parse(rawBody) as typeof payload;
   } catch {
-    logWarn("webhook.payload_unparseable", { delivery, event });
+    logWarn("webhook.payload_unparseable", { delivery, githubEvent });
     return new NextResponse("invalid json", { status: 400 });
   }
 
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       ? payload.installation.id
       : null;
 
-  logInfo("webhook.received", { delivery, event, action, installationId });
+  logInfo("webhook.received", { delivery, githubEvent, action, installationId });
 
   // Slice 3 will dispatch pull_request events to the review pipeline. For now,
   // verified deliveries are acknowledged so GitHub stops retrying.

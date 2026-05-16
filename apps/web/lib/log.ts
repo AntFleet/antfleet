@@ -12,11 +12,14 @@ type Level = "debug" | "info" | "warn" | "error";
 type LogFields = Record<string, unknown>;
 
 export function log(level: Level, event: string, fields: LogFields = {}): void {
+  // Base fields go LAST so a caller-supplied `event` / `level` / `ts` field
+  // can't accidentally shadow them. The log event name and severity are the
+  // logger's contract; everything else is contextual.
   const entry = {
+    ...fields,
     ts: new Date().toISOString(),
     level,
     event,
-    ...fields,
   };
   // eslint-disable-next-line no-console -- log() is the sanctioned writer.
   console.log(JSON.stringify(entry));
