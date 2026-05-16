@@ -5,6 +5,7 @@ coverage/
 .env
 .env.local
 .env.*.local
+*.pem
 .fleet/runs/
 .fleet/findings/
 .fleet/patches/
