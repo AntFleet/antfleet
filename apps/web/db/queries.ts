@@ -131,6 +131,95 @@ export async function markFindingClosed(args: {
     .where(eq(findingStatus.findingId, args.findingId));
 }
 
+// Mission 3 slice 3-5 — sweep orchestrator data loader. Joins finding_status
+// (status='open') against the parent reviews row and returns one batch per
+// review so the orchestrator can group GitHub API calls by repo. Rows whose
+// review is missing any of installation_id/owner/repo (e.g. the M3-1 smoke
+// rows that predate the 0003 migration) are silently dropped — the
+// orchestrator has no way to act on them and they don't represent
+// production-shape state going forward.
+export type SweepFinding = {
+  findingId: string;
+  findingIndex: number;
+  prCommentId: number | null;
+  createdAt: Date;
+  lastPolledAt: Date | null;
+};
+
+export type SweepReviewBatch = {
+  reviewId: string;
+  installationId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  commitSha: string;
+  prCommentId: number | null;
+  prCommentUrl: string | null;
+  agreementDecision: unknown;
+  findings: SweepFinding[];
+};
+
+export async function loadSweepWork(): Promise<SweepReviewBatch[]> {
+  // The join is the readable shape — for v1 cardinality (low review volume),
+  // a join + JS grouping is cheaper to read and identical in cost to the
+  // two-query variant. Revisit if the per-review fan-out grows.
+  const rows = await db
+    .select({
+      reviewId: reviews.reviewId,
+      installationId: reviews.installationId,
+      owner: reviews.owner,
+      repo: reviews.repo,
+      prNumber: reviews.prNumber,
+      commitSha: reviews.commitSha,
+      prCommentId: reviews.prCommentId,
+      prCommentUrl: reviews.prCommentUrl,
+      agreementDecision: reviews.agreementDecision,
+      findingId: findingStatus.findingId,
+      findingIndex: findingStatus.findingIndex,
+      findingCreatedAt: findingStatus.createdAt,
+      findingLastPolledAt: findingStatus.lastPolledAt,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(eq(findingStatus.status, "open"));
+
+  const byReview = new Map<string, SweepReviewBatch>();
+  for (const r of rows) {
+    if (r.installationId === null || r.owner === null || r.repo === null) continue;
+    let batch = byReview.get(r.reviewId);
+    if (batch === undefined) {
+      batch = {
+        reviewId: r.reviewId,
+        installationId: r.installationId,
+        owner: r.owner,
+        repo: r.repo,
+        prNumber: r.prNumber,
+        commitSha: r.commitSha,
+        prCommentId: r.prCommentId,
+        prCommentUrl: r.prCommentUrl,
+        agreementDecision: r.agreementDecision,
+        findings: [],
+      };
+      byReview.set(r.reviewId, batch);
+    }
+    batch.findings.push({
+      findingId: r.findingId,
+      findingIndex: r.findingIndex,
+      prCommentId: r.prCommentId,
+      createdAt: r.findingCreatedAt,
+      lastPolledAt: r.findingLastPolledAt,
+    });
+  }
+  return Array.from(byReview.values());
+}
+
+export async function stampFindingPolled(findingId: string, now: Date): Promise<void> {
+  await db
+    .update(findingStatus)
+    .set({ lastPolledAt: now })
+    .where(eq(findingStatus.findingId, findingId));
+}
+
 // Mission 3 slice 3-4 — reaction polling DB helper. GitHub returns the full
 // list of reactions on every poll, so we accept that we'll re-attempt the
 // same rows repeatedly and let the unique index drop the duplicates. Returns

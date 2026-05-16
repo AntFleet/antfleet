@@ -22,6 +22,13 @@
       "when": 1778948892706,
       "tag": "0002_lush_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778949326686,
+      "tag": "0003_high_maggott",
+      "breakpoints": true
     }
   ]
 }

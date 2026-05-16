@@ -111,10 +111,10 @@ End-to-end demo working: GitHub PR → smee → localhost → 2-of-2 unanimous �
 | 3-2 | `79c7a55` | `classifyFindings` + `detectClosures` primitives | ✓ |
 | 3-3 | `a9b842a` | `formatClosureReceipt` + extended `markFindingClosed` | ✓ |
 | 3-4 | `a63adde` | `pollReactions` + `mapToMaintainerReactions` + `recordMaintainerReactions` + dedup unique index migration `0002_lush_nighthawk` | ✓ |
-| 3-5 | — | `/api/cron/sweep` endpoint (orchestrator, `CRON_SECRET`-gated) | next |
-| 3-6 | — | `vercel.json` cron schedule | — |
+| 3-5 | _pending commit_ | `/api/cron/sweep` orchestrator + `runSweep` + `loadSweepWork`/`stampFindingPolled` + `sweep-data` JSONB extractors + reviews coord cols migration `0003_high_maggott` + webhook persists coords | ✓ |
+| 3-6 | — | `vercel.json` cron schedule | next |
 
-**Next mission:** Mission 3 slice 3-5 (`/api/cron/sweep` orchestrator). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
+**Next mission:** Mission 3 slice 3-6 (`vercel.json` cron schedule + `CRON_SECRET` env). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
 
 ---
 

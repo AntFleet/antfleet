@@ -33,6 +33,15 @@ export const reviews = pgTable("reviews", {
   // the PR. Null when degraded/skipped or before posting succeeded.
   prCommentId: bigint("pr_comment_id", { mode: "number" }),
   prCommentUrl: text("pr_comment_url"),
+  // Mission 3 slice 3-5 — the cron sweep needs to re-auth as the App
+  // installation and call the GitHub REST API on the source repo to detect
+  // closure and poll reactions. None of that is derivable from repo_hash
+  // (sha256 is one-way). Persisted nullable so the slice 3-1 smoke rows
+  // (which predate this column) don't blow up the schema migration; the
+  // sweep skips findings on reviews where any of the three are null.
+  installationId: bigint("installation_id", { mode: "number" }),
+  owner: text("owner"),
+  repo: text("repo"),
 });
 
 // One row per agreed finding. Sweeper updates status when reconciliation

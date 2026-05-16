@@ -131,6 +131,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       timingMs: 0,
       costEstimatedUsd: 0,
       schemaVersion: 1,
+      // Mission 3 slice 3-5 — sweep needs these to re-auth + call GitHub.
+      // Persisted at stub-row time so failure mid-review still leaves a
+      // sweepable row.
+      installationId: pr.installation.id,
+      owner: pr.repository.owner.login,
+      repo: pr.repository.name,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
