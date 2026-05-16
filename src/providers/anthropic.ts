@@ -16,7 +16,10 @@ import {
 } from "../types.js";
 
 const DEFAULT_MODEL = "claude-opus-4-7";
-const MAX_TOKENS = 8192;
+// Raised from 8192 after Phase 0 verdict (WEEK1-VERDICT-V2.md): run 1 returned a
+// truncated tool_use on a 142k-char prompt. 16384 covers the largest review
+// outputs seen so far with headroom; raise again if truncation recurs.
+const MAX_TOKENS = 16384;
 
 export const anthropicProvider: Provider = {
   name: "anthropic",
