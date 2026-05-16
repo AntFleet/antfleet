@@ -36,6 +36,7 @@ import {
 import type { ReviewOutput } from "../src/types.js";
 import { parseSpikeArgs } from "../src/spike/cli.js";
 import { estimateRunCost, shouldAbortBeforeRun } from "../src/spike/cost.js";
+import { buildSpikePrompt } from "../src/spike/build-prompt.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CORPUS = resolve(ROOT, "examples/dogfood");
@@ -145,69 +146,19 @@ async function listCorpusFiles(corpusRoot: string): Promise<string[]> {
 }
 
 async function buildPrompt(corpusRoot: string, files: string[]): Promise<string> {
-  const blocks: string[] = [];
-  for (const file of files) {
-    const rel = relative(corpusRoot, file);
-    const contents = await readFile(file, "utf8");
-    blocks.push(`--- ${rel}\n${contents}`);
-  }
-  return `You are reviewing one semantic feature for fleet.
-
-Return strict JSON only. No markdown fences.
-
-Project:
-${JSON.stringify({ name: "corpus", root: corpusRoot }, null, 2)}
-
-Feature:
-${JSON.stringify(
-    {
-      featureId: "corpus",
-      title: "Corpus (full TypeScript source)",
-      kind: "library",
-      ownedFiles: files.map((f) => ({ path: relative(corpusRoot, f), reason: "owned" })),
-    },
-    null,
-    2,
-  )}
-
-Review categories:
-- correctness bugs (null derefs, off-by-one, wrong branch)
-- security issues (injection, missing auth, unsafe deserialization)
-- race/concurrency bugs (TOCTOU, read-modify-write, shared mutation)
-- data loss/corruption
-- bad error handling
-- API contract gaps (missing validation, unchecked input)
-- deceptive or misleading comments/docs
-- maintainability risks with concrete impact
-
-Inspect every file. Treat suspicious comments as evidence to verify against the
-code they describe; a comment that lies about behavior is itself a bug.
-
-Avoid speculative low-evidence findings. Evidence MUST point at the file:line
-ranges you actually inspected.
-
-JSON shape:
-{
-  "findings": [
-    {
-      "title": "string",
-      "category": "bug|security|performance|concurrency|api-contract|data-loss|test-gap|docs-gap|build-release|maintainability",
-      "severity": "critical|high|medium|low",
-      "confidence": "high|medium|low",
-      "evidence": [{"path":"string","startLine":1,"endLine":1,"symbol":null,"quote":null}],
-      "reasoning": "string",
-      "reproduction": null,
-      "recommendation": "string",
-      "whyTestsDoNotAlreadyCoverThis": "string",
-      "suggestedRegressionTest": "string or null",
-      "minimumFixScope": "string"
-    }
-  ],
-  "inspected": {"files":["string"],"symbols":["string"],"notes":["string"]}
-}
-
-Files:
-${blocks.join("\n\n")}`;
+  const inputs = await Promise.all(
+    files.map(async (f) => ({
+      path: relative(corpusRoot, f),
+      contents: await readFile(f, "utf8"),
+    })),
+  );
+  return buildSpikePrompt({
+    projectName: "corpus",
+    projectRoot: corpusRoot,
+    featureId: "corpus",
+    featureTitle: "Corpus (full TypeScript source)",
+    files: inputs,
+  });
 }
 
 async function resolveProvider(

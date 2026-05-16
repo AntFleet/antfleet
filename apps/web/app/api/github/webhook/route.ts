@@ -1,18 +1,21 @@
 import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { verifyGitHubSignature } from "@/lib/github-signature";
 import { getInstallationToken } from "@/lib/github-app";
+import { getChangedFiles } from "@/lib/github-files";
+import { reviewPR } from "@/lib/review-pipeline";
 import { logError, logInfo, logWarn } from "@/lib/log";
-import { hashRepo, recordReview } from "@/db/queries";
+import { hashRepo, recordReview, updateReview } from "@/db/queries";
 
 // node:crypto is Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
 
+// Hobby plan max; Pro can go up to 300. The review pipeline takes 60–90s in
+// V2/V3 data; this matches the upper bound we observed.
+export const maxDuration = 60;
+
 const DISPATCH_ACTIONS = new Set(["opened", "reopened", "synchronize"]);
 
-// Minimal subset of the pull_request webhook payload we touch. The DB row's
-// provider_responses JSONB captures the rest verbatim in slice 4+; for slice 3
-// we just need enough to identify the PR.
 type PullRequestPayload = {
   action: string;
   number: number;
@@ -80,54 +83,134 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   logInfo("webhook.received", { delivery, githubEvent, action });
 
-  if (githubEvent === "pull_request" && action !== null && DISPATCH_ACTIONS.has(action)) {
-    const pr = asPullRequestPayload(payload);
-    if (pr === null) {
-      logWarn("webhook.dispatch_skipped", { delivery, reason: "payload shape mismatch" });
-      return NextResponse.json({ ok: true });
-    }
-    try {
-      // Prove App auth works end-to-end. The token isn't used in slice 3 — slice
-      // 4 will fetch changed files with it — but failing fast here surfaces a
-      // misconfigured PEM or App ID at the first PR instead of two slices later.
-      await getInstallationToken(pr.installation.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logError("webhook.installation_token_failed", { delivery, installationId: pr.installation.id, message });
-      return new NextResponse("auth failure", { status: 500 });
-    }
+  if (githubEvent !== "pull_request" || action === null || !DISPATCH_ACTIONS.has(action)) {
+    return NextResponse.json({ ok: true });
+  }
 
-    const repoHash = hashRepo(pr.repository.owner.login, pr.repository.name);
-    let reviewId: string;
+  const pr = asPullRequestPayload(payload);
+  if (pr === null) {
+    logWarn("webhook.dispatch_skipped", { delivery, reason: "payload shape mismatch" });
+    return NextResponse.json({ ok: true });
+  }
+
+  // Fast path before scheduling background work: prove App auth + insert a
+  // stub reviews row so the receipt is durable even if the review itself
+  // fails downstream. Failure here returns 5xx so GitHub retries; failure
+  // inside after() updates the row with the error.
+  try {
+    await getInstallationToken(pr.installation.id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("webhook.installation_token_failed", {
+      delivery,
+      installationId: pr.installation.id,
+      message,
+    });
+    return new NextResponse("auth failure", { status: 500 });
+  }
+
+  const repoHash = hashRepo(pr.repository.owner.login, pr.repository.name);
+  let reviewId: string;
+  try {
+    reviewId = await recordReview({
+      repoHash,
+      prNumber: pr.number,
+      commitSha: pr.pull_request.head.sha,
+      filesReviewed: [],
+      promptVersion: "spike-v1",
+      providerModelIds: {},
+      providerResponses: { status: "pending" },
+      agreementDecision: { status: "pending" },
+      timingMs: 0,
+      costEstimatedUsd: 0,
+      schemaVersion: 1,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("webhook.recordReview_failed", { delivery, message });
+    return new NextResponse("db failure", { status: 500 });
+  }
+
+  logInfo("webhook.dispatched", {
+    delivery,
+    action,
+    reviewId,
+    installationId: pr.installation.id,
+    prNumber: pr.number,
+    commitSha: pr.pull_request.head.sha,
+  });
+
+  // Heavy lifting runs after the 200 — GitHub stops retrying immediately
+  // while the actual review keeps going. Errors are caught and persisted
+  // to the row's providerResponses field rather than thrown.
+  after(async () => {
     try {
-      reviewId = await recordReview({
-        repoHash,
+      const files = await getChangedFiles({
+        installationId: pr.installation.id,
+        owner: pr.repository.owner.login,
+        repo: pr.repository.name,
         prNumber: pr.number,
-        commitSha: pr.pull_request.head.sha,
-        filesReviewed: [],
-        promptVersion: "stub-1",
-        providerModelIds: {},
-        providerResponses: { status: "pending" },
-        agreementDecision: { status: "pending" },
-        timingMs: 0,
-        costEstimatedUsd: 0,
-        schemaVersion: 1,
+        headSha: pr.pull_request.head.sha,
+      });
+      logInfo("review.files_fetched", {
+        reviewId,
+        delivery,
+        fileCount: files.length,
+        filenames: files.map((f) => f.filename),
+      });
+      if (files.length === 0) {
+        await updateReview(reviewId, {
+          filesReviewed: [],
+          providerResponses: { status: "skipped", reason: "no reviewable files" },
+          agreementDecision: { status: "skipped" },
+        });
+        logInfo("review.skipped", { reviewId, delivery, reason: "no reviewable files" });
+        return;
+      }
+      const bundle = await reviewPR({
+        files,
+        owner: pr.repository.owner.login,
+        repo: pr.repository.name,
+        prNumber: pr.number,
+      });
+      await updateReview(reviewId, {
+        filesReviewed: files.map((f) => f.filename),
+        providerModelIds: bundle.modelIds,
+        providerResponses: { perProvider: bundle.perProvider },
+        agreementDecision: {
+          mode: bundle.agreementMode,
+          agreed: bundle.agreed,
+          disagreements: bundle.disagreements,
+        },
+        timingMs: bundle.totalMs,
+        costEstimatedUsd: bundle.estimatedCostUsd,
+      });
+      logInfo("review.completed", {
+        reviewId,
+        delivery,
+        agreedCount: bundle.agreed.length,
+        totalMs: bundle.totalMs,
+        estimatedCostUsd: bundle.estimatedCostUsd,
+        providerStatuses: bundle.perProvider.map((p) => ({
+          name: p.name,
+          ok: p.output !== null,
+          ms: p.ms,
+        })),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logError("webhook.recordReview_failed", { delivery, message });
-      return new NextResponse("db failure", { status: 500 });
+      logError("review.failed", { reviewId, delivery, message });
+      try {
+        await updateReview(reviewId, {
+          providerResponses: { status: "error", message },
+          agreementDecision: { status: "error" },
+        });
+      } catch (updateErr) {
+        const updateMessage = updateErr instanceof Error ? updateErr.message : String(updateErr);
+        logError("review.failure_persist_failed", { reviewId, delivery, message: updateMessage });
+      }
     }
+  });
 
-    logInfo("webhook.dispatched", {
-      delivery,
-      action,
-      reviewId,
-      installationId: pr.installation.id,
-      prNumber: pr.number,
-      commitSha: pr.pull_request.head.sha,
-    });
-  }
-
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, reviewId });
 }

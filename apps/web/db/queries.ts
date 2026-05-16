@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { db } from "./index";
 import { reviews, type NewReview } from "./schema";
 
@@ -28,4 +29,24 @@ export async function recordReview(input: RecordReviewInput): Promise<string> {
     throw new Error("recordReview: insert returned no row");
   }
   return row.reviewId;
+}
+
+// Post-review patch: slice 4b writes a stub row up front, then updates it
+// with real per-provider output + agreement decision once the pipeline
+// completes. Only the columns that change post-review are accepted.
+export type UpdateReviewInput = {
+  filesReviewed?: string[];
+  providerModelIds?: unknown;
+  providerResponses?: unknown;
+  agreementDecision?: unknown;
+  timingMs?: number;
+  costEstimatedUsd?: number;
+};
+
+export async function updateReview(reviewId: string, input: UpdateReviewInput): Promise<void> {
+  const values: Record<string, unknown> = { ...input };
+  if (input.costEstimatedUsd !== undefined) {
+    values["costEstimatedUsd"] = input.costEstimatedUsd.toFixed(4);
+  }
+  await db.update(reviews).set(values).where(eq(reviews.reviewId, reviewId));
 }
