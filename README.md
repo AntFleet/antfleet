@@ -1,145 +1,97 @@
-# 🩹 fleet
+# Antfeed Fleet
 
-Automated code review that lands fixes.
+**Trust substrate for autonomous code. Multi-model verification. SHA-pinned receipts.**
 
-`fleet` maps a repo into semantic feature slices, reviews each slice with a
-provider, persists findings, and can run an explicit fix loop for one finding at
-a time.
+Antfeed Fleet runs every pull request through several independent models in parallel and posts only the findings they agree on. Disagreements are surfaced; consensus is what reaches the human reviewer. Each closed finding is pinned to the commit SHA that resolved it — the receipt — so you can audit later whether the fix actually fixed it.
 
-Current status: early CLI. Review/report/state are implemented; patching exists
-behind `fleet fix --finding <id>` and still requires manual review of the
-resulting worktree changes.
+Fleet is the substrate underneath a family of automatons: Sweeper triages, Patch Bot lands small repairs with SHA pinning, Security and Perf specialists run on the same stacked plumbing. The wedge is multi-model verification. The moat is the receipt.
 
-## Install
+This repository is the **week-1 spike**. The stacked provider is wired up end-to-end and tested. The dogfood corpus and baseline run are in `examples/dogfood/`. The GitHub App, Sweeper, and Patch Bot are next.
 
-```bash
-pnpm add -g fleet
-```
+## Status
 
-From source:
+- Stacked provider with `unanimous` / `majority` / `any` agreement modes — **shipping**
+- Anthropic, OpenAI, and Codex providers under one `Provider` interface — **shipping**
+- Synthetic dogfood corpus with planted bugs + spike runner + ground-truth report — **shipping**
+- GitHub App + PR-comment posting — _next_
+- SHA-pinned receipts for closed findings — _next_
+- Patch Bot, Sweeper, and specialist providers — _later_
+
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for how the inherited slicer, finding schema, workflow, and state engine fit together with the new stacked layer.
+
+## Quickstart
+
+### Prerequisites
+
+- Node.js 22+
+- pnpm 11+
+- One or more of:
+  - `ANTHROPIC_API_KEY` (defaults to `claude-opus-4-7`)
+  - `OPENAI_API_KEY` (defaults to `gpt-5`)
+  - `codex` CLI on `PATH` for the codex provider
+
+### Install
 
 ```bash
 pnpm install
-pnpm build
-pnpm link --global
+pnpm test
 ```
 
-## Workflow
+### Single-provider review
 
 ```bash
+export ANTHROPIC_API_KEY=...
+cd path/to/your/repo
 fleet init
 fleet map
-fleet review --limit 3 --jobs 3
+FLEET_PROVIDER=anthropic fleet review
 fleet report
-fleet next
-fleet show --finding <id>
-fleet triage --finding <id> --status false-positive --note "covered by tests"
-fleet fix --finding <id>
-fleet revalidate --finding <id>
-fleet revalidate --all --status open
 ```
 
-`fix` does not commit, push, open PRs, or land changes. It runs configured
-validation commands and records a patch attempt under `.fleet/`.
-
-## What It Maps Today
-
-- npm package bins
-- selected package scripts: `start`, `build`, `test`, `lint`, `typecheck`,
-  `format`
-- Next.js `app/` and `pages/` routes
-- Go package slices from `go list ./...`, including command packages
-- Go package tests and same-repo imports as review context
-- Rust `src/main.rs`, `src/bin/*.rs`, `src/lib.rs`, `crates/*`, and
-  `tests/*.rs`
-- SwiftPM `Sources/*` targets and `Tests/*` suites
-- common project config files
-
-Deeper framework mappers and agent-assisted enrichment are next steps.
-
-## Provider
-
-The default provider is the local Codex CLI.
+### Stacked review (the wedge)
 
 ```bash
-codex --version
-fleet doctor
+export ANTHROPIC_API_KEY=...
+export OPENAI_API_KEY=...
+# codex CLI auth managed separately
+
+FLEET_PROVIDER=stacked \
+FLEET_STACKED_PROVIDERS=codex,anthropic,openai \
+FLEET_STACKED_AGREEMENT=unanimous \
+fleet review
 ```
 
-Provider calls use `codex exec` with strict JSON schemas. Review and revalidate
-run read-only; fix planning runs with workspace-write because Codex may edit the
-working tree during the explicit fix command.
+Only findings where all three providers agree on the file, line range, category, and (roughly) the severity will land. Disagreements are recorded in `inspected.notes` so you can see what was filtered out and why.
 
-Supported provider names today:
+### Dogfood baseline
 
-- `codex`: local Codex CLI
-- `mock`: deterministic test provider
-- `mock-fail`: failure test provider
+To reproduce the week-1 spike against the planted-bug corpus:
 
-Direct OpenAI, Claude, Gemini, and provider panels are not implemented yet.
-
-## Commands
-
-- `fleet init`: create `.fleet/`, detect project basics, write config
-- `fleet map`: write feature records
-- `fleet status`: show project, dirty state, feature/finding counts
-- `fleet review`: review pending or selected features
-- `fleet report`: print or write a Markdown findings report
-- `fleet next`: print the next actionable finding
-- `fleet show --finding <id>`: inspect one finding with evidence and suggested validation
-- `fleet triage --finding <id> --status <status>`: mark a finding with optional history note
-- `fleet fix --finding <id>`: run the explicit patch loop for one finding
-- `fleet revalidate --finding <id>`: re-check one finding
-- `fleet revalidate --all`: re-check open findings with report-style filters
-- `fleet doctor`: check provider availability
-- `fleet clean-locks`: clear feature locks
-
-Useful flags:
-
-- `--root <path>`
-- `--state-dir <path>`
-- `--config <path>`
-- `--json`
-- `--plain`
-- `--limit <n>`
-- `--jobs <n>`
-- `--feature <id>`
-- `--finding <id>`
-- `--status <status>`
-- `--severity <severity>`
-- `--provider <name>`
-- `--model <name>`
-- `--output <path>` / `-o <path>`
-- `--dry-run`
-- `--force`
-
-Unknown flags fail fast.
-
-## State
-
-State is project-local by default:
-
-```text
-.fleet/
-  config.json
-  project.json
-  features/*.json
-  findings/*.json
-  patches/*.json
-  reports/*.md
-  runs/*.json
+```bash
+pnpm spike
 ```
 
-Feature records are the durable work units. Findings and patch attempts link back
-to features so runs can resume and be audited.
+The report lands in `examples/dogfood-results/<timestamp>.md`. The committed baseline at `examples/dogfood-results/spike-baseline.md` records the very first run; it is honest about what was and was not measured.
 
-## Safety
+## Configuration
 
-- Review does not edit files.
-- Fix is explicit and selected by finding ID.
-- Fix refuses a dirty source worktree by default.
-- Fleet never commits, pushes, opens PRs, or lands changes today.
-- Provider output is parsed through strict schemas.
-- Symlinked directories and generated build output are skipped during mapping.
+State lives in `.fleet/` (gitignored). Configuration via `fleet.config.json` at the repo root or `FLEET_*` environment variables. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the engine surfaces.
 
-See `docs/spec.md` for the longer product and implementation spec.
+## Architecture
+
+- **Provider seam** — `src/provider.ts`. Four-method interface (`check`, `review`, `fix`, `revalidate`) that every model speaks.
+- **Stacked provider** — `src/providers/stacked.ts`. Wraps N children, fans out with `Promise.allSettled`, and merges through the agreement primitive.
+- **Agreement** — `src/providers/agreement.ts`. Pure functions: `findingsAgree` (same category, overlapping evidence, severity within 1 bucket) and `mergeFindings` (union-find clustering, threshold by agreement mode).
+- **Finding schema** — `src/types.ts`. Zod-validated, strict, the contract every provider speaks.
+- **Slicer** — `src/mapper.ts` + `src/mappers/`. Inherited unchanged; maps the repo into semantic feature slices.
+- **Workflow + state** — `src/app.ts`, `src/cli.ts`, `src/state.ts`. Inherited unchanged; orchestrates review, fix, revalidate, report, and pessimistic feature locking.
+
+Full map is in [`ARCHITECTURE.md`](./ARCHITECTURE.md). The fork point is recorded in [`UPSTREAM.md`](./UPSTREAM.md).
+
+## License
+
+MIT — see [LICENSE](./LICENSE). Attribution to the upstream project is preserved in both the license and the changelog.
+
+## Acknowledgements
+
+Antfeed Fleet is built on top of [openclaw/clawpatch](https://github.com/openclaw/clawpatch) (MIT). Clawpatch contributed the slicer, finding schema, workflow, state engine, CLI, and the entire single-provider review loop. Fleet's contribution this week is the stacking layer, the agreement primitive, and the multi-provider transports that together make multi-model verification a first-class operation.
