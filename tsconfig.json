@@ -17,6 +17,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"],
-  "exclude": ["dist", "node_modules", "fixtures"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
+  "exclude": ["dist", "node_modules", "fixtures", "examples/**"]
 }
