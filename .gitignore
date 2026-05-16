@@ -11,4 +11,8 @@ coverage/
 .fleet/reports/
 .fleet/locks/
 examples/dogfood-results/[0-9]*.md
+# Real-repo corpus source files live on disk for local spike runs only.
+# They are downstream code and do not belong in this tree. GROUND_TRUTH.md
+# names the exact paths a contributor needs to populate locally.
+examples/antseed-corpus/apps/
 
