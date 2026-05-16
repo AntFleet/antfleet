@@ -59,12 +59,22 @@ function SiteHeader() {
 function SiteFooter() {
   return (
     <footer className="border-t border-[var(--color-line)]">
-      <div className="mx-auto flex max-w-5xl flex-col gap-2 px-6 py-8 text-sm text-[var(--color-ink-subtle)] sm:flex-row sm:justify-between">
+      <div className="mx-auto flex max-w-5xl flex-col gap-3 px-6 py-8 text-sm text-[var(--color-ink-subtle)] sm:flex-row sm:items-center sm:justify-between">
         <span>AntFleet — trust substrate for autonomous code work.</span>
-        <span className="font-mono text-xs">
-          {/* Placeholder — slice 4-3 wires the live receipts counter here. */}
-          receipts: pending
-        </span>
+        <nav className="flex items-center gap-5 font-mono text-xs">
+          <a
+            href="/receipts"
+            className="hover:text-[var(--color-ink)] transition-colors"
+          >
+            receipts
+          </a>
+          <a
+            href="/policy"
+            className="hover:text-[var(--color-ink)] transition-colors"
+          >
+            policy
+          </a>
+        </nav>
       </div>
     </footer>
   );
