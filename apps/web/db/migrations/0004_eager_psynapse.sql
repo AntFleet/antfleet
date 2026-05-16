@@ -1,0 +1,1 @@
+ALTER TABLE "reviews" ADD COLUMN "public_receipt" boolean DEFAULT false NOT NULL;

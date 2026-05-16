@@ -91,7 +91,21 @@ export default function PolicyPage() {
           <PolicyLink href="/receipts">
             <code className="font-mono text-xs">/receipts</code>
           </PolicyLink>{" "}
-          page is the public artifact. Each row contains the severity,
+          page is the public artifact, and it is <em>opt-in per install</em>{" "}
+          (default: off). Until you explicitly enable public receipts for a
+          repo, none of its closed findings reach the public page — the
+          review still runs, the comment still posts to your PR, the sweeper
+          still closes findings — but the resulting receipts stay private to
+          your install. New installs are private by default; the v1.5
+          customer dashboard will expose the toggle, and until it ships
+          enabling public receipts requires a request to{" "}
+          <PolicyLink href="mailto:privacy@antfleet.dev">
+            privacy@antfleet.dev
+          </PolicyLink>
+          .
+        </p>
+        <p>
+          When public visibility is enabled, each row contains the severity,
           category, finding title, PR number, the closing commit SHA
           (shortened), and an anonymized repo label —{" "}
           <code className="font-mono text-xs">repo &lt;8-char-prefix&gt;</code>{" "}
@@ -105,13 +119,15 @@ export default function PolicyPage() {
           owner/repo and the comment content is publicly visible. This is
           intentional and load-bearing: the link <em>is</em> the receipt, and
           a third-party-witnessed artifact only counts because anyone can
-          click and verify the SHA on GitHub. For installs on private repos,
-          the URL auth-walls to anyone outside the org naturally.
+          click and verify the SHA on GitHub. The opt-in gate above is what
+          ensures you choose whether your repo participates in this public
+          surface at all.
         </p>
         <p>
           The raw owner/repo, raw diff content, raw provider responses, and
           per-customer maintainer-reaction history live only in our database
-          and are not exposed on any public surface.
+          and are not exposed on any public surface, regardless of the
+          public-receipt setting.
         </p>
       </Section>
 

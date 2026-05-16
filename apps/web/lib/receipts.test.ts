@@ -29,13 +29,19 @@ describe("toDisplayReceipt", () => {
     expect(display.shaLabel).toBe("1ee2fd9");
   });
 
-  it("returns null shaLabel and relativeClosedAt when closure columns are null", () => {
+  it("returns null shaLabel, relativeClosedAt, and closedAtIso when closure columns are null", () => {
     const display = toDisplayReceipt(
       { ...SAMPLE, closureSha: null, closedAt: null },
       BASE_NOW,
     );
     expect(display.shaLabel).toBeNull();
     expect(display.relativeClosedAt).toBeNull();
+    expect(display.closedAtIso).toBeNull();
+  });
+
+  it("exposes closedAtIso as a stable ISO 8601 string for cursor pagination", () => {
+    const display = toDisplayReceipt(SAMPLE, BASE_NOW);
+    expect(display.closedAtIso).toBe("2026-05-17T08:00:00.000Z");
   });
 
   it("preserves the closureCommentUrl exactly — it is the receipt artifact", () => {

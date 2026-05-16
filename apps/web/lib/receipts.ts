@@ -14,6 +14,11 @@ export type DisplayReceipt = {
   prLabel: string;
   shaLabel: string | null;
   relativeClosedAt: string | null;
+  // ISO 8601, kept so the page can build the next-page cursor link from the
+  // last visible row without re-querying. Null only when closure_detected_at
+  // is null (pre-closure row that snuck into the result set — defensive,
+  // shouldn't happen because the query filters status='closed').
+  closedAtIso: string | null;
   receiptUrl: string | null;
 };
 
@@ -30,6 +35,7 @@ export function toDisplayReceipt(row: PublicReceiptRow, now: Date): DisplayRecei
     prLabel: `PR #${row.prNumber}`,
     shaLabel: row.closureSha === null ? null : row.closureSha.slice(0, SHA_LABEL_LEN),
     relativeClosedAt: row.closedAt === null ? null : formatRelativeTime(now, row.closedAt),
+    closedAtIso: row.closedAt === null ? null : row.closedAt.toISOString(),
     receiptUrl: row.closureCommentUrl,
   };
 }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, lt, max } from "drizzle-orm";
 import { db } from "./index";
 import {
   findingStatus,
@@ -225,15 +225,17 @@ export async function stampFindingPolled(findingId: string, now: Date): Promise<
 // same rows repeatedly and let the unique index drop the duplicates. Returns
 // the count of rows actually inserted so the slice 3-5 cron handler can
 // report a meaningful "reactionsRecorded" counter.
-// Mission 4 slice 4-3 — the public /receipts page. Receipts are the moat
-// (§18.2): a third-party-witnessed, growing audit trail of every closed
+// Mission 4 slice 4-3 / 4-5 — the public /receipts page. Receipts are the
+// moat (§18.2): a third-party-witnessed, growing audit trail of every closed
 // finding. The page reads finding_status WHERE status='closed' joined to
-// reviews for repo_hash + pr_number. owner/repo are not selected: only the
-// already-anonymized repo_hash crosses this boundary (§10 / §18.3). The
-// closure_comment_url itself does contain owner/repo for installs on public
-// repos — that is intentional and load-bearing: the URL IS the receipt, and
-// the third-party witness only counts because anyone can click and verify it
-// on GitHub. For private-repo installs, the URL auth-walls naturally.
+// reviews for repo_hash + pr_number, gated by reviews.public_receipt = true
+// (slice 4-5: opt-in per install, default false, see schema comment).
+// owner/repo are not selected: only the already-anonymized repo_hash crosses
+// this boundary (§10 / §18.3). The closure_comment_url itself does contain
+// owner/repo for installs on public repos — that is intentional and
+// load-bearing: the URL IS the receipt, and the third-party witness only
+// counts because anyone can click and verify it on GitHub. For private-repo
+// installs, the URL auth-walls naturally.
 export type PublicReceiptRow = {
   findingId: string;
   severity: string;
@@ -249,16 +251,45 @@ export type PublicReceiptRow = {
 export type PublicReceiptsPage = {
   totalClosed: number;
   recent: PublicReceiptRow[];
+  lastUpdatedAt: Date | null;
+  hasMore: boolean;
 };
 
 export async function loadPublicReceiptsPage(args: {
   limit: number;
+  // Cursor for older-than pagination. Pass the closedAt of the last row on
+  // the current page; the next page returns rows strictly older than it.
+  // Stable under inserts because closures append at the top, not the middle.
+  before?: Date | undefined;
 }): Promise<PublicReceiptsPage> {
-  const [countRows, recentRows] = await Promise.all([
+  // Fetch limit+1 so we can answer hasMore without a second count query.
+  const fetchLimit = args.limit + 1;
+  // Gate condition is identical across all three queries — closed findings
+  // attached to reviews flagged for public visibility. Inlined per-query
+  // because the count and max queries need the join too.
+  const recentConditions =
+    args.before === undefined
+      ? and(
+          eq(findingStatus.status, "closed"),
+          eq(reviews.publicReceipt, true),
+        )
+      : and(
+          eq(findingStatus.status, "closed"),
+          eq(reviews.publicReceipt, true),
+          lt(findingStatus.closureDetectedAt, args.before),
+        );
+
+  const totalConditions = and(
+    eq(findingStatus.status, "closed"),
+    eq(reviews.publicReceipt, true),
+  );
+
+  const [countRows, fetchedRows, lastUpdatedRows] = await Promise.all([
     db
       .select({ value: count() })
       .from(findingStatus)
-      .where(eq(findingStatus.status, "closed")),
+      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+      .where(totalConditions),
     db
       .select({
         findingId: findingStatus.findingId,
@@ -273,13 +304,32 @@ export async function loadPublicReceiptsPage(args: {
       })
       .from(findingStatus)
       .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(eq(findingStatus.status, "closed"))
+      .where(recentConditions)
       .orderBy(desc(findingStatus.closureDetectedAt))
-      .limit(args.limit),
+      .limit(fetchLimit),
+    db
+      .select({ value: max(findingStatus.closureDetectedAt) })
+      .from(findingStatus)
+      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+      .where(totalConditions),
   ]);
+
+  const hasMore = fetchedRows.length > args.limit;
+  const recent = hasMore ? fetchedRows.slice(0, args.limit) : fetchedRows;
+  const lastUpdatedRaw = lastUpdatedRows[0]?.value ?? null;
+  // drizzle returns max() as a string for timestamp columns over neon-http.
+  const lastUpdatedAt =
+    lastUpdatedRaw === null
+      ? null
+      : lastUpdatedRaw instanceof Date
+        ? lastUpdatedRaw
+        : new Date(lastUpdatedRaw);
+
   return {
     totalClosed: countRows[0]?.value ?? 0,
-    recent: recentRows,
+    recent,
+    lastUpdatedAt,
+    hasMore,
   };
 }
 

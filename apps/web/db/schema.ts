@@ -1,5 +1,6 @@
 import {
   bigint,
+  boolean,
   integer,
   jsonb,
   numeric,
@@ -42,6 +43,14 @@ export const reviews = pgTable("reviews", {
   installationId: bigint("installation_id", { mode: "number" }),
   owner: text("owner"),
   repo: text("repo"),
+  // Mission 4 slice 4-5 — gates whether closed findings from this review
+  // appear on the public /receipts page. Default false: new installs are
+  // private until explicitly opted in. Design partners get the flag
+  // flipped per repo (manual SQL until the v1.5 dashboard ships). Without
+  // this gate, a competitor visiting /receipts could see severities,
+  // categories, and finding titles for private-repo installs whose PR
+  // comments are auth-walled — that is the leak this column closes.
+  publicReceipt: boolean("public_receipt").notNull().default(false),
 });
 
 // One row per agreed finding. Sweeper updates status when reconciliation
