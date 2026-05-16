@@ -37,7 +37,7 @@ export function defaultConfig(): FleetConfig {
       ".fleet/**",
     ],
     provider: {
-      name: "codex",
+      name: "stacked",
       model: null,
     },
     commands: defaultCommands,

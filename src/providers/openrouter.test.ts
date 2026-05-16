@@ -14,7 +14,8 @@ async function loadFixture(name: string): Promise<OpenAI.Chat.Completions.ChatCo
   return JSON.parse(raw) as OpenAI.Chat.Completions.ChatCompletion;
 }
 
-describe("openrouterProvider.check", () => {
+// deferred to v2 — see ARCHITECTURE.md §Provider roster
+describe.skip("openrouterProvider.check", () => {
   let originalKey: string | undefined;
   let originalFallback: string | undefined;
 
@@ -59,7 +60,8 @@ describe("openrouterProvider.check", () => {
   });
 });
 
-describe("extractOpenRouterContent", () => {
+// deferred to v2 — see ARCHITECTURE.md §Provider roster
+describe.skip("extractOpenRouterContent", () => {
   it("parses a recorded DeepSeek-V3 response with findings", async () => {
     const response = await loadFixture("openrouter-review-with-findings.json");
     const raw = extractOpenRouterContent(response);

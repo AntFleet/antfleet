@@ -40,7 +40,9 @@ import { estimateRunCost, shouldAbortBeforeRun } from "../src/spike/cost.js";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CORPUS_ROOT = resolve(ROOT, "examples/dogfood");
 const RESULTS_DIR = resolve(ROOT, "examples/dogfood-results");
-const DEFAULT_PROVIDERS = ["anthropic", "openai", "openrouter"] as const;
+// v1 default stack: two independent frontier providers, unanimous agreement.
+// See ARCHITECTURE.md §Provider roster for why openrouter/codex are deferred.
+const DEFAULT_PROVIDERS = ["anthropic", "openai"] as const;
 
 loadDotenv({ path: resolve(ROOT, ".env.local"), quiet: true });
 

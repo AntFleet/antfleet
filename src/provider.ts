@@ -14,8 +14,10 @@ import {
 import { AgreementMode } from "./providers/agreement.js";
 import { anthropicProvider } from "./providers/anthropic.js";
 import { openaiProvider } from "./providers/openai.js";
-import { openrouterProvider } from "./providers/openrouter.js";
 import { stackedProvider } from "./providers/stacked.js";
+// openrouter + codex providers are deferred to v2; see ARCHITECTURE.md §Provider roster.
+// Their source remains in tree and importable (tests are skipped); they are not
+// registered in providerByName so they cannot be picked accidentally from config.
 
 export type Provider = {
   name: string;
@@ -26,9 +28,6 @@ export type Provider = {
 };
 
 export function providerByName(name: string): Provider {
-  if (name === "codex") {
-    return codexProvider;
-  }
   if (name === "mock") {
     return mockProvider;
   }
@@ -41,9 +40,6 @@ export function providerByName(name: string): Provider {
   if (name === "openai") {
     return openaiProvider;
   }
-  if (name === "openrouter") {
-    return openrouterProvider;
-  }
   if (name === "stacked") {
     return buildStackedFromEnv();
   }
@@ -51,7 +47,7 @@ export function providerByName(name: string): Provider {
 }
 
 function buildStackedFromEnv(): Provider {
-  const raw = process.env["FLEET_STACKED_PROVIDERS"] ?? "codex,mock";
+  const raw = process.env["FLEET_STACKED_PROVIDERS"] ?? "anthropic,openai";
   const childNames = raw
     .split(",")
     .map((s) => s.trim())
@@ -86,6 +82,17 @@ function buildStackedFromEnv(): Provider {
 
 function isAgreementMode(value: string): value is AgreementMode {
   return value === "unanimous" || value === "majority" || value === "any";
+}
+
+/**
+ * Deferred-to-v2 providers. Their source stays in the tree so re-enabling them
+ * is a single-line change in providerByName above; this accessor is the only
+ * supported way to reach them today and is intentionally absent from the
+ * factory so they cannot be selected via config or env. See
+ * ARCHITECTURE.md §Provider roster for the rationale.
+ */
+export function deferredV2Providers(): Record<string, Provider> {
+  return { codex: codexProvider };
 }
 
 const codexProvider: Provider = {

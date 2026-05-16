@@ -362,14 +362,19 @@ describe("workflow", () => {
       JSON.stringify({ name: "dry-run-cli", bin: { dry: "src/index.ts" } }),
     );
     await writeFixture(root, "src/index.ts", "export const value = 1;\n");
-    const context = await makeContext(testOptions(root));
+    process.env["FLEET_PROVIDER"] = "mock";
+    try {
+      const context = await makeContext(testOptions(root));
 
-    await initCommand(context, {});
-    await mapCommand(context);
-    await reviewCommand(context, { dryRun: true });
-    const features = await readFeatures(statePaths(join(root, ".fleet")));
+      await initCommand(context, {});
+      await mapCommand(context);
+      await reviewCommand(context, { dryRun: true });
+      const features = await readFeatures(statePaths(join(root, ".fleet")));
 
-    expect(features[0]?.status).toBe("pending");
+      expect(features[0]?.status).toBe("pending");
+    } finally {
+      delete process.env["FLEET_PROVIDER"];
+    }
   });
 
   it("does not mutate features on dry-run map", async () => {
@@ -725,29 +730,34 @@ describe("workflow", () => {
       JSON.stringify({ name: "lock-conflict", bin: { lock: "src/index.ts" } }),
     );
     await writeFixture(root, "src/index.ts", "export const value = 1;\n");
-    const context = await makeContext(testOptions(root));
-    const paths = statePaths(join(root, ".fleet"));
+    process.env["FLEET_PROVIDER"] = "mock";
+    try {
+      const context = await makeContext(testOptions(root));
+      const paths = statePaths(join(root, ".fleet"));
 
-    await initCommand(context, {});
-    await mapCommand(context);
-    const feature = (await readFeatures(paths))[0];
-    expect(feature).toBeDefined();
-    await writeFeature(paths, {
-      ...feature!,
-      lock: {
-        lockedByRunId: "existing",
-        lockedAt: new Date().toISOString(),
-        hostname: "test",
-        pid: 1,
-      },
-    });
+      await initCommand(context, {});
+      await mapCommand(context);
+      const feature = (await readFeatures(paths))[0];
+      expect(feature).toBeDefined();
+      await writeFeature(paths, {
+        ...feature!,
+        lock: {
+          lockedByRunId: "existing",
+          lockedAt: new Date().toISOString(),
+          hostname: "test",
+          pid: 1,
+        },
+      });
 
-    await expect(reviewCommand(context, { feature: feature!.featureId })).rejects.toThrow(
-      "feature locked",
-    );
-    const runs = await readRuns(paths);
+      await expect(reviewCommand(context, { feature: feature!.featureId })).rejects.toThrow(
+        "feature locked",
+      );
+      const runs = await readRuns(paths);
 
-    expect(runs[0]?.status).toBe("failed");
+      expect(runs[0]?.status).toBe("failed");
+    } finally {
+      delete process.env["FLEET_PROVIDER"];
+    }
   });
 
   it("requeues changed reviewed features after remapping", async () => {
