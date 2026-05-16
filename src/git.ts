@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { runCommand } from "./exec.js";
-import { ClawpatchError } from "./errors.js";
+import { FleetError } from "./errors.js";
 
 export type GitInfo = {
   root: string | null;
@@ -45,7 +45,7 @@ export async function findProjectRoot(cwd: string, explicitRoot?: string): Promi
   if (explicitRoot !== undefined) {
     const info = await stat(explicitRoot).catch(() => null);
     if (info === null || !info.isDirectory()) {
-      throw new ClawpatchError(`root not found: ${explicitRoot}`, 2, "invalid-root");
+      throw new FleetError(`root not found: ${explicitRoot}`, 2, "invalid-root");
     }
     return explicitRoot;
   }

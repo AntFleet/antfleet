@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { ClawpatchConfig, configSchema, ProjectCommands } from "./types.js";
+import { FleetConfig, configSchema, ProjectCommands } from "./types.js";
 import { pathExists, readJson } from "./fs.js";
 
 export type GlobalOptions = {
@@ -22,10 +22,10 @@ export const defaultCommands: ProjectCommands = {
   test: null,
 };
 
-export function defaultConfig(): ClawpatchConfig {
+export function defaultConfig(): FleetConfig {
   return {
     schemaVersion: 1,
-    stateDir: ".clawpatch",
+    stateDir: ".fleet",
     include: ["**/*"],
     exclude: [
       "node_modules/**",
@@ -34,7 +34,7 @@ export function defaultConfig(): ClawpatchConfig {
       "target/**",
       ".build/**",
       ".git/**",
-      ".clawpatch/**",
+      ".fleet/**",
     ],
     provider: {
       name: "codex",
@@ -55,21 +55,21 @@ export function defaultConfig(): ClawpatchConfig {
   };
 }
 
-export async function loadConfig(root: string, options: GlobalOptions): Promise<ClawpatchConfig> {
+export async function loadConfig(root: string, options: GlobalOptions): Promise<FleetConfig> {
   const configPath = await discoverConfigPath(root, options);
   const base = configPath === null ? defaultConfig() : await readJson(configPath, configSchema);
   return {
     ...base,
-    stateDir: options.stateDir ?? process.env["CLAWPATCH_STATE_DIR"] ?? base.stateDir,
+    stateDir: options.stateDir ?? process.env["FLEET_STATE_DIR"] ?? base.stateDir,
     provider: {
       ...base.provider,
-      name: process.env["CLAWPATCH_PROVIDER"] ?? base.provider.name,
-      model: process.env["CLAWPATCH_MODEL"] ?? base.provider.model,
+      name: process.env["FLEET_PROVIDER"] ?? base.provider.name,
+      model: process.env["FLEET_MODEL"] ?? base.provider.model,
     },
   };
 }
 
-export function resolveStateDir(root: string, config: ClawpatchConfig): string {
+export function resolveStateDir(root: string, config: FleetConfig): string {
   return resolve(root, config.stateDir);
 }
 
@@ -77,16 +77,16 @@ async function discoverConfigPath(root: string, options: GlobalOptions): Promise
   if (options.config !== undefined) {
     return resolve(options.config);
   }
-  if (process.env["CLAWPATCH_CONFIG"] !== undefined) {
-    return resolve(process.env["CLAWPATCH_CONFIG"]);
+  if (process.env["FLEET_CONFIG"] !== undefined) {
+    return resolve(process.env["FLEET_CONFIG"]);
   }
-  const configuredStateDir = options.stateDir ?? process.env["CLAWPATCH_STATE_DIR"];
+  const configuredStateDir = options.stateDir ?? process.env["FLEET_STATE_DIR"];
   const candidates = [
     ...(configuredStateDir === undefined
       ? []
       : [join(resolve(root, configuredStateDir), "config.json")]),
-    join(root, "clawpatch.config.json"),
-    join(root, ".clawpatch", "config.json"),
+    join(root, "fleet.config.json"),
+    join(root, ".fleet", "config.json"),
   ];
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {

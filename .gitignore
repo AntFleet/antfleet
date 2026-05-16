@@ -1,8 +1,11 @@
 node_modules/
 dist/
 coverage/
-.clawpatch/runs/
-.clawpatch/findings/
-.clawpatch/patches/
-.clawpatch/reports/
-.clawpatch/locks/
+.omc/
+.fleet/runs/
+.fleet/findings/
+.fleet/patches/
+.fleet/reports/
+.fleet/locks/
+examples/dogfood-results/[0-9]*.md
+

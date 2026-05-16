@@ -17,7 +17,7 @@ import {
   statusCommand,
   triageCommand,
 } from "./app.js";
-import { ClawpatchError } from "./errors.js";
+import { FleetError } from "./errors.js";
 import { GlobalOptions } from "./config.js";
 
 const moduleRequire = createRequire(import.meta.url);
@@ -68,7 +68,7 @@ async function dispatch(
     case "clean-locks":
       return cleanLocksCommand(context);
     default:
-      throw new ClawpatchError(`unknown command: ${command}`, 2, "invalid-usage");
+      throw new FleetError(`unknown command: ${command}`, 2, "invalid-usage");
   }
 }
 
@@ -134,7 +134,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       flags["output"] = next;
       continue;
     }
-    throw new ClawpatchError(`unknown arg: ${arg}`, 2, "invalid-usage");
+    throw new FleetError(`unknown arg: ${arg}`, 2, "invalid-usage");
   }
   if (command === "") {
     command = "status";
@@ -216,12 +216,12 @@ export function packageVersion(): string {
 
 function validateCommandFlags(command: string, flags: Record<string, string | boolean>): void {
   if (!isKnownCommand(command)) {
-    throw new ClawpatchError(`unknown command: ${command}`, 2, "invalid-usage");
+    throw new FleetError(`unknown command: ${command}`, 2, "invalid-usage");
   }
   const allowed = commandFlags[command];
   for (const flag of Object.keys(flags)) {
     if (!allowed.has(flag)) {
-      throw new ClawpatchError(
+      throw new FleetError(
         `unsupported flag for ${command}: --${kebab(flag)}`,
         2,
         "invalid-usage",
@@ -235,16 +235,16 @@ function validateCommandRequirements(
   flags: Record<string, string | boolean>,
 ): void {
   if (!isKnownCommand(command)) {
-    throw new ClawpatchError(`unknown command: ${command}`, 2, "invalid-usage");
+    throw new FleetError(`unknown command: ${command}`, 2, "invalid-usage");
   }
   const required = requiredCommandFlags[command] ?? [];
   for (const flag of required) {
     if (typeof flags[flag] !== "string" || flags[flag].length === 0) {
-      throw new ClawpatchError(`missing --${kebab(flag)}`, 2, "invalid-usage");
+      throw new FleetError(`missing --${kebab(flag)}`, 2, "invalid-usage");
     }
   }
   if (command === "revalidate" && typeof flags["finding"] !== "string" && flags["all"] !== true) {
-    throw new ClawpatchError("missing --finding or --all", 2, "invalid-usage");
+    throw new FleetError("missing --finding or --all", 2, "invalid-usage");
   }
 }
 
@@ -259,7 +259,7 @@ function isBooleanFlag(name: string): boolean {
 function readFlagValue(argv: string[], index: number, flag: string): string {
   const next = argv[index + 1];
   if (next === undefined || isKnownOptionToken(next)) {
-    throw new ClawpatchError(`missing value for ${flag}`, 2, "invalid-usage");
+    throw new FleetError(`missing value for ${flag}`, 2, "invalid-usage");
   }
   return next;
 }
@@ -338,10 +338,10 @@ function writeResult(result: unknown, options: GlobalOptions): void {
 
 function printHelp(command = ""): void {
   if (command === "review") {
-    process.stdout.write(`clawpatch review
+    process.stdout.write(`fleet review
 
 Usage:
-  clawpatch review [flags]
+  fleet review [flags]
 
 Flags:
   --feature <id>
@@ -356,10 +356,10 @@ Flags:
     return;
   }
   if (command === "report") {
-    process.stdout.write(`clawpatch report
+    process.stdout.write(`fleet report
 
 Usage:
-  clawpatch report [flags]
+  fleet report [flags]
 
 Flags:
   --status <status>
@@ -373,10 +373,10 @@ Flags:
     return;
   }
   if (command === "show") {
-    process.stdout.write(`clawpatch show
+    process.stdout.write(`fleet show
 
 Usage:
-  clawpatch show --finding <id> [flags]
+  fleet show --finding <id> [flags]
 
 Flags:
   --finding <id>
@@ -385,10 +385,10 @@ Flags:
     return;
   }
   if (command === "next") {
-    process.stdout.write(`clawpatch next
+    process.stdout.write(`fleet next
 
 Usage:
-  clawpatch next [flags]
+  fleet next [flags]
 
 Flags:
   --status <status>  default: open
@@ -397,10 +397,10 @@ Flags:
     return;
   }
   if (command === "triage") {
-    process.stdout.write(`clawpatch triage
+    process.stdout.write(`fleet triage
 
 Usage:
-  clawpatch triage --finding <id> --status <status> [flags]
+  fleet triage --finding <id> --status <status> [flags]
 
 Flags:
   --finding <id>
@@ -411,10 +411,10 @@ Flags:
     return;
   }
   if (command === "fix") {
-    process.stdout.write(`clawpatch fix
+    process.stdout.write(`fleet fix
 
 Usage:
-  clawpatch fix --finding <id> [flags]
+  fleet fix --finding <id> [flags]
 
 Flags:
   --finding <id>
@@ -426,10 +426,10 @@ Flags:
     return;
   }
   if (command === "init") {
-    process.stdout.write(`clawpatch init
+    process.stdout.write(`fleet init
 
 Usage:
-  clawpatch init [flags]
+  fleet init [flags]
 
 Flags:
   --force
@@ -438,10 +438,10 @@ Flags:
     return;
   }
   if (command === "map") {
-    process.stdout.write(`clawpatch map
+    process.stdout.write(`fleet map
 
 Usage:
-  clawpatch map [flags]
+  fleet map [flags]
 
 Flags:
   --dry-run
@@ -450,10 +450,10 @@ Flags:
     return;
   }
   if (command === "revalidate") {
-    process.stdout.write(`clawpatch revalidate
+    process.stdout.write(`fleet revalidate
 
 Usage:
-  clawpatch revalidate --finding <id> [flags]
+  fleet revalidate --finding <id> [flags]
 
 Flags:
   --finding <id>
@@ -471,10 +471,10 @@ Flags:
     return;
   }
   if (command === "status") {
-    process.stdout.write(`clawpatch status
+    process.stdout.write(`fleet status
 
 Usage:
-  clawpatch status [flags]
+  fleet status [flags]
 
 Flags:
   --json
@@ -482,10 +482,10 @@ Flags:
     return;
   }
   if (command === "doctor") {
-    process.stdout.write(`clawpatch doctor
+    process.stdout.write(`fleet doctor
 
 Usage:
-  clawpatch doctor [flags]
+  fleet doctor [flags]
 
 Flags:
   --json
@@ -493,20 +493,20 @@ Flags:
     return;
   }
   if (command === "clean-locks") {
-    process.stdout.write(`clawpatch clean-locks
+    process.stdout.write(`fleet clean-locks
 
 Usage:
-  clawpatch clean-locks [flags]
+  fleet clean-locks [flags]
 
 Flags:
   --json
 `);
     return;
   }
-  process.stdout.write(`clawpatch: automated code review that lands fixes
+  process.stdout.write(`fleet: automated code review that lands fixes
 
 Usage:
-  clawpatch [global flags] <command> [flags]
+  fleet [global flags] <command> [flags]
 
 Commands:
   init
@@ -540,7 +540,7 @@ Global flags:
 
 if (isMainModule()) {
   main(process.argv.slice(2)).catch((error: unknown) => {
-    if (error instanceof ClawpatchError) {
+    if (error instanceof FleetError) {
       process.stderr.write(`error: ${error.message}\n`);
       process.exitCode = error.exitCode;
       return;

@@ -172,7 +172,7 @@ export function shouldSkip(path: string): boolean {
     return false;
   }
   return (
-    /(^|\/)(node_modules|dist|build|coverage|\.build|\.git|\.clawpatch|\.worktrees)(\/|$)/u.test(
+    /(^|\/)(node_modules|dist|build|coverage|\.build|\.git|\.fleet|\.worktrees)(\/|$)/u.test(
       path,
     ) ||
     path === "target" ||

@@ -1,12 +1,12 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { ClawpatchConfig, FeatureRecord, FindingRecord, ProjectRecord } from "./types.js";
+import { FleetConfig, FeatureRecord, FindingRecord, ProjectRecord } from "./types.js";
 
 export async function buildReviewPrompt(
   root: string,
   project: ProjectRecord,
   feature: FeatureRecord,
-  config: ClawpatchConfig,
+  config: FleetConfig,
 ): Promise<string> {
   const owned = feature.ownedFiles.slice(0, config.review.maxOwnedFiles);
   const context = feature.contextFiles.slice(0, config.review.maxContextFiles);
@@ -14,7 +14,7 @@ export async function buildReviewPrompt(
   for (const ref of [...owned, ...context]) {
     fileBlocks.push(await fileBlock(root, ref.path));
   }
-  return `You are reviewing one semantic feature for clawpatch.
+  return `You are reviewing one semantic feature for fleet.
 
 Return strict JSON only. No markdown fences.
 
@@ -71,7 +71,7 @@ ${fileBlocks.join("\n\n")}`;
 }
 
 export async function buildRevalidatePrompt(root: string, findingJson: string): Promise<string> {
-  return `Revalidate this clawpatch finding against the current repository at ${root}.
+  return `Revalidate this fleet finding against the current repository at ${root}.
 
 Check whether the original evidence paths/lines still exist. If evidence moved or changed,
 decide whether the issue is fixed, stale/false-positive, still open elsewhere, or uncertain.
@@ -93,7 +93,7 @@ export async function buildFixPrompt(
   for (const ref of feature.ownedFiles) {
     fileBlocks.push(await fileBlock(root, ref.path));
   }
-  return `You are clawpatch applying one small repair in the current repository.
+  return `You are fleet applying one small repair in the current repository.
 
 Fix only the finding below. Keep the patch minimal. Add or update focused tests when feasible.
 Do not commit, push, switch branches, or run destructive git commands.

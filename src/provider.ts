@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCommand } from "./exec.js";
-import { ClawpatchError } from "./errors.js";
+import { FleetError } from "./errors.js";
 import {
   FixPlanOutput,
   ReviewOutput,
@@ -30,7 +30,7 @@ export function providerByName(name: string): Provider {
   if (name === "mock-fail") {
     return mockFailProvider;
   }
-  throw new ClawpatchError(`unsupported provider: ${name}`, 2, "unsupported-provider");
+  throw new FleetError(`unsupported provider: ${name}`, 2, "unsupported-provider");
 }
 
 const codexProvider: Provider = {
@@ -38,7 +38,7 @@ const codexProvider: Provider = {
   async check(root: string): Promise<string> {
     const result = await runCommand("codex --version", root);
     if (result.exitCode !== 0) {
-      throw new ClawpatchError("codex CLI not available", 4, "provider-auth");
+      throw new FleetError("codex CLI not available", 4, "provider-auth");
     }
     return result.stdout.trim();
   },
@@ -127,13 +127,13 @@ const mockFailProvider: Provider = {
     return "mock-fail";
   },
   async review(): Promise<ReviewOutput> {
-    throw new ClawpatchError("mock review failure", 1, "mock-failure");
+    throw new FleetError("mock review failure", 1, "mock-failure");
   },
   async fix(): Promise<FixPlanOutput> {
-    throw new ClawpatchError("mock fix failure", 1, "mock-failure");
+    throw new FleetError("mock fix failure", 1, "mock-failure");
   },
   async revalidate(): Promise<RevalidateOutput> {
-    throw new ClawpatchError("mock revalidate failure", 1, "mock-failure");
+    throw new FleetError("mock revalidate failure", 1, "mock-failure");
   },
 };
 
@@ -144,7 +144,7 @@ async function runCodexJson(
   schema: object,
   sandbox = "read-only",
 ): Promise<unknown> {
-  const dir = await mkdtemp(join(tmpdir(), "clawpatch-codex-"));
+  const dir = await mkdtemp(join(tmpdir(), "fleet-codex-"));
   const schemaPath = join(dir, "schema.json");
   const outputPath = join(dir, "output.json");
   await writeFile(schemaPath, JSON.stringify(schema), "utf8");
@@ -152,7 +152,7 @@ async function runCodexJson(
   const command = `codex exec --cd ${shellQuote(root)} --sandbox ${sandbox} --output-schema ${shellQuote(schemaPath)} --output-last-message ${shellQuote(outputPath)}${modelArg} -`;
   const result = await runCommand(command, root, prompt);
   if (result.exitCode !== 0) {
-    throw new ClawpatchError(
+    throw new FleetError(
       `codex provider failed: ${result.stderr || result.stdout}`,
       providerExitCode(result.stderr),
       "provider-failure",
@@ -160,7 +160,7 @@ async function runCodexJson(
   }
   const raw = await readFile(outputPath, "utf8").catch(() => "");
   if (raw.trim().length === 0) {
-    throw new ClawpatchError("codex provider produced no JSON output", 8, "malformed-output");
+    throw new FleetError("codex provider produced no JSON output", 8, "malformed-output");
   }
   return JSON.parse(raw) as unknown;
 }

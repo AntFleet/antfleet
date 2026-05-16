@@ -3,7 +3,7 @@ import { join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
 import { loadConfig, resolveStateDir, GlobalOptions } from "./config.js";
 import { detectProject } from "./detect.js";
-import { ClawpatchError, assertDefined } from "./errors.js";
+import { FleetError, assertDefined } from "./errors.js";
 import { runCommand } from "./exec.js";
 import { nowIso, writeJson } from "./fs.js";
 import { discoverGit, findProjectRoot } from "./git.js";
@@ -58,7 +58,7 @@ export async function initCommand(
   const detectedConfig = { ...config, commands: project.detected.commands };
   const previous = await readProject(paths);
   if (previous !== null && flags["force"] !== true) {
-    throw new ClawpatchError("project already initialized; use --force", 2, "already-initialized");
+    throw new FleetError("project already initialized; use --force", 2, "already-initialized");
   }
   await writeProject(paths, { ...project, createdAt: previous?.createdAt ?? project.createdAt });
   if (previous === null || flags["force"] === true) {
@@ -68,7 +68,7 @@ export async function initCommand(
     created: previous === null,
     project,
     paths: [paths.project, paths.config],
-    next: "clawpatch map",
+    next: "fleet map",
   };
 }
 
@@ -107,7 +107,7 @@ export async function mapCommand(
     new: result.created,
     changed: result.changed,
     stale: result.stale,
-    next: "clawpatch review --limit 3",
+    next: "fleet review --limit 3",
   };
 }
 
@@ -185,7 +185,7 @@ export async function reviewCommand(
         } catch (error: unknown) {
           errors.push({
             message: error instanceof Error ? error.message : String(error),
-            code: error instanceof ClawpatchError ? error.code : null,
+            code: error instanceof FleetError ? error.code : null,
             error,
           });
         }
@@ -201,7 +201,7 @@ export async function reviewCommand(
       errors: errors.map(({ message, code }) => ({ message, code })),
     });
     emitReviewProgress(context, "failed", { run: currentRunId, errors: errors.length });
-    throw errors[0]?.error ?? new ClawpatchError("review failed", 1, "review-failed");
+    throw errors[0]?.error ?? new FleetError("review failed", 1, "review-failed");
   }
   const finished: RunRecord = {
     ...run,
@@ -227,7 +227,7 @@ export async function reviewCommand(
     findings: findingIds.length,
     jobs,
     report: reportPath,
-    next: findingIds.length > 0 ? `clawpatch fix --finding ${findingIds[0]}` : "clawpatch status",
+    next: findingIds.length > 0 ? `fleet fix --finding ${findingIds[0]}` : "fleet status",
   };
 }
 
@@ -283,7 +283,7 @@ export async function showCommand(
       feature,
       validation,
       patchAttempts: linkedPatches,
-      next: `clawpatch triage --finding ${record.findingId} --status <status>`,
+      next: `fleet triage --finding ${record.findingId} --status <status>`,
     };
   }
   return {
@@ -304,13 +304,13 @@ export async function nextCommand(
   const status = stringFlag(flags, "status") ?? "open";
   const selected = nextFinding(findings.filter((finding) => finding.status === status));
   if (selected === null) {
-    return { finding: null, status, next: "clawpatch report --status open" };
+    return { finding: null, status, next: "fleet report --status open" };
   }
   const feature = features.find((candidate) => candidate.featureId === selected.featureId) ?? null;
   if (context.options.json) {
     return {
       finding: findingSummary(selected, feature),
-      next: `clawpatch show --finding ${selected.findingId}`,
+      next: `fleet show --finding ${selected.findingId}`,
     };
   }
   return {
@@ -321,7 +321,7 @@ export async function nextCommand(
     triage: selected.triage,
     feature: feature?.title ?? selected.featureId,
     evidence: selected.evidence.map(evidenceLabel).join(", ") || "none",
-    next: `clawpatch show --finding ${selected.findingId}`,
+    next: `fleet show --finding ${selected.findingId}`,
   };
 }
 
@@ -359,7 +359,7 @@ export async function triageCommand(
     finding: findingId,
     status,
     note,
-    next: "clawpatch next",
+    next: "fleet next",
   };
 }
 
@@ -517,7 +517,7 @@ export async function revalidateCommand(
       status: "failed",
       finishedAt: nowIso(),
       findingIds: run.findingIds,
-      errors: [{ message, code: error instanceof ClawpatchError ? error.code : null }],
+      errors: [{ message, code: error instanceof FleetError ? error.code : null }],
     });
     throw error;
   }
@@ -528,7 +528,7 @@ export async function revalidateCommand(
       fixed: results.filter((result) => result.outcome === "fixed").length,
       falsePositive: results.filter((result) => result.outcome === "false-positive").length,
       uncertain: results.filter((result) => result.outcome === "uncertain").length,
-      next: "clawpatch next",
+      next: "fleet next",
     };
   }
   const first = assertDefined(results[0], "missing revalidation result");
@@ -545,7 +545,7 @@ export async function fixCommand(
   const git = await discoverGit(loaded.root);
   const dirty = await hasSourceDirtyWorktree(loaded.root, loaded.paths.stateDir);
   if (config.git.requireCleanWorktreeForFix && dirty && flags["dryRun"] !== true) {
-    throw new ClawpatchError(
+    throw new FleetError(
       "dirty worktree blocks fix; commit/stash first or use --dry-run",
       3,
       "dirty-worktree",
@@ -657,7 +657,7 @@ export async function fixCommand(
   };
   await writeFinding(loaded.paths, updatedFinding);
   if (failed) {
-    throw new ClawpatchError("validation failed after applying fix", 6, "validation-failed");
+    throw new FleetError("validation failed after applying fix", 6, "validation-failed");
   }
   return {
     finding: finding.findingId,
@@ -675,7 +675,7 @@ export async function fixCommand(
             .join("; "),
     next: failed
       ? `inspect ${patchAttemptId}`
-      : `clawpatch revalidate --finding ${finding.findingId}`,
+      : `fleet revalidate --finding ${finding.findingId}`,
   };
 }
 
@@ -733,7 +733,7 @@ async function loadProjectState(context: AppContext) {
   const paths = statePaths(resolveStateDir(context.root, config));
   const project = await readProject(paths);
   if (project === null) {
-    throw new ClawpatchError("not initialized; run clawpatch init", 2, "not-initialized");
+    throw new FleetError("not initialized; run fleet init", 2, "not-initialized");
   }
   await ensureStateDirs(paths);
   return { root: context.root, config, paths, project };
@@ -837,7 +837,7 @@ function parseFindingStatus(value: string): FindingRecord["status"] {
   ) {
     return value;
   }
-  throw new ClawpatchError(`invalid finding status: ${value}`, 2, "invalid-usage");
+  throw new FleetError(`invalid finding status: ${value}`, 2, "invalid-usage");
 }
 
 async function hasSourceDirtyWorktree(root: string, stateDir: string): Promise<boolean> {
@@ -902,12 +902,12 @@ function emitReviewProgress(
   const values = Object.entries(fields)
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(" ");
-  process.stderr.write(`clawpatch review ${event}${values.length > 0 ? ` ${values}` : ""}\n`);
+  process.stderr.write(`fleet review ${event}${values.length > 0 ? ` ${values}` : ""}\n`);
 }
 
 function lockFeature(feature: FeatureRecord, currentRunId: string): FeatureRecord {
   if (feature.lock !== null) {
-    throw new ClawpatchError(`feature locked: ${feature.featureId}`, 7, "lock-conflict");
+    throw new FleetError(`feature locked: ${feature.featureId}`, 7, "lock-conflict");
   }
   return {
     ...feature,
@@ -1000,7 +1000,7 @@ function renderReport(
   features: FeatureRecord[] = [],
   options: { includeNext?: boolean } = {},
 ): string {
-  const lines = ["# clawpatch report", "", `findings: ${findings.length}`, ""];
+  const lines = ["# fleet report", "", `findings: ${findings.length}`, ""];
   const featureById = new Map(features.map((feature) => [feature.featureId, feature]));
   for (const finding of findings) {
     lines.push(`## ${finding.severity}: ${finding.title}`);
@@ -1012,7 +1012,7 @@ function renderReport(
     lines.push(`status: ${finding.status}`);
     lines.push(`feature: ${featureLabel(finding.featureId, featureById.get(finding.featureId))}`);
     if (options.includeNext === true) {
-      lines.push(`next: clawpatch show --finding ${finding.findingId}`);
+      lines.push(`next: fleet show --finding ${finding.findingId}`);
     }
     if (finding.evidence.length > 0) {
       lines.push("");
@@ -1135,7 +1135,7 @@ function renderFindingDetail(
     lines.push("- none");
   }
   lines.push("");
-  lines.push(`next: clawpatch triage --finding ${finding.findingId} --status <status>`);
+  lines.push(`next: fleet triage --finding ${finding.findingId} --status <status>`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -1250,7 +1250,7 @@ function findingSummary(
     whyTestsDoNotAlreadyCoverThis: finding.whyTestsDoNotAlreadyCoverThis,
     suggestedRegressionTest: finding.suggestedRegressionTest,
     minimumFixScope: finding.minimumFixScope,
-    next: `clawpatch show --finding ${finding.findingId}`,
+    next: `fleet show --finding ${finding.findingId}`,
   };
 }
 

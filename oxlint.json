@@ -5,5 +5,5 @@
     "suspicious": "error",
     "perf": "off"
   },
-  "ignorePatterns": ["dist/**", "coverage/**", ".clawpatch/**", "fixtures/**"]
+  "ignorePatterns": ["dist/**", "coverage/**", ".fleet/**", "fixtures/**"]
 }

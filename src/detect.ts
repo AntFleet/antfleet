@@ -782,7 +782,7 @@ async function containsFileMatching(
         ".build",
         ".swiftpm",
         ".git",
-        ".clawpatch",
+        ".fleet",
         ".worktrees",
         ".venv",
         "venv",

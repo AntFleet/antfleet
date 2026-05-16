@@ -1,10 +1,10 @@
 {
-  "name": "clawpatch",
+  "name": "antfeed-fleet",
   "version": "0.1.0",
-  "description": "Automated code review that lands fixes.",
+  "description": "Antfeed Fleet — trust substrate for autonomous code",
   "license": "MIT",
   "bin": {
-    "clawpatch": "dist/cli.js"
+    "fleet": "dist/cli.js"
   },
   "files": [
     "dist",

@@ -123,13 +123,13 @@ describe("workflow", () => {
   });
 
   it("rejects nonexistent explicit roots before init", async () => {
-    const root = join(await fixtureRoot("clawpatch-missing-root-parent-"), "missing");
+    const root = join(await fixtureRoot("fleet-missing-root-parent-"), "missing");
 
     await expect(makeContext(testOptions(root))).rejects.toMatchObject({ exitCode: 2 });
   });
 
   it("initializes, maps, reviews, and reports findings", async () => {
-    const root = await fixtureRoot("clawpatch-flow-");
+    const root = await fixtureRoot("fleet-flow-");
     await writeFixture(
       root,
       "package.json",
@@ -145,13 +145,13 @@ describe("workflow", () => {
     );
     await writeFixture(root, "tsconfig.json", "{}");
     await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
     const mapped = await mapCommand(context);
     const reviewed = await reviewCommand(context, { limit: "1" });
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
     const finding = (await readFindings(paths))[0];
     expect(finding).toBeDefined();
     await writeFinding(paths, {
@@ -185,11 +185,11 @@ describe("workflow", () => {
         },
       ],
     });
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("shows, prioritizes, and triages findings with history", async () => {
-    const root = await fixtureRoot("clawpatch-finding-lifecycle-");
+    const root = await fixtureRoot("fleet-finding-lifecycle-");
     await writeFixture(
       root,
       "package.json",
@@ -200,13 +200,13 @@ describe("workflow", () => {
       }),
     );
     await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
     await mapCommand(context);
     await reviewCommand(context, { limit: "1" });
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
     const finding = (await readFindings(paths))[0];
     expect(finding).toBeDefined();
 
@@ -222,10 +222,10 @@ describe("workflow", () => {
 
     expect(next).toMatchObject({ finding: finding!.findingId });
     expect(shown).toMatchObject({
-      markdown: expect.stringContaining(`next: clawpatch triage --finding ${finding!.findingId}`),
+      markdown: expect.stringContaining(`next: fleet triage --finding ${finding!.findingId}`),
     });
     expect(report).toMatchObject({
-      markdown: expect.stringContaining(`next: clawpatch show --finding ${finding!.findingId}`),
+      markdown: expect.stringContaining(`next: fleet show --finding ${finding!.findingId}`),
     });
     expect(triaged).toMatchObject({ status: "false-positive" });
     expect(updated?.status).toBe("false-positive");
@@ -234,11 +234,11 @@ describe("workflow", () => {
       status: "false-positive",
       note: "tests cover intended contract",
     });
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("revalidates filtered findings in bulk and records history", async () => {
-    const root = await fixtureRoot("clawpatch-revalidate-all-");
+    const root = await fixtureRoot("fleet-revalidate-all-");
     await writeFixture(
       root,
       "package.json",
@@ -256,13 +256,13 @@ describe("workflow", () => {
     await writeFixture(root, "src/open.ts", "export const open = 'TODO_BUG';\n");
     await writeFixture(root, "src/falsey.ts", "export const falsey = 'TODO_BUG';\n");
     await writeFixture(root, "src/uncertain.ts", "export const uncertain = 'TODO_BUG';\n");
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
     await mapCommand(context);
     await reviewCommand(context, { limit: "4", jobs: "2" });
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
     const findings = await readFindings(paths);
     expect(findings).toHaveLength(4);
     const markers = [
@@ -296,24 +296,24 @@ describe("workflow", () => {
     const uncertain = updated.find((finding) => finding.status === "uncertain");
     const uncertainFeature = features.find((feature) => feature.featureId === uncertain?.featureId);
     expect(uncertainFeature?.status).toBe("needs-fix");
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("preserves selected finding ids when revalidation fails", async () => {
-    const root = await fixtureRoot("clawpatch-revalidate-fail-");
+    const root = await fixtureRoot("fleet-revalidate-fail-");
     await writeFixture(
       root,
       "package.json",
       JSON.stringify({ name: "reval-fail", bin: { fail: "src/fail.ts" } }),
     );
     await writeFixture(root, "src/fail.ts", "export const fail = 'TODO_BUG';\n");
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
     await mapCommand(context);
     await reviewCommand(context, { limit: "1" });
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
     const finding = (await readFindings(paths))[0];
     expect(finding).toBeDefined();
 
@@ -327,11 +327,11 @@ describe("workflow", () => {
       status: "failed",
       findingIds: [finding!.findingId],
     });
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("reviews features concurrently without corrupting findings or locks", async () => {
-    const root = await fixtureRoot("clawpatch-parallel-review-");
+    const root = await fixtureRoot("fleet-parallel-review-");
     await writeFixture(
       root,
       "package.json",
@@ -339,23 +339,23 @@ describe("workflow", () => {
     );
     await writeFixture(root, "src/one.ts", "export const one = 'TODO_BUG';\n");
     await writeFixture(root, "src/two.ts", "export const two = 'TODO_BUG';\n");
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
     await mapCommand(context);
     const reviewed = await reviewCommand(context, { limit: "2", jobs: "2" });
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
     const [features, findings] = await Promise.all([readFeatures(paths), readFindings(paths)]);
 
     expect(reviewed).toMatchObject({ reviewed: 2, findings: 2, jobs: 2 });
     expect(findings).toHaveLength(2);
     expect(features.every((feature) => feature.lock === null)).toBe(true);
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("does not consume features on dry-run review", async () => {
-    const root = await fixtureRoot("clawpatch-dry-run-");
+    const root = await fixtureRoot("fleet-dry-run-");
     await writeFixture(
       root,
       "package.json",
@@ -367,13 +367,13 @@ describe("workflow", () => {
     await initCommand(context, {});
     await mapCommand(context);
     await reviewCommand(context, { dryRun: true });
-    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const features = await readFeatures(statePaths(join(root, ".fleet")));
 
     expect(features[0]?.status).toBe("pending");
   });
 
   it("does not mutate features on dry-run map", async () => {
-    const root = await fixtureRoot("clawpatch-map-dry-run-");
+    const root = await fixtureRoot("fleet-map-dry-run-");
     await writeFixture(
       root,
       "package.json",
@@ -386,15 +386,15 @@ describe("workflow", () => {
     await mapCommand(context);
     await writeFixture(root, "package.json", JSON.stringify({ name: "map-dry-run-cli" }));
     const preview = await mapCommand(context, { dryRun: true });
-    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const features = await readFeatures(statePaths(join(root, ".fleet")));
 
     expect(preview).toMatchObject({ dryRun: true, stale: 1 });
     expect(features.some((feature) => feature.status === "skipped")).toBe(false);
   });
 
   it("does not recurse through symlinked mapper directories", async () => {
-    const root = await fixtureRoot("clawpatch-map-symlink-root-");
-    const external = await fixtureRoot("clawpatch-map-symlink-external-");
+    const root = await fixtureRoot("fleet-map-symlink-root-");
+    const external = await fixtureRoot("fleet-map-symlink-external-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "map-symlink" }));
     await writeFixture(external, "page.tsx", "export default function Page() { return null; }\n");
     await symlink(external, join(root, "app"), "dir");
@@ -402,13 +402,13 @@ describe("workflow", () => {
 
     await initCommand(context, {});
     await mapCommand(context);
-    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const features = await readFeatures(statePaths(join(root, ".fleet")));
 
     expect(features.some((feature) => feature.source === "next-app-route")).toBe(false);
   });
 
   it("seeds config commands from detected package scripts and package manager", async () => {
-    const root = await fixtureRoot("clawpatch-config-");
+    const root = await fixtureRoot("fleet-config-");
     await writeFixture(
       root,
       "package.json",
@@ -421,7 +421,7 @@ describe("workflow", () => {
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
-    const config = JSON.parse(await readFile(join(root, ".clawpatch/config.json"), "utf8")) as {
+    const config = JSON.parse(await readFile(join(root, ".fleet/config.json"), "utf8")) as {
       commands: { typecheck: string; test: string };
     };
 
@@ -429,23 +429,23 @@ describe("workflow", () => {
     expect(config.commands.test).toBe("npm run test");
   });
 
-  it("honors CLAWPATCH_STATE_DIR during init", async () => {
-    const root = await fixtureRoot("clawpatch-env-state-root-");
-    const stateDir = await fixtureRoot("clawpatch-env-state-");
+  it("honors FLEET_STATE_DIR during init", async () => {
+    const root = await fixtureRoot("fleet-env-state-root-");
+    const stateDir = await fixtureRoot("fleet-env-state-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "env-state" }));
-    process.env["CLAWPATCH_STATE_DIR"] = stateDir;
+    process.env["FLEET_STATE_DIR"] = stateDir;
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
     const project = await readProject(statePaths(stateDir));
 
     expect(project?.name).toBe("env-state");
-    await expect(access(join(root, ".clawpatch"))).rejects.toThrow();
-    delete process.env["CLAWPATCH_STATE_DIR"];
+    await expect(access(join(root, ".fleet"))).rejects.toThrow();
+    delete process.env["FLEET_STATE_DIR"];
   });
 
   it("allows fix dry-run when only the default state dir is dirty", async () => {
-    const root = await fixtureRoot("clawpatch-state-dirty-");
+    const root = await fixtureRoot("fleet-state-dirty-");
     await runCommand(
       "git init -q && git config user.email test@example.com && git config user.name Test",
       root,
@@ -460,7 +460,7 @@ describe("workflow", () => {
       "git add package.json src/index.ts && git -c commit.gpgsign=false commit -q -m init",
       root,
     );
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
@@ -468,15 +468,15 @@ describe("workflow", () => {
     const reviewed = (await reviewCommand(context, { limit: "1" })) as { next: string };
     const finding = reviewed.next.split(" ").at(-1) ?? "";
     const fixed = await fixCommand(context, { finding, dryRun: true });
-    const patches = await readPatchAttempts(statePaths(join(root, ".clawpatch")));
+    const patches = await readPatchAttempts(statePaths(join(root, ".fleet")));
 
     expect(fixed).toMatchObject({ dryRun: true });
     expect(patches).toEqual([]);
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("retires stale features when seeds disappear", async () => {
-    const root = await fixtureRoot("clawpatch-stale-");
+    const root = await fixtureRoot("fleet-stale-");
     await writeFixture(
       root,
       "package.json",
@@ -490,13 +490,13 @@ describe("workflow", () => {
     await unlink(join(root, "src/index.ts"));
     await writeFixture(root, "package.json", JSON.stringify({ name: "stale-cli" }));
     await mapCommand(context);
-    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const features = await readFeatures(statePaths(join(root, ".fleet")));
 
     expect(features.some((feature) => feature.status === "skipped")).toBe(true);
   });
 
   it("counts stale features by missing ids", async () => {
-    const root = await fixtureRoot("clawpatch-stale-count-");
+    const root = await fixtureRoot("fleet-stale-count-");
     await writeFixture(
       root,
       "package.json",
@@ -519,7 +519,7 @@ describe("workflow", () => {
   });
 
   it("requeues restored skipped features", async () => {
-    const root = await fixtureRoot("clawpatch-restore-");
+    const root = await fixtureRoot("fleet-restore-");
     await writeFixture(
       root,
       "package.json",
@@ -540,14 +540,14 @@ describe("workflow", () => {
     );
     await writeFixture(root, "src/index.ts", "export const value = 1;\n");
     await mapCommand(context);
-    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const features = await readFeatures(statePaths(join(root, ".fleet")));
     const restored = features.find((feature) => feature.title === "CLI command restore");
 
     expect(restored?.status).toBe("pending");
   });
 
   it("releases feature locks on provider review failure", async () => {
-    const root = await fixtureRoot("clawpatch-lock-fail-");
+    const root = await fixtureRoot("fleet-lock-fail-");
     await writeFixture(
       root,
       "package.json",
@@ -561,24 +561,24 @@ describe("workflow", () => {
     await expect(reviewCommand(context, { provider: "mock-fail" })).rejects.toThrow(
       "mock review failure",
     );
-    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const features = await readFeatures(statePaths(join(root, ".fleet")));
 
     expect(features[0]?.status).toBe("error");
     expect(features[0]?.lock).toBeNull();
-    await rm(join(root, ".clawpatch"), { recursive: true, force: true });
+    await rm(join(root, ".fleet"), { recursive: true, force: true });
   });
 
   it("does not create state directories for status before init", async () => {
-    const root = await fixtureRoot("clawpatch-readonly-");
+    const root = await fixtureRoot("fleet-readonly-");
     const context = await makeContext(testOptions(root));
 
     await expect(statusCommand(context)).rejects.toThrow("not initialized");
-    await expect(access(join(root, ".clawpatch"))).rejects.toThrow();
+    await expect(access(join(root, ".fleet"))).rejects.toThrow();
   });
 
   it("loads config from custom state directories", async () => {
-    const root = await fixtureRoot("clawpatch-custom-state-root-");
-    const stateDir = await fixtureRoot("clawpatch-custom-state-");
+    const root = await fixtureRoot("fleet-custom-state-root-");
+    const stateDir = await fixtureRoot("fleet-custom-state-");
     await writeFixture(
       root,
       "package.json",
@@ -598,7 +598,7 @@ describe("workflow", () => {
   });
 
   it("clean-locks requeues claimed features", async () => {
-    const root = await fixtureRoot("clawpatch-clean-locks-");
+    const root = await fixtureRoot("fleet-clean-locks-");
     await writeFixture(
       root,
       "package.json",
@@ -606,7 +606,7 @@ describe("workflow", () => {
     );
     await writeFixture(root, "src/index.ts", "export const value = 1;\n");
     const context = await makeContext(testOptions(root));
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
 
     await initCommand(context, {});
     await mapCommand(context);
@@ -630,7 +630,7 @@ describe("workflow", () => {
   });
 
   it("filters state files from successful fix results", async () => {
-    const root = await fixtureRoot("clawpatch-filter-state-");
+    const root = await fixtureRoot("fleet-filter-state-");
     await runCommand(
       "git init -q && git config user.email test@example.com && git config user.name Test",
       root,
@@ -645,7 +645,7 @@ describe("workflow", () => {
       "git add package.json src/index.ts && git -c commit.gpgsign=false commit -q -m init",
       root,
     );
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
@@ -653,23 +653,23 @@ describe("workflow", () => {
     const reviewed = (await reviewCommand(context, { limit: "1" })) as { next: string };
     const finding = reviewed.next.split(" ").at(-1) ?? "";
     const fixed = await fixCommand(context, { finding });
-    const patches = await readPatchAttempts(statePaths(join(root, ".clawpatch")));
+    const patches = await readPatchAttempts(statePaths(join(root, ".fleet")));
 
     expect(fixed).toMatchObject({ status: "applied", filesChanged: 0 });
     expect(patches[0]?.filesChanged).toEqual([]);
     await expect(access(join(root, "SHOULD_NOT_RUN_PROVIDER_COMMANDS"))).rejects.toThrow();
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("blocks fix when git cleanliness cannot be verified", async () => {
-    const root = await fixtureRoot("clawpatch-non-git-fix-");
+    const root = await fixtureRoot("fleet-non-git-fix-");
     await writeFixture(
       root,
       "package.json",
       JSON.stringify({ name: "buggy", bin: { buggy: "src/index.ts" } }),
     );
     await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
@@ -680,11 +680,11 @@ describe("workflow", () => {
       code: "dirty-worktree",
     });
 
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("fails fix when configured validation fails", async () => {
-    const root = await fixtureRoot("clawpatch-validation-fail-");
+    const root = await fixtureRoot("fleet-validation-fail-");
     await runCommand(
       "git init -q && git config user.email test@example.com && git config user.name Test",
       root,
@@ -703,7 +703,7 @@ describe("workflow", () => {
       "git add package.json src/index.ts && git -c commit.gpgsign=false commit -q -m init",
       root,
     );
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
@@ -711,14 +711,14 @@ describe("workflow", () => {
     const reviewed = (await reviewCommand(context, { limit: "1" })) as { next: string };
     const finding = reviewed.next.split(" ").at(-1) ?? "";
     await expect(fixCommand(context, { finding })).rejects.toMatchObject({ exitCode: 6 });
-    const patches = await readPatchAttempts(statePaths(join(root, ".clawpatch")));
+    const patches = await readPatchAttempts(statePaths(join(root, ".fleet")));
 
     expect(patches[0]?.status).toBe("failed");
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("marks review runs failed on lock conflicts", async () => {
-    const root = await fixtureRoot("clawpatch-lock-conflict-");
+    const root = await fixtureRoot("fleet-lock-conflict-");
     await writeFixture(
       root,
       "package.json",
@@ -726,7 +726,7 @@ describe("workflow", () => {
     );
     await writeFixture(root, "src/index.ts", "export const value = 1;\n");
     const context = await makeContext(testOptions(root));
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
 
     await initCommand(context, {});
     await mapCommand(context);
@@ -751,13 +751,13 @@ describe("workflow", () => {
   });
 
   it("requeues changed reviewed features after remapping", async () => {
-    const root = await fixtureRoot("clawpatch-requeue-");
+    const root = await fixtureRoot("fleet-requeue-");
     await writeFixture(
       root,
       "package.json",
       JSON.stringify({ name: "requeue", scripts: { test: "echo old" } }),
     );
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
@@ -769,29 +769,29 @@ describe("workflow", () => {
       JSON.stringify({ name: "requeue", scripts: { test: "echo new" } }),
     );
     await mapCommand(context);
-    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const features = await readFeatures(statePaths(join(root, ".fleet")));
     const testFeature = features.find((feature) => feature.title === "Package script test");
 
     expect(testFeature?.summary).toContain("echo new");
     expect(testFeature?.status).toBe("pending");
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("preserves finding status and patch links on repeated review", async () => {
-    const root = await fixtureRoot("clawpatch-merge-finding-");
+    const root = await fixtureRoot("fleet-merge-finding-");
     await writeFixture(
       root,
       "package.json",
       JSON.stringify({ name: "merge-finding", bin: { merge: "src/index.ts" } }),
     );
     await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
     await mapCommand(context);
     await reviewCommand(context, { limit: "1" });
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
     const finding = (await readFindings(paths))[0];
     expect(finding).toBeDefined();
     await writeFinding(paths, {
@@ -804,11 +804,11 @@ describe("workflow", () => {
 
     expect(reviewedAgain?.status).toBe("fixed");
     expect(reviewedAgain?.linkedPatchAttemptIds).toEqual(["pat_existing"]);
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 
   it("does not include escaped feature paths in prompts", async () => {
-    const root = await fixtureRoot("clawpatch-path-escape-");
+    const root = await fixtureRoot("fleet-path-escape-");
     const siblingSecret = join(root, "..", "secret.txt");
     await writeFixture(root, "package.json", JSON.stringify({ name: "path-escape" }));
     await writeFixture(root, "../secret.txt", "do-not-read\n");
@@ -817,7 +817,7 @@ describe("workflow", () => {
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
-    const project = await readProject(statePaths(join(root, ".clawpatch")));
+    const project = await readProject(statePaths(join(root, ".fleet")));
     expect(project).toBeDefined();
     const prompt = await buildReviewPrompt(
       root,
@@ -883,7 +883,7 @@ describe("workflow", () => {
   });
 
   it("persists failed patch attempts when provider fix throws", async () => {
-    const root = await fixtureRoot("clawpatch-fix-fail-");
+    const root = await fixtureRoot("fleet-fix-fail-");
     await runCommand(
       "git init -q && git config user.email test@example.com && git config user.name Test",
       root,
@@ -898,7 +898,7 @@ describe("workflow", () => {
       "git add package.json src/index.ts && git -c commit.gpgsign=false commit -q -m init",
       root,
     );
-    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["FLEET_PROVIDER"] = "mock";
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});
@@ -908,12 +908,12 @@ describe("workflow", () => {
     await expect(fixCommand(context, { finding, provider: "mock-fail" })).rejects.toThrow(
       "mock fix failure",
     );
-    const paths = statePaths(join(root, ".clawpatch"));
+    const paths = statePaths(join(root, ".fleet"));
     const patches = await readPatchAttempts(paths);
     const findings = await readFindings(paths);
 
     expect(patches[0]?.status).toBe("failed");
     expect(findings[0]?.linkedPatchAttemptIds).toContain(patches[0]?.patchAttemptId);
-    delete process.env["CLAWPATCH_PROVIDER"];
+    delete process.env["FLEET_PROVIDER"];
   });
 });

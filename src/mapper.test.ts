@@ -7,7 +7,7 @@ import { fixtureRoot, writeFixture } from "./test-helpers.js";
 
 describe("mapFeatures", () => {
   it("maps package bins, scripts, configs, and Next routes", async () => {
-    const root = await fixtureRoot("clawpatch-map-");
+    const root = await fixtureRoot("fleet-map-");
     await writeFixture(
       root,
       "package.json",
@@ -63,7 +63,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps Next routes under src/app and src/pages", async () => {
-    const root = await fixtureRoot("clawpatch-map-next-src-");
+    const root = await fixtureRoot("fleet-map-next-src-");
     await writeFixture(
       root,
       "package.json",
@@ -139,7 +139,7 @@ describe("mapFeatures", () => {
   });
 
   it("does not map src app-shaped routes without a Next project signal", async () => {
-    const root = await fixtureRoot("clawpatch-map-src-non-next-");
+    const root = await fixtureRoot("fleet-map-src-non-next-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "plain-app" }, null, 2));
     await writeFixture(
       root,
@@ -161,7 +161,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps generated package bins back to source entries", async () => {
-    const root = await fixtureRoot("clawpatch-map-bin-source-");
+    const root = await fixtureRoot("fleet-map-bin-source-");
     await writeFixture(
       root,
       "package.json",
@@ -182,7 +182,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps workspace packages and splits large Node source groups", async () => {
-    const root = await fixtureRoot("clawpatch-node-workspace-map-");
+    const root = await fixtureRoot("fleet-node-workspace-map-");
     await writeFixture(
       root,
       "package.json",
@@ -349,7 +349,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps pnpm workspace packages without a root package manifest", async () => {
-    const root = await fixtureRoot("clawpatch-pnpm-workspace-only-map-");
+    const root = await fixtureRoot("fleet-pnpm-workspace-only-map-");
     await writeFixture(root, "pnpm-workspace.yaml", "packages:\n  - packages/*\n");
     await writeFixture(
       root,
@@ -374,7 +374,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps nested SwiftPM, Apple, and Android Gradle app surfaces", async () => {
-    const root = await fixtureRoot("clawpatch-native-app-map-");
+    const root = await fixtureRoot("fleet-native-app-map-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "native-root" }, null, 2));
     await writeFixture(
       root,
@@ -480,7 +480,7 @@ describe("mapFeatures", () => {
   });
 
   it("normalizes root Gradle source groups", async () => {
-    const root = await fixtureRoot("clawpatch-root-gradle-map-");
+    const root = await fixtureRoot("fleet-root-gradle-map-");
     await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
     await writeFixture(root, "build.gradle.kts", 'plugins { id("java") }\n');
     await writeFixture(root, "src/main/java/com/example/App.kt", "class App\n");
@@ -496,7 +496,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps build.gradle-only roots without empty Gradle groups", async () => {
-    const root = await fixtureRoot("clawpatch-gradle-build-only-map-");
+    const root = await fixtureRoot("fleet-gradle-build-only-map-");
     await writeFixture(root, "build.gradle.kts", 'plugins { id("java") }\n');
     await writeFixture(root, "src/main/java/com/acme/test/Foo.kt", "class Foo\n");
     await writeFixture(root, "src/test/java/com/acme/FooTest.kt", "class FooTest\n");
@@ -516,7 +516,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps nested build.gradle-only Gradle apps", async () => {
-    const root = await fixtureRoot("clawpatch-nested-gradle-build-only-map-");
+    const root = await fixtureRoot("fleet-nested-gradle-build-only-map-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
     await writeFixture(root, "apps/android/build.gradle.kts", 'plugins { id("java") }\n');
     await writeFixture(root, "apps/android/src/main/java/com/example/App.kt", "class App\n");
@@ -531,7 +531,7 @@ describe("mapFeatures", () => {
   });
 
   it("ignores vendored SwiftPM manifests during detection", async () => {
-    const root = await fixtureRoot("clawpatch-vendored-swiftpm-detect-");
+    const root = await fixtureRoot("fleet-vendored-swiftpm-detect-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
     await writeFixture(root, "apps/ios/project.yml", "name: MobileApp\n");
     await writeFixture(
@@ -547,7 +547,7 @@ describe("mapFeatures", () => {
   });
 
   it("detects Swift sources in pure Apple projects", async () => {
-    const root = await fixtureRoot("clawpatch-pure-apple-swift-detect-");
+    const root = await fixtureRoot("fleet-pure-apple-swift-detect-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
     await writeFixture(root, "apps/ios/project.yml", "name: MobileApp\n");
     await writeFixture(root, "apps/ios/Sources/App.swift", "@main struct MobileApp {}\n");
@@ -562,7 +562,7 @@ describe("mapFeatures", () => {
   });
 
   it("chooses Apple project manifests deterministically", async () => {
-    const root = await fixtureRoot("clawpatch-apple-manifest-order-map-");
+    const root = await fixtureRoot("fleet-apple-manifest-order-map-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
     await writeFixture(root, "apps/ios/B.xcodeproj", "");
     await writeFixture(root, "apps/ios/A.xcworkspace", "");
@@ -576,7 +576,7 @@ describe("mapFeatures", () => {
   });
 
   it("maps Apple projects that also contain SwiftPM manifests", async () => {
-    const root = await fixtureRoot("clawpatch-hybrid-apple-swiftpm-map-");
+    const root = await fixtureRoot("fleet-hybrid-apple-swiftpm-map-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
     await writeFixture(root, "apps/ios/project.yml", "name: HybridApp\n");
     await writeFixture(
@@ -606,7 +606,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("ignores native sample projects under fixtures and testdata during detection", async () => {
-    const root = await fixtureRoot("clawpatch-native-fixture-detect-");
+    const root = await fixtureRoot("fleet-native-fixture-detect-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
     await writeFixture(
       root,
@@ -636,7 +636,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Go commands and internal packages", async () => {
-    const root = await fixtureRoot("clawpatch-go-map-");
+    const root = await fixtureRoot("fleet-go-map-");
     await writeFixture(root, "go.mod", "module example.com/tool\n\ngo 1.26\n");
     await writeFixture(root, "cmd/tool/aaa.go", "package main\n\nfunc early() {}\n");
     await writeFixture(root, "cmd/tool/main.go", "package main\n\nfunc main() {}\n");
@@ -678,7 +678,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("adds same-repo Go imports as context", async () => {
-    const root = await fixtureRoot("clawpatch-go-import-context-");
+    const root = await fixtureRoot("fleet-go-import-context-");
     await writeFixture(root, "go.mod", "module example.com/tool\n\ngo 1.26\n");
     await writeFixture(
       root,
@@ -699,7 +699,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("adds Go module root imports as context", async () => {
-    const root = await fixtureRoot("clawpatch-go-root-import-context-");
+    const root = await fixtureRoot("fleet-go-root-import-context-");
     await writeFixture(root, "go.mod", "module example.com/tool\n\ngo 1.26\n");
     await writeFixture(root, "lib.go", "package tool\n\nfunc Run() {}\n");
     await writeFixture(
@@ -716,7 +716,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Go module root packages", async () => {
-    const root = await fixtureRoot("clawpatch-go-root-package-");
+    const root = await fixtureRoot("fleet-go-root-package-");
     await writeFixture(root, "go.mod", "module example.com/rootpkg\n\ngo 1.26\n");
     await writeFixture(root, "main.go", "package main\n\nfunc main() {}\n");
     await writeFixture(root, "root.go", "package main\n\nfunc run() {}\n");
@@ -732,7 +732,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Go packages from symlinked explicit roots", async () => {
-    const root = await fixtureRoot("clawpatch-go-symlink-real-");
+    const root = await fixtureRoot("fleet-go-symlink-real-");
     const link = `${root}-link`;
     await writeFixture(root, "go.mod", "module example.com/symlink\n\ngo 1.26\n");
     await writeFixture(root, "cmd/tool/main.go", "package main\n\nfunc main() {}\n");
@@ -748,7 +748,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("does not classify nested cmd packages as commands", async () => {
-    const root = await fixtureRoot("clawpatch-go-nested-cmd-package-");
+    const root = await fixtureRoot("fleet-go-nested-cmd-package-");
     await writeFixture(root, "go.mod", "module example.com/tool\n\ngo 1.26\n");
     await writeFixture(root, "cmd/tool/main.go", "package main\n\nfunc main() {}\n");
     await writeFixture(root, "cmd/tool/internal/store/store.go", "package store\n");
@@ -763,7 +763,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("does not classify non-main cmd packages as commands", async () => {
-    const root = await fixtureRoot("clawpatch-go-cmd-library-package-");
+    const root = await fixtureRoot("fleet-go-cmd-library-package-");
     await writeFixture(root, "go.mod", "module example.com/tool\n\ngo 1.26\n");
     await writeFixture(root, "cmd/tool/tool.go", "package tool\n\nfunc Helper() {}\n");
 
@@ -778,7 +778,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("uses partial Go list output before falling back", async () => {
-    const root = await fixtureRoot("clawpatch-go-list-partial-");
+    const root = await fixtureRoot("fleet-go-list-partial-");
     await writeFixture(root, "go.mod", "module example.com/broken\n\ngo 1.20\n");
     await writeFixture(root, "api/api.go", "package api\n\nfunc API() {}\n");
     await writeFixture(root, "mixed/a.go", "package a\n\nfunc A() {}\n");
@@ -792,7 +792,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("reads root package names when Go list falls back", async () => {
-    const root = await fixtureRoot("clawpatch-go-root-fallback-");
+    const root = await fixtureRoot("fleet-go-root-fallback-");
     await writeFixture(root, "go.mod", "module example.com/cache\n\ngo 999.0\n");
     await writeFixture(root, "cache.go", "package cache\n\nfunc Get() {}\n");
     await writeFixture(root, "api/api.go", "package api\n\nfunc API() {}\n");
@@ -808,7 +808,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("parses large Go list output without truncating packages", async () => {
-    const root = await fixtureRoot("clawpatch-go-list-large-");
+    const root = await fixtureRoot("fleet-go-list-large-");
     await writeFixture(root, "go.mod", "module example.com/large\n\ngo 1.26\n");
     for (let index = 0; index < 140; index += 1) {
       const name = `pkg${String(index).padStart(3, "0")}`;
@@ -825,7 +825,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("skips ignored Go package directories from Go list output", async () => {
-    const root = await fixtureRoot("clawpatch-go-list-skip-");
+    const root = await fixtureRoot("fleet-go-list-skip-");
     await writeFixture(root, "go.mod", "module example.com/skip\n\ngo 1.26\n");
     await writeFixture(root, "app/app.go", "package app\n");
     await writeFixture(root, "node_modules/dep/dep.go", "package dep\n");
@@ -847,7 +847,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("mirrors Go list exclusions during fallback discovery", async () => {
-    const root = await fixtureRoot("clawpatch-go-fallback-skip-");
+    const root = await fixtureRoot("fleet-go-fallback-skip-");
     await writeFixture(root, "go.mod", "module example.com/fallback\n\ngo 999.0\n");
     await writeFixture(root, "app/app.go", "package app\n");
     await writeFixture(root, "sub/go.mod", "module example.com/sub\n\ngo 1.20\n");
@@ -868,7 +868,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Rust commands, libraries, integration tests, and Cargo defaults", async () => {
-    const root = await fixtureRoot("clawpatch-rust-map-");
+    const root = await fixtureRoot("fleet-rust-map-");
     await writeFixture(root, "Cargo.toml", '[package]\nname = "rusty-tool"\n');
     await writeFixture(root, "src/main.rs", "fn main() {}\n");
     await writeFixture(root, "src/lib.rs", "pub fn run() {}\n");
@@ -914,7 +914,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Python project metadata, console scripts, source groups, and tests", async () => {
-    const root = await fixtureRoot("clawpatch-python-map-");
+    const root = await fixtureRoot("fleet-python-map-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -960,7 +960,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("resolves Python console scripts and tests from non-src package roots", async () => {
-    const root = await fixtureRoot("clawpatch-python-roots-");
+    const root = await fixtureRoot("fleet-python-roots-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -985,7 +985,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("associates root-level pytest files with flat Python console scripts", async () => {
-    const root = await fixtureRoot("clawpatch-python-flat-tests-");
+    const root = await fixtureRoot("fleet-python-flat-tests-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -1003,8 +1003,8 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("does not resolve Python console scripts through symlinked package dirs", async () => {
-    const root = await fixtureRoot("clawpatch-python-script-symlink-root-");
-    const external = await fixtureRoot("clawpatch-python-script-symlink-external-");
+    const root = await fixtureRoot("fleet-python-script-symlink-root-");
+    const external = await fixtureRoot("fleet-python-script-symlink-external-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -1024,7 +1024,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("detects Python projects and conservative command defaults", async () => {
-    const uvRoot = await fixtureRoot("clawpatch-python-uv-");
+    const uvRoot = await fixtureRoot("fleet-python-uv-");
     await writeFixture(
       uvRoot,
       "pyproject.toml",
@@ -1036,7 +1036,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "uv run pytest",
     });
 
-    const uvDevRoot = await fixtureRoot("clawpatch-python-uv-dev-");
+    const uvDevRoot = await fixtureRoot("fleet-python-uv-dev-");
     await writeFixture(
       uvDevRoot,
       "pyproject.toml",
@@ -1049,7 +1049,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "uv run pytest",
     });
 
-    const uvArrayRoot = await fixtureRoot("clawpatch-python-uv-array-table-");
+    const uvArrayRoot = await fixtureRoot("fleet-python-uv-array-table-");
     await writeFixture(
       uvArrayRoot,
       "pyproject.toml",
@@ -1062,7 +1062,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       },
     });
 
-    const poetryRoot = await fixtureRoot("clawpatch-python-poetry-");
+    const poetryRoot = await fixtureRoot("fleet-python-poetry-");
     await writeFixture(
       poetryRoot,
       "pyproject.toml",
@@ -1075,7 +1075,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "poetry run pytest",
     });
 
-    const poetryPyprojectRoot = await fixtureRoot("clawpatch-python-poetry-pyproject-");
+    const poetryPyprojectRoot = await fixtureRoot("fleet-python-poetry-pyproject-");
     await writeFixture(
       poetryPyprojectRoot,
       "pyproject.toml",
@@ -1089,7 +1089,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       },
     });
 
-    const hatchRoot = await fixtureRoot("clawpatch-python-hatch-");
+    const hatchRoot = await fixtureRoot("fleet-python-hatch-");
     await writeFixture(
       hatchRoot,
       "pyproject.toml",
@@ -1101,7 +1101,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "hatch run pytest",
     });
 
-    const hatchPyprojectRoot = await fixtureRoot("clawpatch-python-hatch-pyproject-");
+    const hatchPyprojectRoot = await fixtureRoot("fleet-python-hatch-pyproject-");
     await writeFixture(
       hatchPyprojectRoot,
       "pyproject.toml",
@@ -1115,7 +1115,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       },
     });
 
-    const setupCfgRoot = await fixtureRoot("clawpatch-python-setup-cfg-tools-");
+    const setupCfgRoot = await fixtureRoot("fleet-python-setup-cfg-tools-");
     await writeFixture(
       setupCfgRoot,
       "setup.cfg",
@@ -1127,7 +1127,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       format: "ruff format --check .",
     });
 
-    const setupCfgExtrasNameRoot = await fixtureRoot("clawpatch-python-setup-cfg-extras-name-");
+    const setupCfgExtrasNameRoot = await fixtureRoot("fleet-python-setup-cfg-extras-name-");
     await writeFixture(
       setupCfgExtrasNameRoot,
       "setup.cfg",
@@ -1140,7 +1140,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: null,
     });
 
-    const setupCfgCommentRoot = await fixtureRoot("clawpatch-python-setup-cfg-pytest-comment-");
+    const setupCfgCommentRoot = await fixtureRoot("fleet-python-setup-cfg-pytest-comment-");
     await writeFixture(
       setupCfgCommentRoot,
       "setup.cfg",
@@ -1148,7 +1148,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     );
     expect((await detectProject(setupCfgCommentRoot)).detected.commands.test).toBeNull();
 
-    const setupCfgExtrasValueRoot = await fixtureRoot("clawpatch-python-setup-cfg-extras-value-");
+    const setupCfgExtrasValueRoot = await fixtureRoot("fleet-python-setup-cfg-extras-value-");
     await writeFixture(
       setupCfgExtrasValueRoot,
       "setup.cfg",
@@ -1159,7 +1159,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "pytest",
     });
 
-    const markerRoot = await fixtureRoot("clawpatch-python-marker-deps-");
+    const markerRoot = await fixtureRoot("fleet-python-marker-deps-");
     await writeFixture(
       markerRoot,
       "pyproject.toml",
@@ -1170,7 +1170,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "pytest",
     });
 
-    const pdmRoot = await fixtureRoot("clawpatch-python-pdm-");
+    const pdmRoot = await fixtureRoot("fleet-python-pdm-");
     await writeFixture(pdmRoot, "requirements.txt", "pytest\nruff\n");
     await writeFixture(pdmRoot, "pdm.lock", "");
     expect((await detectProject(pdmRoot)).detected.commands).toMatchObject({
@@ -1179,7 +1179,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "pdm run pytest",
     });
 
-    const pdmPyprojectRoot = await fixtureRoot("clawpatch-python-pdm-pyproject-");
+    const pdmPyprojectRoot = await fixtureRoot("fleet-python-pdm-pyproject-");
     await writeFixture(
       pdmPyprojectRoot,
       "pyproject.toml",
@@ -1192,7 +1192,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: "pdm run pytest",
     });
 
-    const pdmPyprojectNoLockRoot = await fixtureRoot("clawpatch-python-pdm-pyproject-no-lock-");
+    const pdmPyprojectNoLockRoot = await fixtureRoot("fleet-python-pdm-pyproject-no-lock-");
     await writeFixture(
       pdmPyprojectNoLockRoot,
       "pyproject.toml",
@@ -1206,12 +1206,12 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       },
     });
 
-    const directRoot = await fixtureRoot("clawpatch-python-direct-");
+    const directRoot = await fixtureRoot("fleet-python-direct-");
     await writeFixture(directRoot, "setup.py", "from setuptools import setup\n");
     await writeFixture(directRoot, "tests/test_app.py", "def test_app():\n    pass\n");
     expect((await detectProject(directRoot)).detected.commands.test).toBe("pytest");
 
-    const nullRoot = await fixtureRoot("clawpatch-python-null-");
+    const nullRoot = await fixtureRoot("fleet-python-null-");
     await writeFixture(nullRoot, "src/app/main.py", "def main():\n    pass\n");
     const nullProject = await detectProject(nullRoot);
     expect(nullProject.detected.languages).toContain("python");
@@ -1223,7 +1223,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: null,
     });
 
-    const groupNameRoot = await fixtureRoot("clawpatch-python-group-names-");
+    const groupNameRoot = await fixtureRoot("fleet-python-group-names-");
     await writeFixture(
       groupNameRoot,
       "pyproject.toml",
@@ -1236,7 +1236,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: null,
     });
 
-    const commentedGroupRoot = await fixtureRoot("clawpatch-python-commented-groups-");
+    const commentedGroupRoot = await fixtureRoot("fleet-python-commented-groups-");
     await writeFixture(
       commentedGroupRoot,
       "pyproject.toml",
@@ -1249,7 +1249,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       test: null,
     });
 
-    const dependencyGroupRoot = await fixtureRoot("clawpatch-python-dependency-groups-");
+    const dependencyGroupRoot = await fixtureRoot("fleet-python-dependency-groups-");
     await writeFixture(
       dependencyGroupRoot,
       "pyproject.toml",
@@ -1263,7 +1263,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps root-level Python pytest files", async () => {
-    const root = await fixtureRoot("clawpatch-python-root-tests-");
+    const root = await fixtureRoot("fleet-python-root-tests-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "root-tests"\n');
     await writeFixture(root, "test_app.py", "def test_app():\n    pass\n");
 
@@ -1277,7 +1277,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("uses Hatch pytest commands in mapped Python features", async () => {
-    const root = await fixtureRoot("clawpatch-python-hatch-map-");
+    const root = await fixtureRoot("fleet-python-hatch-map-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -1297,7 +1297,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("uses uv pytest commands from pyproject uv config in mapped Python features", async () => {
-    const root = await fixtureRoot("clawpatch-python-uv-pyproject-map-");
+    const root = await fixtureRoot("fleet-python-uv-pyproject-map-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -1315,7 +1315,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("uses uv pytest commands from pyproject uv array-table config in mapped Python features", async () => {
-    const root = await fixtureRoot("clawpatch-python-uv-array-map-");
+    const root = await fixtureRoot("fleet-python-uv-array-map-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -1335,7 +1335,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("uses Poetry and PDM pytest commands from pyproject tool config in mapped Python features", async () => {
-    const poetryRoot = await fixtureRoot("clawpatch-python-poetry-pyproject-map-");
+    const poetryRoot = await fixtureRoot("fleet-python-poetry-pyproject-map-");
     await writeFixture(
       poetryRoot,
       "pyproject.toml",
@@ -1353,7 +1353,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       { path: "src/poetry_map/test_app.py", command: "poetry run pytest" },
     ]);
 
-    const pdmRoot = await fixtureRoot("clawpatch-python-pdm-pyproject-map-");
+    const pdmRoot = await fixtureRoot("fleet-python-pdm-pyproject-map-");
     await writeFixture(
       pdmRoot,
       "pyproject.toml",
@@ -1371,7 +1371,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Python metadata-only projects without pyproject", async () => {
-    const root = await fixtureRoot("clawpatch-python-legacy-metadata-");
+    const root = await fixtureRoot("fleet-python-legacy-metadata-");
     await writeFixture(root, "setup.cfg", "[metadata]\nname = legacy\n");
     await writeFixture(root, "requirements.txt", "pytest\n");
 
@@ -1388,7 +1388,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("keeps Python source group ids stable when a root gains files", async () => {
-    const root = await fixtureRoot("clawpatch-python-stable-source-id-");
+    const root = await fixtureRoot("fleet-python-stable-source-id-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "stable-source"\n');
     await writeFixture(root, "scripts/tool.py", "def main():\n    pass\n");
 
@@ -1407,7 +1407,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("keeps Python pytest suite ids stable when tests are added", async () => {
-    const root = await fixtureRoot("clawpatch-python-stable-test-id-");
+    const root = await fixtureRoot("fleet-python-stable-test-id-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "stable-tests"\n');
     await writeFixture(root, "tests/test_b.py", "def test_b():\n    pass\n");
 
@@ -1428,7 +1428,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("keeps root-level Python pytest suite ids stable when tests are added", async () => {
-    const root = await fixtureRoot("clawpatch-python-stable-root-test-id-");
+    const root = await fixtureRoot("fleet-python-stable-root-test-id-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "stable-root-tests"\n');
     await writeFixture(root, "test_b.py", "def test_b():\n    pass\n");
 
@@ -1449,7 +1449,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("stops Python script parsing at TOML array-table headers", async () => {
-    const root = await fixtureRoot("clawpatch-python-array-table-script-");
+    const root = await fixtureRoot("fleet-python-array-table-script-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -1468,7 +1468,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("does not map commented Python console scripts", async () => {
-    const root = await fixtureRoot("clawpatch-python-commented-script-");
+    const root = await fixtureRoot("fleet-python-commented-script-");
     await writeFixture(
       root,
       "pyproject.toml",
@@ -1487,7 +1487,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("groups colocated Python pytest suites by their actual directory", async () => {
-    const root = await fixtureRoot("clawpatch-python-colocated-test-groups-");
+    const root = await fixtureRoot("fleet-python-colocated-test-groups-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "colocated-tests"\n');
     for (let index = 0; index < 13; index += 1) {
       await writeFixture(root, `src/pkg/test_${index}.py`, `def test_${index}():\n    pass\n`);
@@ -1509,7 +1509,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("groups nested Python star-test files by their actual directory", async () => {
-    const root = await fixtureRoot("clawpatch-python-nested-star-test-");
+    const root = await fixtureRoot("fleet-python-nested-star-test-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "nested-star-tests"\n');
     await writeFixture(root, "src/pkg/store_test.py", "def test_store():\n    pass\n");
 
@@ -1523,7 +1523,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("does not map Python test support modules as pytest suites", async () => {
-    const root = await fixtureRoot("clawpatch-python-test-support-");
+    const root = await fixtureRoot("fleet-python-test-support-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "support-only"\n');
     await writeFixture(root, "tests/helpers.py", "def helper():\n    pass\n");
     await writeFixture(root, "tests/conftest.py", "def pytest_configure():\n    pass\n");
@@ -1537,7 +1537,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("does not map Python fixture sample tests as pytest suites", async () => {
-    const root = await fixtureRoot("clawpatch-python-fixture-tests-");
+    const root = await fixtureRoot("fleet-python-fixture-tests-");
     await writeFixture(root, "pyproject.toml", '[project]\nname = "fixture-only"\n');
     await writeFixture(root, "tests/fixtures/test_sample.py", "def test_sample():\n    pass\n");
     await writeFixture(root, "tests/__fixtures__/test_sample.py", "def test_sample():\n    pass\n");
@@ -1551,7 +1551,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Python source-only projects without a full source-group pre-scan", async () => {
-    const root = await fixtureRoot("clawpatch-python-source-only-");
+    const root = await fixtureRoot("fleet-python-source-only-");
     await writeFixture(root, "src/source_only/app.py", "def app():\n    pass\n");
 
     const project = await detectProject(root);
@@ -1565,7 +1565,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("keeps Node scripts and native defaults in mixed package repos", async () => {
-    const root = await fixtureRoot("clawpatch-mixed-map-");
+    const root = await fixtureRoot("fleet-mixed-map-");
     await writeFixture(
       root,
       "package.json",
@@ -1599,7 +1599,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("maps Cargo workspace members outside crates", async () => {
-    const root = await fixtureRoot("clawpatch-rust-workspace-");
+    const root = await fixtureRoot("fleet-rust-workspace-");
     await writeFixture(root, "Cargo.toml", "[workspace]\nmembers = ['cli', 'core']\n");
     await writeFixture(root, "cli/Cargo.toml", '[package]\nname = "workspace-cli"\n');
     await writeFixture(root, "cli/src/main.rs", "fn main() {}\n");
@@ -1620,7 +1620,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("does not map virtual Cargo workspace root sources", async () => {
-    const root = await fixtureRoot("clawpatch-rust-virtual-workspace-");
+    const root = await fixtureRoot("fleet-rust-virtual-workspace-");
     await writeFixture(root, "Cargo.toml", '[workspace]\nmembers = ["core"]\n');
     await writeFixture(root, "src/lib.rs", "pub fn ignored() {}\n");
     await writeFixture(root, "src/main.rs", "fn main() {}\n");
@@ -1639,7 +1639,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
   });
 
   it("reads Cargo package names from the package section", async () => {
-    const root = await fixtureRoot("clawpatch-rust-package-name-");
+    const root = await fixtureRoot("fleet-rust-package-name-");
     await writeFixture(
       root,
       "Cargo.toml",
@@ -1661,7 +1661,7 @@ name = 'actual-pkg'
   });
 
   it("ignores commented and excluded Cargo workspace members", async () => {
-    const root = await fixtureRoot("clawpatch-rust-workspace-comments-");
+    const root = await fixtureRoot("fleet-rust-workspace-comments-");
     await writeFixture(
       root,
       "Cargo.toml",
@@ -1691,7 +1691,7 @@ exclude = ["./crates/old/"]
   });
 
   it("expands Cargo workspace member glob segments", async () => {
-    const root = await fixtureRoot("clawpatch-rust-workspace-glob-");
+    const root = await fixtureRoot("fleet-rust-workspace-glob-");
     await writeFixture(root, "Cargo.toml", '[workspace]\nmembers = ["crates/o*"]\n');
     await writeFixture(root, "crates/old-one/Cargo.toml", '[package]\nname = "old-one"\n');
     await writeFixture(root, "crates/old-one/src/lib.rs", "pub fn old() {}\n");
@@ -1707,7 +1707,7 @@ exclude = ["./crates/old/"]
   });
 
   it("does not map Cargo workspace members without package manifests", async () => {
-    const root = await fixtureRoot("clawpatch-rust-member-manifest-");
+    const root = await fixtureRoot("fleet-rust-member-manifest-");
     await writeFixture(root, "Cargo.toml", '[workspace]\nmembers = ["crates/*"]\n');
     await writeFixture(root, "crates/template/src/lib.rs", "pub fn template() {}\n");
     await writeFixture(root, "crates/real/Cargo.toml", '[package]\nname = "real"\n');
@@ -1722,7 +1722,7 @@ exclude = ["./crates/old/"]
   });
 
   it("ignores Cargo members outside the workspace section", async () => {
-    const root = await fixtureRoot("clawpatch-rust-metadata-members-");
+    const root = await fixtureRoot("fleet-rust-metadata-members-");
     await writeFixture(
       root,
       "Cargo.toml",
@@ -1746,8 +1746,8 @@ members = ["tools/old"]
   });
 
   it("skips duplicate and symlinked Cargo workspace members", async () => {
-    const root = await fixtureRoot("clawpatch-rust-workspace-safe-");
-    const external = await fixtureRoot("clawpatch-rust-workspace-external-");
+    const root = await fixtureRoot("fleet-rust-workspace-safe-");
+    const external = await fixtureRoot("fleet-rust-workspace-external-");
     await writeFixture(
       root,
       "Cargo.toml",
@@ -1772,8 +1772,8 @@ members = ["tools/old"]
   });
 
   it("does not scan symlinked conventional crates directories", async () => {
-    const root = await fixtureRoot("clawpatch-rust-crates-symlink-root-");
-    const external = await fixtureRoot("clawpatch-rust-crates-symlink-external-");
+    const root = await fixtureRoot("fleet-rust-crates-symlink-root-");
+    const external = await fixtureRoot("fleet-rust-crates-symlink-external-");
     await writeFixture(root, "Cargo.toml", '[package]\nname = "rootpkg"\n');
     await writeFixture(root, "src/lib.rs", "pub fn root() {}\n");
     await writeFixture(external, "member/Cargo.toml", '[package]\nname = "outside-member"\n');
@@ -1789,9 +1789,9 @@ members = ["tools/old"]
   });
 
   it("does not map Rust entrypoints through symlinked source directories", async () => {
-    const root = await fixtureRoot("clawpatch-rust-src-symlink-root-");
-    const externalRoot = await fixtureRoot("clawpatch-rust-src-symlink-external-root-");
-    const externalMember = await fixtureRoot("clawpatch-rust-src-symlink-external-member-");
+    const root = await fixtureRoot("fleet-rust-src-symlink-root-");
+    const externalRoot = await fixtureRoot("fleet-rust-src-symlink-external-root-");
+    const externalMember = await fixtureRoot("fleet-rust-src-symlink-external-member-");
     await writeFixture(
       root,
       "Cargo.toml",
@@ -1816,7 +1816,7 @@ members = ["tools/old"]
   });
 
   it("skips native build output during root test discovery", async () => {
-    const root = await fixtureRoot("clawpatch-native-build-skip-");
+    const root = await fixtureRoot("fleet-native-build-skip-");
     await writeFixture(root, "Cargo.toml", '[package]\nname = "rootpkg"\n');
     await writeFixture(root, "src/lib.rs", "pub fn root() {}\n");
     await writeFixture(root, "target/Cargo.test.ts", "test('generated', () => {});\n");
@@ -1830,7 +1830,7 @@ members = ["tools/old"]
   });
 
   it("maps SwiftPM executable targets, libraries, tests, and Swift defaults", async () => {
-    const root = await fixtureRoot("clawpatch-swift-map-");
+    const root = await fixtureRoot("fleet-swift-map-");
     await writeFixture(
       root,
       "Package.swift",
@@ -1881,7 +1881,7 @@ let package = Package(
   });
 
   it("ignores commented SwiftPM target declarations", async () => {
-    const root = await fixtureRoot("clawpatch-swift-comments-");
+    const root = await fixtureRoot("fleet-swift-comments-");
     await writeFixture(
       root,
       "Package.swift",
@@ -1918,7 +1918,7 @@ let package = Package(
   });
 
   it("ignores commented and string Swift main attributes", async () => {
-    const root = await fixtureRoot("clawpatch-swift-main-comments-");
+    const root = await fixtureRoot("fleet-swift-main-comments-");
     await writeFixture(
       root,
       "Package.swift",
@@ -1946,7 +1946,7 @@ public struct Core {
   });
 
   it("uses manifest target names for SwiftPM custom paths", async () => {
-    const root = await fixtureRoot("clawpatch-swift-custom-path-");
+    const root = await fixtureRoot("fleet-swift-custom-path-");
     await writeFixture(
       root,
       "Package.swift",
@@ -1988,7 +1988,7 @@ let package = Package(
   });
 
   it("links SwiftPM tests from arbitrary manifest test paths", async () => {
-    const root = await fixtureRoot("clawpatch-swift-specs-path-");
+    const root = await fixtureRoot("fleet-swift-specs-path-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2019,7 +2019,7 @@ let package = Package(
   });
 
   it("links custom SwiftPM test targets by dependency", async () => {
-    const root = await fixtureRoot("clawpatch-swift-custom-test-name-");
+    const root = await fixtureRoot("fleet-swift-custom-test-name-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2053,7 +2053,7 @@ let package = Package(
   });
 
   it("does not link SwiftPM external product names as local target dependencies", async () => {
-    const root = await fixtureRoot("clawpatch-swift-external-product-name-");
+    const root = await fixtureRoot("fleet-swift-external-product-name-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2090,7 +2090,7 @@ let package = Package(
   });
 
   it("links custom SwiftPM test targets at default test paths", async () => {
-    const root = await fixtureRoot("clawpatch-swift-default-custom-test-name-");
+    const root = await fixtureRoot("fleet-swift-default-custom-test-name-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2121,7 +2121,7 @@ let package = Package(
   });
 
   it("maps SwiftPM targets with root custom paths", async () => {
-    const root = await fixtureRoot("clawpatch-swift-root-path-");
+    const root = await fixtureRoot("fleet-swift-root-path-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2160,7 +2160,7 @@ let package = Package(
   });
 
   it("handles SwiftPM root test paths with source filters", async () => {
-    const root = await fixtureRoot("clawpatch-swift-root-test-path-");
+    const root = await fixtureRoot("fleet-swift-root-test-path-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2200,7 +2200,7 @@ let package = Package(
   });
 
   it("ignores SwiftPM custom paths that escape the repo", async () => {
-    const root = await fixtureRoot("clawpatch-swift-escape-");
+    const root = await fixtureRoot("fleet-swift-escape-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2233,8 +2233,8 @@ let package = Package(
   });
 
   it("ignores SwiftPM custom paths through symlinks outside the repo", async () => {
-    const root = await fixtureRoot("clawpatch-swift-symlink-path-");
-    const external = await fixtureRoot("clawpatch-swift-external-path-");
+    const root = await fixtureRoot("fleet-swift-symlink-path-");
+    const external = await fixtureRoot("fleet-swift-external-path-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2263,7 +2263,7 @@ let package = Package(
   });
 
   it("does not seed swift test when a SwiftPM package has no tests", async () => {
-    const root = await fixtureRoot("clawpatch-swift-no-tests-");
+    const root = await fixtureRoot("fleet-swift-no-tests-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2297,8 +2297,8 @@ let package = Package(name: "NoTests", targets: [.executableTarget(name: "NoTest
   });
 
   it("ignores symlinked SwiftPM test directories", async () => {
-    const root = await fixtureRoot("clawpatch-swift-symlink-tests-");
-    const external = await fixtureRoot("clawpatch-swift-external-tests-");
+    const root = await fixtureRoot("fleet-swift-symlink-tests-");
+    const external = await fixtureRoot("fleet-swift-external-tests-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2326,7 +2326,7 @@ let package = Package(name: "NoTests", targets: [.executableTarget(name: "NoTest
   });
 
   it("uses manifest target names for flat SwiftPM source layouts", async () => {
-    const root = await fixtureRoot("clawpatch-swift-flat-");
+    const root = await fixtureRoot("fleet-swift-flat-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2363,7 +2363,7 @@ let package = Package(
   });
 
   it("preserves SwiftPM source targets declared under Tests", async () => {
-    const root = await fixtureRoot("clawpatch-swift-test-helper-target-");
+    const root = await fixtureRoot("fleet-swift-test-helper-target-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2405,7 +2405,7 @@ let package = Package(
   });
 
   it("preserves SwiftPM targets sharing a path with sources filters", async () => {
-    const root = await fixtureRoot("clawpatch-swift-shared-source-path-");
+    const root = await fixtureRoot("fleet-swift-shared-source-path-");
     await writeFixture(
       root,
       "Package.swift",
@@ -2461,7 +2461,7 @@ let package = Package(
   });
 
   it("maps SwiftPM source filters that point at files", async () => {
-    const root = await fixtureRoot("clawpatch-swift-file-source-");
+    const root = await fixtureRoot("fleet-swift-file-source-");
     await writeFixture(
       root,
       "Package.swift",

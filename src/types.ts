@@ -136,7 +136,7 @@ export const configSchema = z.object({
   }),
 });
 
-export type ClawpatchConfig = z.infer<typeof configSchema>;
+export type FleetConfig = z.infer<typeof configSchema>;
 
 export const featureFileRefSchema = z.object({
   path: z.string(),
