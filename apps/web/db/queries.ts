@@ -96,3 +96,20 @@ export async function recordFindingStatuses(
   });
   return inserted.map((r) => r.findingId);
 }
+
+// Mission 3 slice 2 — Sweeper marks a finding closed when the evidence file
+// has changed on the default branch since the review's commit_sha. Slice 3-3
+// will follow up by setting closure_comment_id/url after posting the receipt.
+export async function markFindingClosed(args: {
+  findingId: string;
+  closureSha: string;
+}): Promise<void> {
+  await db
+    .update(findingStatus)
+    .set({
+      status: "closed",
+      closureSha: args.closureSha,
+      closureDetectedAt: new Date(),
+    })
+    .where(eq(findingStatus.findingId, args.findingId));
+}
