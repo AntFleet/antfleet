@@ -116,8 +116,35 @@ A small synthetic TypeScript repo with planted bugs of varying difficulty (null-
 - **The state engine.** `.fleet/` layout, feature locking, atomic writes, ID derivation. All inherited.
 - **Existing tests.** All 113 inherited tests pass after the rebrand and must continue to pass on every commit this week.
 
+## Provider roster
+
+### v1 stack — what ships
+
+**`anthropic` (claude-opus-4-7) + `openai` (gpt-5), unanimous mode.** This is the registered default in `providerByName` and the spike's default `--providers` list. The `fleet init` config writes `provider: { name: "stacked" }` and `buildStackedFromEnv` resolves to `anthropic,openai` unless `FLEET_STACKED_PROVIDERS` overrides it.
+
+The pitch is intentionally narrow: **two independent frontier models must agree**. Not "N providers from a marketplace" — two. Same generation, same approximate capability, different vendors. The agreement filter is meaningful only when the voters are peer-tier; that is the whole point of locking the stack at this composition before Phase 1.
+
+### Why not three? Why not cheap-tier diversity?
+
+See [`examples/dogfood-results/WEEK1-VERDICT.md`](./examples/dogfood-results/WEEK1-VERDICT.md). The Week 1 measurement was three providers (`anthropic` + `openai` + `openrouter/deepseek-chat`) in unanimous mode. Unanimous catches 16% of planted bugs because unanimous degrades to the weakest voter's recall, and a price-stratified third voter (DeepSeek-V3 at ~1/30 the cost) catches only the single most obvious bug in the corpus. The cheap voter becomes a veto.
+
+The corrective is not "add more cheap voters" or "fall back to majority mode" — both move the goalpost. The corrective is "make the stack be the two who actually agree on most things." That is the v1 lock.
+
+### Deferred to v2: `openrouter`, `codex`
+
+Both providers remain in the tree:
+
+- `src/providers/openrouter.ts` — OpenAI-compatible client pointed at `https://openrouter.ai/api/v1`, default model `deepseek/deepseek-chat`, fallback to `qwen/qwen-2.5-coder-32b-instruct` on malformed JSON. Tests are wrapped in `describe.skip()` so the implementation does not bit-rot but does not run in CI either.
+- `codex` provider, inline in `src/provider.ts` — shells out to the `codex` CLI; operator-installed, operator-billed.
+
+Neither is registered in `providerByName`. Re-enabling either is a single-line factory change once real-repo data shows a third voter would add value rather than veto it. They are reachable for prototyping via `deferredV2Providers()` in `src/provider.ts`.
+
+### Future consideration (≥6 months)
+
+**Marketplace-as-router** (different model per task type) vs **marketplace-as-voter** (current design where every voter sees every task). Both designs benefit from the agreement primitive; they differ on what "agreement" measures. Today's voter model measures "did multiple frontier models independently flag this?". A router model would measure "did the right model flag this?" — which is a fundamentally different claim that the SHA-pinned-receipt narrative has to evolve to support. Decision deferred until v1 has shipped against real PRs.
+
 ## AntSeed posture
 
-Antfeed maintains a marketplace of model providers; one of those sources is AntSeed. **AntSeed never appears in the Fleet product surface.** No imports, no env vars, no flags, no copy. The `Provider` interface is provider-agnostic; the marketplace is an internal concern that lives behind the configuration layer. When marketplace routing ships, it will choose between concrete providers (`codex`, `anthropic`, `openai`, and whatever else qualifies) without exposing the routing source to the user, the CLI, or the README.
+Antfeed maintains a network of model providers; one of those sources is AntSeed. **AntSeed never appears in the Fleet product surface.** No imports, no env vars, no flags, no copy. The `Provider` interface is provider-agnostic; the marketplace is an internal concern that lives behind the configuration layer. When the marketplace ships behind Fleet, it will choose between concrete providers (`anthropic`, `openai`, and whatever else qualifies) without exposing the routing source to the user, the CLI, or the README.
 
-The wedge is multi-model verification with SHA-pinned receipts. The moat is the receipt. AntSeed-vs-X is a routing detail, not a product story.
+The wedge is two-model agreement with SHA-pinned receipts. The moat is the receipt. Routing decisions live below the `Provider` interface, not in product copy.
