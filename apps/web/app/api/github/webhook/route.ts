@@ -4,6 +4,7 @@ import { verifyGitHubSignature } from "@/lib/github-signature";
 import { getInstallationToken } from "@/lib/github-app";
 import { getChangedFiles } from "@/lib/github-files";
 import { reviewPR } from "@/lib/review-pipeline";
+import { formatPRComment, postPRComment } from "@/lib/pr-comment";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import { hashRepo, recordReview, updateReview } from "@/db/queries";
 
@@ -201,6 +202,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           ms: p.ms,
         })),
       });
+
+      // Honest-report gate: post only when two voters actually agreed.
+      // Degraded runs and 0-finding agreement sets are silent — the audit
+      // trail still captures everything (DB row + log lines), but the
+      // public artifact only appears when there is something to receipt.
+      if (!bundle.degraded && bundle.agreed.length > 0) {
+        const commentBody = formatPRComment(bundle.agreed, {
+          reviewId,
+          totalMs: bundle.totalMs,
+          estimatedCostUsd: bundle.estimatedCostUsd,
+          modelIds: bundle.modelIds,
+        });
+        try {
+          const posted = await postPRComment({
+            installationId: pr.installation.id,
+            owner: pr.repository.owner.login,
+            repo: pr.repository.name,
+            prNumber: pr.number,
+            body: commentBody,
+          });
+          logInfo("comment.posted", {
+            reviewId,
+            delivery,
+            commentId: posted.id,
+            commentUrl: posted.htmlUrl,
+            findingCount: bundle.agreed.length,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // Comment failure does NOT fail the review. The DB row is still
+          // the source of truth; we just lost the visible artifact for
+          // this delivery.
+          logError("comment.post_failed", { reviewId, delivery, message });
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logError("review.failed", { reviewId, delivery, message });
