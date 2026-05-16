@@ -12,6 +12,14 @@
     "LICENSE"
   ],
   "type": "module",
+  "exports": {
+    "./provider": "./src/provider.ts",
+    "./providers/stacked": "./src/providers/stacked.ts",
+    "./providers/agreement": "./src/providers/agreement.ts",
+    "./providers/anthropic": "./src/providers/anthropic.ts",
+    "./providers/openai": "./src/providers/openai.ts",
+    "./types": "./src/types.ts"
+  },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "prepack": "pnpm -s build",

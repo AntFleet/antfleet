@@ -51,6 +51,9 @@ importers:
       '@octokit/rest':
         specifier: ^22.0.1
         version: 22.0.1
+      antfeed-fleet:
+        specifier: workspace:*
+        version: link:../..
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
