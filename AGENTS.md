@@ -87,7 +87,34 @@ When a decision changes, update this file. When an experiment runs, write a verd
 
 **Locked decision from Phase 0 (2026-05-16):** Pitch **(b)** is the value proposition — "fewer-but-real bugs you wouldn't have written up yourself." Precision, not coverage. This aligns with the receipts-as-moat thesis (§18.2): every receipt is provably real, never required to align with any prior expectation. Phase 1 unlocked. Phase 0 RED verdict on recall is logged honestly per §12 and folded into the customer-visible pitch, not papered over.
 
-**Next mission:** Phase 1 — Mission 1 (GitHub App skeleton). See §5.
+**Mission 1 — complete (2026-05-16 → -17):**
+
+| Slice | Commit | Delivers |
+|---|---|---|
+| 1 | `c75f187` | Next.js 16 + Drizzle schema scaffold |
+| 2 | `673f995` | Webhook HMAC verification + structured logging |
+| 3 | `ed152e0` | Neon Postgres + GitHub App auth + stub-row dispatcher |
+| 4a | `7dc862a` | Workspace exports + Octokit file fetcher |
+| 4b | `6053efe` | Real review pipeline (anthropic+openai parallel) |
+| 4b.1 | `be9704d` | Agreement gate (degraded ⇒ no comment) + tight prompt |
+| 4b.2 | `08d673a` | Anthropic `{input:{…}}` unwrap |
+| 4c | `ed6c971` | PR comment posting via Octokit |
+| 4d | `3ab052a` | Generalized unwrap + `inspected` tolerance, real-PR e2e via smee |
+
+End-to-end demo working: GitHub PR → smee → localhost → 2-of-2 unanimous → markdown comment on the PR. Live evidence on `Augustas11/krisskross_shops` PR #1 (comments `#issuecomment-4466966392`, `#issuecomment-4467326988`, `#issuecomment-4467353797`).
+
+**Mission 3 — in progress:**
+
+| Slice | Commit | Delivers | Status |
+|---|---|---|---|
+| 3-1 | `63af2e2` | `finding_status` table + `pr_comment_id` persistence | ✓ |
+| 3-2 | `79c7a55` | `classifyFindings` + `detectClosures` primitives | ✓ |
+| 3-3 | `a9b842a` | `formatClosureReceipt` + extended `markFindingClosed` | ✓ |
+| 3-4 | — | Maintainer reaction polling (24h/7d/30d → `maintainer_reactions`) | next |
+| 3-5 | — | `/api/cron/sweep` endpoint (orchestrator, `CRON_SECRET`-gated) | — |
+| 3-6 | — | `vercel.json` cron schedule | — |
+
+**Next mission:** Mission 3 slice 3-4 (reaction polling). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
 
 ---
 
