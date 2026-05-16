@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPRComment, type ReviewMeta } from "./pr-comment";
+import { formatClosureReceipt, formatPRComment, type ReviewMeta } from "./pr-comment";
 import type { Finding } from "./review-types";
 
 const META: ReviewMeta = {
@@ -105,5 +105,96 @@ describe("formatPRComment", () => {
     expect(out).toContain("(unanimous)");
     expect(out).toContain("87s");
     expect(out).toContain("~$0.40");
+  });
+});
+
+describe("formatClosureReceipt", () => {
+  const CLOSURE_SHA = "abc1234deadbeef5678901234567890abcdef1234";
+  const ORIGINAL_URL = "https://github.com/Augustas11/krisskross_shops/pull/1#issuecomment-4467353797";
+
+  const mkInput = (overrides: {
+    finding?: Partial<Finding>;
+    findingId?: string;
+    originalCommentUrl?: string | null;
+  } = {}) => ({
+    findingId: overrides.findingId ?? "83e79770-2",
+    closureSha: CLOSURE_SHA,
+    finding: mkFinding(overrides.finding ?? {}),
+    owner: "Augustas11",
+    repo: "krisskross_shops",
+    // Use `in` so explicit null/empty passes through; ?? would coalesce
+    // them away and we couldn't test the fallback-footer branch.
+    originalCommentUrl:
+      "originalCommentUrl" in overrides ? overrides.originalCommentUrl! : ORIGINAL_URL,
+  });
+
+  it("includes the finding id and the 7-char short SHA in the header", () => {
+    const out = formatClosureReceipt(mkInput());
+    expect(out).toContain("`83e79770-2`");
+    expect(out).toContain("`abc1234`");
+  });
+
+  it("links the short SHA to the commit URL", () => {
+    const out = formatClosureReceipt(mkInput());
+    expect(out).toContain(`https://github.com/Augustas11/krisskross_shops/commit/${CLOSURE_SHA}`);
+  });
+
+  it("title-cases category and severity", () => {
+    const out = formatClosureReceipt(
+      mkInput({ finding: { category: "security", severity: "critical" } }),
+    );
+    expect(out).toContain("**Security · Critical**");
+  });
+
+  it("includes the file:line evidence path", () => {
+    const out = formatClosureReceipt(
+      mkInput({
+        finding: {
+          evidence: [{ path: "src/admin.ts", startLine: 10, endLine: 22, symbol: null, quote: null }],
+        },
+      }),
+    );
+    expect(out).toContain("`src/admin.ts:10-22`");
+  });
+
+  it("links back to the original comment when URL is provided", () => {
+    const out = formatClosureReceipt(mkInput());
+    expect(out).toContain(`[the AntFleet review](${ORIGINAL_URL})`);
+  });
+
+  it("omits the linkback (uses fallback footer) when original comment URL is null", () => {
+    const out = formatClosureReceipt(mkInput({ originalCommentUrl: null }));
+    expect(out).toContain("Receipt automated by AntFleet.");
+    expect(out).not.toContain("Originally flagged");
+  });
+
+  it("omits the linkback when original comment URL is empty string", () => {
+    const out = formatClosureReceipt(mkInput({ originalCommentUrl: "" }));
+    expect(out).toContain("Receipt automated by AntFleet.");
+    expect(out).not.toContain("Originally flagged");
+  });
+
+  it("renders single-line file path when startLine === endLine", () => {
+    const out = formatClosureReceipt(
+      mkInput({
+        finding: {
+          evidence: [{ path: "src/a.ts", startLine: 5, endLine: 5, symbol: null, quote: null }],
+        },
+      }),
+    );
+    expect(out).toContain("`src/a.ts:5`");
+    expect(out).not.toContain("`src/a.ts:5-5`");
+  });
+
+  it("renders path-only locator when startLine is null", () => {
+    const out = formatClosureReceipt(
+      mkInput({
+        finding: {
+          evidence: [{ path: "no-lines.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+        },
+      }),
+    );
+    expect(out).toContain("`no-lines.ts`");
+    expect(out).not.toMatch(/no-lines\.ts:/u);
   });
 });

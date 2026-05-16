@@ -73,6 +73,52 @@ function truncate(s: string, n: number): string {
   return `${s.slice(0, n - 1).trimEnd()}…`;
 }
 
+/**
+ * Closure receipt formatter — Mission 3 slice 3. When Sweeper detects a
+ * finding's evidence file has changed on main, it posts a follow-up
+ * comment on the original PR that names the closing SHA. This is the
+ * receipt artifact referenced in AGENTS.md §18.2 — public, verifiable,
+ * the thing customers cannot fake.
+ *
+ * Voice matches formatPRComment: direct, technical, no marketing. The
+ * closing SHA is the load-bearing element; everything else is context
+ * that reminds readers what this finding was.
+ */
+export type ClosureReceiptInput = {
+  findingId: string;
+  closureSha: string;
+  finding: Finding;
+  owner: string;
+  repo: string;
+  originalCommentUrl: string | null;
+};
+
+export function formatClosureReceipt(args: ClosureReceiptInput): string {
+  const f = args.finding;
+  const shortSha = args.closureSha.slice(0, 7);
+  const closingCommitUrl = `https://github.com/${args.owner}/${args.repo}/commit/${args.closureSha}`;
+  const ev = f.evidence[0];
+
+  const lines: string[] = [];
+  lines.push(
+    `## AntFleet · finding \`${args.findingId}\` closed in [\`${shortSha}\`](${closingCommitUrl})`,
+  );
+  lines.push("");
+  lines.push(`**${titleCase(f.category)} · ${titleCase(f.severity)}** — ${f.title}`);
+  if (ev !== undefined) {
+    lines.push(`\`${formatEvidencePath(ev)}\``);
+  }
+  lines.push("");
+  if (args.originalCommentUrl !== null && args.originalCommentUrl.length > 0) {
+    lines.push(
+      `<sub>Originally flagged in [the AntFleet review](${args.originalCommentUrl}). Receipt automated.</sub>`,
+    );
+  } else {
+    lines.push("<sub>Receipt automated by AntFleet.</sub>");
+  }
+  return lines.join("\n");
+}
+
 export async function postPRComment(args: {
   installationId: number;
   owner: string;

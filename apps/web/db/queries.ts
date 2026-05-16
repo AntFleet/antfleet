@@ -97,19 +97,30 @@ export async function recordFindingStatuses(
   return inserted.map((r) => r.findingId);
 }
 
-// Mission 3 slice 2 — Sweeper marks a finding closed when the evidence file
-// has changed on the default branch since the review's commit_sha. Slice 3-3
-// will follow up by setting closure_comment_id/url after posting the receipt.
+// Mission 3 slices 2-3 — Sweeper marks a finding closed when the evidence
+// file has changed on the default branch since the review's commit_sha.
+// Slice 3 extends the helper to optionally record the closure-receipt
+// comment id/url in the same write so the slice 3-5 cron loop can transition
+// a finding from "open" → "closed + receipted" in one DB round-trip.
 export async function markFindingClosed(args: {
   findingId: string;
   closureSha: string;
+  closureCommentId?: number;
+  closureCommentUrl?: string;
 }): Promise<void> {
+  const values: Record<string, unknown> = {
+    status: "closed",
+    closureSha: args.closureSha,
+    closureDetectedAt: new Date(),
+  };
+  if (args.closureCommentId !== undefined) {
+    values["closureCommentId"] = args.closureCommentId;
+  }
+  if (args.closureCommentUrl !== undefined) {
+    values["closureCommentUrl"] = args.closureCommentUrl;
+  }
   await db
     .update(findingStatus)
-    .set({
-      status: "closed",
-      closureSha: args.closureSha,
-      closureDetectedAt: new Date(),
-    })
+    .set(values)
     .where(eq(findingStatus.findingId, args.findingId));
 }
