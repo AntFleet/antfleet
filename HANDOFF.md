@@ -16,11 +16,7 @@ This file is the resume sheet for the next session. It's transient — delete it
 
 Not required to start Mission 4 — Mission 4 is the landing page / receipts page, entirely separable from the cron. But the cron won't do useful work until these land. Do these next time you touch Vercel/Neon, regardless of whether Mission 4 has started.
 
-1. **Apply pending Neon migrations**:
-   ```bash
-   pnpm -F @antfleet/web db:migrate
-   ```
-   Applies `0002_lush_nighthawk` (maintainer_reactions dedup unique index) + `0003_high_maggott` (reviews installation_id/owner/repo columns). Without these, the cron will silently no-op (loadSweepWork drops batches missing coord columns) or throw on `recordMaintainerReactions`.
+1. ~~Apply pending Neon migrations~~ — **done.** Neon's schema is current as of `0003_high_maggott` (3 reviews coord columns + maintainer_reactions dedup unique constraint applied 2026-05-17 via `db:push`). Future schema changes: use `pnpm -F @antfleet/web db:push`, NOT `db:migrate`. The repo's `__drizzle_migrations` tracking table on Neon is empty (the original schema was seeded via push), so `db:migrate` will try to apply 0000 from scratch and fail with "relation already exists." Push diffs schema.ts against actual DB and applies only what's missing — non-destructive changes (column adds, constraint adds) auto-apply without prompts.
 
 2. **Set `CRON_SECRET` in Vercel project env**:
    ```bash
@@ -73,7 +69,7 @@ git log --oneline -25
 pnpm install
 pnpm -w build
 pnpm -F @antfleet/web test   # baseline: 90 passing
-pnpm -F @antfleet/web dev
+pnpm -F @antfleet/web dev    # NOTE: future schema changes use db:push, not db:migrate (see Ops debt #1)
 ```
 
 ## State you might have forgotten
