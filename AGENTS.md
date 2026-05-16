@@ -124,7 +124,7 @@ Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule li
 | 4-2 | `62acc77` | Landing page `/` — Hero/Proof/FeatureGrid/HowItWorks/Trust/CTA + `install-url` helper, architectural pitch per §15 | ✓ |
 | 4-3 | `12f0e56` | Public receipts page `/receipts` — server component (force-dynamic), `loadPublicReceiptsPage` count+list query, `lib/receipts` adapter (anonymized labels + relative time), empty/normal/truncated states | ✓ |
 | 4-4 | `15a94a5` | `/policy` page — 7-section plain-English data policy + footer nav links to `/receipts` + `/policy` (replaces 4-1 placeholder) | ✓ |
-| 4-5 | — | Receipts page polish (pagination, last-updated stamp, anonymization) | — |
+| 4-5 | `21c796d` | `/receipts` polish: `public_receipt` opt-in gate (migration 0004) + cursor pagination (`?before=<iso>`) + `MAX(closure_detected_at)` last-updated stamp + `/policy` reframed around opt-in | ✓ |
 
 **Next mission slice:** Mission 4 slice 4-2 (landing page hero + install button). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
 
