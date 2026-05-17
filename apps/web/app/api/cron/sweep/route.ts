@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { logError, logInfo, logWarn } from "@/lib/log";
+import { runDailyOnboarderCheckIns } from "@/lib/onboarder";
 import { runSweep } from "@/lib/sweep";
 
 // node:crypto + DB driver are Node-only — lock this off Edge.
@@ -30,19 +31,44 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const t0 = Date.now();
   try {
     const result = await runSweep();
-    const elapsedMs = Date.now() - t0;
+    const sweepMs = Date.now() - t0;
     logInfo("cron.sweep_complete", {
       swept: result.swept,
       closed: result.closed,
       reactionsRecorded: result.reactionsRecorded,
       reviewsSkipped: result.reviewsSkipped,
       errorCount: result.errors.length,
+      elapsedMs: sweepMs,
+    });
+
+    // Onboarder daily check-in runs on the same cron tick as Sweeper.
+    // Self-gates on ONBOARDER_ENABLED so prod stays silent until flipped.
+    // Failure here is logged but does not 5xx the cron — Sweeper success
+    // is the primary load-bearing outcome of this tick.
+    const tOnboarder = Date.now();
+    let onboarderResult: Awaited<ReturnType<typeof runDailyOnboarderCheckIns>> = {
+      attempted: 0,
+      posted: 0,
+      skipped: 0,
+      errors: 0,
+    };
+    try {
+      onboarderResult = await runDailyOnboarderCheckIns(new Date());
+      logInfo("cron.onboarder_checkins_complete", {
+        ...onboarderResult,
+        elapsedMs: Date.now() - tOnboarder,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logError("cron.onboarder_checkins_failed", { message });
+    }
+
+    const elapsedMs = Date.now() - t0;
+    return NextResponse.json({
+      ...result,
+      onboarder: onboarderResult,
       elapsedMs,
     });
-    // Errors that happened per-batch/finding don't fail the request — Vercel
-    // would just retry an arbitrary subset. Surfacing them in the JSON
-    // response keeps them visible without forcing a retry storm.
-    return NextResponse.json({ ...result, elapsedMs });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logError("cron.sweep_failed", { message });

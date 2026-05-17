@@ -7,7 +7,9 @@ import {
   onboardingEvents,
   reviews,
   type NewMaintainerReaction,
+  type NewOnboardingEvent,
   type NewReview,
+  type OnboardingEvent,
 } from "./schema";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
@@ -631,6 +633,184 @@ const ONBOARDER_EVENT_TYPES: ReadonlySet<OnboarderEventType> = new Set([
 
 function isOnboarderEventType(value: string): value is OnboarderEventType {
   return ONBOARDER_EVENT_TYPES.has(value as OnboarderEventType);
+}
+
+// ─── Onboarder persistence helpers ──────────────────────────────────────────
+// One row per agent action. The agent's tool output is stored verbatim in
+// tool_output so we can replay every decision and rebuild prompts later.
+
+export type RecordOnboardingEventInput = Omit<
+  NewOnboardingEvent,
+  "id" | "createdAt"
+>;
+
+export async function recordOnboardingEvent(
+  input: RecordOnboardingEventInput,
+): Promise<string> {
+  const result = await db
+    .insert(onboardingEvents)
+    .values(input)
+    .returning({ id: onboardingEvents.id });
+  const row = result[0];
+  if (row === undefined) {
+    throw new Error("recordOnboardingEvent: insert returned no row");
+  }
+  return row.id;
+}
+
+// Idempotency check. Onboarder fires off `installation.created` AND
+// `installation_repositories.added`; both can arrive for the same repo
+// when an install is broadened. Without this gate we'd post duplicate
+// welcome issues.
+export async function hasOnboardingEventForInstall(
+  installationId: number,
+  owner: string,
+  repo: string,
+  eventType: OnboarderEventType,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: onboardingEvents.id })
+    .from(onboardingEvents)
+    .where(
+      and(
+        eq(onboardingEvents.installationId, installationId),
+        eq(onboardingEvents.owner, owner),
+        eq(onboardingEvents.repo, repo),
+        eq(onboardingEvents.eventType, eventType),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+// Fetch the most recent onboarding event of a given type for an install,
+// or null. Used by check-in to find the welcome issue number to post on.
+export async function getOnboardingEventForInstall(
+  installationId: number,
+  owner: string,
+  repo: string,
+  eventType: OnboarderEventType,
+): Promise<OnboardingEvent | null> {
+  const rows = await db
+    .select()
+    .from(onboardingEvents)
+    .where(
+      and(
+        eq(onboardingEvents.installationId, installationId),
+        eq(onboardingEvents.owner, owner),
+        eq(onboardingEvents.repo, repo),
+        eq(onboardingEvents.eventType, eventType),
+      ),
+    )
+    .orderBy(desc(onboardingEvents.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+// Used by Onboarder to detect "first review" — Reviewer has already
+// recorded its row by the time first_review_summary fires, so a count
+// of 1 means "this review is the first".
+export async function countReviewsForInstall(installationId: number): Promise<number> {
+  const rows = await db
+    .select({ value: count(reviews.reviewId) })
+    .from(reviews)
+    .where(eq(reviews.installationId, installationId));
+  return rows[0]?.value ?? 0;
+}
+
+// 7-day check-in candidate query. Returns installations whose
+// install_welcome row was created between (now - 8d) and (now - 7d) and
+// that don't yet have a check_in_7d row. The 1-day window keeps the
+// cron idempotent across daily ticks (a missed day still catches the
+// install once it slides into range).
+export type CheckInCandidate = {
+  installationId: number;
+  owner: string;
+  repo: string;
+  welcomeCreatedAt: Date;
+};
+
+export async function loadCheckInCandidates(now: Date): Promise<CheckInCandidate[]> {
+  const ms24h = 24 * 60 * 60 * 1000;
+  const upper = new Date(now.getTime() - 7 * ms24h);
+  const lower = new Date(now.getTime() - 8 * ms24h);
+  const welcomes = await db
+    .select({
+      installationId: onboardingEvents.installationId,
+      owner: onboardingEvents.owner,
+      repo: onboardingEvents.repo,
+      welcomeCreatedAt: onboardingEvents.createdAt,
+    })
+    .from(onboardingEvents)
+    .where(
+      and(
+        eq(onboardingEvents.eventType, "install_welcome"),
+        gte(onboardingEvents.createdAt, lower),
+        lt(onboardingEvents.createdAt, upper),
+      ),
+    );
+  if (welcomes.length === 0) return [];
+
+  // Filter out installs that already have a check-in row. Done as a
+  // second pass rather than a join — keeps the SQL simple at the cost
+  // of one extra round-trip per candidate. Acceptable at expected
+  // partner volume (single digits in Phase 2).
+  const out: CheckInCandidate[] = [];
+  for (const w of welcomes) {
+    const already = await hasOnboardingEventForInstall(
+      w.installationId,
+      w.owner,
+      w.repo,
+      "check_in_7d",
+    );
+    if (!already) out.push(w);
+  }
+  return out;
+}
+
+// Activity stats over a (install, repo) for the check-in prompt.
+export type InstallActivitySnapshot = {
+  reviewCount: number;
+  findingsAgreed: number;
+  findingsClosed: number;
+  reactionsObserved: number;
+};
+
+export async function snapshotInstallActivity(
+  installationId: number,
+): Promise<InstallActivitySnapshot> {
+  const [revCount, agreed, closed, reacted] = await Promise.all([
+    db
+      .select({ value: count(reviews.reviewId) })
+      .from(reviews)
+      .where(eq(reviews.installationId, installationId)),
+    db
+      .select({ value: count(findingStatus.id) })
+      .from(findingStatus)
+      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+      .where(eq(reviews.installationId, installationId)),
+    db
+      .select({ value: count(findingStatus.id) })
+      .from(findingStatus)
+      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+      .where(
+        and(
+          eq(reviews.installationId, installationId),
+          eq(findingStatus.status, "closed"),
+        ),
+      ),
+    db
+      .select({ value: count(maintainerReactions.reactionId) })
+      .from(maintainerReactions)
+      .innerJoin(reviews, eq(maintainerReactions.reviewId, reviews.reviewId))
+      .where(eq(reviews.installationId, installationId)),
+  ]);
+  return {
+    reviewCount: revCount[0]?.value ?? 0,
+    findingsAgreed: agreed[0]?.value ?? 0,
+    findingsClosed: closed[0]?.value ?? 0,
+    reactionsObserved: reacted[0]?.value ?? 0,
+  };
 }
 
 async function activityWindow(sinceDate: Date | null): Promise<ActivityWindow> {

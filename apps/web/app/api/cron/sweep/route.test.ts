@@ -11,6 +11,17 @@ vi.mock("@/lib/sweep", () => ({
   }),
 }));
 
+// Stub Onboarder so the route can finish without touching the agent or DB.
+// Returns a no-op result shape matching DailyCheckInResult.
+vi.mock("@/lib/onboarder", () => ({
+  runDailyOnboarderCheckIns: vi.fn().mockResolvedValue({
+    attempted: 0,
+    posted: 0,
+    skipped: 0,
+    errors: 0,
+  }),
+}));
+
 // Silence the route's structured logger so test output stays clean.
 vi.mock("@/lib/log", () => ({
   logInfo: vi.fn(),
@@ -73,6 +84,7 @@ describe("/api/cron/sweep route", () => {
       reactionsRecorded: 2,
       reviewsSkipped: 0,
       errors: [],
+      onboarder: { attempted: 0, posted: 0, skipped: 0, errors: 0 },
     });
     expect(typeof body["elapsedMs"]).toBe("number");
   });

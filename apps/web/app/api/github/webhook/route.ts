@@ -7,6 +7,10 @@ import { reviewPR } from "@/lib/review-pipeline";
 import { formatPRComment, postPRComment } from "@/lib/pr-comment";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import {
+  runFirstReviewSummary,
+  runWelcomeOnInstall,
+} from "@/lib/onboarder";
+import {
   hashRepo,
   recordFindingStatuses,
   recordReview,
@@ -34,6 +38,58 @@ type PullRequestPayload = {
   repository: { name: string; owner: { login: string } };
   pull_request: { head: { sha: string } };
 };
+
+type InstallTarget = {
+  installationId: number;
+  owner: string;
+  repo: string;
+};
+
+// installation.created payload shape — the `repositories` array carries
+// the repos that arrived with the install (could be one or many). Owner
+// of each is the installation account; we extract via `account.login`.
+function installCreatedTargets(raw: unknown): InstallTarget[] {
+  if (typeof raw !== "object" || raw === null) return [];
+  const p = raw as Record<string, unknown>;
+  const installation = p["installation"] as Record<string, unknown> | undefined;
+  const installationId = installation?.["id"];
+  const account = installation?.["account"] as Record<string, unknown> | undefined;
+  const ownerLogin = account?.["login"];
+  const repositories = Array.isArray(p["repositories"])
+    ? (p["repositories"] as Array<Record<string, unknown>>)
+    : [];
+  if (typeof installationId !== "number" || typeof ownerLogin !== "string") return [];
+  const out: InstallTarget[] = [];
+  for (const r of repositories) {
+    if (typeof r["name"] === "string") {
+      out.push({ installationId, owner: ownerLogin, repo: r["name"] });
+    }
+  }
+  return out;
+}
+
+// installation_repositories.added — fired when an existing install
+// broadens to include new repos. The `repositories_added` array
+// names them.
+function repositoriesAddedTargets(raw: unknown): InstallTarget[] {
+  if (typeof raw !== "object" || raw === null) return [];
+  const p = raw as Record<string, unknown>;
+  const installation = p["installation"] as Record<string, unknown> | undefined;
+  const installationId = installation?.["id"];
+  const account = installation?.["account"] as Record<string, unknown> | undefined;
+  const ownerLogin = account?.["login"];
+  const repositoriesAdded = Array.isArray(p["repositories_added"])
+    ? (p["repositories_added"] as Array<Record<string, unknown>>)
+    : [];
+  if (typeof installationId !== "number" || typeof ownerLogin !== "string") return [];
+  const out: InstallTarget[] = [];
+  for (const r of repositoriesAdded) {
+    if (typeof r["name"] === "string") {
+      out.push({ installationId, owner: ownerLogin, repo: r["name"] });
+    }
+  }
+  return out;
+}
 
 function asPullRequestPayload(raw: unknown): PullRequestPayload | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -93,6 +149,46 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       : null;
 
   logInfo("webhook.received", { delivery, githubEvent, action });
+
+  // Onboarder install-welcome dispatch. Handled separately from PR
+  // events because the payload shape differs and the signal we care
+  // about (a freshly-installed repo) lives on the `installation` and
+  // `installation_repositories` events, not on `pull_request`. The
+  // agent itself self-gates on ONBOARDER_ENABLED — but we still parse
+  // the payload here so we can log "we saw the install" regardless.
+  if (githubEvent === "installation" && action === "created") {
+    const welcomes = installCreatedTargets(payload);
+    logInfo("webhook.install_created", {
+      delivery,
+      installationId: welcomes[0]?.installationId ?? null,
+      repoCount: welcomes.length,
+    });
+    if (welcomes.length > 0) {
+      after(async () => {
+        for (const w of welcomes) {
+          await runWelcomeOnInstall(w);
+        }
+      });
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  if (githubEvent === "installation_repositories" && action === "added") {
+    const welcomes = repositoriesAddedTargets(payload);
+    logInfo("webhook.installation_repositories_added", {
+      delivery,
+      installationId: welcomes[0]?.installationId ?? null,
+      repoCount: welcomes.length,
+    });
+    if (welcomes.length > 0) {
+      after(async () => {
+        for (const w of welcomes) {
+          await runWelcomeOnInstall(w);
+        }
+      });
+    }
+    return NextResponse.json({ ok: true });
+  }
 
   if (githubEvent !== "pull_request" || action === null || !DISPATCH_ACTIONS.has(action)) {
     return NextResponse.json({ ok: true });
@@ -218,6 +314,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           ms: p.ms,
         })),
       });
+
+      // Onboarder first-review summary fires AFTER the review work
+      // is captured, regardless of agreed/degraded state. It self-
+      // gates on (a) ONBOARDER_ENABLED and (b) being the install's
+      // first review — see runFirstReviewSummary for the math. Logs
+      // failures but never bubbles; the review itself is independent.
+      try {
+        const perProviderFindingCounts: Record<string, number> = {};
+        for (const p of bundle.perProvider) {
+          perProviderFindingCounts[p.name] = p.output?.findings.length ?? 0;
+        }
+        await runFirstReviewSummary({
+          installationId: pr.installation.id,
+          owner: pr.repository.owner.login,
+          repo: pr.repository.name,
+          prNumber: pr.number,
+          perProviderFindingCounts,
+          agreedCount: bundle.agreed.length,
+          disagreementCount: bundle.disagreements.length,
+          modelIds: bundle.modelIds,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logError("onboarder.first_review_summary_dispatch_failed", {
+          reviewId,
+          delivery,
+          message,
+        });
+      }
 
       // Honest-report gate: post only when two voters actually agreed.
       // Degraded runs and 0-finding agreement sets are silent — the audit

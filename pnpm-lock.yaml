@@ -42,6 +42,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.96.0
+        version: 0.96.0(zod@4.4.3)
       '@neondatabase/serverless':
         specifier: ^0.10.4
         version: 0.10.4
