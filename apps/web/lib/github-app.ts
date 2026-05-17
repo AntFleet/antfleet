@@ -1,4 +1,5 @@
 import { createAppAuth } from "@octokit/auth-app";
+import { Octokit } from "@octokit/rest";
 
 // Lazily build the auth instance — keeps env reads scoped to handler invocation
 // so a missing key surfaces as a 5xx-with-clear-log, not a process-start crash.
@@ -27,4 +28,9 @@ export async function getInstallationToken(installationId: number): Promise<stri
   const auth = appAuth();
   const result = await auth({ type: "installation", installationId });
   return result.token;
+}
+
+export async function getInstallationOctokit(installationId: number): Promise<Octokit> {
+  const token = await getInstallationToken(installationId);
+  return new Octokit({ auth: token });
 }

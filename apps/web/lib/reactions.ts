@@ -1,6 +1,5 @@
-import { Octokit } from "@octokit/rest";
 import type { NewMaintainerReaction } from "../db/schema";
-import { getInstallationToken } from "./github-app";
+import { getInstallationOctokit } from "./github-app";
 
 // Mission 3 slice 3-4 — reaction polling primitives. AGENTS.md §10 names
 // maintainer reactions as the most valuable signal in the system: what did
@@ -111,7 +110,6 @@ export async function pollReactions(args: {
   repo: string;
   commentId: number;
 }): Promise<RawReaction[]> {
-  const token = await getInstallationToken(args.installationId);
-  const octokit = new Octokit({ auth: token });
+  const octokit = await getInstallationOctokit(args.installationId);
   return pollReactionsWith(octokit, args);
 }
