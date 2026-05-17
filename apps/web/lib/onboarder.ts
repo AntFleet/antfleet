@@ -7,6 +7,7 @@ import {
   getOnboardingEventForInstall,
   hashRepo,
   hasOnboardingEventForInstall,
+  isWelcomeIssue,
   loadCheckInCandidates,
   recordOnboardingEvent,
   snapshotInstallActivity,
@@ -591,6 +592,68 @@ export async function runCheckIn(args: {
     });
   }
 }
+
+// Partner reply capture — fires from the webhook's issue_comment.created
+// handler. Persists the reply verbatim into onboarding_events with
+// event_type='partner_reply' and public=false. No LLM call, no GitHub
+// post; this is purely signal capture for the weekly digest + NPS-style
+// rollups. Comments from antfleet[bot] are filtered out at the webhook
+// layer so they never reach this function.
+export async function recordPartnerReply(args: {
+  installationId: number;
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  commentId: number;
+  commentUrl: string;
+  body: string;
+  senderLogin: string;
+  senderType: string;
+}): Promise<void> {
+  // Honor ONBOARDER_ENABLED for symmetry with the rest of the agent —
+  // when the agent is silent in prod, the signal capture stays silent
+  // too (a partner couldn't reply to a welcome that wasn't posted).
+  if (!isOnboarderEnabled()) return;
+
+  try {
+    await recordOnboardingEvent({
+      eventType: "partner_reply",
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      repoHash: hashRepo(args.owner, args.repo),
+      modelId: null,
+      prompt: null,
+      toolOutput: {
+        body: args.body,
+        sender_login: args.senderLogin,
+        sender_type: args.senderType,
+        welcome_issue_number: args.issueNumber,
+      },
+      commentId: args.commentId,
+      commentUrl: args.commentUrl,
+      public: false,
+    });
+    logInfo("onboarder.partner_reply_recorded", {
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      issueNumber: args.issueNumber,
+      senderLogin: args.senderLogin,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("onboarder.partner_reply_persist_failed", {
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      issueNumber: args.issueNumber,
+      message,
+    });
+  }
+}
+
+export { isWelcomeIssue };
 
 // Top-level cron driver — fans out check-ins for every install whose
 // install_welcome row lies in the 7-to-8-day window. Logs per-candidate

@@ -26,7 +26,11 @@ type OnboarderEventTypeJson =
   | "first_review_summary"
   | "public_receipts_enabled"
   | "public_receipts_disabled"
-  | "check_in_7d";
+  | "check_in_7d"
+  // partner_reply is captured in the DB but filtered out by the server
+  // before serialization — per-customer raw content never surfaces on
+  // /activity. Kept in the union for type symmetry with the DB layer.
+  | "partner_reply";
 
 type FleetActivityEventJson =
   | { kind: "review_completed"; ts: string; repoHash: string; prNumber: number }
@@ -538,5 +542,8 @@ function onboarderBodyFor(eventType: OnboarderEventTypeJson): string {
       return "Onboarder disabled public receipts for a repo";
     case "check_in_7d":
       return "Onboarder posted a 7-day check-in";
+    case "partner_reply":
+      // Filtered out server-side; this branch is unreachable in practice.
+      return "Onboarder logged a partner reply";
   }
 }

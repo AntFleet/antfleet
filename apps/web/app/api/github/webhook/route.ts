@@ -7,6 +7,8 @@ import { reviewPR } from "@/lib/review-pipeline";
 import { formatPRComment, postPRComment } from "@/lib/pr-comment";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import {
+  isWelcomeIssue,
+  recordPartnerReply,
   runFirstReviewSummary,
   runWelcomeOnInstall,
 } from "@/lib/onboarder";
@@ -66,6 +68,57 @@ function installCreatedTargets(raw: unknown): InstallTarget[] {
     }
   }
   return out;
+}
+
+type IssueCommentPayload = {
+  installationId: number;
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  commentId: number;
+  commentUrl: string;
+  body: string;
+  sender: { login: string; type: string };
+};
+
+// issue_comment.created payload shape — `comment.user` is the author of
+// the comment; `issue.number` is the target issue; `repository.owner.login`
+// + `repository.name` and `installation.id` give us the auth context.
+function asIssueCommentPayload(raw: unknown): IssueCommentPayload | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const p = raw as Record<string, unknown>;
+  const installation = p["installation"] as Record<string, unknown> | undefined;
+  const installationId = installation?.["id"];
+  const repository = p["repository"] as Record<string, unknown> | undefined;
+  const owner = repository?.["owner"] as Record<string, unknown> | undefined;
+  const issue = p["issue"] as Record<string, unknown> | undefined;
+  const comment = p["comment"] as Record<string, unknown> | undefined;
+  const sender = (comment?.["user"] ?? p["sender"]) as
+    | Record<string, unknown>
+    | undefined;
+  if (
+    typeof installationId !== "number" ||
+    typeof repository?.["name"] !== "string" ||
+    typeof owner?.["login"] !== "string" ||
+    typeof issue?.["number"] !== "number" ||
+    typeof comment?.["id"] !== "number" ||
+    typeof comment?.["html_url"] !== "string" ||
+    typeof comment?.["body"] !== "string" ||
+    typeof sender?.["login"] !== "string" ||
+    typeof sender?.["type"] !== "string"
+  ) {
+    return null;
+  }
+  return {
+    installationId,
+    owner: owner["login"],
+    repo: repository["name"],
+    issueNumber: issue["number"],
+    commentId: comment["id"],
+    commentUrl: comment["html_url"],
+    body: comment["body"],
+    sender: { login: sender["login"], type: sender["type"] },
+  };
 }
 
 // installation_repositories.added — fired when an existing install
@@ -184,6 +237,46 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       after(async () => {
         for (const w of welcomes) {
           await runWelcomeOnInstall(w);
+        }
+      });
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  // Partner-reply signal capture. issue_comment.created fires for every
+  // new comment on every issue/PR in every installed repo. Most of those
+  // we don't care about; we only capture comments on our welcome issues.
+  // Filter at three layers:
+  //   1. Action == created (skip edited/deleted)
+  //   2. Sender is not antfleet[bot] (skip our own posts — the
+  //      first-review summary, check-ins, etc., all post via the App)
+  //   3. The target issue is one of our welcome issues (DB lookup)
+  if (githubEvent === "issue_comment" && action === "created") {
+    const ic = asIssueCommentPayload(payload);
+    if (ic !== null && ic.sender.login !== "antfleet[bot]") {
+      after(async () => {
+        try {
+          const isWelcome = await isWelcomeIssue(
+            ic.installationId,
+            ic.owner,
+            ic.repo,
+            ic.issueNumber,
+          );
+          if (!isWelcome) return;
+          await recordPartnerReply({
+            installationId: ic.installationId,
+            owner: ic.owner,
+            repo: ic.repo,
+            issueNumber: ic.issueNumber,
+            commentId: ic.commentId,
+            commentUrl: ic.commentUrl,
+            body: ic.body,
+            senderLogin: ic.sender.login,
+            senderType: ic.sender.type,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logError("webhook.partner_reply_dispatch_failed", { delivery, message });
         }
       });
     }

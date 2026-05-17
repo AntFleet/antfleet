@@ -413,7 +413,12 @@ export type OnboarderEventType =
   | "first_review_summary"
   | "public_receipts_enabled"
   | "public_receipts_disabled"
-  | "check_in_7d";
+  | "check_in_7d"
+  // Partner-replied: someone (not antfleet[bot]) commented on a welcome
+  // issue. Captured for NPS-style signal — read by weekly-digest and
+  // by analysis scripts. Rows are private (public=false always); the
+  // /activity event stream filters them out by kind, not by gate.
+  | "partner_reply";
 
 export type ActivityWindow = {
   reviewsRun: number;
@@ -596,6 +601,10 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     // vocabulary. New types must be added to OnboarderEventType before
     // they'll render — keeps the union and the data in lock-step.
     if (!isOnboarderEventType(e.eventType)) continue;
+    // Per-customer raw content (partner replies) never surfaces here,
+    // even when public=true. The privacy boundary lives in the kind
+    // filter, not just in the public column.
+    if (!ACTIVITY_SURFACED_ONBOARDER_KINDS.has(e.eventType)) continue;
     events.push({
       kind: "onboarder_action",
       ts: e.ts,
@@ -624,6 +633,18 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
 }
 
 const ONBOARDER_EVENT_TYPES: ReadonlySet<OnboarderEventType> = new Set([
+  "install_welcome",
+  "first_review_summary",
+  "public_receipts_enabled",
+  "public_receipts_disabled",
+  "check_in_7d",
+  "partner_reply",
+]);
+
+// /activity hides partner replies even when public=true. They're per-
+// customer raw content (free-text issue comments) and never belong on
+// the public surface; the strategy doc §10 boundary requires it.
+const ACTIVITY_SURFACED_ONBOARDER_KINDS: ReadonlySet<OnboarderEventType> = new Set([
   "install_welcome",
   "first_review_summary",
   "public_receipts_enabled",
@@ -705,6 +726,33 @@ export async function getOnboardingEventForInstall(
     .orderBy(desc(onboardingEvents.createdAt))
     .limit(1);
   return rows[0] ?? null;
+}
+
+// Used by the webhook's issue_comment.created handler — looks up whether
+// a given (install, repo, issue_number) is one of our welcome issues.
+// Welcome rows persist the GitHub issue number in `comment_id` (a slight
+// schema-shape overload, but issues and comments share the numeric id
+// space well enough for our needs).
+export async function isWelcomeIssue(
+  installationId: number,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: onboardingEvents.id })
+    .from(onboardingEvents)
+    .where(
+      and(
+        eq(onboardingEvents.installationId, installationId),
+        eq(onboardingEvents.owner, owner),
+        eq(onboardingEvents.repo, repo),
+        eq(onboardingEvents.eventType, "install_welcome"),
+        eq(onboardingEvents.commentId, issueNumber),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 // Used by Onboarder to detect "first review" — Reviewer has already
