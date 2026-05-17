@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, count, desc, eq, lt, max } from "drizzle-orm";
+import { shortenReviewId } from "../lib/short-id";
 import { db } from "./index";
 import {
   findingStatus,
@@ -64,7 +65,7 @@ export async function updateReview(reviewId: string, input: UpdateReviewInput): 
 
 /** Stable id format: `<first-8-of-reviewId>-<findingIndex>`. */
 export function makeFindingId(reviewId: string, findingIndex: number): string {
-  return `${reviewId.slice(0, 8)}-${findingIndex}`;
+  return `${shortenReviewId(reviewId)}-${findingIndex}`;
 }
 
 export async function setReviewComment(args: {

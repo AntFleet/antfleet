@@ -1,6 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import { getInstallationToken } from "./github-app";
 import type { Finding } from "./review-types";
+import { shortenReviewId, shortenSha } from "./short-id";
 
 // Order matches AGENTS.md §15 framing — direct, technical. Highest-priority
 // items first so reviewers see them before scrolling.
@@ -32,7 +33,7 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
     .map((m) => `\`${m}\``)
     .join(" + ");
   const footer =
-    `<sub>Review \`${meta.reviewId.slice(0, 8)}\` · ${stack} (unanimous) ` +
+    `<sub>Review \`${shortenReviewId(meta.reviewId)}\` · ${stack} (unanimous) ` +
     `· ${Math.round(meta.totalMs / 1000)}s · ~$${meta.estimatedCostUsd.toFixed(2)}</sub>`;
   return `${intro}\n\n---\n\n${body}\n\n—\n\n${footer}`;
 }
@@ -95,7 +96,7 @@ export type ClosureReceiptInput = {
 
 export function formatClosureReceipt(args: ClosureReceiptInput): string {
   const f = args.finding;
-  const shortSha = args.closureSha.slice(0, 7);
+  const shortSha = shortenSha(args.closureSha);
   const closingCommitUrl = `https://github.com/${args.owner}/${args.repo}/commit/${args.closureSha}`;
   const ev = f.evidence[0];
 
