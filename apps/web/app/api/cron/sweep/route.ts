@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { logError, logInfo, logWarn } from "@/lib/log";
@@ -22,9 +23,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
   const authHeader = req.headers.get("authorization");
   // Vercel's cron invocation sets Authorization: Bearer <CRON_SECRET>.
-  // Plain string equality is fine here — both sides are server-controlled
-  // and the cost of constant-time comparison is invisible at cron cadence.
-  if (authHeader !== `Bearer ${secret}`) {
+  // Constant-time compare to deny a length / prefix oracle to anything that
+  // can reach this route before Vercel's edge rate-limit (defense in depth).
+  const expected = `Bearer ${secret}`;
+  const provided = authHeader ?? "";
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
     logWarn("cron.unauthorized", { hasAuth: authHeader !== null });
     return new NextResponse("unauthorized", { status: 401 });
   }
