@@ -45,7 +45,8 @@ export const anthropicProvider: Provider = {
     return reviewOutputSchema.parse(tolerateReviewShape(json));
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
-    // Week 1: read-only. The provider produces a plan but does not apply it.
+    // Plan-only: providers describe a fix; applying patches is a separate
+    // concern (Patch Bot lives downstream and is not wired in this surface).
     const json = await callAnthropic({
       prompt,
       model: model ?? DEFAULT_MODEL,
