@@ -1,6 +1,6 @@
 {
-  "name": "antfeed-fleet",
-  "version": "0.1.0",
+  "name": "@antfleet/cli",
+  "version": "0.2.0",
   "description": "AntFleet — trust substrate for autonomous code",
   "license": "MIT",
   "bin": {

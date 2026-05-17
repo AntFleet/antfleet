@@ -63,7 +63,7 @@ Partner onboarding doc: [`docs/ONBOARDING.md`](./docs/ONBOARDING.md).
 ## Install (CLI)
 
 ```bash
-pnpm add -g antfeed-fleet
+pnpm add -g @antfleet/cli
 ```
 
 From source:
@@ -137,7 +137,7 @@ not "no findings at all" — per-provider outputs persist to
 
 ```text
 .
-├── src/                    CLI + stacked provider (npm: antfeed-fleet)
+├── src/                    CLI + stacked provider (npm: @antfleet/cli)
 │   ├── provider.ts         four-method provider interface
 │   ├── types.ts            zod-validated finding schema
 │   ├── providers/          anthropic, openai, agreement, stacked

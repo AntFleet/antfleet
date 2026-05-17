@@ -1,8 +1,8 @@
-import { anthropicProvider } from "antfeed-fleet/providers/anthropic";
-import { openaiProvider } from "antfeed-fleet/providers/openai";
-import { mergeFindings } from "antfeed-fleet/providers/agreement";
-import { buildSpikePrompt } from "antfeed-fleet/spike/build-prompt";
-import { estimateRunCost } from "antfeed-fleet/spike/cost";
+import { anthropicProvider } from "@antfleet/cli/providers/anthropic";
+import { openaiProvider } from "@antfleet/cli/providers/openai";
+import { mergeFindings } from "@antfleet/cli/providers/agreement";
+import { buildSpikePrompt } from "@antfleet/cli/spike/build-prompt";
+import { estimateRunCost } from "@antfleet/cli/spike/cost";
 import type {
   AgreementMode,
   Disagreement,
