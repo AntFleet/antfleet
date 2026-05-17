@@ -45,6 +45,9 @@ function SiteHeader() {
           AntFleet
         </a>
         <nav className="flex items-center gap-7 text-sm text-[var(--color-ink-muted)]">
+          <a href="/architecture" className="hover:text-[var(--color-ink)] transition-colors">
+            Architecture
+          </a>
           <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             Receipts
           </a>
@@ -68,6 +71,12 @@ function SiteFooter() {
             className="hover:text-[var(--color-ink)] transition-colors"
           >
             receipts
+          </a>
+          <a
+            href="/changelog"
+            className="hover:text-[var(--color-ink)] transition-colors"
+          >
+            changelog
           </a>
           <a
             href="/policy"
