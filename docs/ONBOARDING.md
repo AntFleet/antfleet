@@ -95,6 +95,7 @@ Permissions requested:
 - `pull_requests: read` — read PR diff and changed files
 - `issues: write` — post the review comment and closure receipt
 - `contents: read` — fetch file contents at the PR's head SHA
+- `metadata: read` — required for installation-level Onboarder events
 
 Both Reviewer and Onboarder post as `antfleet[bot]`. No human-
 account impersonation.
@@ -237,7 +238,7 @@ exactly what your repo provides.
 |---|---|---|---|
 | **Reviewer** | `apps/web/lib/review-pipeline.ts` (calls `src/providers/{anthropic,openai}.ts`) | Two-model unanimous gate on every PR | Live |
 | **Sweeper** | `apps/web/lib/sweep.ts` | Daily cron; closure receipts pinned to merge SHA | Live |
-| **Onboarder** | `apps/web/lib/onboarding-agent.ts` *(forthcoming)* | Install welcome, first-review summary, public-receipts intake, 7-day check-in | Next ship |
+| **Onboarder** | `apps/web/lib/onboarder.ts` | Install welcome, first-review summary, 7-day check-in, partner_reply signal capture | Live |
 | **Patch Bot** | not yet implemented | Proposes fixes; pins closure SHA on apply | Phase 3+ |
 
 The fleet is open source under MIT
