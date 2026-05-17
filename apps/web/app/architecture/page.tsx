@@ -47,10 +47,11 @@ function Hero() {
           AntFleet is operated by a small fleet of agents.
         </h1>
         <p className="mt-5 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
-          Two of them are language-model agents (Claude Opus 4.7, GPT-5). The
-          rest are deterministic workers — a webhook receiver, an agreement
-          gate, a daily sweeper, a reaction poller. Together they manufacture
-          the receipts you see on{" "}
+          Two of them are reviewer-fleet language models (Claude Opus 4.7,
+          GPT-5). A third — Onboarder — owns the partner-facing lifecycle.
+          The rest are deterministic workers: a webhook receiver, an
+          agreement gate, a daily sweeper, a reaction poller. Together they
+          manufacture the receipts you see on{" "}
           <a
             href="/receipts"
             className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity"
@@ -102,6 +103,12 @@ const AGENTS = [
     kind: "deterministic",
     role: "Re-fetches each posted review comment at the 24h / 7d / 30d marks. Persists maintainer reactions (thumbs-up / down / heart / rocket / etc.) as implicit RLHF signal for future routing.",
     runs: "daily as part of the sweeper pass",
+  },
+  {
+    name: "Onboarder",
+    kind: "language model",
+    role: "Owns the partner-facing lifecycle. Posts a model-authored welcome on a fresh install, frames the partner's first review, reads agent@antfleet.dev for public-receipts opt-in, and posts a 7-day reaction-tally check-in.",
+    runs: "on installation.created webhook, on the first PR per install, on inbound email at agent@antfleet.dev, and on a 7-day cron",
   },
 ] as const;
 

@@ -24,6 +24,7 @@ export default async function ActivityPage() {
   const initialJson: FleetActivityJson = {
     lastSweepAt: initial.lastSweepAt?.toISOString() ?? null,
     lastReceiptAt: initial.lastReceiptAt?.toISOString() ?? null,
+    lastOnboarderAt: initial.lastOnboarderAt?.toISOString() ?? null,
     windows: initial.windows,
     events: initial.events.map((e) => ({ ...e, ts: e.ts.toISOString() })),
   };

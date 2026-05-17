@@ -21,14 +21,23 @@ type ActivityWindowJson = {
   reactionsObserved: number;
 };
 
+type OnboarderEventTypeJson =
+  | "install_welcome"
+  | "first_review_summary"
+  | "public_receipts_enabled"
+  | "public_receipts_disabled"
+  | "check_in_7d";
+
 type FleetActivityEventJson =
   | { kind: "review_completed"; ts: string; repoHash: string; prNumber: number }
   | { kind: "finding_agreed"; ts: string; findingId: string; severity: string; category: string; title: string; repoHash: string }
-  | { kind: "finding_closed"; ts: string; findingId: string; severity: string; category: string; title: string; closureSha: string | null; repoHash: string };
+  | { kind: "finding_closed"; ts: string; findingId: string; severity: string; category: string; title: string; closureSha: string | null; repoHash: string }
+  | { kind: "onboarder_action"; ts: string; eventType: OnboarderEventTypeJson; repoHash: string; commentUrl: string | null };
 
 export type FleetActivityJson = {
   lastSweepAt: string | null;
   lastReceiptAt: string | null;
+  lastOnboarderAt: string | null;
   windows: {
     last24h: ActivityWindowJson;
     last7d: ActivityWindowJson;
@@ -101,7 +110,12 @@ export function ActivityView({
       <SectionDivider />
       <WindowsSection windows={data.windows} />
       <SectionDivider />
-      <AgentRoster lastSweepAt={data.lastSweepAt} lastReceiptAt={data.lastReceiptAt} now={now} />
+      <AgentRoster
+        lastSweepAt={data.lastSweepAt}
+        lastReceiptAt={data.lastReceiptAt}
+        lastOnboarderAt={data.lastOnboarderAt}
+        now={now}
+      />
       <SectionDivider />
       <EventStream events={data.events} now={now} />
     </>
@@ -309,15 +323,23 @@ const AGENT_ROSTER = [
     role: "HMAC verify, stub-row insert, dispatch to the after()-scheduled review.",
     cadenceSource: "perReview" as const,
   },
+  {
+    name: "Onboarder",
+    kind: "language model",
+    role: "Welcomes new installs, frames the first review, owns public-receipts intake and 7-day check-in.",
+    cadenceSource: "onboarder" as const,
+  },
 ];
 
 function AgentRoster({
   lastSweepAt,
   lastReceiptAt,
+  lastOnboarderAt,
   now,
 }: {
   lastSweepAt: string | null;
   lastReceiptAt: string | null;
+  lastOnboarderAt: string | null;
   now: Date;
 }) {
   return (
@@ -331,7 +353,9 @@ function AgentRoster({
             const lastSeenIso =
               agent.cadenceSource === "sweep"
                 ? lastSweepAt ?? lastReceiptAt
-                : lastReceiptAt ?? lastSweepAt;
+                : agent.cadenceSource === "onboarder"
+                  ? lastOnboarderAt
+                  : lastReceiptAt ?? lastSweepAt;
             return (
               <li
                 key={agent.name}
@@ -402,6 +426,8 @@ function eventKey(event: FleetActivityEventJson): string {
     case "finding_agreed":
     case "finding_closed":
       return event.findingId;
+    case "onboarder_action":
+      return `${event.eventType}-${event.repoHash}`;
   }
 }
 
@@ -413,7 +439,9 @@ function EventRow({ event, now }: { event: FleetActivityEventJson; now: Date }) 
   const href =
     event.kind === "review_completed"
       ? null
-      : `/receipts/${encodeURIComponent(event.kind === "finding_agreed" ? event.findingId : event.findingId)}`;
+      : event.kind === "onboarder_action"
+        ? event.commentUrl
+        : `/receipts/${encodeURIComponent(event.findingId)}`;
 
   const content = (
     <div className="flex flex-col gap-1 py-4 sm:flex-row sm:items-start sm:gap-6">
@@ -480,6 +508,8 @@ function kindMetaFor(kind: FleetActivityEventJson["kind"]): {
       return { label: "agreed", tone: "muted" };
     case "finding_closed":
       return { label: "closed", tone: "ink" };
+    case "onboarder_action":
+      return { label: "onboarder", tone: "muted" };
   }
 }
 
@@ -491,5 +521,22 @@ function bodyFor(event: FleetActivityEventJson): string {
       return `${event.category} · ${event.severity} — ${event.title}`;
     case "finding_closed":
       return `${event.category} · ${event.severity} — ${event.title}${event.closureSha === null ? "" : ` (closed in ${event.closureSha.slice(0, 7)})`}`;
+    case "onboarder_action":
+      return onboarderBodyFor(event.eventType);
+  }
+}
+
+function onboarderBodyFor(eventType: OnboarderEventTypeJson): string {
+  switch (eventType) {
+    case "install_welcome":
+      return "Onboarder posted a welcome on a fresh install";
+    case "first_review_summary":
+      return "Onboarder framed a partner's first review";
+    case "public_receipts_enabled":
+      return "Onboarder enabled public receipts for a repo";
+    case "public_receipts_disabled":
+      return "Onboarder disabled public receipts for a repo";
+    case "check_in_7d":
+      return "Onboarder posted a 7-day check-in";
   }
 }

@@ -4,6 +4,7 @@ import { db } from "./index";
 import {
   findingStatus,
   maintainerReactions,
+  onboardingEvents,
   reviews,
   type NewMaintainerReaction,
   type NewReview,
@@ -394,6 +395,9 @@ export async function loadPublicReceiptDetail(
 export type FleetActivityPage = {
   lastSweepAt: Date | null;
   lastReceiptAt: Date | null;
+  // max(onboarding_events.created_at) for public rows. Drives the
+  // "last seen" timestamp on the Onboarder row in the agent roster.
+  lastOnboarderAt: Date | null;
   windows: {
     last24h: ActivityWindow;
     last7d: ActivityWindow;
@@ -401,6 +405,13 @@ export type FleetActivityPage = {
   };
   events: FleetActivityEvent[];
 };
+
+export type OnboarderEventType =
+  | "install_welcome"
+  | "first_review_summary"
+  | "public_receipts_enabled"
+  | "public_receipts_disabled"
+  | "check_in_7d";
 
 export type ActivityWindow = {
   reviewsRun: number;
@@ -434,6 +445,16 @@ export type FleetActivityEvent =
       title: string;
       closureSha: string | null;
       repoHash: string;
+    }
+  | {
+      // Single discriminator for every Onboarder action; eventType
+      // carries the action specifics. New event_type strings can be
+      // added to OnboarderEventType without touching the union.
+      kind: "onboarder_action";
+      ts: Date;
+      eventType: OnboarderEventType;
+      repoHash: string;
+      commentUrl: string | null;
     };
 
 const EVENT_STREAM_LIMIT = 20;
@@ -448,12 +469,14 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
   const [
     lastSweep,
     lastReceipt,
+    lastOnboarder,
     win24h,
     win7d,
     winAll,
     eventReviews,
     eventAgreed,
     eventClosed,
+    eventOnboarder,
   ] = await Promise.all([
     db
       .select({ value: max(findingStatus.lastPolledAt) })
@@ -462,6 +485,10 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       .select({ value: max(findingStatus.closureDetectedAt) })
       .from(findingStatus)
       .where(eq(findingStatus.status, "closed")),
+    db
+      .select({ value: max(onboardingEvents.createdAt) })
+      .from(onboardingEvents)
+      .where(eq(onboardingEvents.public, true)),
     activityWindow(since24h),
     activityWindow(since7d),
     activityWindow(null),
@@ -507,6 +534,17 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       )
       .orderBy(desc(findingStatus.closureDetectedAt))
       .limit(EVENT_STREAM_LIMIT),
+    db
+      .select({
+        ts: onboardingEvents.createdAt,
+        eventType: onboardingEvents.eventType,
+        repoHash: onboardingEvents.repoHash,
+        commentUrl: onboardingEvents.commentUrl,
+      })
+      .from(onboardingEvents)
+      .where(eq(onboardingEvents.public, true))
+      .orderBy(desc(onboardingEvents.createdAt))
+      .limit(EVENT_STREAM_LIMIT),
   ]);
 
   // Merge the three sources into one chronologically-sorted event stream
@@ -551,14 +589,29 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       repoHash: f.repoHash,
     });
   }
+  for (const e of eventOnboarder) {
+    // Defensive: skip rows whose event_type doesn't match the typed
+    // vocabulary. New types must be added to OnboarderEventType before
+    // they'll render — keeps the union and the data in lock-step.
+    if (!isOnboarderEventType(e.eventType)) continue;
+    events.push({
+      kind: "onboarder_action",
+      ts: e.ts,
+      eventType: e.eventType,
+      repoHash: e.repoHash,
+      commentUrl: e.commentUrl,
+    });
+  }
   events.sort((a, b) => b.ts.getTime() - a.ts.getTime());
 
   const lastSweepRaw = lastSweep[0]?.value ?? null;
   const lastReceiptRaw = lastReceipt[0]?.value ?? null;
+  const lastOnboarderRaw = lastOnboarder[0]?.value ?? null;
 
   return {
     lastSweepAt: coerceDate(lastSweepRaw),
     lastReceiptAt: coerceDate(lastReceiptRaw),
+    lastOnboarderAt: coerceDate(lastOnboarderRaw),
     windows: {
       last24h: win24h,
       last7d: win7d,
@@ -566,6 +619,18 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     },
     events: events.slice(0, EVENT_STREAM_LIMIT),
   };
+}
+
+const ONBOARDER_EVENT_TYPES: ReadonlySet<OnboarderEventType> = new Set([
+  "install_welcome",
+  "first_review_summary",
+  "public_receipts_enabled",
+  "public_receipts_disabled",
+  "check_in_7d",
+]);
+
+function isOnboarderEventType(value: string): value is OnboarderEventType {
+  return ONBOARDER_EVENT_TYPES.has(value as OnboarderEventType);
 }
 
 async function activityWindow(sinceDate: Date | null): Promise<ActivityWindow> {

@@ -108,9 +108,55 @@ export const maintainerReactions = pgTable(
   ],
 );
 
+// Onboarder agent — owns the partner-facing lifecycle (install welcome,
+// first-review summary, public-receipts opt-in, 7-day check-in). One row
+// per action the agent took. Audit shape mirrors `reviews` so future
+// analysis on agent reliability is queryable the same way.
+//
+// The `public` flag mirrors reviews.public_receipt as the surface gate
+// for /activity. Onboarding events without a parent review (install
+// welcome) need their own gate — we can't transitively inherit, since
+// no review exists at install time.
+export const onboardingEvents = pgTable("onboarding_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Discrete vocabulary, validated at the application layer:
+  //   install_welcome           — Onboarder posted a welcome on install
+  //   first_review_summary      — Onboarder framed the partner's first review
+  //   public_receipts_enabled   — Onboarder flipped the opt-in flag
+  //   public_receipts_disabled  — Onboarder reversed the opt-in
+  //   check_in_7d               — Onboarder posted the 7-day reaction summary
+  // Stored as text rather than a pg enum so adding a new event_type is
+  // application-only; no migration required.
+  eventType: text("event_type").notNull(),
+  installationId: bigint("installation_id", { mode: "number" }).notNull(),
+  owner: text("owner").notNull(),
+  repo: text("repo").notNull(),
+  repoHash: text("repo_hash").notNull(),
+  // Null when the event is purely operational (flag-flip) rather than
+  // model-authored. Audit symmetry with reviews.provider_model_ids.
+  modelId: text("model_id"),
+  // The full prompt sent to the model, when modelId is non-null. Lets
+  // future analysis diff prompt evolution; mirror of the persistence
+  // shape in reviews.provider_responses.
+  prompt: text("prompt"),
+  // Structured output the agent emitted — model tool-use result for
+  // model-authored events, or a synthetic { summary } for ops events.
+  toolOutput: jsonb("tool_output").notNull(),
+  // GitHub artifact identifiers when the event posted a comment or
+  // opened an issue. Null when the action wasn't visible on GitHub.
+  commentId: bigint("comment_id", { mode: "number" }),
+  commentUrl: text("comment_url"),
+  // Surface gate for /activity. Default false so a fresh install's
+  // actions don't appear publicly until the partner explicitly opts in.
+  public: boolean("public").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
 export type NewFindingStatus = typeof findingStatus.$inferInsert;
 export type MaintainerReaction = typeof maintainerReactions.$inferSelect;
 export type NewMaintainerReaction = typeof maintainerReactions.$inferInsert;
+export type OnboardingEvent = typeof onboardingEvents.$inferSelect;
+export type NewOnboardingEvent = typeof onboardingEvents.$inferInsert;
