@@ -66,13 +66,13 @@ describe("parseChangelog", () => {
   });
 
   it("escapes raw HTML in body text to prevent injection", () => {
-    const doc = parseChangelog(`# Changelog
+    const injectionDoc = parseChangelog(`# Changelog
 
 ## Section
 
 - Entry with <script>alert(1)</script> inline.
 `);
-    expect(doc.sections[0]?.entries[0]?.html).toContain("&lt;script&gt;");
-    expect(doc.sections[0]?.entries[0]?.html).not.toContain("<script>");
+    expect(injectionDoc.sections[0]?.entries[0]?.html).toContain("&lt;script&gt;");
+    expect(injectionDoc.sections[0]?.entries[0]?.html).not.toContain("<script>");
   });
 });

@@ -23,7 +23,7 @@ export type ReviewMeta = {
 
 export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
   if (findings.length === 0) return "";
-  const sorted = [...findings].sort((a, b) => severityRank(a) - severityRank(b));
+  const sorted = findings.toSorted((a, b) => severityRank(a) - severityRank(b));
   const intro =
     `## AntFleet · ${findings.length} finding${findings.length === 1 ? "" : "s"}\n\n` +
     "Both reviewers flagged the items below on the changed files. AntFleet posts only what two independent frontier models agree on.";
