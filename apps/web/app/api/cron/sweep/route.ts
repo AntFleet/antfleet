@@ -7,11 +7,12 @@ import { runSweep } from "@/lib/sweep";
 // node:crypto + DB driver are Node-only — lock this off Edge.
 export const runtime = "nodejs";
 
-// The sweep iterates every open finding sequentially against the GitHub API.
-// Hobby plan ceiling is 60s; that's roughly enough for ~30 reviews in v1
-// (one git.getRef + one compareCommits + one listForIssueComment per
-// review). Revisit on Pro when real-repo volume grows.
-export const maxDuration = 60;
+// Sweeper iterates every open finding sequentially against the GitHub
+// API — historically fast enough under the 60s Hobby ceiling. Onboarder
+// check-ins run on the same tick (slice O5); each candidate adds one
+// Anthropic call (~30s) plus a GitHub post. Bumped to 180s (Pro plan
+// has 300s headroom) so a single-digit-partner Phase 2 stays comfortable.
+export const maxDuration = 180;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const secret = process.env["CRON_SECRET"];
