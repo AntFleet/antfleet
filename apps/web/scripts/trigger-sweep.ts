@@ -13,7 +13,7 @@
 import { config as loadDotenv } from "dotenv";
 loadDotenv({ path: ".env.local", quiet: true });
 
-const DEFAULT_BASE = "https://antfleet-web.vercel.app";
+const DEFAULT_BASE = "https://www.antfleet.dev";
 
 async function main() {
   const baseUrl = process.argv[2] ?? DEFAULT_BASE;

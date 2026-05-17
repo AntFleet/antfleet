@@ -19,6 +19,7 @@ const jbMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://www.antfleet.dev"),
   title: "AntFleet — trust substrate for autonomous code",
   description:
     "AI code review with receipts. Agreement between independent frontier models is the trust gate; every closure is SHA-pinned to GitHub's event log.",
