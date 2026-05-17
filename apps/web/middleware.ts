@@ -21,13 +21,17 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   // for a future product surface, this list shrinks accordingly.
   "Permissions-Policy":
     "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()",
-  // Tight CSP. self for everything; data: for the inline favicon SVG. No
-  // unsafe-inline, no unsafe-eval — Next.js 16 + Tailwind v4 + next/font
-  // emit static styles that don't need either.
+  // Tight CSP. self for everything; data: for the inline favicon SVG.
+  //   script-src: 'self' only — no unsafe-inline, no unsafe-eval.
+  //   style-src:  'self' + 'unsafe-inline'. Required because Tailwind v4 +
+  //               next/font emit inline <style> blocks during hydration and
+  //               removing it would break every Tailwind utility class in
+  //               production. The looser style-src is a known trade-off,
+  //               not an oversight.
   "Content-Security-Policy": [
     "default-src 'self'",
     "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'", // Tailwind utility classes are inline-equivalent in dev
+    "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self' data:",
     "connect-src 'self'",
