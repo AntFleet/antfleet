@@ -2,9 +2,6 @@ import { getGitHubAppInstallUrl } from "@/lib/install-url";
 
 // ─── constants ──────────────────────────────────────────────────────────────
 
-const VERDICTS_URL =
-  "https://github.com/Augustas11/antfleet/blob/main/examples/antseed-corpus-results/WEEK1-VERDICT-V3.md";
-
 const RECEIPTS_URL = "/receipts";
 
 // ─── shared layout primitives ───────────────────────────────────────────────
@@ -351,111 +348,6 @@ function CodeBlock({
   );
 }
 
-// ─── trust / stats ────────────────────────────────────────────────────────────
-
-function TrustSection() {
-  return (
-    <section>
-      <ContentWrap>
-        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-8">
-          Honest numbers
-        </h2>
-
-        {/* primary stat */}
-        <div className="rounded-md border border-[var(--color-line-strong)] p-5 mb-6 max-w-xl">
-          <p className="font-mono text-[11px] text-[var(--color-ink-subtle)] uppercase tracking-widest mb-3">
-            Agreement-mode verdict · 6 real-repo runs
-          </p>
-          <p className="text-2xl font-semibold font-mono text-[var(--color-ink)] mb-1">
-            0
-          </p>
-          <p className="text-sm text-[var(--color-ink-muted)]">
-            hallucinated findings in unanimous mode across all 6 runs
-          </p>
-        </div>
-
-        {/* precision / recall table */}
-        <div className="overflow-x-auto mb-6">
-          <table className="w-full text-xs font-mono border-collapse">
-            <thead>
-              <tr className="border-b border-[var(--color-line)]">
-                <th className="text-left py-2 pr-6 text-[var(--color-ink-subtle)] font-normal">
-                  Provider
-                </th>
-                <th className="text-right py-2 pr-6 text-[var(--color-ink-subtle)] font-normal">
-                  Precision
-                </th>
-                <th className="text-right py-2 text-[var(--color-ink-subtle)] font-normal">
-                  Recall
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-b border-[var(--color-line)]">
-                <td className="py-2 pr-6 text-[var(--color-ink-muted)]">
-                  Anthropic Opus 4.7
-                </td>
-                <td className="py-2 pr-6 text-right text-[var(--color-ink)]">
-                  ~55%
-                </td>
-                <td className="py-2 text-right text-[var(--color-ink)]">
-                  100%
-                </td>
-              </tr>
-              <tr className="border-b border-[var(--color-line)]">
-                <td className="py-2 pr-6 text-[var(--color-ink-muted)]">
-                  OpenAI GPT-5
-                </td>
-                <td className="py-2 pr-6 text-right text-[var(--color-ink)]">
-                  ~80%
-                </td>
-                <td className="py-2 text-right text-[var(--color-ink)]">
-                  96%
-                </td>
-              </tr>
-              <tr>
-                <td className="py-2 pr-6 text-[var(--color-ink-muted)]">
-                  Unanimous (both)
-                </td>
-                <td className="py-2 pr-6 text-right text-[var(--color-ink)] font-semibold">
-                  ~100%
-                </td>
-                <td className="py-2 text-right text-[var(--color-ink-subtle)]">
-                  7–13%
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        {/* recall red — transparent disclosure */}
-        <div className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg-elevated)] p-4 mb-5 max-w-xl">
-          <p className="font-mono text-[11px] text-[var(--color-ink-subtle)] uppercase tracking-widest mb-2">
-            Recall verdict: RED
-          </p>
-          <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">
-            Unanimous mode does not catch most bugs in a curated list — recall
-            is 7–13% across Phase 0 verdicts (V2 + V3). We are transparent about
-            this. The product promise is not "catch everything" — it is
-            "everything we post is real." If you need coverage, AntFleet is not
-            the right tool.
-          </p>
-        </div>
-
-        <p className="text-sm text-[var(--color-ink-muted)]">
-          Full methodology and raw data:{" "}
-          <a
-            href={VERDICTS_URL}
-            className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity font-mono text-xs"
-          >
-            WEEK1-VERDICT-V3.md
-          </a>
-        </p>
-      </ContentWrap>
-    </section>
-  );
-}
-
 // ─── bottom CTA ───────────────────────────────────────────────────────────────
 
 function BottomCta({ installUrl }: { installUrl: string }) {
@@ -504,8 +396,6 @@ export default function Home() {
       <FeatureGrid />
       <SectionDivider />
       <HowItWorks installUrl={installUrl} />
-      <SectionDivider />
-      <TrustSection />
       <SectionDivider />
       <BottomCta installUrl={installUrl} />
     </>
