@@ -29,3 +29,7 @@ export const logInfo = (event: string, fields?: LogFields): void => log("info", 
 export const logWarn = (event: string, fields?: LogFields): void => log("warn", event, fields);
 export const logError = (event: string, fields?: LogFields): void => log("error", event, fields);
 export const logDebug = (event: string, fields?: LogFields): void => log("debug", event, fields);
+
+export function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

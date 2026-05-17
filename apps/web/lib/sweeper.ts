@@ -1,5 +1,6 @@
 import { Octokit } from "@octokit/rest";
 import { getInstallationToken } from "./github-app";
+import { messageOf } from "./log";
 
 // Mission 3 slice 2 — closure detection. The heuristic is intentionally cheap:
 // a finding is "closed" when its evidence file changed between
@@ -102,7 +103,7 @@ export async function detectClosuresWith(
     });
     currentMainSha = ref.data.object.sha;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = messageOf(err);
     return args.findings.map((f) => ({
       findingId: f.findingId,
       status: "indeterminate" as const,
@@ -124,7 +125,7 @@ export async function detectClosuresWith(
     });
     changedFiles = compare.data.files?.map((f) => f.filename) ?? [];
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = messageOf(err);
     return args.findings.map((f) => ({
       findingId: f.findingId,
       status: "indeterminate" as const,
