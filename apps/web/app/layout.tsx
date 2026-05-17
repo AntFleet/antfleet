@@ -48,6 +48,9 @@ function SiteHeader() {
           <a href="/architecture" className="hover:text-[var(--color-ink)] transition-colors">
             Architecture
           </a>
+          <a href="/activity" className="hover:text-[var(--color-ink)] transition-colors">
+            Activity
+          </a>
           <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             Receipts
           </a>

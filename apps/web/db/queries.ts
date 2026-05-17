@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, desc, eq, lt, max } from "drizzle-orm";
+import { and, count, desc, eq, gte, lt, max } from "drizzle-orm";
 import { db } from "./index";
 import {
   findingStatus,
@@ -385,6 +385,240 @@ export async function loadPublicReceiptDetail(
     .limit(1);
 
   return rows[0] ?? null;
+}
+
+// Phase-2 P2-G — /activity page. Aggregate counters are repo-blind
+// (privacy-safe by construction — just integers across all installs),
+// recent events stream respects the public_receipt opt-in gate (only
+// rows from opted-in reviews surface).
+export type FleetActivityPage = {
+  lastSweepAt: Date | null;
+  lastReceiptAt: Date | null;
+  windows: {
+    last24h: ActivityWindow;
+    last7d: ActivityWindow;
+    allTime: ActivityWindow;
+  };
+  events: FleetActivityEvent[];
+};
+
+export type ActivityWindow = {
+  reviewsRun: number;
+  findingsAgreed: number;
+  receiptsClosed: number;
+  reactionsObserved: number;
+};
+
+export type FleetActivityEvent =
+  | {
+      kind: "review_completed";
+      ts: Date;
+      repoHash: string;
+      prNumber: number;
+    }
+  | {
+      kind: "finding_agreed";
+      ts: Date;
+      findingId: string;
+      severity: string;
+      category: string;
+      title: string;
+      repoHash: string;
+    }
+  | {
+      kind: "finding_closed";
+      ts: Date;
+      findingId: string;
+      severity: string;
+      category: string;
+      title: string;
+      closureSha: string | null;
+      repoHash: string;
+    };
+
+const EVENT_STREAM_LIMIT = 20;
+
+export async function loadFleetActivity(): Promise<FleetActivityPage> {
+  const now = new Date();
+  const ms24h = 24 * 60 * 60 * 1000;
+  const ms7d = 7 * ms24h;
+  const since24h = new Date(now.getTime() - ms24h);
+  const since7d = new Date(now.getTime() - ms7d);
+
+  const [
+    lastSweep,
+    lastReceipt,
+    win24h,
+    win7d,
+    winAll,
+    eventReviews,
+    eventAgreed,
+    eventClosed,
+  ] = await Promise.all([
+    db
+      .select({ value: max(findingStatus.lastPolledAt) })
+      .from(findingStatus),
+    db
+      .select({ value: max(findingStatus.closureDetectedAt) })
+      .from(findingStatus)
+      .where(eq(findingStatus.status, "closed")),
+    activityWindow(since24h),
+    activityWindow(since7d),
+    activityWindow(null),
+    db
+      .select({
+        ts: reviews.createdAt,
+        repoHash: reviews.repoHash,
+        prNumber: reviews.prNumber,
+      })
+      .from(reviews)
+      .innerJoin(findingStatus, eq(reviews.reviewId, findingStatus.reviewId))
+      .where(eq(reviews.publicReceipt, true))
+      .orderBy(desc(reviews.createdAt))
+      .limit(EVENT_STREAM_LIMIT),
+    db
+      .select({
+        ts: findingStatus.createdAt,
+        findingId: findingStatus.findingId,
+        severity: findingStatus.severity,
+        category: findingStatus.category,
+        title: findingStatus.title,
+        repoHash: reviews.repoHash,
+      })
+      .from(findingStatus)
+      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+      .where(eq(reviews.publicReceipt, true))
+      .orderBy(desc(findingStatus.createdAt))
+      .limit(EVENT_STREAM_LIMIT),
+    db
+      .select({
+        ts: findingStatus.closureDetectedAt,
+        findingId: findingStatus.findingId,
+        severity: findingStatus.severity,
+        category: findingStatus.category,
+        title: findingStatus.title,
+        closureSha: findingStatus.closureSha,
+        repoHash: reviews.repoHash,
+      })
+      .from(findingStatus)
+      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+      .where(
+        and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true)),
+      )
+      .orderBy(desc(findingStatus.closureDetectedAt))
+      .limit(EVENT_STREAM_LIMIT),
+  ]);
+
+  // Merge the three sources into one chronologically-sorted event stream
+  // (dedup not needed — different rows, different ids).
+  const events: FleetActivityEvent[] = [];
+  // Deduplicate reviews by (repoHash, prNumber) keeping the latest ts —
+  // multiple finding_status rows per review otherwise produce duplicate
+  // review_completed events.
+  const seenReviews = new Set<string>();
+  for (const r of eventReviews) {
+    const key = `${r.repoHash}#${r.prNumber}`;
+    if (seenReviews.has(key)) continue;
+    seenReviews.add(key);
+    events.push({
+      kind: "review_completed",
+      ts: r.ts,
+      repoHash: r.repoHash,
+      prNumber: r.prNumber,
+    });
+  }
+  for (const f of eventAgreed) {
+    events.push({
+      kind: "finding_agreed",
+      ts: f.ts,
+      findingId: f.findingId,
+      severity: f.severity,
+      category: f.category,
+      title: f.title,
+      repoHash: f.repoHash,
+    });
+  }
+  for (const f of eventClosed) {
+    if (f.ts === null) continue;
+    events.push({
+      kind: "finding_closed",
+      ts: f.ts,
+      findingId: f.findingId,
+      severity: f.severity,
+      category: f.category,
+      title: f.title,
+      closureSha: f.closureSha,
+      repoHash: f.repoHash,
+    });
+  }
+  events.sort((a, b) => b.ts.getTime() - a.ts.getTime());
+
+  const lastSweepRaw = lastSweep[0]?.value ?? null;
+  const lastReceiptRaw = lastReceipt[0]?.value ?? null;
+
+  return {
+    lastSweepAt: coerceDate(lastSweepRaw),
+    lastReceiptAt: coerceDate(lastReceiptRaw),
+    windows: {
+      last24h: win24h,
+      last7d: win7d,
+      allTime: winAll,
+    },
+    events: events.slice(0, EVENT_STREAM_LIMIT),
+  };
+}
+
+async function activityWindow(sinceDate: Date | null): Promise<ActivityWindow> {
+  const reviewsWhere = sinceDate === null ? undefined : gte(reviews.createdAt, sinceDate);
+  const findingsCreatedWhere =
+    sinceDate === null ? undefined : gte(findingStatus.createdAt, sinceDate);
+  const findingsClosedWhere =
+    sinceDate === null
+      ? eq(findingStatus.status, "closed")
+      : and(eq(findingStatus.status, "closed"), gte(findingStatus.closureDetectedAt, sinceDate));
+  const reactionsWhere =
+    sinceDate === null ? undefined : gte(maintainerReactions.polledAt, sinceDate);
+
+  const reviewsCountQuery =
+    reviewsWhere === undefined
+      ? db.select({ value: count() }).from(reviews)
+      : db.select({ value: count() }).from(reviews).where(reviewsWhere);
+
+  const agreedCountQuery =
+    findingsCreatedWhere === undefined
+      ? db.select({ value: count() }).from(findingStatus)
+      : db.select({ value: count() }).from(findingStatus).where(findingsCreatedWhere);
+
+  const closedCountQuery = db
+    .select({ value: count() })
+    .from(findingStatus)
+    .where(findingsClosedWhere);
+
+  const reactionsCountQuery =
+    reactionsWhere === undefined
+      ? db.select({ value: count() }).from(maintainerReactions)
+      : db.select({ value: count() }).from(maintainerReactions).where(reactionsWhere);
+
+  const [r, a, c, x] = await Promise.all([
+    reviewsCountQuery,
+    agreedCountQuery,
+    closedCountQuery,
+    reactionsCountQuery,
+  ]);
+
+  return {
+    reviewsRun: r[0]?.value ?? 0,
+    findingsAgreed: a[0]?.value ?? 0,
+    receiptsClosed: c[0]?.value ?? 0,
+    reactionsObserved: x[0]?.value ?? 0,
+  };
+}
+
+function coerceDate(raw: unknown): Date | null {
+  if (raw === null || raw === undefined) return null;
+  if (raw instanceof Date) return raw;
+  if (typeof raw === "string") return new Date(raw);
+  return null;
 }
 
 export async function recordMaintainerReactions(
