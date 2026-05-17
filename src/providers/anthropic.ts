@@ -79,9 +79,18 @@ type CallOptions = {
   schema: object;
 };
 
+// Per-request timeout and retry policy. PR #7 (2026-05-17) observed an
+// Anthropic call returning at exactly 59.3s and the SDK throwing; retry
+// on PR synchronize succeeded at 61s. Origin unknown (Anthropic-side
+// timeout or upstream proxy boundary near 60s). Explicit 240s ceiling
+// keeps us under the 300s Vercel function maxDuration with headroom;
+// maxRetries bumped from the SDK default of 2 to 3 so a single 60s
+// boundary-blip doesn't fail the whole review.
+const ANTHROPIC_CLIENT_OPTS = { timeout: 240_000, maxRetries: 3 } as const;
+
 async function callAnthropic(opts: CallOptions): Promise<unknown> {
   const apiKey = requireApiKey();
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({ apiKey, ...ANTHROPIC_CLIENT_OPTS });
   const response = await client.messages.create({
     model: opts.model,
     max_tokens: MAX_TOKENS,
