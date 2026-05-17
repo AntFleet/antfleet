@@ -87,6 +87,22 @@ function SiteFooter() {
           >
             policy
           </a>
+          <a
+            href="https://github.com/AntFleet/antfleet"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-[var(--color-ink)] transition-colors"
+          >
+            github
+          </a>
+          <a
+            href="https://x.com/AntFleet_"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-[var(--color-ink)] transition-colors"
+          >
+            x
+          </a>
         </nav>
       </div>
     </footer>
