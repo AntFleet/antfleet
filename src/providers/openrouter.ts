@@ -39,7 +39,7 @@ export const openrouterProvider: Provider = {
     return reviewOutputSchema.parse(json);
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
-    // Week 1: read-only. Plan only.
+    // Plan-only: providers describe a fix; no file mutation here.
     const json = await callOpenRouter({
       prompt,
       model: model ?? DEFAULT_MODEL,

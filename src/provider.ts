@@ -15,9 +15,11 @@ import { AgreementMode } from "./providers/agreement.js";
 import { anthropicProvider } from "./providers/anthropic.js";
 import { openaiProvider } from "./providers/openai.js";
 import { stackedProvider } from "./providers/stacked.js";
-// openrouter + codex providers are deferred to v2; see ARCHITECTURE.md §Provider roster.
-// Their source remains in tree and importable (tests are skipped); they are not
-// registered in providerByName so they cannot be picked accidentally from config.
+// openrouter and codex providers live in the tree but are intentionally not
+// registered in providerByName below: they cannot be selected from config or
+// FLEET_PROVIDER. openrouter ships as an importable module (its parse tests
+// are gated behind a live API key); codex remains for the older spike path.
+// To enable either as a primary provider, add a branch in providerByName.
 
 export type Provider = {
   name: string;

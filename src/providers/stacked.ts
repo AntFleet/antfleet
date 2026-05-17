@@ -82,7 +82,8 @@ export function stackedProvider(opts: StackedOptions): Provider {
       return { findings: agreed, inspected };
     },
     async fix(root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
-      // Week 1: read-only. Return the first successful plan; real merging is Patch Bot's job.
+      // Plan-only: return the first successful child plan. Cross-provider
+      // plan merging is intentionally out of scope here.
       const settled = await Promise.allSettled(
         opts.providers.map((p) => p.fix(root, prompt, model)),
       );

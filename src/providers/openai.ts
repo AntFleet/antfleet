@@ -34,7 +34,7 @@ export const openaiProvider: Provider = {
     return reviewOutputSchema.parse(json);
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
-    // Week 1: read-only. Plan only, no patching.
+    // Plan-only: providers describe a fix; no file mutation here.
     const json = await callOpenAI({
       prompt,
       model: model ?? DEFAULT_MODEL,
