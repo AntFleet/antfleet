@@ -109,6 +109,7 @@ pnpm spike --providers anthropic,openai --mode unanimous --runs 5
 - `/architecture` — agent diagram + pipeline flowcharts
 - `/activity` — live feed of recent reviews, agreed findings,
   closure receipts, and Onboarder actions; polls every 60s
+- `/roadmap` — in-flight goals and the open decisions behind them
 - `/policy` — plain-English data policy, MIT-style; covers what's
   collected, where it goes, and the public/private boundary
 
@@ -150,7 +151,8 @@ not "no findings at all" — per-provider outputs persist to
 │   ├── db/                 drizzle schema + queries + migrations
 │   ├── lib/                review-pipeline, sweep, pr-comment,
 │   │                       onboarder, github-app, github-files, …
-│   └── scripts/            operator admin scripts (dotenv-loaded)
+│   └── scripts/            operator admin scripts (dotenv-loaded),
+│                           e.g. weekly-digest.ts for Phase 2 metrics
 │
 ├── docs/                   ONBOARDING.md, venice-integration.md
 ├── examples/               dogfood spike corpus + baseline reports
