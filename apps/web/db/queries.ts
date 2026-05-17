@@ -333,6 +333,60 @@ export async function loadPublicReceiptsPage(args: {
   };
 }
 
+// Mission Phase-2 P2-E — single-receipt detail page. Returns the full
+// receipt context for one finding: same column projection as
+// loadPublicReceiptsPage plus the JSONB that carries the per-provider
+// reasoning + the agreement decision shape. The page consumes both. Same
+// public_receipt = true gate as the list query — no public receipt = 404.
+export type PublicReceiptDetailRow = PublicReceiptRow & {
+  reviewId: string;
+  findingIndex: number;
+  prCommentUrl: string | null;
+  reviewCreatedAt: Date;
+  timingMs: number;
+  costEstimatedUsd: string;
+  providerModelIds: unknown;
+  providerResponses: unknown;
+  agreementDecision: unknown;
+};
+
+export async function loadPublicReceiptDetail(
+  findingId: string,
+): Promise<PublicReceiptDetailRow | null> {
+  const rows = await db
+    .select({
+      findingId: findingStatus.findingId,
+      findingIndex: findingStatus.findingIndex,
+      severity: findingStatus.severity,
+      category: findingStatus.category,
+      title: findingStatus.title,
+      closureSha: findingStatus.closureSha,
+      closureCommentUrl: findingStatus.closureCommentUrl,
+      closedAt: findingStatus.closureDetectedAt,
+      reviewId: reviews.reviewId,
+      repoHash: reviews.repoHash,
+      prNumber: reviews.prNumber,
+      prCommentUrl: reviews.prCommentUrl,
+      reviewCreatedAt: reviews.createdAt,
+      timingMs: reviews.timingMs,
+      costEstimatedUsd: reviews.costEstimatedUsd,
+      providerModelIds: reviews.providerModelIds,
+      providerResponses: reviews.providerResponses,
+      agreementDecision: reviews.agreementDecision,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(
+      and(
+        eq(findingStatus.findingId, findingId),
+        eq(reviews.publicReceipt, true),
+      ),
+    )
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
 export async function recordMaintainerReactions(
   rows: NewMaintainerReaction[],
 ): Promise<number> {

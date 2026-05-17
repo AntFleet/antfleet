@@ -201,7 +201,10 @@ function Pagination({
 
 function ReceiptRow({ display }: { display: DisplayReceipt }) {
   return (
-    <div className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6">
+    <a
+      href={`/receipts/${encodeURIComponent(display.findingId)}`}
+      className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group transition-colors hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md"
+    >
       {/* meta column — fixed-width on desktop, stacked on mobile */}
       <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
         <Badge>{display.category}</Badge>
@@ -210,7 +213,9 @@ function ReceiptRow({ display }: { display: DisplayReceipt }) {
 
       {/* body */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-[var(--color-ink)] leading-snug">{display.title}</p>
+        <p className="text-sm text-[var(--color-ink)] leading-snug group-hover:underline underline-offset-2">
+          {display.title}
+        </p>
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
           <span>{display.repoLabel}</span>
           <span className="text-[var(--color-line-strong)]">·</span>
@@ -232,18 +237,11 @@ function ReceiptRow({ display }: { display: DisplayReceipt }) {
         </div>
       </div>
 
-      {/* receipt link — right-aligned on desktop, full row on mobile */}
-      {display.receiptUrl !== null && (
-        <a
-          href={display.receiptUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="font-mono text-[11px] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 sm:shrink-0 sm:self-center"
-        >
-          view on GitHub →
-        </a>
-      )}
-    </div>
+      {/* affordance — right-aligned on desktop */}
+      <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
+        detail →
+      </span>
+    </a>
   );
 }
 

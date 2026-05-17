@@ -1,4 +1,4 @@
-import type { PublicReceiptRow } from "@/db/queries";
+import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
 
 // Pure view-model for the public /receipts page. Lives apart from the DB
 // query so the adapter (privacy labels + relative time) can be unit-tested
@@ -68,4 +68,155 @@ export function formatRelativeTime(now: Date, then: Date): string {
 
 function plural(n: number, unit: string): string {
   return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+}
+
+// Phase-2 P2-E — detail-page adapter. Maps a single-receipt query row into
+// a richer view-model that surfaces the agent attribution (model versions
+// for both reviewers, per-provider timing, the full finding body) and the
+// closure timing math. Same privacy boundary as the list adapter: only
+// repo_hash crosses, never owner/repo.
+export type DisplayReceiptDetail = DisplayReceipt & {
+  reviewId: string;
+  reviewIdShort: string;
+  reviewerLabels: string[]; // ordered ["claude-opus-4-7", "gpt-5"], for "Reviewed by …"
+  providerTimings: Array<{ name: string; ms: number | null; ok: boolean }>;
+  reviewedAtIso: string;
+  relativeReviewedAt: string;
+  closureLagText: string | null; // "closed in 4 hours" — null when closedAt is null
+  totalReviewMs: number;
+  estimatedCostUsd: string;
+  finding: {
+    severity: string;
+    category: string;
+    title: string;
+    reasoning: string | null;
+    recommendation: string | null;
+    evidence: Array<{ path: string; startLine: number | null; endLine: number | null }>;
+  };
+  originalCommentUrl: string | null;
+  prLinkUrl: string | null;
+};
+
+export function toDisplayReceiptDetail(
+  row: PublicReceiptDetailRow,
+  now: Date,
+): DisplayReceiptDetail {
+  const base = toDisplayReceipt(row, now);
+  const reviewerLabels = extractModelLabels(row.providerModelIds);
+  const providerTimings = extractProviderTimings(row.providerResponses);
+  const finding = extractFindingAtIndex(row.agreementDecision, row.findingIndex) ?? {
+    severity: row.severity,
+    category: row.category,
+    title: row.title,
+    reasoning: null,
+    recommendation: null,
+    evidence: [],
+  };
+  const closureLagText =
+    row.closedAt === null
+      ? null
+      : `closed in ${closureLag(row.reviewCreatedAt, row.closedAt)}`;
+
+  return {
+    ...base,
+    reviewId: row.reviewId,
+    reviewIdShort: row.reviewId.slice(0, 8),
+    reviewerLabels,
+    providerTimings,
+    reviewedAtIso: row.reviewCreatedAt.toISOString(),
+    relativeReviewedAt: formatRelativeTime(now, row.reviewCreatedAt),
+    closureLagText,
+    totalReviewMs: row.timingMs,
+    estimatedCostUsd: row.costEstimatedUsd,
+    finding,
+    originalCommentUrl: row.prCommentUrl,
+    // Reconstruct the PR URL from the closure-comment URL when present —
+    // both contain owner/repo. We don't surface owner/repo directly but
+    // the link itself is the third-party-witnessed receipt, so the URL is
+    // load-bearing per §18.2. Strip the `#issuecomment-<id>` fragment to
+    // get to the PR top.
+    prLinkUrl:
+      row.closureCommentUrl === null
+        ? null
+        : row.closureCommentUrl.split("#")[0] ?? null,
+  };
+}
+
+function closureLag(reviewedAt: Date, closedAt: Date): string {
+  const deltaMs = Math.max(0, closedAt.getTime() - reviewedAt.getTime());
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  const DAY = 24 * HOUR;
+  if (deltaMs < MINUTE) return "<1 minute";
+  if (deltaMs < HOUR) return plural(Math.floor(deltaMs / MINUTE), "minute").replace(" ago", "");
+  if (deltaMs < DAY) return plural(Math.floor(deltaMs / HOUR), "hour").replace(" ago", "");
+  return plural(Math.floor(deltaMs / DAY), "day").replace(" ago", "");
+}
+
+function extractModelLabels(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null) return [];
+  const out: string[] = [];
+  for (const value of Object.values(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) out.push(value);
+  }
+  return out;
+}
+
+function extractProviderTimings(
+  raw: unknown,
+): Array<{ name: string; ms: number | null; ok: boolean }> {
+  if (typeof raw !== "object" || raw === null) return [];
+  const perProvider = (raw as Record<string, unknown>)["perProvider"];
+  if (!Array.isArray(perProvider)) return [];
+  const out: Array<{ name: string; ms: number | null; ok: boolean }> = [];
+  for (const entry of perProvider) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    const name = typeof e["name"] === "string" ? e["name"] : null;
+    if (name === null) continue;
+    const ms = typeof e["ms"] === "number" ? e["ms"] : null;
+    const ok = e["ok"] === true;
+    out.push({ name, ms, ok });
+  }
+  return out;
+}
+
+function extractFindingAtIndex(
+  raw: unknown,
+  index: number,
+): {
+  severity: string;
+  category: string;
+  title: string;
+  reasoning: string | null;
+  recommendation: string | null;
+  evidence: Array<{ path: string; startLine: number | null; endLine: number | null }>;
+} | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const agreed = (raw as Record<string, unknown>)["agreed"];
+  if (!Array.isArray(agreed)) return null;
+  const f = agreed[index];
+  if (typeof f !== "object" || f === null) return null;
+  const ff = f as Record<string, unknown>;
+  const severity = typeof ff["severity"] === "string" ? ff["severity"] : null;
+  const category = typeof ff["category"] === "string" ? ff["category"] : null;
+  const title = typeof ff["title"] === "string" ? ff["title"] : null;
+  if (severity === null || category === null || title === null) return null;
+  const reasoning = typeof ff["reasoning"] === "string" ? ff["reasoning"] : null;
+  const recommendation =
+    typeof ff["recommendation"] === "string" ? ff["recommendation"] : null;
+  const evRaw = ff["evidence"];
+  const evidence: Array<{ path: string; startLine: number | null; endLine: number | null }> = [];
+  if (Array.isArray(evRaw)) {
+    for (const ev of evRaw) {
+      if (typeof ev !== "object" || ev === null) continue;
+      const e = ev as Record<string, unknown>;
+      const path = typeof e["path"] === "string" ? e["path"] : null;
+      if (path === null) continue;
+      const startLine = typeof e["startLine"] === "number" ? e["startLine"] : null;
+      const endLine = typeof e["endLine"] === "number" ? e["endLine"] : null;
+      evidence.push({ path, startLine, endLine });
+    }
+  }
+  return { severity, category, title, reasoning, recommendation, evidence };
 }
