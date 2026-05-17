@@ -28,3 +28,21 @@ html, body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* Inline-rendered HTML from CHANGELOG.md (parseChangelog → dangerouslySetInnerHTML).
+   No external prose library — only the elements we actually emit. */
+.prose-text a {
+  color: var(--color-ink);
+}
+.prose-text code {
+  background: var(--color-line);
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+}
+.prose-text strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.prose-text p + p {
+  margin-top: 0.75rem;
+}
