@@ -19,6 +19,11 @@ export const metadata: Metadata = {
   title: "AntFleet · Receipts",
   description:
     "Public, SHA-pinned closure receipts. Every entry is a comment on the PR that resolved it — verifiable on GitHub.",
+  alternates: {
+    types: {
+      "application/rss+xml": "/receipts.rss",
+    },
+  },
 };
 
 // Next.js App Router server-component searchParams contract: a Promise of
