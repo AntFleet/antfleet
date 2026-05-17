@@ -17,9 +17,13 @@ import {
 // node:crypto is Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
 
-// Hobby plan max; Pro can go up to 300. The review pipeline takes 60–90s in
-// V2/V3 data; this matches the upper bound we observed.
-export const maxDuration = 60;
+// Pro plan ceiling — 300s. The 60s self-imposed limit from earlier matched
+// the V2/V3 observed upper bound for tight single-file reviews, but the
+// first production smoke test (Augustas11/antfleet PR #1, 5 files) blew
+// past it and got killed mid-review. Bumped to the plan max so multi-file
+// PRs reliably complete; revisit if we move off Pro or restructure the
+// review into a separately-dispatched worker (e.g. QStash / Inngest).
+export const maxDuration = 300;
 
 const DISPATCH_ACTIONS = new Set(["opened", "reopened", "synchronize"]);
 
