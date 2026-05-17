@@ -1,5 +1,4 @@
-import { Octokit } from "@octokit/rest";
-import { getInstallationToken } from "./github-app";
+import { getInstallationOctokit } from "./github-app";
 import type { Finding } from "./review-types";
 
 // Order matches AGENTS.md §15 framing — direct, technical. Highest-priority
@@ -126,8 +125,7 @@ export async function postPRComment(args: {
   prNumber: number;
   body: string;
 }): Promise<{ id: number; htmlUrl: string }> {
-  const token = await getInstallationToken(args.installationId);
-  const octokit = new Octokit({ auth: token });
+  const octokit = await getInstallationOctokit(args.installationId);
   const resp = await octokit.rest.issues.createComment({
     owner: args.owner,
     repo: args.repo,

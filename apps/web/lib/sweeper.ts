@@ -1,5 +1,4 @@
-import { Octokit } from "@octokit/rest";
-import { getInstallationToken } from "./github-app";
+import { getInstallationOctokit } from "./github-app";
 import { messageOf } from "./log";
 
 // Mission 3 slice 2 — closure detection. The heuristic is intentionally cheap:
@@ -153,7 +152,6 @@ export async function detectClosures(args: {
   findings: readonly FindingForClosureCheck[];
   baseBranch?: string;
 }): Promise<ClosureDecision[]> {
-  const token = await getInstallationToken(args.installationId);
-  const octokit = new Octokit({ auth: token });
+  const octokit = await getInstallationOctokit(args.installationId);
   return detectClosuresWith(octokit, args);
 }

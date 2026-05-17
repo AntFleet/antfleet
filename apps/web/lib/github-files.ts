@@ -1,6 +1,5 @@
 import { extname } from "node:path";
-import { Octokit } from "@octokit/rest";
-import { getInstallationToken } from "./github-app";
+import { getInstallationOctokit } from "./github-app";
 
 // Mirrors the spike runner's source-file detection in scripts/spike.ts. Keep
 // in sync if that list changes — the review prompt's behavior is tied to it.
@@ -123,7 +122,6 @@ export async function getChangedFiles(args: {
   prNumber: number;
   headSha: string;
 }): Promise<ChangedFile[]> {
-  const token = await getInstallationToken(args.installationId);
-  const octokit = new Octokit({ auth: token });
+  const octokit = await getInstallationOctokit(args.installationId);
   return fetchChangedFilesWith(octokit, args);
 }
