@@ -11,6 +11,7 @@ import type {
   ReviewOutput,
 } from "./review-types";
 import type { ChangedFile } from "./github-files";
+import { messageOf } from "./log";
 
 // Per-provider outcome of one review. `error` is non-null when the API call
 // failed; `output` is non-null when it returned a parseable response. Both
@@ -72,7 +73,7 @@ export async function reviewPR(args: {
       const output = await provider.review(".", prompt, null);
       return { name, modelId, output, error: null, ms: Date.now() - start };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = messageOf(err);
       return { name, modelId, output: null, error: message, ms: Date.now() - start };
     }
   });

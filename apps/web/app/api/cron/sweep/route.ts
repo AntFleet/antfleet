@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { logError, logInfo, logWarn } from "@/lib/log";
+import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { runDailyOnboarderCheckIns } from "@/lib/onboarder";
 import { runSweep } from "@/lib/sweep";
 
@@ -65,7 +65,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         elapsedMs: Date.now() - tOnboarder,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = messageOf(err);
       logError("cron.onboarder_checkins_failed", { message });
     }
 
@@ -76,7 +76,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       elapsedMs,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = messageOf(err);
     logError("cron.sweep_failed", { message });
     return new NextResponse("sweep failed", { status: 500 });
   }

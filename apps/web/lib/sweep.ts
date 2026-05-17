@@ -18,6 +18,7 @@ import {
   type SweepReviewBatch,
 } from "../db/queries";
 import type { NewMaintainerReaction } from "../db/schema";
+import { messageOf } from "./log";
 
 // Mission 3 slice 3-5 — the orchestrator. Composes every primitive shipped
 // in slices 3-1 through 3-4 into one daily cron pass:
@@ -254,10 +255,6 @@ async function runReactionPass(
       });
     }
   }
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // Re-export so route handlers can import without reaching across files.
