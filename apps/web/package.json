@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "prebuild": "cd ../.. && pnpm build",
+    "prebuild": "cp ../../CHANGELOG.md ./CHANGELOG.md && cd ../.. && pnpm build",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc -p tsconfig.json --noEmit",

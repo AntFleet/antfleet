@@ -15,11 +15,13 @@ export const metadata: Metadata = {
 };
 
 async function loadChangelogMarkdown(): Promise<string> {
-  // process.cwd() in the Vercel build/runtime points at apps/web. The
-  // CHANGELOG lives at the repo root, two levels up.
+  // process.cwd() points at apps/web in both Vercel and local dev. The
+  // prebuild step copies ../../CHANGELOG.md → ./CHANGELOG.md so the file
+  // lives inside the function bundle. Repo-root fallback covers `pnpm dev`
+  // runs that haven't gone through prebuild.
   const candidates = [
-    path.join(process.cwd(), "..", "..", "CHANGELOG.md"),
     path.join(process.cwd(), "CHANGELOG.md"),
+    path.join(process.cwd(), "..", "..", "CHANGELOG.md"),
   ];
   for (const p of candidates) {
     try {
