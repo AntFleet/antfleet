@@ -17,7 +17,7 @@ import {
   statusCommand,
   triageCommand,
 } from "./app.js";
-import { FleetError } from "./errors.js";
+import { FleetError, messageOf } from "./errors.js";
 import { GlobalOptions } from "./config.js";
 
 const moduleRequire = createRequire(import.meta.url);
@@ -545,7 +545,7 @@ if (isMainModule()) {
       process.exitCode = error.exitCode;
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     process.stderr.write(`error: ${message}\n`);
     process.exitCode = 1;
   });

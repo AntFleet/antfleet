@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { FleetError, assertDefined } from "../errors.js";
+import { FleetError, assertDefined, messageOf } from "../errors.js";
 import type { Provider } from "../provider.js";
 import {
   fixPlanJsonSchema,
@@ -107,7 +107,7 @@ export function extractOpenAIContent(
   try {
     return JSON.parse(content);
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = messageOf(err);
     throw new FleetError(
       `openai provider returned invalid JSON: ${reason}`,
       8,

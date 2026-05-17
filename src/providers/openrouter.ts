@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { FleetError, assertDefined } from "../errors.js";
+import { FleetError, assertDefined, messageOf } from "../errors.js";
 import type { Provider } from "../provider.js";
 import {
   fixPlanJsonSchema,
@@ -104,7 +104,7 @@ async function callOpenRouter(opts: CallOptions): Promise<unknown> {
       });
       return extractOpenRouterContent(response);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = messageOf(err);
       errors.push(`${attempt.label}/${attempt.model}: ${message}`);
       // Non-JSON / parse errors get one more retry per the policy above. Auth, rate-limit, and
       // other transport errors will repeat on retry; that is intentional -- we want the error
@@ -157,7 +157,7 @@ export function extractOpenRouterContent(
   try {
     return JSON.parse(cleaned);
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = messageOf(err);
     throw new FleetError(
       `openrouter provider returned invalid JSON: ${reason}`,
       8,
