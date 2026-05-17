@@ -23,6 +23,8 @@ export default function ArchitecturePage() {
       <SectionDivider />
       <SweepLoopSection />
       <SectionDivider />
+      <OnboarderLifecycleSection />
+      <SectionDivider />
       <ReceiptAnatomySection />
     </>
   );
@@ -220,6 +222,55 @@ function SweepLoopSection() {
           The closure receipt comment is the artifact. It lives on
           GitHub&apos;s event log — third-party-witnessed — and it is what the
           public <a href="/receipts" className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity">/receipts</a> counter is counting.
+        </p>
+      </ContentWrap>
+    </section>
+  );
+}
+
+// ─── Onboarder lifecycle diagram ────────────────────────────────────────────
+
+function OnboarderLifecycleSection() {
+  return (
+    <section>
+      <ContentWrap>
+        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-8">
+          The Onboarder lifecycle
+        </h2>
+        <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-8">
+          Onboarder is the third language-model agent in the fleet. It owns
+          everything partner-facing that isn&apos;t a PR review: the welcome
+          on install, a one-time framing comment on the partner&apos;s first
+          PR, and a 7-day check-in. Each action is structured tool output
+          from <code className="font-mono text-xs">claude-opus-4-7</code> and
+          persists a row in{" "}
+          <code className="font-mono text-xs">onboarding_events</code> with
+          the prompt, output, and GitHub artifact ids — the same audit shape
+          as <code className="font-mono text-xs">reviews</code>.
+        </p>
+
+        <PipelineDiagram
+          rows={[
+            { actor: "installation.created webhook", arrow: "↓", target: "Webhook Receiver" },
+            { actor: "Webhook Receiver", arrow: "↓ dispatches", target: "Onboarder · welcome" },
+            { actor: "Onboarder · welcome", arrow: "↓ repos.get + LLM tool call", target: "issues.create on partner repo" },
+            { actor: "(first PR per install)", arrow: "↓ after Reviewer posts", target: "Onboarder · first-review summary" },
+            { actor: "Onboarder · first-review summary", arrow: "↓ LLM tool call", target: "issues.createComment on the PR" },
+            { actor: "Cron · 06:00 UTC daily", arrow: "↓ alongside Sweeper", target: "Onboarder · check-in driver" },
+            { actor: "Onboarder · check-in driver", arrow: "↓ for installs aged 7-8d", target: "Onboarder · 7-day check-in" },
+            { actor: "Onboarder · 7-day check-in", arrow: "↓ LLM tool call", target: "issues.createComment on welcome issue" },
+          ]}
+        />
+
+        <p className="mt-8 text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl">
+          The whole lifecycle is gated behind an{" "}
+          <code className="font-mono text-xs">ONBOARDER_ENABLED</code> env
+          flag — default off in every environment. Cutover is operator-
+          controlled, not webhook-controlled: a fresh install on a repo with
+          the flag off generates a server log line and nothing else.
+          Idempotency is per-<code className="font-mono text-xs">(installation_id, owner, repo, event_type)</code>
+          {" "}so a repeated webhook never produces a duplicate issue or
+          comment.
         </p>
       </ContentWrap>
     </section>
