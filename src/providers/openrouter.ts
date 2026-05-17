@@ -15,8 +15,10 @@ import {
   revalidateOutputSchema,
 } from "../types.js";
 
-const DEFAULT_MODEL = "deepseek/deepseek-chat";
-const DEFAULT_FALLBACK_MODEL = "qwen/qwen-2.5-coder-32b-instruct";
+export const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-chat";
+export const OPENROUTER_DEFAULT_FALLBACK_MODEL = "qwen/qwen-2.5-coder-32b-instruct";
+const DEFAULT_MODEL = OPENROUTER_DEFAULT_MODEL;
+const DEFAULT_FALLBACK_MODEL = OPENROUTER_DEFAULT_FALLBACK_MODEL;
 const BASE_URL = "https://openrouter.ai/api/v1";
 const HTTP_REFERER = "https://www.antfleet.dev";
 const X_TITLE = "AntFleet";

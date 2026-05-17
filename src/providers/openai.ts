@@ -15,7 +15,8 @@ import {
   revalidateOutputSchema,
 } from "../types.js";
 
-const DEFAULT_MODEL = "gpt-5";
+export const OPENAI_DEFAULT_MODEL = "gpt-5";
+const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL;
 
 export const openaiProvider: Provider = {
   name: "openai",

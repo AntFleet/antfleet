@@ -1,5 +1,5 @@
-import { anthropicProvider } from "@antfleet/cli/providers/anthropic";
-import { openaiProvider } from "@antfleet/cli/providers/openai";
+import { anthropicProvider, ANTHROPIC_DEFAULT_MODEL } from "@antfleet/cli/providers/anthropic";
+import { openaiProvider, OPENAI_DEFAULT_MODEL } from "@antfleet/cli/providers/openai";
 import { mergeFindings } from "@antfleet/cli/providers/agreement";
 import { buildSpikePrompt } from "@antfleet/cli/spike/build-prompt";
 import { estimateRunCost } from "@antfleet/cli/spike/cost";
@@ -43,11 +43,11 @@ export type ReviewBundle = {
 };
 
 // The v1 stack — locked in §6 of AGENTS.md. Same providers + model ids the
-// V2/V3 verdicts ran against. Keep modelId in sync with each provider's
-// DEFAULT_MODEL constant when those bump.
+// V2/V3 verdicts ran against. modelId tracks the provider module's exported
+// default constant so a single bump there propagates to the audit trail.
 const STACK = [
-  { name: "anthropic", provider: anthropicProvider, modelId: "claude-opus-4-7" },
-  { name: "openai", provider: openaiProvider, modelId: "gpt-5" },
+  { name: "anthropic", provider: anthropicProvider, modelId: ANTHROPIC_DEFAULT_MODEL },
+  { name: "openai", provider: openaiProvider, modelId: OPENAI_DEFAULT_MODEL },
 ] as const;
 
 export async function reviewPR(args: {

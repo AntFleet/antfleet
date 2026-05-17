@@ -15,7 +15,8 @@ import {
   revalidateOutputSchema,
 } from "../types.js";
 
-const DEFAULT_MODEL = "claude-opus-4-7";
+export const ANTHROPIC_DEFAULT_MODEL = "claude-opus-4-7";
+const DEFAULT_MODEL = ANTHROPIC_DEFAULT_MODEL;
 // History of this constant:
 //   8192 → 16384 (Phase 0 V2 verdict, 142k-char corpus, run 1 truncation)
 //   16384 → 32768 (Slice 4b.1 attempt) — REVERTED: the SDK guards any
