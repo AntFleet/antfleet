@@ -85,8 +85,8 @@ describe("parseSpikeArgs", () => {
   });
 
   it("parses --corpus as a path", () => {
-    const args = parseSpikeArgs(["--corpus", "examples/antseed-corpus"]);
-    expect(args.corpus).toBe("examples/antseed-corpus");
+    const args = parseSpikeArgs(["--corpus", "examples/dogfood"]);
+    expect(args.corpus).toBe("examples/dogfood");
   });
 
   it("rejects an empty --corpus value", () => {

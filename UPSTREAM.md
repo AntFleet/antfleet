@@ -1,6 +1,6 @@
 # Upstream
 
-Antfeed Fleet is a fork of [openclaw/clawpatch](https://github.com/openclaw/clawpatch) (MIT).
+AntFleet is a fork of [openclaw/clawpatch](https://github.com/openclaw/clawpatch) (MIT).
 
 ## Fork point
 
@@ -12,7 +12,7 @@ Antfeed Fleet is a fork of [openclaw/clawpatch](https://github.com/openclaw/claw
 
 - `upstream` remote is read-only (push is disabled at the git level).
 - We do not contribute changes back to clawpatch.
-- We may pull selective bug fixes from upstream by cherry-pick; we do not rebase the fleet onto upstream.
+- We may pull selective bug fixes from upstream by cherry-pick; we do not rebase AntFleet onto upstream.
 - If upstream ships a breaking change to the `Provider` interface mid-mission, we freeze on the original SHA above and migrate in a dedicated pass.
 
 ## What we kept untouched on the fork

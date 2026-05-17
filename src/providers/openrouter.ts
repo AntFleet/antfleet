@@ -18,8 +18,8 @@ import {
 const DEFAULT_MODEL = "deepseek/deepseek-chat";
 const DEFAULT_FALLBACK_MODEL = "qwen/qwen-2.5-coder-32b-instruct";
 const BASE_URL = "https://openrouter.ai/api/v1";
-const HTTP_REFERER = "https://antfeed.local";
-const X_TITLE = "Antfeed Fleet";
+const HTTP_REFERER = "https://www.antfleet.dev";
+const X_TITLE = "AntFleet";
 
 export const openrouterProvider: Provider = {
   name: "openrouter",

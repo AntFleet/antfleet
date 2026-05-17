@@ -1,5 +1,5 @@
 /**
- * Antfeed Fleet — dogfood spike runner.
+ * AntFleet — dogfood spike runner.
  *
  * Runs N independent stacked reviews against the planted-bug corpus under
  * examples/dogfood/ and writes one markdown report per run to
@@ -183,9 +183,7 @@ async function resolveProvider(
  */
 function sanitizeForReport(text: string): string {
   const redacted = text
-    .replace(/sk-[A-Za-z0-9_-]{20,}/gu, "[REDACTED]")
-    .replace(/antseed[_-]?api[_-]?key/giu, "[redacted-routing-key]")
-    .replace(/antseed/giu, "[routing-provider]");
+    .replace(/sk-[A-Za-z0-9_-]{20,}/gu, "[REDACTED]");
   const lines = redacted.split(/\r?\n/u).filter((l) => l.trim().length > 0);
   if (lines.length === 0) {
     return "";

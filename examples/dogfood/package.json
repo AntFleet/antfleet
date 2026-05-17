@@ -2,6 +2,6 @@
   "name": "dogfood-corpus",
   "version": "0.0.0",
   "private": true,
-  "description": "Synthetic TypeScript corpus with planted bugs for Antfeed Fleet stacked-review baseline.",
+  "description": "Synthetic TypeScript corpus with planted bugs for AntFleet stacked-review baseline.",
   "type": "module"
 }

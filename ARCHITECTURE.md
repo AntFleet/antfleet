@@ -1,6 +1,6 @@
 # Architecture
 
-Antfeed Fleet is a fork of [clawpatch](https://github.com/openclaw/clawpatch) (MIT). The inherited engine maps a repository into semantic feature slices, reviews each slice against a strict finding schema, and (in clawpatch) lands fixes through a patch loop. Fleet keeps all of that and adds one thing on top: a **stacked provider** that runs N independent models and emits only the findings they agree on.
+AntFleet is a fork of [clawpatch](https://github.com/openclaw/clawpatch) (MIT). The inherited engine maps a repository into semantic feature slices, reviews each slice against a strict finding schema, and (in clawpatch) lands fixes through a patch loop. AntFleet keeps all of that and adds one thing on top: a **stacked provider** that runs N independent models and emits only the findings they agree on.
 
 This document maps the inherited surface, then says what changes in week 1 and what does not.
 
@@ -143,8 +143,8 @@ Neither is registered in `providerByName`. Re-enabling either is a single-line f
 
 **Marketplace-as-router** (different model per task type) vs **marketplace-as-voter** (current design where every voter sees every task). Both designs benefit from the agreement primitive; they differ on what "agreement" measures. Today's voter model measures "did multiple frontier models independently flag this?". A router model would measure "did the right model flag this?" — which is a fundamentally different claim that the SHA-pinned-receipt narrative has to evolve to support. Decision deferred until v1 has shipped against real PRs.
 
-## AntSeed posture
+## Product surface boundary
 
-Antfeed maintains a network of model providers; one of those sources is AntSeed. **AntSeed never appears in the Fleet product surface.** No imports, no env vars, no flags, no copy. The `Provider` interface is provider-agnostic; the marketplace is an internal concern that lives behind the configuration layer. When the marketplace ships behind Fleet, it will choose between concrete providers (`anthropic`, `openai`, and whatever else qualifies) without exposing the routing source to the user, the CLI, or the README.
+The `Provider` interface is provider-agnostic. Concrete provider routing — which models AntFleet calls under what conditions — lives below this interface and is an implementation concern, never product copy. The user, the CLI, and the README see model identifiers (`claude-opus-4-7`, `gpt-5`) and the agreement primitive. They do not see internal routing.
 
-The wedge is two-model agreement with SHA-pinned receipts. The moat is the receipt. Routing decisions live below the `Provider` interface, not in product copy.
+The wedge is two-model agreement with SHA-pinned receipts. The moat is the receipt.

@@ -1,7 +1,7 @@
 {
   "name": "antfeed-fleet",
   "version": "0.1.0",
-  "description": "Antfeed Fleet — trust substrate for autonomous code",
+  "description": "AntFleet — trust substrate for autonomous code",
   "license": "MIT",
   "bin": {
     "fleet": "dist/cli.js"

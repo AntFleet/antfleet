@@ -91,10 +91,10 @@ the agent log.
 
 ## 2026-05-15 — Phase 0 + fork
 
-- **Phase 0 verdict** — V2 + V3 runs on the AntSeed corpus settled the
-  pitch as "precision, not coverage." Per §18.9, the receipt corpus
-  guarantees what we post; recall against a curated bug list is not the
-  promise.
+- **Phase 0 verdict** — V2 + V3 spike runs on the real-repo baseline
+  corpus settled the pitch as "precision, not coverage." The receipt
+  corpus guarantees what we post; recall against a curated bug list is
+  not the promise.
 - **Fork base** — Forked from
   [openclaw/clawpatch@b03bf52](https://github.com/openclaw/clawpatch/commit/b03bf5200a7348165bca96dd1a89008ed718b25f).
   Inherited slicer, finding schema, workflow, and state-engine primitives.

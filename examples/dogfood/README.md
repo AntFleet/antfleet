@@ -1,6 +1,6 @@
 # Dogfood Corpus
 
-Tiny synthetic TypeScript repo used to measure whether Antfeed Fleet's stacked
+Tiny synthetic TypeScript repo used to measure whether AntFleet's stacked
 multi-model review separates signal from noise on a known set of bugs.
 
 Five bugs are intentionally planted across `src/`. They span:

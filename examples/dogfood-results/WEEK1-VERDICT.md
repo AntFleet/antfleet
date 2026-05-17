@@ -1,4 +1,4 @@
-# Week 1 verdict — Antfeed Fleet stacked review
+# Week 1 verdict — AntFleet stacked review
 
 **Status: RED for unanimous mode (the configured default). STOP before Week 2.**
 
