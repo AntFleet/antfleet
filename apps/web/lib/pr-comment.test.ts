@@ -56,7 +56,7 @@ describe("formatPRComment", () => {
       META,
     );
     const positions = ["CRIT", "HIGH", "MED", "LOW"].map((t) => out.indexOf(t));
-    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(positions).toEqual(positions.toSorted((a, b) => a - b));
     expect(positions.every((p) => p >= 0)).toBe(true);
   });
 

@@ -25,16 +25,19 @@ const RFC822_MONTHS = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 export function toRfc822(date: Date): string {
-  const pad2 = (n: number) => String(n).padStart(2, "0");
   const day = RFC822_DAYS[date.getUTCDay()];
-  const date_ = pad2(date.getUTCDate());
+  const dayOfMonth = pad2(date.getUTCDate());
   const month = RFC822_MONTHS[date.getUTCMonth()];
   const year = date.getUTCFullYear();
   const hh = pad2(date.getUTCHours());
   const mm = pad2(date.getUTCMinutes());
   const ss = pad2(date.getUTCSeconds());
-  return `${day}, ${date_} ${month} ${year} ${hh}:${mm}:${ss} GMT`;
+  return `${day}, ${dayOfMonth} ${month} ${year} ${hh}:${mm}:${ss} GMT`;
 }
 
 export type RssItem = {

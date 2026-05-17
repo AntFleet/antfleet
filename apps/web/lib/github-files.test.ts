@@ -60,9 +60,9 @@ describe("isWithinSizeLimit", () => {
   });
 });
 
-describe("fetchChangedFilesWith", () => {
-  const mkBase64 = (s: string): string => Buffer.from(s, "utf8").toString("base64");
+const mkBase64 = (s: string): string => Buffer.from(s, "utf8").toString("base64");
 
+describe("fetchChangedFilesWith", () => {
   const mkOctokit = (overrides: {
     files: Array<{ filename: string; status: string; sha: string }>;
     contentByPath: Record<string, { content: string; oversize?: boolean }>;

@@ -60,16 +60,6 @@ function Hero({ installUrl }: { installUrl: string }) {
 
 // ─── proof: example receipt ──────────────────────────────────────────────────
 
-const EXAMPLE_RECEIPT = `## AntFleet · finding \`83e79770-1\` closed in \`1ee2fd9\`
-
-**Security · High** — SQL injection in \`getOrder\` handler
-\`apps/api/src/orders.ts:42–56\`
-
-Originally flagged in the AntFleet review on PR #14.
-Both frontier models agreed independently. Receipt automated by the daily sweep.
-
-> Closed 2026-05-17 · commit 1ee2fd9 · sweeper v0.3`;
-
 function ProofSection() {
   return (
     <section>
@@ -239,7 +229,7 @@ function FeatureGrid() {
 
 // ─── how it works ─────────────────────────────────────────────────────────────
 
-function HowItWorks({ installUrl }: { installUrl: string }) {
+function HowItWorks() {
   return (
     <section>
       <ContentWrap>
@@ -395,7 +385,7 @@ export default function Home() {
       <SectionDivider />
       <FeatureGrid />
       <SectionDivider />
-      <HowItWorks installUrl={installUrl} />
+      <HowItWorks />
       <SectionDivider />
       <BottomCta installUrl={installUrl} />
     </>
