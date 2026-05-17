@@ -1,107 +1,216 @@
-# Antfeed Fleet
+# AntFleet
 
-**Trust substrate for autonomous code. Two independent frontier models must agree. SHA-pinned receipts.**
+Two independent frontier models review every pull request. Only the
+findings they both agree on get posted. Every closure is pinned to the
+commit SHA that resolved it. The receipts are the artifact.
 
-Antfeed Fleet runs every pull request through two independent frontier models in parallel and posts only the findings they both agree on. Disagreements are surfaced; consensus is what reaches the human reviewer. Each closed finding is pinned to the commit SHA that resolved it — the receipt — so you can audit later whether the fix actually fixed it.
-
-Fleet is the substrate underneath a family of automatons: Sweeper triages, Patch Bot lands small repairs with SHA pinning, Security and Perf specialists run on the same stacked plumbing. The wedge is two-model agreement. The moat is the receipt.
-
-This repository is the **MVP scaffold**. The stacked provider is wired up end-to-end and tested. The dogfood corpus and Week 1 baseline are in `examples/dogfood/`; the real-repo Phase 0 baseline is in `examples/antseed-corpus/`. The GitHub App, Sweeper, and Patch Bot are next.
+Public site: <https://www.antfleet.dev> · receipts:
+<https://www.antfleet.dev/receipts> · architecture:
+<https://www.antfleet.dev/architecture>
 
 ## Status
 
-- Stacked provider with `unanimous` / `majority` / `any` agreement modes — **shipping**
-- Two-provider default stack: Anthropic (`claude-opus-4-7`) + OpenAI (`gpt-5`) — **shipping**
-- Synthetic dogfood corpus with planted bugs + spike runner + ground-truth report — **shipping**
-- Real-repo Phase 0 corpus + 3-iteration baseline + GO/NO-GO verdict — **shipping**
-- GitHub App + PR-comment posting — _Phase 1_
-- SHA-pinned receipts for closed findings — _Phase 1_
-- Patch Bot, Sweeper, and specialist providers — _later_
+Shipping in production:
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the engine map and the provider-roster rationale.
+- GitHub App at `antfleet[bot]`. Webhook handles `pull_request`,
+  `installation.created`, `installation_repositories.added`, and
+  `issue_comment.created`.
+- **Reviewer fleet** — Claude Opus 4.7 + GPT-5, both runs on every
+  PR in parallel, agreement gate `unanimous` by default. Only the
+  intersection gets posted.
+- **Sweeper** — daily cron at 06:00 UTC. Reconciles open findings
+  against `main` HEAD; when the evidence file changed, posts a
+  closure receipt comment pinned to the commit SHA.
+- **Onboarder** — third agent (model-authored). Posts a welcome
+  issue on install, a one-time framing comment on the first PR per
+  install, and a 7-day check-in. Gated by `ONBOARDER_ENABLED`.
+- **CLI workflow** — `fleet init` / `map` / `review` / `report` for
+  local single-repo runs. The CLI predates the GitHub App and is
+  still maintained for repos that prefer scripted invocation.
 
-## Quickstart
+In the queue:
 
-### Prerequisites
+- **Patch Bot** — proposes fixes and pins a closure SHA on apply.
+  Phase 3+ work; design partners pull this first.
+- **Email intake** for the public-receipts opt-in flow at
+  `agent@antfleet.dev`.
 
-- Node.js 22+
-- pnpm 11+
-- Both of:
-  - `ANTHROPIC_API_KEY` (defaults to model `claude-opus-4-7`)
-  - `OPENAI_API_KEY` (defaults to model `gpt-5`)
+Phase status, design-partner cohort plan, and the strategy
+substrate live operator-side; the public artifact is everything
+on antfleet.dev.
 
-### Install
+## Install (GitHub App)
+
+```text
+https://github.com/apps/antfleet/installations/new
+```
+
+Recommended scope on first install: "Only select repositories".
+Reviewer runs on every PR opened or synchronized; a busy org with
+"All repositories" produces volume you didn't ask for. You can
+broaden later from the same screen.
+
+App permissions:
+
+- `pull_requests: read` — read diff and changed files
+- `issues: write` — post review comments, closure receipts, and
+  (when Onboarder is enabled) the welcome issue
+- `contents: read` — fetch file content at the PR head SHA
+- `metadata: read` — repo metadata for the Onboarder welcome
+
+Partner onboarding doc: [`docs/ONBOARDING.md`](./docs/ONBOARDING.md).
+
+## Install (CLI)
+
+```bash
+pnpm add -g antfeed-fleet
+```
+
+From source:
 
 ```bash
 pnpm install
-pnpm test
+pnpm build
+pnpm link --global
 ```
 
-### Single-provider review
+The CLI is `fleet`. Both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+must be exported. Defaults: `claude-opus-4-7` and `gpt-5`.
 
-```bash
-export ANTHROPIC_API_KEY=...
-cd path/to/your/repo
-fleet init
-fleet map
-FLEET_PROVIDER=anthropic fleet review
-fleet report
-```
-
-### Stacked review (the wedge)
+## CLI workflow
 
 ```bash
 export ANTHROPIC_API_KEY=...
 export OPENAI_API_KEY=...
 
-FLEET_PROVIDER=stacked \
-FLEET_STACKED_PROVIDERS=anthropic,openai \
-FLEET_STACKED_AGREEMENT=unanimous \
+cd path/to/your/repo
+fleet init
+fleet map
 fleet review
+fleet report
 ```
 
-Stacked is the default: `fleet init` writes `provider: { name: "stacked" }` and the stacked builder defaults to `anthropic,openai` unanimous. Only findings where both providers agree on the file, line range, category, and (roughly) severity will land. Disagreements are recorded in `inspected.notes` so you can see what was filtered out and why.
+`fleet review` defaults to the stacked provider in unanimous mode.
+Individual providers via `FLEET_PROVIDER=anthropic|openai`. Agreement
+mode override via `FLEET_STACKED_AGREEMENT=unanimous|majority|any`.
 
-### Dogfood baseline (synthetic)
-
-To reproduce the Week 1 spike against the planted-bug corpus:
+Spike runner for baseline experiments:
 
 ```bash
 pnpm spike --providers anthropic,openai --mode unanimous --runs 5
 ```
 
-The committed baseline lives at `examples/dogfood-results/spike-baseline.md` and the per-run reports at `examples/dogfood-results/run-{1..5}-*.md`. The Week 1 verdict is in [`examples/dogfood-results/WEEK1-VERDICT.md`](./examples/dogfood-results/WEEK1-VERDICT.md).
+## Public surfaces
 
-### Phase 0 baseline (real repo)
+- `/receipts` — every closed finding, anonymized by repo hash,
+  linking to the original PR comment on GitHub
+- `/receipts.rss` — RSS 2.0 feed of the same
+- `/changelog` — per-release notes (operator-facing)
+- `/architecture` — agent diagram + pipeline flowcharts
+- `/activity` — live feed of recent reviews, agreed findings,
+  closure receipts, and Onboarder actions; polls every 60s
+- `/policy` — plain-English data policy, MIT-style; covers what's
+  collected, where it goes, and the public/private boundary
 
-To reproduce the Phase 0 spike against the real-repo corpus:
+All routes are static-rendered or server-component-driven. No
+client-side analytics, no third-party fonts at runtime.
 
-```bash
-pnpm spike --providers anthropic,openai --mode unanimous --runs 3 \
-  --corpus examples/antseed-corpus
+## The fleet
+
+| Agent | Kind | Cadence | Source of truth |
+|---|---|---|---|
+| Reviewer · Claude Opus 4.7 | language model | per PR | `src/providers/anthropic.ts` |
+| Reviewer · GPT-5 | language model | per PR | `src/providers/openai.ts` |
+| Agreement Gate | deterministic | per review | `src/providers/agreement.ts` |
+| Sweeper | deterministic | daily cron | `apps/web/lib/sweep.ts` |
+| Reaction Poller | deterministic | with sweep | `apps/web/lib/reactions.ts` |
+| Onboarder | language model | webhook + cron | `apps/web/lib/onboarder.ts` |
+| Webhook Receiver | deterministic | per event | `apps/web/app/api/github/webhook/route.ts` |
+
+The agreement gate is the trust primitive. A finding only crosses
+into the PR comment if both reviewers flagged the same code with
+overlapping evidence. Silence on a PR means "no unanimous finding,"
+not "no findings at all" — per-provider outputs persist to
+`reviews.provider_responses` for analysis but never post.
+
+## Repository layout
+
+```text
+.
+├── src/                    CLI + stacked provider (npm: antfeed-fleet)
+│   ├── provider.ts         four-method provider interface
+│   ├── types.ts            zod-validated finding schema
+│   ├── providers/          anthropic, openai, agreement, stacked
+│   ├── mapper.ts           semantic feature slicer (clawpatch-derived)
+│   ├── app.ts / cli.ts     workflow + commands
+│   └── state.ts            .fleet/ state engine
+│
+├── apps/web/               Next.js App Router + Neon Postgres
+│   ├── app/                routes (api + public surfaces)
+│   ├── db/                 drizzle schema + queries + migrations
+│   ├── lib/                review-pipeline, sweep, pr-comment,
+│   │                       onboarder, github-app, github-files, …
+│   └── scripts/            operator admin scripts (dotenv-loaded)
+│
+├── docs/                   ONBOARDING.md, venice-integration.md
+├── examples/               dogfood spike corpus + baseline reports
+└── CHANGELOG.md            per-release ship log
 ```
 
-The Phase 0 verdict lives at [`examples/antseed-corpus-results/WEEK1-VERDICT-V2.md`](./examples/antseed-corpus-results/WEEK1-VERDICT-V2.md). It is the GO/NO-GO for Phase 1.
+## State and persistence
 
-## Configuration
+CLI state is project-local in `.fleet/`. The GitHub App writes to
+Postgres (Neon, EU region). Tables:
 
-State lives in `.fleet/` (gitignored). Configuration via `fleet.config.json` at the repo root or `FLEET_*` environment variables. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the engine surfaces.
+- `reviews` — one row per webhook delivery, with per-provider
+  responses, agreement decision, timing, and cost estimate
+- `finding_status` — one row per agreed finding; status is
+  `open | closed | superseded`
+- `maintainer_reactions` — reaction polling output at 24h/7d/30d
+- `onboarding_events` — Onboarder audit trail (welcome, summary,
+  check-in, partner_reply)
+
+Migration schema head: `0005_dark_doctor_octopus`. Schema definitions
+in `apps/web/db/schema.ts`; query layer in `apps/web/db/queries.ts`.
+
+## Safety
+
+- Reviewers never edit files. Agreement is the gate; silence is the
+  correct output when there is no overlap.
+- Sweeper only writes the closure receipt comment; it never edits
+  source.
+- Onboarder is gated by `ONBOARDER_ENABLED`. Default off. Idempotent
+  per `(installation_id, owner, repo, event_type)` so a re-fired
+  webhook can't produce duplicate issues or comments.
+- Public receipts are opt-in per repo. Default off; flag flip via
+  request to `agent@antfleet.dev`.
+- Anonymization at write time — the public `/receipts` page renders
+  `repo <8-char-prefix>`, not the raw owner/repo string.
+- Provider outputs are parsed through strict Zod schemas; degraded
+  reviews (any provider fails) are recorded but not posted.
+
+See [`apps/web/app/policy/page.tsx`](./apps/web/app/policy/page.tsx)
+for the customer-facing policy.
 
 ## Architecture
 
-- **Provider seam** — `src/provider.ts`. Four-method interface (`check`, `review`, `fix`, `revalidate`) that every model speaks.
-- **Stacked provider** — `src/providers/stacked.ts`. Wraps N children, fans out with `Promise.allSettled`, and merges through the agreement primitive.
-- **Agreement** — `src/providers/agreement.ts`. Pure functions: `findingsAgree` (same category, overlapping evidence, severity within 1 bucket) and `mergeFindings` (union-find clustering, threshold by agreement mode).
-- **Finding schema** — `src/types.ts`. Zod-validated, strict, the contract every provider speaks.
-- **Slicer** — `src/mapper.ts` + `src/mappers/`. Inherited unchanged; maps the repo into semantic feature slices.
-- **Workflow + state** — `src/app.ts`, `src/cli.ts`, `src/state.ts`. Inherited unchanged; orchestrates review, fix, revalidate, report, and pessimistic feature locking.
+Full diagram and design notes in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+Live pipeline flowcharts at
+<https://www.antfleet.dev/architecture>.
 
-Full map and provider-roster rationale in [`ARCHITECTURE.md`](./ARCHITECTURE.md). The fork point is in [`UPSTREAM.md`](./UPSTREAM.md).
+Fork point in [`UPSTREAM.md`](./UPSTREAM.md).
 
 ## License
 
-MIT — see [LICENSE](./LICENSE). Attribution to the upstream project is preserved in both the license and the changelog.
+MIT — see [`LICENSE`](./LICENSE).
 
 ## Acknowledgements
 
-Antfeed Fleet is built on top of [openclaw/clawpatch](https://github.com/openclaw/clawpatch) (MIT). Clawpatch contributed the slicer, finding schema, workflow, state engine, CLI, and the entire single-provider review loop. Fleet's contribution is the stacking layer, the agreement primitive, the multi-provider transports, and the measured-against-ground-truth spike methodology that make two-model agreement a first-class operation.
+AntFleet is built on top of
+[openclaw/clawpatch](https://github.com/openclaw/clawpatch) (MIT).
+Clawpatch contributed the slicer, finding schema, workflow, state
+engine, CLI, and the entire single-provider review loop. AntFleet's
+contribution is the stacked provider, the agreement primitive, the
+multi-provider transports, the spike methodology, and everything
+under `apps/web/` — the GitHub App, the Sweeper, the receipts
+surface, and the Onboarder agent.
