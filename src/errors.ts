@@ -16,3 +16,7 @@ export function assertDefined<T>(value: T | null | undefined, message: string): 
   }
   return value;
 }
+
+export function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

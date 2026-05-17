@@ -3,7 +3,7 @@ import { join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
 import { loadConfig, resolveStateDir, GlobalOptions } from "./config.js";
 import { detectProject } from "./detect.js";
-import { FleetError, assertDefined } from "./errors.js";
+import { FleetError, assertDefined, messageOf } from "./errors.js";
 import { runCommand } from "./exec.js";
 import { nowIso, writeJson } from "./fs.js";
 import { discoverGit, findProjectRoot } from "./git.js";
@@ -184,7 +184,7 @@ export async function reviewCommand(
           findingIds.push(...reviewed.findingIds);
         } catch (error: unknown) {
           errors.push({
-            message: error instanceof Error ? error.message : String(error),
+            message: messageOf(error),
             code: error instanceof FleetError ? error.code : null,
             error,
           });
@@ -430,7 +430,7 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
     });
     return { findingIds };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     if (locked !== null) {
       await writeFeature(loaded.paths, {
         ...locked,
@@ -511,7 +511,7 @@ export async function revalidateCommand(
       findingIds: results.map((result) => result.finding),
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     await writeRun(loaded.paths, {
       ...run,
       status: "failed",
@@ -601,7 +601,7 @@ export async function fixCommand(
   try {
     plan = await provider.fix(loaded.root, prompt, config.provider.model);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     await writePatchAttempt(loaded.paths, {
       ...initialPatch,
       status: "failed",
