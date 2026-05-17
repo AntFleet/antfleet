@@ -1,52 +1,118 @@
 # Session handoff — pick up here
 
-This file is the resume sheet for the next session. It's transient — delete it once Mission 4 is fully done and start a clean handoff for whatever follows.
+This file is the resume sheet for the next session. It's transient — delete it once the next phase milestone closes and start a clean handoff for whatever follows.
 
-**Last session ended:** 2026-05-17, after Mission 3 closed.
-**Last commit:** `75ff270` (`feat(web): Mission 3 slice 3-6 — vercel.json cron schedule + close Mission 3`)
-**Working tree:** clean (modulo this file committing alongside the slice).
+**Last session ended:** 2026-05-17, after Mission 4 + first-receipt smoke test.
+**Last commit:** `d91bbf8` (`chore(web): scripts/trigger-sweep admin tool for on-demand cron firing`)
+**Working tree:** clean.
 
 ---
 
-## What's done
+## Phase 1 — complete
 
-`AGENTS.md §4` has the full table — Missions 1 and 3 are complete. The end-to-end pipeline (webhook → 2-of-2 unanimous review → PR comment → finding lifecycle → daily sweep → closure receipts + reaction polling) is wired in code AND locally smoke-tested. The only ops gap remaining is the production deploy itself.
+All four MVP missions per AGENTS.md §5 Phase 1 are shipped and deployed:
 
-## Ops state (all local-smoke prerequisites cleared 2026-05-17)
+| Mission | Slices | Final commit |
+|---|---|---|
+| 1 — GitHub App skeleton + review pipeline + PR comments | 1, 2, 3, 4a–4d | `3ab052a` |
+| 3 — Sweeper + receipts + reaction polling | 3-1 … 3-6 | `75ff270` |
+| 4 — Landing page + receipts page + policy + polish | 4-1 … 4-5 | `21c796d` |
+| (Mission 2 was absorbed into M1 4b — pipeline + comment posting landed together.) | | |
 
-1. ~~Apply pending Neon migrations~~ — **done via `db:push`.** Neon schema current as of `0003_high_maggott`. Future schema changes: use `pnpm -F @antfleet/web db:push`, NOT `db:migrate`. The repo's `__drizzle_migrations` tracking table on Neon is empty (original schema seeded via push), so `db:migrate` re-applies 0000 from scratch and fails with "relation already exists." Push diffs schema.ts against actual DB and applies only what's missing — non-destructive changes (column adds, constraint adds) auto-apply without prompts.
+## First-receipt smoke test — done (2026-05-17)
 
-2. ~~`CRON_SECRET` in Vercel env~~ — **done in Production + Development**, mirrored to `apps/web/.env.local`. **Preview env still skipped** — Vercel CLI 53.4.0 has a bug where `vercel env add CRON_SECRET preview --value <v> --yes` returns its own command as a "next step" suggestion and exits 0 without saving. Workaround: add via Vercel dashboard if/when smoke-testing preview URLs becomes useful. Cron only fires on production deployments, so this doesn't block the schedule.
+Production end-to-end lifecycle validated on `Augustas11/antfleet` itself:
 
-3. ~~Backfill M3-1 smoke row's repo coords~~ — **done.** `review_id=83e79770-1869-4331-8690-b534a531d327` now has `installation_id=132854945`, `owner='Augustas11'`, `repo='krisskross_shops'`. The 4 open finding_status rows on that review are sweepable.
+1. **PR #3** opened with `/api/health` improvement (real new feature — replaces scaffold stub)
+2. Webhook fired, HMAC verified, App auth succeeded, files fetched, both providers reviewed in 36s
+3. Agreement gate produced **1 unanimous finding** (Security/High — info disclosure in the health response body)
+4. AntFleet bot posted the review comment on PR #3
+5. Fix commit `84a54c1` addressed the finding (response body limited to `{ ok }` only; diagnostics moved to server logs)
+6. Squash merged to main as `4640404a`
+7. Manual sweep triggered via `scripts/trigger-sweep.ts` → `swept:5, closed:1`
+8. Closure receipt comment posted on PR #3
+9. **`/receipts` counter incremented 0 → 1** — first public, SHA-pinned receipt
 
-4. ~~Local smoke~~ — **done.** `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/sweep` returned `{swept:4, closed:0, reactionsRecorded:0, reviewsSkipped:0, errors:[], elapsedMs:7327}`. Auth gate: 401 on missing/wrong header. The cron pipeline works end-to-end against real Neon + real GitHub.
+PR #1 (short-id refactor) and PR #2 (maxDuration bump) are evidence in the trail:
+- PR #1 = first production smoke test. Both reviews completed cleanly but no agreed findings (clean refactor, no overlap). Closed without merging; receipts logic intact.
+- PR #2 = the discovered 60s self-imposed webhook ceiling was incompatible with multi-file PRs. Bumped to 300s (Pro plan ceiling). Squash-merged.
 
-5. ~~Vercel project Git connection~~ — **done.** `apps/web` (project `antfleet-web`) is now connected to `https://github.com/Augustas11/antfleet`. Future `git push` to `main` auto-deploys to production. Side effect: `.gitignore` at repo root now lists `.vercel` (Vercel CLI added this automatically when it briefly mis-linked at the root before being redirected to `apps/web/`). Defensive — kept.
+## What was set up this session that previous handoff didn't have
 
-6. **Production deploy + cron activation — not done.** Next `git push origin main` triggers the first Vercel production build. The cron schedule (`apps/web/vercel.json`) starts firing once a production deployment exists — first scheduled run is 06:00 UTC the day after the first prod deploy. (For an immediate first deploy without waiting on a push, `cd apps/web && vercel deploy --prod`.)
+### Vercel production env (all 5 secrets pushed)
 
-7. **Zombie Vercel project to clean up.** When Vercel CLI was first run from the repo root, it auto-created a spurious project named `antfleet` (separate from the real `antfleet-web`). It has no deployments, env vars, or domains attached and is harmless, but should be deleted from the Vercel dashboard (Projects → antfleet → Settings → Delete). The auto-deletion via `vercel project rm antfleet` was blocked by the agent's auto-mode classifier; user action needed.
+| Env var | Why | Pushed via |
+|---|---|---|
+| `GITHUB_APP_ID` | App auth | `scripts/push-prod-env.ts` |
+| `GITHUB_APP_PRIVATE_KEY` | Mint installation tokens (multi-line PEM, ~1700 chars) | `scripts/push-prod-env.ts` |
+| `GITHUB_APP_WEBHOOK_SECRET` | HMAC verify incoming webhooks | `scripts/push-prod-env.ts` |
+| `ANTHROPIC_API_KEY` | Claude Opus 4.7 review | `scripts/push-prod-env.ts` |
+| `OPENAI_API_KEY` | GPT-5 review | `scripts/push-prod-env.ts` |
 
-## What's next: Mission 4
+`scripts/push-prod-env.ts` is the documented pattern — reads selected vars from `.env.local`, pipes to `vercel env add NAME production --yes` over stdin so values never appear in command lines, history, or output. Use it for future credential rotations or adding new prod secrets.
 
-Per AGENTS.md §9 MVP scope:
+### GitHub App config
 
-- **Landing page** at `/` — Next.js single-pager. Stripe + Linear aesthetic per §15 (clean, numerical, receipts-forward, sans-serif, generous whitespace, monospace only for code/SHAs). Install button as primary CTA (GitHub App install URL).
-- **Public receipts page** at `/receipts` — live counter as hero. Pulls from `finding_status` where `status='closed'`. Each receipt: finding id, closure SHA (linked to commit), original PR (linked). This is the public, verifiable, growing artifact that AGENTS.md §18.2 names by name as the moat.
-- **Data policy** in footer + a `/policy` (or `/data-policy`) page. References the opt-in eval-corpus contribution language from §9.
+- **Webhook URL** repointed from `https://smee.io/PCgyaSg2iXGWP66P` to `https://antfleet-web.vercel.app/api/github/webhook` (done by user on github.com)
+- **Installed on** `Augustas11/antfleet` (Only-select-repositories scope)
+- **Bot user** posts as `antfleet[bot]` (shows up as login `antfleet` in gh CLI)
+- **Webhook secret** byte-matches `GITHUB_APP_WEBHOOK_SECRET` in Vercel prod env
 
-**Mission 4 has not been sliced yet.** Recommended slicing (open to redrafting):
+### Production schema
 
-| Slice | Scope |
+- `db:push` applied migration `0004_eager_psynapse` (adds `reviews.public_receipt boolean default false not null`)
+- Schema head in repo + production: `0004_eager_psynapse`
+- The drop+recreate of `maintainer_reactions_dedup` during the push was drizzle-kit's idempotent re-sync — no data effect
+
+### Opted-in for public receipts
+
+`scripts/enable-public-receipts.ts` is the documented opt-in pattern — owner-only form opts in all repos under a login/org; owner+repo form scopes to one repo. Idempotent.
+
+Current opt-in: `Augustas11` (4 review rows flipped). For future design partners, run:
+```
+pnpm exec tsx scripts/enable-public-receipts.ts <owner> [<repo>]
+```
+
+## Phase 1 → Phase 2 gate — half crossed
+
+Per AGENTS.md §5: "1 design partner repo live, public receipts counter > 0."
+
+| Criterion | Status |
 |---|---|
-| 4-1 | Page chrome: shared layout, nav, footer, base typography/spacing tokens (Tailwind config + minimal shadcn pieces). Static-only — no data dependencies. |
-| 4-2 | Landing page `/` — hero, install button (GitHub App install URL pointing at the App's public install page), explainer of the unanimous-on-2 pitch from §15. |
-| 4-3 | Public receipts page `/receipts` — server component reading `finding_status` (status='closed'), displaying receipt rows with closing-SHA links. Hero counter shows total closed count. |
-| 4-4 | `/policy` page — data policy text. Footer link from every page. |
-| 4-5 | Receipts page polish — small SHA, repo anonymization toggle (or default to repo_hash), pagination if N grows beyond a screen, "last updated" stamp. |
+| Public receipts counter > 0 | ✅ counter = 1 (Augustas11/antfleet PR #3 closure) |
+| Design partner repo live | ⏳ external design partner not onboarded yet — dogfood doesn't count |
 
-**Open design question for Mission 4-3**: anonymization. `finding_status` joined to `reviews` gives us owner/repo (slice 3-5 just added those columns), but per AGENTS.md §10 the privacy boundary says "per-customer data accessed only via explicit auth" — public `/receipts` should NOT leak owner/repo unless the customer opts in. Likely default: show only `repo_hash` (or a short prefix) and the closing SHA, with an opt-in mechanism for customers who want public attribution. Pin this down before writing 4-3.
+The remaining work is **outreach**, not code. Per AGENTS.md §8.1 (just locked this session), v1 design partners are CAC, not COGS — 5–10 partners on free tier with rate limits, no Stripe.
+
+## Phase 2 prep — useful to do before first design-partner conversation
+
+In rough priority order:
+
+1. **Custom domain.** `antfleet-web.vercel.app` reads less serious for b2b. Register `antfleet.dev` (or whatever's available) and attach via `vercel domains add`. ~$12/year. Quick win.
+
+2. **`privacy@antfleet.dev` mailbox.** The `/policy` page tells customers to email this address to enable public receipts. Currently dead-letter. Needs a real inbox (Gmail forwarding, ImprovMX, or wherever).
+
+3. **Onboarding doc.** When you say "yes, install AntFleet on your repo" to a design partner, what's the exact set of steps you hand them? Currently undocumented. Should cover: install URL, single-repo recommendation, what to expect in their first PR review, where receipts appear, how to enable public receipts, how to uninstall. One page.
+
+4. **Phase 2 metrics dashboard plan.** Per §5 Phase 2: "Weekly metrics review: per-repo recall, noise, time-to-close." Needs a basic admin surface or even just a SQL query template. Could be slice-of-slice (one query per metric) or a simple `/admin/metrics` page behind a Vercel password.
+
+5. **Onboarding pitch.** What's the exact 30-second ask when reaching out to a developer friend? Variants worth A/B-ing: "be receipt #2 on AntFleet" / "free PR review on your repo, contributes to a public audit corpus" / etc. Doesn't need to be locked but worth sketching.
+
+## Ops items still pending (carried forward)
+
+These were carried from the previous handoff and are still open:
+
+1. **Zombie `antfleet` Vercel project.** Was auto-created when Vercel CLI first ran from repo root. No deployments/env/domains, harmless. `vercel project rm antfleet` blocked by classifier; needs dashboard delete (Projects → antfleet → Settings → Delete).
+
+2. **`CRON_SECRET` in Vercel Preview env.** Vercel CLI 53.4.0 bug — `vercel env add CRON_SECRET preview --value <v> --yes` echoes its own command and exits 0 without saving. Dashboard add still works. Not blocking — cron only fires on production.
+
+3. **Krisskross_shops reaction polling error.** First sweep run returned an error:
+   ```
+   batch · reviewId 83e79770 · "reaction pass: Not Found"
+   ```
+   This is the original M1 krisskross_shops review row. Either the PR comment was deleted or the App lost access to that repo (it was uninstalled). Doesn't affect new reviews. Cleanup options:
+   - Set `status='superseded'` on its 4 finding_status rows so the sweeper stops trying to poll
+   - Or delete the rows entirely (cascades from `reviews` deletion)
 
 ## Resume sequence
 
@@ -54,29 +120,22 @@ Per AGENTS.md §9 MVP scope:
 cd /Users/augstar/projects/antfleet
 git log --oneline -25
 pnpm install
-pnpm -w build
-pnpm -F @antfleet/web test   # baseline: 90 passing
-pnpm -F @antfleet/web dev    # NOTE: future schema changes use db:push, not db:migrate (see Ops debt #1)
+pnpm -F @antfleet/web test   # baseline: 105 passing
+pnpm -F @antfleet/web dev    # local dev server (webhook will need smee tunnel)
 ```
 
 ## State you might have forgotten
 
-- **Smee client** may or may not still be running. `pgrep -f smee-client`. Restart: `pnpm dlx smee-client --url https://smee.io/PCgyaSg2iXGWP66P --target http://localhost:3000/api/github/webhook`.
-- **Vercel project**: `augstar-8472s-projects/antfleet-web`, linked. `.vercel/project.json` lives at `apps/web/.vercel/`.
-- **Neon**: `neon-fulvous-zebra`, project id `solitary-dew-96858656`. Schema head in repo at `0003_high_maggott`; production Neon may still be on `0001_friendly_beast` (see Ops debt #1).
-- **GitHub App install URL** — needed for the landing page CTA. Get from the GitHub App settings page (the App owned by the Augstar account that controls the test repo `krisskross_shops`). Likely shape: `https://github.com/apps/<app-slug>/installations/new`.
-- **Existing finding_status rows in Neon**: 4 open rows on review `83e79770-1869-4331-8690-b534a531d327`. Will count toward the receipts page if they close.
+- **Vercel project:** `augstar-8472s-projects/antfleet-web`, linked. `.vercel/project.json` at `apps/web/.vercel/`. On Pro plan.
+- **Neon:** `neon-fulvous-zebra`, project id `solitary-dew-96858656`. Schema head: `0004_eager_psynapse`.
+- **GitHub App:** installed on `Augustas11/antfleet`. Webhook → `https://antfleet-web.vercel.app/api/github/webhook`. Posts as `antfleet[bot]`.
+- **Production cron:** daily 06:00 UTC. Manual trigger via `pnpm exec tsx apps/web/scripts/trigger-sweep.ts` (admin tool, reads `CRON_SECRET` from `.env.local`).
+- **Dogfood receipt rows:** review `f1b5393a-ee36-4af0-b797-a98826c45dcb` has 1 closed finding (the PR #3 info-disclosure closure). This is the seed of the receipt corpus.
 
 ## Things to avoid
 
 - **Don't pull Vercel env directly into `apps/web/.env.local`** — overwrites manually-added keys. Use `vercel env pull .env.vercel.tmp --yes` and merge by hand.
-- **Don't symlink `apps/web/.env.local`** — Vercel auto-pull writes through it.
-- **Don't put owner/repo on the public receipts page** without an opt-in mechanism — see AGENTS.md §10 ("per-customer data accessed only via explicit auth").
+- **Don't reintroduce env-var leaking in `/api/health` response body** — the §15 + PR #3 reasoning is the precedent. Diagnostics go to server logs.
+- **Don't lower `webhook/route.ts` maxDuration below 300** — PR #1 proved 60s is insufficient for multi-file reviews even at Pro.
 - **Don't change `/api/cron/sweep` from GET to POST** — Vercel cron calls GET. Flipping the export breaks the schedule.
-
-## When you finish a slice
-
-1. `pnpm -F @antfleet/web typecheck && pnpm -F @antfleet/web test && pnpm -F @antfleet/web build && pnpm -w test`
-2. Commit with the `Mission 4 slice 4-X` prefix matching prior commits.
-3. Update `AGENTS.md §4`'s Mission 4 table — flip the next row from `—` to `✓` with the new commit hash. (Add a Mission 4 section to §4 first if you're the first to land a 4-X slice.)
-4. Once Mission 4 is fully done: delete this file and start a clean handoff for whatever's next (likely Phase 2 design-partner onboarding per §5).
+- **Don't introduce fake bugs to populate `/receipts`** — per §12 honest-report, the counter must reflect real agreement on real PRs. Manufactured findings poison the trust artifact.

@@ -4,7 +4,7 @@
 
 This file is the canonical strategy + context document for AntFleet. A fresh session should be able to read this top-to-bottom (~15 minutes), then load `ARCHITECTURE.md` for technical context and `examples/dogfood-results/WEEK1-VERDICT.md` for empirical data, and pick up active work without additional briefing.
 
-**Last updated:** 2026-05-17 (Mission 4 in progress; §7.1 surface-choice + §8.1 cost-gap-bridge added)
+**Last updated:** 2026-05-17 (Phase 1 complete; first public receipt landed via dogfood smoke test on `Augustas11/antfleet` PR #3 closed in `4640404a`)
 
 ## Naming hierarchy (read first if you've seen older docs)
 
@@ -126,7 +126,19 @@ Sweeper + receipts + reaction polling are end-to-end wired. The cron schedule li
 | 4-4 | `15a94a5` | `/policy` page — 7-section plain-English data policy + footer nav links to `/receipts` + `/policy` (replaces 4-1 placeholder) | ✓ |
 | 4-5 | `21c796d` | `/receipts` polish: `public_receipt` opt-in gate (migration 0004) + cursor pagination (`?before=<iso>`) + `MAX(closure_detected_at)` last-updated stamp + `/policy` reframed around opt-in | ✓ |
 
-**Next mission slice:** Mission 4 slice 4-2 (landing page hero + install button). See `HANDOFF.md` at repo root for the resume sequence and any session-specific state.
+**Mission 4 — complete (2026-05-17):** All five slices shipped and deployed. Public surface live at `https://antfleet-web.vercel.app` (custom domain pending — see `HANDOFF.md`).
+
+**Phase 1 — complete (2026-05-17).** All four MVP missions per §5 Phase 1 are done. The full review→comment→sweep→receipt lifecycle is validated end-to-end in production:
+
+- **First production smoke test** on `Augustas11/antfleet` PR #3 (dogfood — AntFleet reviewing AntFleet).
+- **One unanimous finding** — Security/High info disclosure on `/api/health`. Both Claude Opus 4.7 and GPT-5 flagged it independently; agreement gate posted the comment.
+- **Fix landed** in commit `84a54c1` (response body limited to `{ ok }` only; diagnostics moved to server logs).
+- **Squash-merged** to main as `4640404a`. Manual sweep via `scripts/trigger-sweep.ts` returned `swept:5, closed:1`.
+- **First closure receipt** posted on PR #3. `/receipts` counter incremented 0 → 1.
+
+This is the seed of the receipt corpus (§18.2). Pipeline behaviors empirically validated in prod: webhook → HMAC verify → App auth → file fetch → 2-provider parallel review → unanimous agreement gate → comment posting → sweeper closure detection (compareCommits) → closure receipt comment → `/receipts` rendering with public_receipt opt-in gate.
+
+**Phase 1 → Phase 2 gate (§5):** "1 design partner repo live, public receipts counter > 0." Counter dimension ✅ met. Design-partner dimension still pending — dogfood doesn't count as external. Remaining work is outreach + minor ops (custom domain, `privacy@` mailbox, onboarding doc) — see `HANDOFF.md`.
 
 ---
 
