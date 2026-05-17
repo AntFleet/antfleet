@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 // instantiating the full middleware function with mock NextRequest — the
 // header values are the load-bearing piece; the rest is plumbing.
 
+import { beforeEach } from "vitest";
 import { middleware } from "./middleware";
 import type { NextRequest } from "next/server";
 
@@ -17,7 +18,14 @@ function makeReq(): NextRequest {
 }
 
 describe("security headers middleware", () => {
-  const res = middleware(makeReq());
+  // Per PR #6 review (claude-opus-4-7 + gpt-5 agreed): a single shared
+  // response defeats per-test isolation if middleware ever becomes
+  // stateful. Re-derive a fresh response inside each `it` via beforeEach
+  // so future tests can't silently coupling-pollute each other.
+  let res: ReturnType<typeof middleware>;
+  beforeEach(() => {
+    res = middleware(makeReq());
+  });
 
   it("sets HSTS for at least 1 year and includes subdomains", () => {
     const hsts = res.headers.get("Strict-Transport-Security");
