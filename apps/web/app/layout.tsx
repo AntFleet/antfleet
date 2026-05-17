@@ -96,7 +96,7 @@ function SiteFooter() {
             github
           </a>
           <a
-            href="https://x.com/AntFleet_"
+            href="https://x.com/AntFleetDev"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-[var(--color-ink)] transition-colors"
