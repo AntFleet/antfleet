@@ -99,8 +99,8 @@ export default function PolicyPage() {
           your install. New installs are private by default; the v1.5
           customer dashboard will expose the toggle, and until it ships
           enabling public receipts requires a request to{" "}
-          <PolicyLink href="mailto:privacy@antfleet.dev">
-            privacy@antfleet.dev
+          <PolicyLink href="mailto:agent@antfleet.dev">
+            agent@antfleet.dev
           </PolicyLink>
           .
         </p>
@@ -178,8 +178,8 @@ export default function PolicyPage() {
         <p>
           To request deletion of historical rows (reviews, finding_status,
           maintainer_reactions) attached to your owner/repo, email{" "}
-          <PolicyLink href="mailto:privacy@antfleet.dev">
-            privacy@antfleet.dev
+          <PolicyLink href="mailto:agent@antfleet.dev">
+            agent@antfleet.dev
           </PolicyLink>
           . Deletion of our DB rows is straightforward. The PR comments and
           closure-receipt comments posted to GitHub live on{" "}
