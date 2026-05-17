@@ -7,6 +7,11 @@ import { db } from "@/db/index";
 // and presence of every secret the runtime path depends on. Useful for
 // external uptime monitors (Pingdom, BetterStack, etc.) and for confirming
 // a fresh deploy is wired up before pointing real traffic at it.
+//
+// Response is intentionally minimal — `{ ok }` only. Per the AntFleet review
+// on PR #3, leaking names of missing env vars or raw DB error strings to
+// unauthenticated callers is unnecessary info disclosure. Detailed diagnostic
+// information stays in server-side logs where the on-call can read it.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -23,37 +28,36 @@ const REQUIRED_ENV: readonly string[] = [
   "CRON_SECRET",
 ];
 
-type DbCheck = { ok: boolean; latencyMs?: number; error?: string };
-type EnvCheck = { ok: boolean; missing: string[] };
-type HealthStatus = {
-  ok: boolean;
-  ts: string;
-  checks: { db: DbCheck; env: EnvCheck };
-};
-
-export async function GET(): Promise<NextResponse<HealthStatus>> {
-  const ts = new Date().toISOString();
-
+export async function GET(): Promise<NextResponse<{ ok: boolean }>> {
   const missing = REQUIRED_ENV.filter(
     (name) => process.env[name] === undefined || process.env[name] === "",
   );
-  const env: EnvCheck = { ok: missing.length === 0, missing };
+  const envOk = missing.length === 0;
 
-  const dbStart = Date.now();
-  let dbCheck: DbCheck;
+  let dbOk = false;
+  let dbError: unknown = null;
   try {
     await db.execute(sql`select 1`);
-    dbCheck = { ok: true, latencyMs: Date.now() - dbStart };
+    dbOk = true;
   } catch (err) {
-    dbCheck = {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    dbError = err;
   }
 
-  const ok = env.ok && dbCheck.ok;
-  return NextResponse.json(
-    { ok, ts, checks: { db: dbCheck, env } },
-    { status: ok ? 200 : 503 },
-  );
+  const ok = envOk && dbOk;
+
+  // Detailed diagnostics go to server logs only — not to the response body.
+  if (!ok) {
+    console.warn(
+      JSON.stringify({
+        event: "health.degraded",
+        envOk,
+        missingCount: missing.length,
+        missing,
+        dbOk,
+        dbError: dbError instanceof Error ? dbError.message : null,
+      }),
+    );
+  }
+
+  return NextResponse.json({ ok }, { status: ok ? 200 : 503 });
 }
