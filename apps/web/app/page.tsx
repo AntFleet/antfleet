@@ -27,16 +27,16 @@ function Hero({ installUrl }: { installUrl: string }) {
           GitHub App · PR code review
         </p>
 
-        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug max-w-xl">
-          Two independent frontier models on every PR.
+        <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight text-[var(--color-ink)] leading-[1.05] max-w-2xl">
+          The trust layer for code written by agents.
         </h1>
 
-        <p className="mt-5 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
-          AntFleet uses agreement between independent frontier models as the
-          trust primitive — and pins every closed finding to a public,
-          SHA-verifiable receipt on the PR that resolved it. Unlike
-          single-model reviewers, the audit trail isn&apos;t in our database;
-          it&apos;s on GitHub&apos;s event log, where anyone can check it.
+        <p className="mt-6 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
+          Two independent frontier models review every PR. Agreement between
+          them is the trust primitive — and every closed finding is pinned to
+          a public, SHA-verifiable receipt on the PR that resolved it. The
+          audit trail isn&apos;t in our database; it&apos;s on GitHub&apos;s
+          event log, where anyone can check it.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
