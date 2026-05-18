@@ -2,7 +2,7 @@ import { loadPublicReceiptsPage, type PublicReceiptRow } from "@/db/queries";
 import {
   loadCrossRepoReceipts,
   type CrossRepoReceiptRow,
-} from "@/lib/outgoing-prs";
+} from "@/lib/receipts";
 import { renderRssFeed, type RssItem } from "@/lib/rss";
 
 // RSS 2.0 feed for the public receipt corpus. Consumed by monitoring tools

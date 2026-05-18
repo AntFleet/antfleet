@@ -2,13 +2,11 @@ import type { Metadata } from "next";
 import { loadPublicReceiptsPage } from "@/db/queries";
 import {
   formatRelativeTime,
+  loadCrossRepoReceipts,
   toDisplayReceipt,
+  type CrossRepoReceiptRow,
   type DisplayReceipt,
 } from "@/lib/receipts";
-import {
-  loadCrossRepoReceipts,
-  type CrossRepoReceiptRow,
-} from "@/lib/outgoing-prs";
 
 // Receipts are the moat (§18.2). The counter must be fresh on every visit —
 // caching this page would let stale numbers persist past closures and break

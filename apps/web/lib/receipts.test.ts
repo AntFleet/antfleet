@@ -95,3 +95,63 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(now, new Date(now.getTime() - 2 * year))).toBe("2 years ago");
   });
 });
+
+import type { OutgoingPr } from "@/db/schema";
+import { mapMergedRowsToReceipts, upstreamPrUrl } from "./receipts";
+
+describe("upstreamPrUrl", () => {
+  it("renders https://github.com/owner/repo/pull/n", () => {
+    expect(upstreamPrUrl("Liquid-Protocol-Ops", "agent-autonomopoly", 3)).toBe(
+      "https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/3",
+    );
+  });
+});
+
+const MERGED_ROW: OutgoingPr = {
+  id: "id-1",
+  sourceFindingId: "finding-1",
+  upstreamOwner: "Liquid-Protocol-Ops",
+  upstreamRepo: "agent-autonomopoly",
+  upstreamPrNumber: 3,
+  branchOnFork: "fix/threshold-harmonization",
+  openedAt: new Date("2026-05-18T05:27:33.000Z"),
+  status: "merged",
+  mergedAt: new Date("2026-05-19T08:15:00.000Z"),
+  mergeSha: "a".repeat(40),
+  lastPolledAt: new Date("2026-05-19T08:30:00.000Z"),
+};
+
+describe("mapMergedRowsToReceipts", () => {
+  it("maps merged rows to receipt rows with the prUrl built from owner/repo/number", () => {
+    const { receipts, lastMergedAt } = mapMergedRowsToReceipts([MERGED_ROW]);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.prUrl).toBe(
+      "https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/3",
+    );
+    expect(receipts[0]?.mergeSha).toBe("a".repeat(40));
+    expect(lastMergedAt).toEqual(new Date("2026-05-19T08:15:00.000Z"));
+  });
+
+  it("drops rows missing mergedAt or mergeSha (belt-and-braces; the WHERE should already filter)", () => {
+    const incomplete: OutgoingPr = { ...MERGED_ROW, mergeSha: null };
+    const incomplete2: OutgoingPr = { ...MERGED_ROW, id: "id-2", mergedAt: null };
+    const { receipts, lastMergedAt } = mapMergedRowsToReceipts([incomplete, incomplete2]);
+    expect(receipts).toHaveLength(0);
+    expect(lastMergedAt).toBeNull();
+  });
+
+  it("tracks lastMergedAt as the max(mergedAt) across rows", () => {
+    const older: OutgoingPr = {
+      ...MERGED_ROW,
+      id: "id-old",
+      mergedAt: new Date("2026-05-10T08:00:00.000Z"),
+    };
+    const newer: OutgoingPr = {
+      ...MERGED_ROW,
+      id: "id-new",
+      mergedAt: new Date("2026-05-20T08:00:00.000Z"),
+    };
+    const { lastMergedAt } = mapMergedRowsToReceipts([MERGED_ROW, older, newer]);
+    expect(lastMergedAt).toEqual(new Date("2026-05-20T08:00:00.000Z"));
+  });
+});

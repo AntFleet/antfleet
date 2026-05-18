@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   pollOutgoingPrs,
-  upstreamPrUrl,
+  runOutgoingPrsPoll,
   type OpenOutgoingPr,
   type PollOutgoingDeps,
   type UpstreamPrState,
@@ -131,12 +131,14 @@ describe("pollOutgoingPrs", () => {
     expect(markMerged).toHaveBeenCalledTimes(1);
   });
 
-  it("does not flip when GitHub reports merged but merge_sha is missing", async () => {
-    // Defensive: a Drizzle-side NOT NULL on merge_sha would crash if we
-    // accepted this state. The poll loop demands both pieces of evidence
-    // before claiming a merge.
+  it("treats merged=true with null merge_sha as still-in-progress (re-poll next tick)", async () => {
+    // GitHub's merge_commit_sha can lag the `merged` flag by seconds-to-
+    // minutes while commit propagation completes. Marking such a row
+    // declined would lose a real upstream receipt; marking it merged
+    // would crash the row's NOT NULL merge_sha invariant. The right
+    // move is to stamp polled_at and wait for the next tick to retry.
     const pr = makePr();
-    const incomplete: UpstreamPrState = {
+    const lagging: UpstreamPrState = {
       merged: true,
       mergedAt: new Date("2026-05-17T12:00:00.000Z"),
       mergeSha: null,
@@ -147,24 +149,32 @@ describe("pollOutgoingPrs", () => {
     const markClosed = vi.fn().mockResolvedValue(undefined);
     const deps = makeDeps({
       loadOpenPrs: vi.fn().mockResolvedValue([pr]),
-      getUpstreamPrState: vi.fn().mockResolvedValue(incomplete),
+      getUpstreamPrState: vi.fn().mockResolvedValue(lagging),
       stampPolled,
       markMerged,
       markClosed,
     });
     const result = await pollOutgoingPrs(deps, NOW);
-    // state==closed without merge_sha — falls through to closed branch
-    // (no merge evidence to assert).
     expect(markMerged).not.toHaveBeenCalled();
-    expect(markClosed).toHaveBeenCalledTimes(1);
-    expect(result.closed).toBe(1);
+    expect(markClosed).not.toHaveBeenCalled();
+    expect(stampPolled).toHaveBeenCalledWith({ id: pr.id, polledAt: NOW });
+    expect(result.unchanged).toBe(1);
+    expect(result.merged).toBe(0);
+    expect(result.closed).toBe(0);
   });
 });
 
-describe("upstreamPrUrl", () => {
-  it("renders https://github.com/owner/repo/pull/n", () => {
-    expect(upstreamPrUrl("Liquid-Protocol-Ops", "agent-autonomopoly", 3)).toBe(
-      "https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/3",
-    );
+describe("runOutgoingPrsPoll (cron-safe wrapper)", () => {
+  beforeEach(() => {
+    delete process.env["ANTFLEET_OPS_GH_TOKEN"];
+  });
+
+  it("never throws — returns null when the underlying poll fails (db unreachable, token missing, etc.)", async () => {
+    // Cron-tick safety contract: any failure inside the poll path must
+    // degrade silently. The cron route depends on this — if
+    // runOutgoingPrsPoll ever threw, a misconfigured env or a flaky
+    // upstream would 5xx the whole sweep tick.
+    const result = await runOutgoingPrsPoll();
+    expect(result).toBeNull();
   });
 });

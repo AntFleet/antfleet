@@ -1,7 +1,7 @@
 import { Octokit } from "@octokit/rest";
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { db } from "@/db/index";
-import { outgoingPrs, type OutgoingPr } from "@/db/schema";
+import { outgoingPrs } from "@/db/schema";
 import { logError, logInfo, logWarn } from "./log";
 
 // Cross-repo receipts — Slice B of Phase-2 receipt density work.
@@ -93,6 +93,18 @@ export async function pollOutgoingPrs(
           id: pr.id,
           upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
           mergeSha: state.mergeSha,
+        });
+      } else if (state.merged) {
+        // GitHub returned merged=true but merge_commit_sha is still null
+        // (async commit propagation can lag the API's `merged` flag by
+        // seconds-to-minutes). Treat as still-open and re-poll next tick
+        // rather than mis-marking as declined — a merged PR is the
+        // receipt-eligible class and we don't want to lose it.
+        await deps.stampPolled({ id: pr.id, polledAt: now });
+        unchanged += 1;
+        logWarn("outgoing_prs.merged_pending_sha", {
+          id: pr.id,
+          upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
         });
       } else if (state.state === "closed") {
         await deps.markClosed({ id: pr.id, polledAt: now });
@@ -201,65 +213,9 @@ export function realPollDeps(): PollOutgoingDeps {
   };
 }
 
-// ─── Display layer — used by /receipts page ────────────────────────────────
-
-export type CrossRepoReceiptRow = {
-  id: string;
-  sourceFindingId: string;
-  upstreamOwner: string;
-  upstreamRepo: string;
-  upstreamPrNumber: number;
-  mergedAt: Date;
-  mergeSha: string;
-  prUrl: string;
-};
-
-export type CrossRepoReceiptsPage = {
-  total: number;
-  recent: CrossRepoReceiptRow[];
-  lastMergedAt: Date | null;
-};
-
-export async function loadCrossRepoReceipts(
-  limit: number,
-): Promise<CrossRepoReceiptsPage> {
-  const rows = await db
-    .select()
-    .from(outgoingPrs)
-    .where(eq(outgoingPrs.status, "merged"))
-    .orderBy(sql`${outgoingPrs.mergedAt} DESC NULLS LAST`)
-    .limit(limit);
-
-  const recent: CrossRepoReceiptRow[] = [];
-  let lastMergedAt: Date | null = null;
-  for (const r of rows as OutgoingPr[]) {
-    if (r.mergedAt === null || r.mergeSha === null) continue;
-    if (lastMergedAt === null || r.mergedAt > lastMergedAt) {
-      lastMergedAt = r.mergedAt;
-    }
-    recent.push({
-      id: r.id,
-      sourceFindingId: r.sourceFindingId,
-      upstreamOwner: r.upstreamOwner,
-      upstreamRepo: r.upstreamRepo,
-      upstreamPrNumber: r.upstreamPrNumber,
-      mergedAt: r.mergedAt,
-      mergeSha: r.mergeSha,
-      prUrl: upstreamPrUrl(r.upstreamOwner, r.upstreamRepo, r.upstreamPrNumber),
-    });
-  }
-
-  const [{ value }] = await db
-    .select({ value: sql<number>`count(*)::int`.as("value") })
-    .from(outgoingPrs)
-    .where(eq(outgoingPrs.status, "merged"));
-
-  return { total: value ?? 0, recent, lastMergedAt };
-}
-
-export function upstreamPrUrl(owner: string, repo: string, number: number): string {
-  return `https://github.com/${owner}/${repo}/pull/${number}`;
-}
+// Display loader + URL helper for cross-repo receipts live in lib/receipts.ts
+// alongside the same-repo loaders. This module owns the write/poll path
+// only; readers import from lib/receipts.ts.
 
 // Wrapping for the cron tick — never throw out of the poll loop. The
 // cron handler treats sweep success as the load-bearing outcome; an
