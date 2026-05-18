@@ -128,7 +128,7 @@ function getAntfleetOpsToken(): string {
   return token;
 }
 
-export function realPollDeps(now: Date = new Date()): PollOutgoingDeps {
+export function realPollDeps(): PollOutgoingDeps {
   // Lazy Octokit construction so the cron route only instantiates when
   // there's actually work to do. Token is read each call so a rotated
   // PAT picks up without a deploy.
