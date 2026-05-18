@@ -20,9 +20,9 @@ const jbMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.antfleet.dev"),
-  title: "AntFleet — trust substrate for autonomous code",
+  title: "AntFleet — the trust layer for code written by agents",
   description:
-    "AI code review with receipts. Agreement between independent frontier models is the trust gate; every closure is SHA-pinned to GitHub's event log.",
+    "The trust layer for code written by agents. Two independent frontier models review every PR; only unanimous findings post, and every closure is SHA-pinned to GitHub's event log.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -70,7 +70,7 @@ function SiteFooter() {
   return (
     <footer className="border-t border-[var(--color-line)]">
       <div className="mx-auto flex max-w-5xl flex-col gap-3 px-6 py-8 text-sm text-[var(--color-ink-subtle)] sm:flex-row sm:items-center sm:justify-between">
-        <span>AntFleet — trust substrate for autonomous code work.</span>
+        <span>AntFleet — the trust layer for code written by agents.</span>
         <nav className="flex items-center gap-5 font-mono text-xs">
           <a
             href="/receipts"
