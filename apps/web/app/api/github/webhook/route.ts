@@ -3,35 +3,25 @@ import { NextResponse, after } from "next/server";
 import { Octokit } from "@octokit/rest";
 import { verifyGitHubSignature } from "@/lib/github-signature";
 import { getInstallationToken } from "@/lib/github-app";
-import { getChangedFiles } from "@/lib/github-files";
-import { reviewPR } from "@/lib/review-pipeline";
-import { formatPRComment, postPRComment } from "@/lib/pr-comment";
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
-import { logError, logInfo, logWarn } from "@/lib/log";
+import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import {
   isWelcomeIssue,
   recordPartnerReply,
-  runFirstReviewSummary,
   runWelcomeOnInstall,
 } from "@/lib/onboarder";
-import {
-  hashRepo,
-  recordFindingStatuses,
-  recordReview,
-  setReviewComment,
-  updateReview,
-} from "@/db/queries";
+import { runReviewWorker } from "@/lib/review-worker";
+import { enqueueReview, hashRepo } from "@/db/queries";
 
 // node:crypto is Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
 
-// Pro plan ceiling — 300s. The 60s self-imposed limit from earlier matched
-// the V2/V3 observed upper bound for tight single-file reviews, but the
-// first production smoke test (Augustas11/antfleet PR #1, 5 files) blew
-// past it and got killed mid-review. Bumped to the plan max so multi-file
-// PRs reliably complete; revisit if we move off Pro or restructure the
-// review into a separately-dispatched worker (e.g. QStash / Inngest).
+// Pro plan ceiling — 300s. The review work itself happens inside
+// after(); we still pin maxDuration here so the worker (now extracted
+// into lib/review-worker.ts) has the full 300s window for its first
+// attempt. The retry cron at /api/cron/review-retry picks up anything
+// the webhook's after() couldn't finish.
 export const maxDuration = 300;
 
 const DISPATCH_ACTIONS = new Set(["opened", "reopened", "synchronize"]);
@@ -326,10 +316,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     isBenchmarkRepo(visibilityOctokit, pr.repository.owner.login, pr.repository.name),
   ]);
 
+  // Mission 7 — durable queuing. enqueueReview is idempotent on the
+  // (repo_hash, pr_number, commit_sha) triple. A duplicate delivery
+  // (GitHub retry, our own retry script pushing an empty commit
+  // with the same head sha, etc.) returns isNew=false and we suppress
+  // the after() so we don't spawn a second concurrent worker for the
+  // same review.
   const repoHash = hashRepo(pr.repository.owner.login, pr.repository.name);
-  let reviewId: string;
+  let enqueued: Awaited<ReturnType<typeof enqueueReview>>;
   try {
-    reviewId = await recordReview({
+    enqueued = await enqueueReview({
       repoHash,
       prNumber: pr.number,
       commitSha: pr.pull_request.head.sha,
@@ -341,9 +337,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       timingMs: 0,
       costEstimatedUsd: 0,
       schemaVersion: 1,
-      // Mission 3 slice 3-5 — sweep needs these to re-auth + call GitHub.
-      // Persisted at stub-row time so failure mid-review still leaves a
-      // sweepable row.
       installationId: pr.installation.id,
       owner: pr.repository.owner.login,
       repo: pr.repository.name,
@@ -351,186 +344,51 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       isBenchmark,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logError("webhook.recordReview_failed", { delivery, message });
+    logError("webhook.enqueue_failed", { delivery, message: messageOf(err) });
     return new NextResponse("db failure", { status: 500 });
   }
+  const { reviewId, isNew } = enqueued;
 
   logInfo("webhook.dispatched", {
     delivery,
     action,
     reviewId,
+    isNew,
     installationId: pr.installation.id,
     prNumber: pr.number,
     commitSha: pr.pull_request.head.sha,
   });
 
-  // Heavy lifting runs after the 200 — GitHub stops retrying immediately
-  // while the actual review keeps going. Errors are caught and persisted
-  // to the row's providerResponses field rather than thrown.
+  // Duplicate delivery: a prior call already enqueued this exact
+  // (repo, pr, head_sha). Don't spawn a second worker — the original
+  // one (or the retry cron) will settle the row.
+  if (!isNew) {
+    return NextResponse.json({ ok: true, reviewId, duplicate: true });
+  }
+
+  // Best-effort first attempt. The webhook still kicks off the review
+  // immediately inside after() so the happy path stays as fast as the
+  // V2/V3 baseline. Failures (rate limits, function timeouts,
+  // crashes) leave the row in pending_retry / in_progress; the
+  // /api/cron/review-retry tick picks them up and drives them to
+  // a terminal state.
   after(async () => {
     try {
-      const files = await getChangedFiles({
-        installationId: pr.installation.id,
-        owner: pr.repository.owner.login,
-        repo: pr.repository.name,
-        prNumber: pr.number,
-        headSha: pr.pull_request.head.sha,
-      });
-      logInfo("review.files_fetched", {
-        reviewId,
+      const outcome = await runReviewWorker(reviewId, "webhook");
+      logInfo("webhook.worker_outcome", {
         delivery,
-        fileCount: files.length,
-        filenames: files.map((f) => f.filename),
-      });
-      if (files.length === 0) {
-        await updateReview(reviewId, {
-          filesReviewed: [],
-          providerResponses: { status: "skipped", reason: "no reviewable files" },
-          agreementDecision: { status: "skipped" },
-        });
-        logInfo("review.skipped", { reviewId, delivery, reason: "no reviewable files" });
-        return;
-      }
-      const bundle = await reviewPR({
-        files,
-        owner: pr.repository.owner.login,
-        repo: pr.repository.name,
-        prNumber: pr.number,
-      });
-      await updateReview(reviewId, {
-        filesReviewed: files.map((f) => f.filename),
-        providerModelIds: bundle.modelIds,
-        providerResponses: { perProvider: bundle.perProvider },
-        agreementDecision: {
-          mode: bundle.agreementMode,
-          agreed: bundle.agreed,
-          disagreements: bundle.disagreements,
-          degraded: bundle.degraded,
-          degradedReason: bundle.degradedReason,
-        },
-        timingMs: bundle.totalMs,
-        costEstimatedUsd: bundle.estimatedCostUsd,
-      });
-      logInfo("review.completed", {
         reviewId,
-        delivery,
-        agreedCount: bundle.agreed.length,
-        degraded: bundle.degraded,
-        degradedReason: bundle.degradedReason,
-        totalMs: bundle.totalMs,
-        estimatedCostUsd: bundle.estimatedCostUsd,
-        providerStatuses: bundle.perProvider.map((p) => ({
-          name: p.name,
-          ok: p.output !== null,
-          ms: p.ms,
-        })),
+        kind: outcome.kind,
       });
-
-      // Onboarder first-review summary fires AFTER the review work
-      // is captured, regardless of agreed/degraded state. It self-
-      // gates on (a) ONBOARDER_ENABLED and (b) being the install's
-      // first review — see runFirstReviewSummary for the math. Logs
-      // failures but never bubbles; the review itself is independent.
-      try {
-        const perProviderFindingCounts: Record<string, number> = {};
-        for (const p of bundle.perProvider) {
-          perProviderFindingCounts[p.name] = p.output?.findings.length ?? 0;
-        }
-        await runFirstReviewSummary({
-          installationId: pr.installation.id,
-          owner: pr.repository.owner.login,
-          repo: pr.repository.name,
-          prNumber: pr.number,
-          perProviderFindingCounts,
-          agreedCount: bundle.agreed.length,
-          disagreementCount: bundle.disagreements.length,
-          modelIds: bundle.modelIds,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logError("onboarder.first_review_summary_dispatch_failed", {
-          reviewId,
-          delivery,
-          message,
-        });
-      }
-
-      // Honest-report gate: post only when two voters actually agreed.
-      // Degraded runs and 0-finding agreement sets are silent — the audit
-      // trail still captures everything (DB row + log lines), but the
-      // public artifact only appears when there is something to receipt.
-      if (!bundle.degraded && bundle.agreed.length > 0) {
-        const commentBody = formatPRComment(bundle.agreed, {
-          reviewId,
-          totalMs: bundle.totalMs,
-          estimatedCostUsd: bundle.estimatedCostUsd,
-          modelIds: bundle.modelIds,
-        });
-        try {
-          const posted = await postPRComment({
-            installationId: pr.installation.id,
-            owner: pr.repository.owner.login,
-            repo: pr.repository.name,
-            prNumber: pr.number,
-            body: commentBody,
-          });
-          logInfo("comment.posted", {
-            reviewId,
-            delivery,
-            commentId: posted.id,
-            commentUrl: posted.htmlUrl,
-            findingCount: bundle.agreed.length,
-          });
-          // Mission 3 lifecycle: persist the comment id + a row per agreed
-          // finding so Sweeper can reconcile later. Best-effort — DB write
-          // failure here doesn't undo the posted comment, but is loud in
-          // logs so Sweeper missing rows is easy to spot.
-          try {
-            await setReviewComment({
-              reviewId,
-              commentId: posted.id,
-              commentUrl: posted.htmlUrl,
-            });
-            const findingIds = await recordFindingStatuses(
-              reviewId,
-              bundle.agreed.map((f) => ({
-                title: f.title,
-                severity: f.severity,
-                category: f.category,
-              })),
-            );
-            logInfo("lifecycle.recorded", {
-              reviewId,
-              delivery,
-              findingIds,
-              commentId: posted.id,
-            });
-          } catch (lifecycleErr) {
-            const message =
-              lifecycleErr instanceof Error ? lifecycleErr.message : String(lifecycleErr);
-            logError("lifecycle.persist_failed", { reviewId, delivery, message });
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          // Comment failure does NOT fail the review. The DB row is still
-          // the source of truth; we just lost the visible artifact for
-          // this delivery.
-          logError("comment.post_failed", { reviewId, delivery, message });
-        }
-      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logError("review.failed", { reviewId, delivery, message });
-      try {
-        await updateReview(reviewId, {
-          providerResponses: { status: "error", message },
-          agreementDecision: { status: "error" },
-        });
-      } catch (updateErr) {
-        const updateMessage = updateErr instanceof Error ? updateErr.message : String(updateErr);
-        logError("review.failure_persist_failed", { reviewId, delivery, message: updateMessage });
-      }
+      // runReviewWorker is expected to swallow all known errors and
+      // settle the row. A throw here is an unexpected codepath; log
+      // loudly so the retry cron is the recovery surface.
+      logError("webhook.worker_threw", {
+        delivery,
+        reviewId,
+        message: messageOf(err),
+      });
     }
   });
 
