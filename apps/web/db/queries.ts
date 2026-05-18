@@ -943,6 +943,48 @@ function coerceDate(raw: unknown): Date | null {
   return null;
 }
 
+// Self-serve opt-in toggle. The Onboarder's first-review summary comment
+// embeds a one-click link; the /api/opt-in route invokes this helper.
+// Returns counts so the caller can distinguish three states:
+//   - alreadyMatching > 0, flipped == 0: no-op (idempotent re-click)
+//   - flipped > 0:                       state changed, emit audit event
+//   - alreadyMatching == 0, flipped == 0: no reviews for this (install,
+//     owner, repo) yet — render a friendly "no reviews here yet" page.
+export async function flipPublicReceiptForRepo(args: {
+  installationId: number;
+  owner: string;
+  repo: string;
+  target: boolean;
+}): Promise<{ alreadyMatching: number; flipped: number; totalMatching: number }> {
+  const scope = and(
+    eq(reviews.installationId, args.installationId),
+    eq(reviews.owner, args.owner),
+    eq(reviews.repo, args.repo),
+  );
+  const totals = await db
+    .select({
+      total: sql<number>`count(*)::int`.as("total"),
+      atTarget: sql<number>`count(*) filter (where ${reviews.publicReceipt} = ${args.target})::int`.as(
+        "at_target",
+      ),
+    })
+    .from(reviews)
+    .where(scope);
+  const t = totals[0] ?? { total: 0, atTarget: 0 };
+  const totalMatching = t.total;
+  const alreadyMatching = t.atTarget;
+  const toFlip = totalMatching - alreadyMatching;
+  if (toFlip <= 0) {
+    return { alreadyMatching, flipped: 0, totalMatching };
+  }
+  const updated = await db
+    .update(reviews)
+    .set({ publicReceipt: args.target })
+    .where(and(scope, eq(reviews.publicReceipt, !args.target)))
+    .returning({ reviewId: reviews.reviewId });
+  return { alreadyMatching, flipped: updated.length, totalMatching };
+}
+
 export async function recordMaintainerReactions(
   rows: NewMaintainerReaction[],
 ): Promise<number> {

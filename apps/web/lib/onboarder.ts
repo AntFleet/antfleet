@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Octokit } from "@octokit/rest";
 import { getInstallationToken } from "./github-app";
 import { logError, logInfo, logWarn } from "./log";
+import { buildOptInUrl } from "./optin-token";
 import {
   countReviewsForInstall,
   getOnboardingEventForInstall,
@@ -147,9 +148,22 @@ async function fetchRepoMeta(
   }
 }
 
+// ─── base URL for self-serve links ─────────────────────────────────────────
+
+function onboarderBaseUrl(): string {
+  // Prefer an explicit canonical override (set in prod), fall back to the
+  // Vercel-injected production URL, then to localhost for dev. The opt-in
+  // link lives in a public GitHub comment so it must always be absolute.
+  const override = process.env["ANTFLEET_PUBLIC_BASE_URL"];
+  if (override !== undefined && override.length > 0) return override;
+  const vercel = process.env["VERCEL_PROJECT_PRODUCTION_URL"];
+  if (vercel !== undefined && vercel.length > 0) return `https://${vercel}`;
+  return "http://localhost:3000";
+}
+
 // ─── prompts ────────────────────────────────────────────────────────────────
 
-function welcomePrompt(args: {
+export function welcomePrompt(args: {
   owner: string;
   repo: string;
   meta: RepoMeta;
@@ -174,7 +188,7 @@ Compose a welcome GitHub issue to open in this repo. Voice: direct, technical, n
 - Acknowledge the install in one sentence
 - Tell the maintainer what happens next: on the next PR opened, two independent frontier models (Claude Opus 4.7 and GPT-5) will review changed files in parallel; only findings both models flag get posted as a comment; typical latency is 30-90s for small PRs
 - Link to https://www.antfleet.dev/architecture for the full agent diagram
-- Mention that public receipts are off by default and ask the maintainer to reply on this issue or email agent@antfleet.dev if they want to opt in
+- Mention that public receipts are off by default; the summary comment on the first PR review will include a one-click opt-in link, no email needed
 - Close with a short "feel free to close this issue when you're set up" line
 - 150-300 words total
 - No emoji
@@ -183,7 +197,7 @@ Compose a welcome GitHub issue to open in this repo. Voice: direct, technical, n
 Return a structured tool call with the issue title and body. The title should be plain and recognizable — something like "AntFleet · welcome" — not clever.`;
 }
 
-function firstReviewSummaryPrompt(args: {
+export function firstReviewSummaryPrompt(args: {
   owner: string;
   repo: string;
   prNumber: number;
@@ -191,6 +205,7 @@ function firstReviewSummaryPrompt(args: {
   agreedCount: number;
   disagreementCount: number;
   modelIds: Record<string, string>;
+  optInUrl: string;
 }): string {
   const counts = Object.entries(args.perProviderFindingCounts)
     .map(([name, count]) => `  ${name} (${args.modelIds[name] ?? "?"}): ${count} findings`)
@@ -202,6 +217,8 @@ function firstReviewSummaryPrompt(args: {
   Per-provider findings:
 ${counts}
   After unanimous-gate: ${args.agreedCount} agreed (posted) / ${args.disagreementCount} disagreements (dropped)
+  Public-receipts opt-in URL (use VERBATIM, do not edit or shorten):
+  ${args.optInUrl}
 
 Compose a follow-up comment on the same PR that frames what happened. This is the partner's FIRST review, so the comment should explain the unanimous gate in concrete terms specific to this PR. Voice: direct, technical, no marketing fluff. The comment should:
 
@@ -211,6 +228,7 @@ Compose a follow-up comment on the same PR that frames what happened. This is th
 - If agreedCount is 0, frame the silence as expected for the majority of PRs and not as failure
 - If agreedCount > 0, point the maintainer at the Reviewer comment for the findings themselves
 - Invite reaction feedback: 👎 on any agreed finding that's noise; the eyes reaction also helps
+- Include a dedicated line "**Public receipts opt-in:** <the URL>" that contains the opt-in URL above EXACTLY as given (no quoting, no edits, no truncation). One click flips this repo's closed findings onto /receipts; link is good for 30 days. Frame it as opt-in, off by default.
 - Mention this Onboarder comment is one-time per install — subsequent PRs are Reviewer-only output
 - Sign off with a sub line "— Onboarder · agent@antfleet.dev"
 - 100-200 words total
@@ -392,8 +410,29 @@ export async function runFirstReviewSummary(args: {
   let agentOutput: { comment_body: string };
   let promptUsed: string;
   let modelId: string;
+  let optInUrl: string;
   try {
-    const prompt = firstReviewSummaryPrompt(args);
+    optInUrl = buildOptInUrl({
+      baseUrl: onboarderBaseUrl(),
+      payload: {
+        installationId: args.installationId,
+        owner: args.owner,
+        repo: args.repo,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("onboarder.optin_url_failed", {
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      prNumber: args.prNumber,
+      message,
+    });
+    return;
+  }
+  try {
+    const prompt = firstReviewSummaryPrompt({ ...args, optInUrl });
     const result = await callOnboarderTool<{ comment_body: string }>({
       prompt,
       toolName: "submit_first_review_summary",

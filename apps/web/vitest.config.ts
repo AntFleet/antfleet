@@ -1,6 +1,15 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // Mirror the `@/*` alias declared in tsconfig.json. Tests that import
+  // app/api/... route modules need this at runtime because Next.js
+  // resolves the alias via its own webpack/turbopack config, not via tsc.
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./", import.meta.url)),
+    },
+  },
   test: {
     include: ["**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/.next/**"],
