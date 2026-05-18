@@ -116,11 +116,8 @@ export async function runReviewWorker(
     await deps.markReviewSucceeded({ reviewId, now: deps.now() });
     return { kind: "skipped", reviewId, reason: "comment_already_posted" };
   }
-  if (
-    row.installationId === null ||
-    row.owner === null ||
-    row.repo === null
-  ) {
+  const { installationId, owner, repo } = row;
+  if (installationId === null || owner === null || repo === null) {
     logError("worker.missing_dispatch_context", { reviewId, source });
     await deps.markReviewTerminallyFailed({
       reviewId,
@@ -129,6 +126,7 @@ export async function runReviewWorker(
     });
     return { kind: "failed", reviewId, attempts: row.processingAttempts, error: "missing dispatch context" };
   }
+  const dispatchRow = { ...row, installationId, owner, repo };
 
   const fromStatuses = allowedClaimSources(source);
   const claimed = await deps.claimReviewForProcessing({
@@ -145,7 +143,7 @@ export async function runReviewWorker(
   const attemptsAfterClaim = row.processingAttempts + 1;
 
   try {
-    await processClaimedRow(reviewId, row, deps);
+    await processClaimedRow(reviewId, dispatchRow, deps);
     await deps.markReviewSucceeded({ reviewId, now: deps.now() });
     logInfo("worker.completed", {
       reviewId,
