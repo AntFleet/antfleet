@@ -400,6 +400,9 @@ export type FleetActivityPage = {
   // max(onboarding_events.created_at) for public rows. Drives the
   // "last seen" timestamp on the Onboarder row in the agent roster.
   lastOnboarderAt: Date | null;
+  // max(reviews.created_at). Drives "last seen" for per-review agents so
+  // they reflect when a review actually ran, not when a finding was closed.
+  lastReviewAt: Date | null;
   windows: {
     last24h: ActivityWindow;
     last7d: ActivityWindow;
@@ -433,6 +436,10 @@ export type FleetActivityEvent =
       ts: Date;
       repoHash: string;
       prNumber: number;
+      // owner/repo only populated for publicReceipt rows (which are the
+      // only ones surfaced anyway). Null for legacy rows pre Mission 3.
+      owner: string | null;
+      repo: string | null;
     }
   | {
       kind: "finding_agreed";
@@ -442,6 +449,8 @@ export type FleetActivityEvent =
       category: string;
       title: string;
       repoHash: string;
+      owner: string | null;
+      repo: string | null;
     }
   | {
       kind: "finding_closed";
@@ -452,6 +461,8 @@ export type FleetActivityEvent =
       title: string;
       closureSha: string | null;
       repoHash: string;
+      owner: string | null;
+      repo: string | null;
     }
   | {
       // Single discriminator for every Onboarder action; eventType
@@ -477,6 +488,7 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     lastSweep,
     lastReceipt,
     lastOnboarder,
+    lastReview,
     win24h,
     win7d,
     winAll,
@@ -496,6 +508,7 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       .select({ value: max(onboardingEvents.createdAt) })
       .from(onboardingEvents)
       .where(eq(onboardingEvents.public, true)),
+    db.select({ value: max(reviews.createdAt) }).from(reviews),
     activityWindow(since24h),
     activityWindow(since7d),
     activityWindow(null),
@@ -504,6 +517,8 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
         ts: reviews.createdAt,
         repoHash: reviews.repoHash,
         prNumber: reviews.prNumber,
+        owner: reviews.owner,
+        repo: reviews.repo,
       })
       .from(reviews)
       // Left join so zero-finding reviews surface (the aggregate reviewsRun
@@ -520,6 +535,8 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
         category: findingStatus.category,
         title: findingStatus.title,
         repoHash: reviews.repoHash,
+        owner: reviews.owner,
+        repo: reviews.repo,
       })
       .from(findingStatus)
       .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
@@ -535,6 +552,8 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
         title: findingStatus.title,
         closureSha: findingStatus.closureSha,
         repoHash: reviews.repoHash,
+        owner: reviews.owner,
+        repo: reviews.repo,
       })
       .from(findingStatus)
       .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
@@ -572,6 +591,8 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       ts: r.ts,
       repoHash: r.repoHash,
       prNumber: r.prNumber,
+      owner: r.owner,
+      repo: r.repo,
     });
   }
   for (const f of eventAgreed) {
@@ -583,6 +604,8 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       category: f.category,
       title: f.title,
       repoHash: f.repoHash,
+      owner: f.owner,
+      repo: f.repo,
     });
   }
   for (const f of eventClosed) {
@@ -596,6 +619,8 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       title: f.title,
       closureSha: f.closureSha,
       repoHash: f.repoHash,
+      owner: f.owner,
+      repo: f.repo,
     });
   }
   for (const e of eventOnboarder) {
@@ -620,11 +645,13 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
   const lastSweepRaw = lastSweep[0]?.value ?? null;
   const lastReceiptRaw = lastReceipt[0]?.value ?? null;
   const lastOnboarderRaw = lastOnboarder[0]?.value ?? null;
+  const lastReviewRaw = lastReview[0]?.value ?? null;
 
   return {
     lastSweepAt: coerceDate(lastSweepRaw),
     lastReceiptAt: coerceDate(lastReceiptRaw),
     lastOnboarderAt: coerceDate(lastOnboarderRaw),
+    lastReviewAt: coerceDate(lastReviewRaw),
     windows: {
       last24h: win24h,
       last7d: win7d,

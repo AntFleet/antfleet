@@ -25,6 +25,7 @@ export default async function ActivityPage() {
     lastSweepAt: initial.lastSweepAt?.toISOString() ?? null,
     lastReceiptAt: initial.lastReceiptAt?.toISOString() ?? null,
     lastOnboarderAt: initial.lastOnboarderAt?.toISOString() ?? null,
+    lastReviewAt: initial.lastReviewAt?.toISOString() ?? null,
     windows: initial.windows,
     events: initial.events.map((e) => ({ ...e, ts: e.ts.toISOString() })),
   };

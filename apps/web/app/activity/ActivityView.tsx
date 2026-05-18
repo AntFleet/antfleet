@@ -33,15 +33,16 @@ type OnboarderEventTypeJson =
   | "partner_reply";
 
 type FleetActivityEventJson =
-  | { kind: "review_completed"; ts: string; repoHash: string; prNumber: number }
-  | { kind: "finding_agreed"; ts: string; findingId: string; severity: string; category: string; title: string; repoHash: string }
-  | { kind: "finding_closed"; ts: string; findingId: string; severity: string; category: string; title: string; closureSha: string | null; repoHash: string }
+  | { kind: "review_completed"; ts: string; repoHash: string; prNumber: number; owner: string | null; repo: string | null }
+  | { kind: "finding_agreed"; ts: string; findingId: string; severity: string; category: string; title: string; repoHash: string; owner: string | null; repo: string | null }
+  | { kind: "finding_closed"; ts: string; findingId: string; severity: string; category: string; title: string; closureSha: string | null; repoHash: string; owner: string | null; repo: string | null }
   | { kind: "onboarder_action"; ts: string; eventType: OnboarderEventTypeJson; repoHash: string; commentUrl: string | null };
 
 export type FleetActivityJson = {
   lastSweepAt: string | null;
   lastReceiptAt: string | null;
   lastOnboarderAt: string | null;
+  lastReviewAt: string | null;
   windows: {
     last24h: ActivityWindowJson;
     last7d: ActivityWindowJson;
@@ -118,6 +119,7 @@ export function ActivityView({
         lastSweepAt={data.lastSweepAt}
         lastReceiptAt={data.lastReceiptAt}
         lastOnboarderAt={data.lastOnboarderAt}
+        lastReviewAt={data.lastReviewAt}
         now={now}
       />
       <SectionDivider />
@@ -339,11 +341,13 @@ function AgentRoster({
   lastSweepAt,
   lastReceiptAt,
   lastOnboarderAt,
+  lastReviewAt,
   now,
 }: {
   lastSweepAt: string | null;
   lastReceiptAt: string | null;
   lastOnboarderAt: string | null;
+  lastReviewAt: string | null;
   now: Date;
 }) {
   return (
@@ -359,7 +363,10 @@ function AgentRoster({
                 ? lastSweepAt ?? lastReceiptAt
                 : agent.cadenceSource === "onboarder"
                   ? lastOnboarderAt
-                  : lastReceiptAt ?? lastSweepAt;
+                  // perReview agents tick whenever a review runs, not when
+                  // a finding closes — so prefer lastReviewAt over the
+                  // closure-based timestamps.
+                  : lastReviewAt ?? lastReceiptAt ?? lastSweepAt;
             return (
               <li
                 key={agent.name}
@@ -437,29 +444,79 @@ function eventKey(event: FleetActivityEventJson): string {
 
 function EventRow({ event, now }: { event: FleetActivityEventJson; now: Date }) {
   const kindMeta = kindMetaFor(event.kind);
-  const repoLabel = `repo ${event.repoHash.slice(0, 8)}`;
   const relative = formatRelativeTime(now, new Date(event.ts));
   const body = bodyFor(event);
-  const href =
+  const bodyHref =
     event.kind === "review_completed"
       ? null
       : event.kind === "onboarder_action"
         ? event.commentUrl
         : `/receipts/${encodeURIComponent(event.findingId)}`;
 
-  const content = (
+  // Repo label: GitHub link when owner/repo are present (publicReceipt rows
+  // only, by query gate); hashed fallback otherwise to preserve the existing
+  // privacy posture for private-repo events that surface aggregates.
+  const hasRepoIdentity =
+    (event.kind === "review_completed" ||
+      event.kind === "finding_agreed" ||
+      event.kind === "finding_closed") &&
+    typeof event.owner === "string" &&
+    typeof event.repo === "string";
+  const repoText = hasRepoIdentity
+    ? `${(event as { owner: string }).owner}/${(event as { repo: string }).repo}`
+    : `repo ${event.repoHash.slice(0, 8)}`;
+  const repoHref = hasRepoIdentity
+    ? `https://github.com/${(event as { owner: string }).owner}/${(event as { repo: string }).repo}`
+    : null;
+  const prHref =
+    event.kind === "review_completed" && hasRepoIdentity
+      ? `https://github.com/${(event as { owner: string }).owner}/${(event as { repo: string }).repo}/pull/${event.prNumber}`
+      : null;
+
+  return (
     <div className="flex flex-col gap-1 py-4 sm:flex-row sm:items-start sm:gap-6">
       <div className="flex items-center gap-2 sm:w-40 sm:shrink-0">
         <KindBadge label={kindMeta.label} tone={kindMeta.tone} />
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-[var(--color-ink)] leading-snug">{body}</p>
+        {bodyHref === null ? (
+          <p className="text-sm text-[var(--color-ink)] leading-snug">{body}</p>
+        ) : (
+          <a
+            href={bodyHref}
+            className="text-sm text-[var(--color-ink)] leading-snug hover:underline underline-offset-2"
+          >
+            {body}
+          </a>
+        )}
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
-          <span>{repoLabel}</span>
+          {repoHref === null ? (
+            <span>{repoText}</span>
+          ) : (
+            <a
+              href={repoHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-[var(--color-ink)] hover:underline underline-offset-2 transition-colors"
+            >
+              {repoText}
+            </a>
+          )}
           {event.kind === "review_completed" && (
             <>
               <span className="text-[var(--color-line-strong)]">·</span>
-              <span>PR #{event.prNumber}</span>
+              {prHref === null ? (
+                <span>PR #{event.prNumber}</span>
+              ) : (
+                <a
+                  href={prHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-[var(--color-ink)] hover:underline underline-offset-2 transition-colors"
+                >
+                  PR #{event.prNumber}
+                </a>
+              )}
             </>
           )}
           <span className="text-[var(--color-line-strong)]">·</span>
@@ -468,15 +525,6 @@ function EventRow({ event, now }: { event: FleetActivityEventJson; now: Date }) 
       </div>
     </div>
   );
-
-  if (href !== null) {
-    return (
-      <a href={href} className="block hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md transition-colors">
-        {content}
-      </a>
-    );
-  }
-  return content;
 }
 
 function KindBadge({
