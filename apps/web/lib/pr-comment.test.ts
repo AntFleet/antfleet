@@ -14,9 +14,7 @@ const mkFinding = (overrides: Partial<Finding> = {}): Finding => ({
   category: "bug",
   severity: "medium",
   confidence: "high",
-  evidence: [
-    { path: "src/foo.ts", startLine: 10, endLine: 20, symbol: null, quote: null },
-  ],
+  evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
   reasoning: "Reasoning text",
   reproduction: null,
   recommendation: "Recommendation text",
@@ -82,7 +80,9 @@ describe("formatPRComment", () => {
     const out = formatPRComment(
       [
         mkFinding({
-          evidence: [{ path: "no-lines.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+          evidence: [
+            { path: "no-lines.ts", startLine: null, endLine: null, symbol: null, quote: null },
+          ],
         }),
       ],
       META,
@@ -110,13 +110,16 @@ describe("formatPRComment", () => {
 
 describe("formatClosureReceipt", () => {
   const CLOSURE_SHA = "abc1234deadbeef5678901234567890abcdef1234";
-  const ORIGINAL_URL = "https://github.com/Augustas11/krisskross_shops/pull/1#issuecomment-4467353797";
+  const ORIGINAL_URL =
+    "https://github.com/Augustas11/krisskross_shops/pull/1#issuecomment-4467353797";
 
-  const mkInput = (overrides: {
-    finding?: Partial<Finding>;
-    findingId?: string;
-    originalCommentUrl?: string | null;
-  } = {}) => ({
+  const mkInput = (
+    overrides: {
+      finding?: Partial<Finding>;
+      findingId?: string;
+      originalCommentUrl?: string | null;
+    } = {},
+  ) => ({
     findingId: overrides.findingId ?? "83e79770-2",
     closureSha: CLOSURE_SHA,
     finding: mkFinding(overrides.finding ?? {}),
@@ -150,7 +153,9 @@ describe("formatClosureReceipt", () => {
     const out = formatClosureReceipt(
       mkInput({
         finding: {
-          evidence: [{ path: "src/admin.ts", startLine: 10, endLine: 22, symbol: null, quote: null }],
+          evidence: [
+            { path: "src/admin.ts", startLine: 10, endLine: 22, symbol: null, quote: null },
+          ],
         },
       }),
     );
@@ -190,7 +195,9 @@ describe("formatClosureReceipt", () => {
     const out = formatClosureReceipt(
       mkInput({
         finding: {
-          evidence: [{ path: "no-lines.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+          evidence: [
+            { path: "no-lines.ts", startLine: null, endLine: null, symbol: null, quote: null },
+          ],
         },
       }),
     );

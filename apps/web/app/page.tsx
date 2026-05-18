@@ -7,9 +7,7 @@ const RECEIPTS_URL = "/receipts";
 // ─── shared layout primitives ───────────────────────────────────────────────
 
 function ContentWrap({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mx-auto max-w-3xl px-6">{children}</div>
-  );
+  return <div className="mx-auto max-w-3xl px-6">{children}</div>;
 }
 
 function SectionDivider() {
@@ -32,11 +30,10 @@ function Hero({ installUrl }: { installUrl: string }) {
         </h1>
 
         <p className="mt-6 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
-          Two independent frontier models review every PR. Agreement between
-          them is the trust primitive — and every closed finding is pinned to
-          a public, SHA-verifiable receipt on the PR that resolved it. The
-          audit trail isn&apos;t in our database; it&apos;s on GitHub&apos;s
-          event log, where anyone can check it.
+          Two independent frontier models review every PR. Agreement between them is the trust
+          primitive — and every closed finding is pinned to a public, SHA-verifiable receipt on the
+          PR that resolved it. The audit trail isn&apos;t in our database; it&apos;s on
+          GitHub&apos;s event log, where anyone can check it.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -68,10 +65,9 @@ function ProofSection() {
           What a receipt looks like
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] mb-5 max-w-xl leading-relaxed">
-          Every closed finding becomes a public comment on the original PR. The
-          comment lives on GitHub&apos;s event log — not ours — so the
-          timestamp, the closing commit SHA, and the accumulation over time are
-          all third-party-witnessed. The receipts are the artifact.
+          Every closed finding becomes a public comment on the original PR. The comment lives on
+          GitHub&apos;s event log — not ours — so the timestamp, the closing commit SHA, and the
+          accumulation over time are all third-party-witnessed. The receipts are the artifact.
         </p>
 
         {/* receipt render — styled as a GitHub-comment facsimile */}
@@ -99,9 +95,7 @@ function ProofSection() {
                 83e79770-1
               </code>{" "}
               closed in{" "}
-              <code className="rounded bg-[var(--color-line)] px-1.5 py-0.5 text-xs">
-                1ee2fd9
-              </code>
+              <code className="rounded bg-[var(--color-line)] px-1.5 py-0.5 text-xs">1ee2fd9</code>
             </p>
 
             {/* badge row */}
@@ -127,8 +121,8 @@ function ProofSection() {
             </p>
 
             <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed mb-4">
-              Originally flagged in the AntFleet review on PR #14. Both frontier
-              models agreed independently. Receipt automated by the daily sweep.
+              Originally flagged in the AntFleet review on PR #14. Both frontier models agreed
+              independently. Receipt automated by the daily sweep.
             </p>
 
             {/* footer strip */}
@@ -138,8 +132,7 @@ function ProofSection() {
               </span>
               <span className="text-[var(--color-line-strong)]">·</span>
               <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-                commit{" "}
-                <span className="text-[var(--color-ink-muted)]">1ee2fd9</span>
+                commit <span className="text-[var(--color-ink-muted)]">1ee2fd9</span>
               </span>
               <span className="text-[var(--color-line-strong)]">·</span>
               <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
@@ -150,8 +143,7 @@ function ProofSection() {
         </div>
 
         <p className="mt-4 text-xs text-[var(--color-ink-subtle)] font-mono">
-          ↳ example receipt — format is identical to what appears on your actual
-          PRs
+          ↳ example receipt — format is identical to what appears on your actual PRs
         </p>
       </ContentWrap>
     </section>
@@ -164,8 +156,7 @@ const FEATURES = [
   {
     glyph: "◈",
     title: "Two frontier models",
-    description:
-      "Claude Opus 4.7 and GPT-5 review every PR independently, in parallel.",
+    description: "Claude Opus 4.7 and GPT-5 review every PR independently, in parallel.",
   },
   {
     glyph: "∩",
@@ -210,12 +201,8 @@ function FeatureGrid() {
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((f) => (
             <div key={f.title} className="flex flex-col gap-2">
-              <span className="font-mono text-base text-[var(--color-ink-muted)]">
-                {f.glyph}
-              </span>
-              <p className="text-sm font-semibold text-[var(--color-ink)]">
-                {f.title}
-              </p>
+              <span className="font-mono text-base text-[var(--color-ink-muted)]">{f.glyph}</span>
+              <p className="text-sm font-semibold text-[var(--color-ink)]">{f.title}</p>
               <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">
                 {f.description}
               </p>
@@ -249,8 +236,8 @@ function HowItWorks() {
               </h3>
             </div>
             <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed pl-7">
-              Authorize AntFleet on any repo. No other setup — no config file,
-              no CI yaml changes. The webhook is live on install.
+              Authorize AntFleet on any repo. No other setup — no config file, no CI yaml changes.
+              The webhook is live on install.
             </p>
             <div className="pl-7">
               <CodeBlock lang="bash">
@@ -271,9 +258,9 @@ function HowItWorks() {
               </h3>
             </div>
             <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed pl-7">
-              On every PR open or synchronize event, the two frontier models
-              review changed files in parallel. Only unanimous findings become a
-              comment. Disagreements are silently dropped.
+              On every PR open or synchronize event, the two frontier models review changed files in
+              parallel. Only unanimous findings become a comment. Disagreements are silently
+              dropped.
             </p>
             <div className="pl-7">
               <CodeBlock lang="text">
@@ -296,9 +283,9 @@ function HowItWorks() {
               </h3>
             </div>
             <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed pl-7">
-              Every night at 06:00 UTC, the sweeper checks each open finding
-              against main. When the code is gone, it posts a closure receipt
-              comment on the original PR — SHA-pinned, automated, permanent.
+              Every night at 06:00 UTC, the sweeper checks each open finding against main. When the
+              code is gone, it posts a closure receipt comment on the original PR — SHA-pinned,
+              automated, permanent.
             </p>
             <div className="pl-7">
               <CodeBlock lang="bash">
@@ -315,13 +302,7 @@ function HowItWorks() {
 
 // ─── code block ───────────────────────────────────────────────────────────────
 
-function CodeBlock({
-  children,
-  lang,
-}: {
-  children: string;
-  lang?: string;
-}) {
+function CodeBlock({ children, lang }: { children: string; lang?: string }) {
   return (
     <div className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg-elevated)] overflow-x-auto">
       {lang && (
@@ -349,8 +330,8 @@ function BottomCta({ installUrl }: { installUrl: string }) {
             Ready to start building a receipts trail?
           </h2>
           <p className="text-sm text-[var(--color-ink-muted)] mb-7 max-w-lg leading-relaxed">
-            Install the GitHub App on any repo. The first receipt appears after
-            the first PR is reviewed and closed.
+            Install the GitHub App on any repo. The first receipt appears after the first PR is
+            reviewed and closed.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <a

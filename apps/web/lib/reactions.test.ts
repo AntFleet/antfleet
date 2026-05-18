@@ -15,9 +15,7 @@ function raw(content: GitHubReactionContent, createdAt: string): RawReaction {
 
 describe("mapToMaintainerReactions", () => {
   it("returns [] for an empty list", () => {
-    expect(
-      mapToMaintainerReactions({ reviewId, findingId, rawReactions: [] }),
-    ).toEqual([]);
+    expect(mapToMaintainerReactions({ reviewId, findingId, rawReactions: [] })).toEqual([]);
   });
 
   it("maps every GitHub reaction content variant to a namespaced action_taken", () => {
@@ -65,10 +63,7 @@ describe("mapToMaintainerReactions", () => {
     const rows = mapToMaintainerReactions({
       reviewId,
       findingId,
-      rawReactions: [
-        raw("+1", "2026-05-17T09:30:45Z"),
-        raw("rocket", "2026-05-17T09:31:00Z"),
-      ],
+      rawReactions: [raw("+1", "2026-05-17T09:30:45Z"), raw("rocket", "2026-05-17T09:31:00Z")],
     });
     for (const row of rows) {
       expect(row.reviewId).toBe(reviewId);

@@ -26,11 +26,7 @@ function getSecret(): string {
 
 function base64urlEncode(input: Buffer | string): string {
   const buf = typeof input === "string" ? Buffer.from(input, "utf8") : input;
-  return buf
-    .toString("base64")
-    .replace(/=+$/u, "")
-    .replace(/\+/gu, "-")
-    .replace(/\//gu, "_");
+  return buf.toString("base64").replace(/=+$/u, "").replace(/\+/gu, "-").replace(/\//gu, "_");
 }
 
 function base64urlDecode(input: string): Buffer {
@@ -43,10 +39,7 @@ function hmacFor(secret: string, payload: string): Buffer {
   return createHmac("sha256", secret).update(payload).digest();
 }
 
-export function signToken(
-  payload: OptInPayload,
-  now: Date = new Date(),
-): string {
+export function signToken(payload: OptInPayload, now: Date = new Date()): string {
   const signed: SignedPayload = {
     installationId: payload.installationId,
     owner: payload.owner,
@@ -63,10 +56,7 @@ export type VerifyResult =
   | { kind: "expired" }
   | { kind: "invalid" };
 
-export function verifyTokenDetailed(
-  token: string,
-  now: Date = new Date(),
-): VerifyResult {
+export function verifyTokenDetailed(token: string, now: Date = new Date()): VerifyResult {
   if (typeof token !== "string" || token.length === 0) return { kind: "invalid" };
   const dot = token.indexOf(".");
   if (dot === -1 || dot === token.length - 1) return { kind: "invalid" };
@@ -107,10 +97,7 @@ export function verifyTokenDetailed(
   return { kind: "ok", payload: { installationId, owner, repo } };
 }
 
-export function verifyToken(
-  token: string,
-  now: Date = new Date(),
-): OptInPayload | null {
+export function verifyToken(token: string, now: Date = new Date()): OptInPayload | null {
   const result = verifyTokenDetailed(token, now);
   return result.kind === "ok" ? result.payload : null;
 }

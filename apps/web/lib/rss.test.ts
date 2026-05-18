@@ -52,9 +52,7 @@ describe("renderRssFeed", () => {
     expect(xml).toContain(`<rss version="2.0"`);
     expect(xml).toContain(`<title>Test</title>`);
     expect(xml).toContain(`<atom:link href="https://example.com/rss"`);
-    expect(xml).toContain(
-      `<lastBuildDate>Sun, 17 May 2026 03:54:38 GMT</lastBuildDate>`,
-    );
+    expect(xml).toContain(`<lastBuildDate>Sun, 17 May 2026 03:54:38 GMT</lastBuildDate>`);
   });
 
   it("renders each item with escaped fields", () => {
@@ -74,8 +72,12 @@ describe("renderRssFeed", () => {
         },
       ],
     });
-    expect(xml).toContain(`<title>Bug with &lt;special&gt; &quot;chars&quot; &amp; ampersands</title>`);
-    expect(xml).toContain(`<description>A description with &lt;html&gt; tags &amp; entities</description>`);
+    expect(xml).toContain(
+      `<title>Bug with &lt;special&gt; &quot;chars&quot; &amp; ampersands</title>`,
+    );
+    expect(xml).toContain(
+      `<description>A description with &lt;html&gt; tags &amp; entities</description>`,
+    );
     expect(xml).toContain(`<guid isPermaLink="false">foo-bar</guid>`);
     expect(xml).not.toContain("<html>");
     expect(xml).not.toContain("<special>");
@@ -91,6 +93,8 @@ describe("renderRssFeed", () => {
       items: [],
     });
     expect(xml).toContain(`<title>Feed with &lt;evil&gt;</title>`);
-    expect(xml).toContain(`<description>Desc with &quot;quotes&quot; &amp; ampersands</description>`);
+    expect(xml).toContain(
+      `<description>Desc with &quot;quotes&quot; &amp; ampersands</description>`,
+    );
   });
 });

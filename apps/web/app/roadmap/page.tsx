@@ -39,15 +39,13 @@ function RoadmapHero() {
           Roadmap · north star + open decisions
         </p>
         <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug max-w-xl">
-          Where AntFleet is going, and what we haven&apos;t yet
-          decided.
+          Where AntFleet is going, and what we haven&apos;t yet decided.
         </h1>
         <p className="mt-5 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
-          The three goals below are the trust-substrate edge: compute
-          efficiency, receipt density, and holder utility. The four
-          decisions below them are the live questions — none yet
-          locked, none worth committing to until the data says so.
-          This page updates when a decision flips.
+          The three goals below are the trust-substrate edge: compute efficiency, receipt density,
+          and holder utility. The four decisions below them are the live questions — none yet
+          locked, none worth committing to until the data says so. This page updates when a decision
+          flips.
         </p>
       </ContentWrap>
     </section>
@@ -97,9 +95,7 @@ function NorthStarSection() {
                 <h3 className="text-base font-semibold text-[var(--color-ink)] leading-snug">
                   {g.title}
                 </h3>
-                <p className="font-mono text-xs text-[var(--color-ink-muted)]">
-                  {g.metric}
-                </p>
+                <p className="font-mono text-xs text-[var(--color-ink-muted)]">{g.metric}</p>
                 <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">
                   {g.description}
                 </p>
@@ -117,8 +113,7 @@ function NorthStarSection() {
 const DECISIONS = [
   {
     title: "Paid tier — private repos in DIEM",
-    summary:
-      "Open question: should private-repo customers pay the agent in DIEM directly?",
+    summary: "Open question: should private-repo customers pay the agent in DIEM directly?",
     pros: "Strengthens work valuation — every paid review is a priced artifact, denominated in the agent's own work-unit.",
     cons: 'Complicates the "agent has a monopoly over its own economy" story; introduces customer-facing token UX that may slow Phase 2 throughput.',
     state: "decide before launch · no commitment yet",
@@ -189,9 +184,7 @@ function DecisionRow({ term, body }: { term: string; body: string }) {
       <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
         {term}
       </dt>
-      <dd className="text-sm text-[var(--color-ink-muted)] leading-relaxed">
-        {body}
-      </dd>
+      <dd className="text-sm text-[var(--color-ink-muted)] leading-relaxed">{body}</dd>
     </div>
   );
 }
@@ -206,20 +199,17 @@ function CadenceSection() {
           Cadence
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl">
-          We update this page when a decision flips — never to add
-          aspirational items. The
-          {" "}
+          We update this page when a decision flips — never to add aspirational items. The{" "}
           <a
             href="/changelog"
             className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity"
           >
             changelog
-          </a>
-          {" "}records what shipped; this page records what we&apos;re
-          deliberately not committing to yet. If something on the
-          decisions list has been here for more than two months
-          without movement, it&apos;s probably the wrong question and
-          should be retired rather than rephrased.
+          </a>{" "}
+          records what shipped; this page records what we&apos;re deliberately not committing to
+          yet. If something on the decisions list has been here for more than two months without
+          movement, it&apos;s probably the wrong question and should be retired rather than
+          rephrased.
         </p>
         <p className="mt-4 font-mono text-xs text-[var(--color-ink-subtle)]">
           Last updated: {LAST_UPDATED}

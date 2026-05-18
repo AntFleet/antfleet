@@ -81,16 +81,16 @@ Every distinct `to` address the wallet has called between deploy
 Basescan with one exception (the implementation behind the proxy is verified
 separately).
 
-| # | Address | Basescan name | Purpose | Verified | Basescan |
-| - | ------- | ------------- | ------- | -------- | -------- |
-| 1 | `0xF4d97F2da56e8c3098f3a8D538DB630A2606a024` | Diem | DIEM ERC-20 with built-in staking (`stake`/`unstake`/`totalStaked`) and an LP-fee hook routed through the LiquidFeeLocker. Solidity 0.8.26. | yes | [link](https://basescan.org/address/0xF4d97F2da56e8c3098f3a8D538DB630A2606a024) |
-| 2 | `0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf` | Venice | VVV ERC-20, the Venice protocol's reward / governance token. Solidity 0.8.26. | yes | [link](https://basescan.org/address/0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf) |
-| 3 | `0x321b7ff75154472B18EDb199033fF4D116F340Ff` | ERC1967Proxy | Upgradeable proxy for the Venice staking module. Delegates to (4). | yes (proxy) | [link](https://basescan.org/address/0x321b7ff75154472B18EDb199033fF4D116F340Ff) |
-| 4 | `0xe37A7920dbc11253ac6d031C29f592f71B348DCA` | StakingV2 | Implementation behind (3). Exposes `stake(address,uint256)` and `claim()`. Solidity 0.8.26. | yes | [link](https://basescan.org/address/0xe37A7920dbc11253ac6d031C29f592f71B348DCA) |
-| 5 | `0xF7d3BE3FC0de76fA5550C29A8F6fa53667B876FF` | LiquidFeeLocker | Custodies LP fees accrued by DIEM-paired Uniswap V3 positions. Exposes `claim(address feeOwner, address token)` and the view `feesToClaim(address,address)`. Solidity 0.8.28. | yes | [link](https://basescan.org/address/0xF7d3BE3FC0de76fA5550C29A8F6fa53667B876FF) |
-| 6 | `0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1` | NonfungiblePositionManager | Uniswap V3 position-NFT manager (standard deployment). Called for `mint`. | yes | [link](https://basescan.org/address/0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1) |
-| 7 | `0x80d995189ecc593672aD4703b250a5e82672EB1D` | UniswapV3Pool | The WETH/DIEM 1% pool. Not called directly by the wallet — touched indirectly during `mint` (Deliverable 4) and visible in the pool's `Mint` event. `token0()` returns WETH `0x4200…0006`, `token1()` returns DIEM, `fee()` returns `0x2710` (=10000 = 1%). | yes | [link](https://basescan.org/address/0x80d995189ecc593672aD4703b250a5e82672EB1D) |
-| 8 | `0x0000000000001fF3684f28c67538d4D072C22734` | AllowanceHolder | 0x Protocol's AllowanceHolder (Settler v2 pull-side). Called for `exec` swaps that route DIEM → VVV through the V3 pool at `0x01271A20…`. | yes | [link](https://basescan.org/address/0x0000000000001fF3684f28c67538d4D072C22734) |
+| #   | Address                                      | Basescan name              | Purpose                                                                                                                                                                                                                                                     | Verified    | Basescan                                                                        |
+| --- | -------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------- |
+| 1   | `0xF4d97F2da56e8c3098f3a8D538DB630A2606a024` | Diem                       | DIEM ERC-20 with built-in staking (`stake`/`unstake`/`totalStaked`) and an LP-fee hook routed through the LiquidFeeLocker. Solidity 0.8.26.                                                                                                                 | yes         | [link](https://basescan.org/address/0xF4d97F2da56e8c3098f3a8D538DB630A2606a024) |
+| 2   | `0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf` | Venice                     | VVV ERC-20, the Venice protocol's reward / governance token. Solidity 0.8.26.                                                                                                                                                                               | yes         | [link](https://basescan.org/address/0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf) |
+| 3   | `0x321b7ff75154472B18EDb199033fF4D116F340Ff` | ERC1967Proxy               | Upgradeable proxy for the Venice staking module. Delegates to (4).                                                                                                                                                                                          | yes (proxy) | [link](https://basescan.org/address/0x321b7ff75154472B18EDb199033fF4D116F340Ff) |
+| 4   | `0xe37A7920dbc11253ac6d031C29f592f71B348DCA` | StakingV2                  | Implementation behind (3). Exposes `stake(address,uint256)` and `claim()`. Solidity 0.8.26.                                                                                                                                                                 | yes         | [link](https://basescan.org/address/0xe37A7920dbc11253ac6d031C29f592f71B348DCA) |
+| 5   | `0xF7d3BE3FC0de76fA5550C29A8F6fa53667B876FF` | LiquidFeeLocker            | Custodies LP fees accrued by DIEM-paired Uniswap V3 positions. Exposes `claim(address feeOwner, address token)` and the view `feesToClaim(address,address)`. Solidity 0.8.28.                                                                               | yes         | [link](https://basescan.org/address/0xF7d3BE3FC0de76fA5550C29A8F6fa53667B876FF) |
+| 6   | `0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1` | NonfungiblePositionManager | Uniswap V3 position-NFT manager (standard deployment). Called for `mint`.                                                                                                                                                                                   | yes         | [link](https://basescan.org/address/0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1) |
+| 7   | `0x80d995189ecc593672aD4703b250a5e82672EB1D` | UniswapV3Pool              | The WETH/DIEM 1% pool. Not called directly by the wallet — touched indirectly during `mint` (Deliverable 4) and visible in the pool's `Mint` event. `token0()` returns WETH `0x4200…0006`, `token1()` returns DIEM, `fee()` returns `0x2710` (=10000 = 1%). | yes         | [link](https://basescan.org/address/0x80d995189ecc593672aD4703b250a5e82672EB1D) |
+| 8   | `0x0000000000001fF3684f28c67538d4D072C22734` | AllowanceHolder            | 0x Protocol's AllowanceHolder (Settler v2 pull-side). Called for `exec` swaps that route DIEM → VVV through the V3 pool at `0x01271A20…`.                                                                                                                   | yes         | [link](https://basescan.org/address/0x0000000000001fF3684f28c67538d4D072C22734) |
 
 No unverified contracts were called by the wallet — Deliverable 1 contains no
 "skip" rows.
@@ -100,6 +100,7 @@ No unverified contracts were called by the wallet — Deliverable 1 contains no
 There are two separate stake flows, as called out in the contradictions block.
 
 **Flow A — Stake DIEM into DIEM's own staking module.**
+
 - Selector: `0xa694fc3a`
 - Decoded: `stake(uint256 amount)` on
   [`0xF4d97F2da56e8c3098f3a8D538DB630A2606a024`](https://basescan.org/address/0xF4d97F2da56e8c3098f3a8D538DB630A2606a024) (Diem)
@@ -112,6 +113,7 @@ There are two separate stake flows, as called out in the contradictions block.
 - Gas used: 63,316.
 
 **Flow B — Stake VVV (Venice) on Venice's `StakingV2`.**
+
 - Selector: `0xadc9772e`
 - Decoded: `stake(address recipient, uint256 amount)` on the ERC-1967 proxy
   [`0x321b7ff75154472B18EDb199033fF4D116F340Ff`](https://basescan.org/address/0x321b7ff75154472B18EDb199033fF4D116F340Ff),
@@ -200,19 +202,19 @@ expect both surfaces and decide which one it's mirroring.
 
 **Decoded params (verbatim):**
 
-| Field | Value | Interpretation |
-| ----- | ----- | -------------- |
-| `token0` | `0x4200000000000000000000000000000000000006` | WETH on Base |
-| `token1` | `0xF4d97F2da56e8c3098f3a8D538DB630A2606a024` | DIEM |
-| `fee` | `10000` | **1% fee tier** — matches the source-tweet claim |
-| `tickLower` | `5000` | |
-| `tickUpper` | `5400` | 400-tick band, ≈ 4.08 % price width |
-| `amount0Desired` | `0` | **No WETH** — single-sided position |
-| `amount1Desired` | `1983691479721410419` | ≈ 1.9837 DIEM |
-| `amount0Min` | `0` | |
-| `amount1Min` | `1963854564924196314` | ≈ 1.9639 DIEM (~1% slippage floor) |
-| `recipient` | `0x8767Df39…aB6A3` | wallet keeps the position NFT |
-| `deadline` | `1778769957` | Unix; ≈ 2026-05-14T14:45:57Z, i.e. 10 min from submission |
+| Field            | Value                                        | Interpretation                                            |
+| ---------------- | -------------------------------------------- | --------------------------------------------------------- |
+| `token0`         | `0x4200000000000000000000000000000000000006` | WETH on Base                                              |
+| `token1`         | `0xF4d97F2da56e8c3098f3a8D538DB630A2606a024` | DIEM                                                      |
+| `fee`            | `10000`                                      | **1% fee tier** — matches the source-tweet claim          |
+| `tickLower`      | `5000`                                       |                                                           |
+| `tickUpper`      | `5400`                                       | 400-tick band, ≈ 4.08 % price width                       |
+| `amount0Desired` | `0`                                          | **No WETH** — single-sided position                       |
+| `amount1Desired` | `1983691479721410419`                        | ≈ 1.9837 DIEM                                             |
+| `amount0Min`     | `0`                                          |                                                           |
+| `amount1Min`     | `1963854564924196314`                        | ≈ 1.9639 DIEM (~1% slippage floor)                        |
+| `recipient`      | `0x8767Df39…aB6A3`                           | wallet keeps the position NFT                             |
+| `deadline`       | `1778769957`                                 | Unix; ≈ 2026-05-14T14:45:57Z, i.e. 10 min from submission |
 
 The `Mint` event on the WETH/DIEM 1% pool
 ([`0x80d995189ecc593672aD4703b250a5e82672EB1D`](https://basescan.org/address/0x80d995189ecc593672aD4703b250a5e82672EB1D))
@@ -232,7 +234,7 @@ manager assigns position **NFT tokenId 5,119,885** to the wallet.
   concentrated-liquidity APR, not LP'ing wide.
 - **No follow-up `increaseLiquidity` was observed in-window.** The LP was set
   up once and left alone; the active loop is claim-and-stake (Deliverables 2
-  + 3), not LP rebalancing.
+  - 3), not LP rebalancing.
 
 Gas used: 475,393 — the single most expensive op in the window.
 
@@ -291,15 +293,15 @@ idle" to "burst then weekly tickover").
 
 **Cost per action (gas × price, observed):**
 
-| Action | Sample gas | Gas price (gwei) | Cost (ETH) | Cost @ $2,190/ETH |
-| ------ | ---------: | --------------: | ---------: | ----------------: |
-| `Diem.stake` | 63,316 | 0.006 | 3.80e-7 | $0.00083 |
-| `StakingV2.stake` (via proxy) | 144,373 | 0.006 | 8.66e-7 | $0.00190 |
-| `LiquidFeeLocker.claim` (paying) | 59,714 | 0.006 | 3.58e-7 | $0.00078 |
-| `LiquidFeeLocker.claim` (empty) | 42,614 | 0.006 | 2.56e-7 | $0.00056 |
-| `AllowanceHolder.exec` (DIEM→VVV swap) | 283,718–388,336 | 0.006 | 1.70e-6 to 2.33e-6 | $0.00373 to $0.00510 |
-| `NonfungiblePositionManager.mint` | 475,393 | 0.006 | 2.85e-6 | $0.00625 |
-| `Diem.approve` | 26,003–46,231 | 0.006 | 1.56e-7 to 2.77e-7 | $0.00034 to $0.00061 |
+| Action                                 |      Sample gas | Gas price (gwei) |         Cost (ETH) |    Cost @ $2,190/ETH |
+| -------------------------------------- | --------------: | ---------------: | -----------------: | -------------------: |
+| `Diem.stake`                           |          63,316 |            0.006 |            3.80e-7 |             $0.00083 |
+| `StakingV2.stake` (via proxy)          |         144,373 |            0.006 |            8.66e-7 |             $0.00190 |
+| `LiquidFeeLocker.claim` (paying)       |          59,714 |            0.006 |            3.58e-7 |             $0.00078 |
+| `LiquidFeeLocker.claim` (empty)        |          42,614 |            0.006 |            2.56e-7 |             $0.00056 |
+| `AllowanceHolder.exec` (DIEM→VVV swap) | 283,718–388,336 |            0.006 | 1.70e-6 to 2.33e-6 | $0.00373 to $0.00510 |
+| `NonfungiblePositionManager.mint`      |         475,393 |            0.006 |            2.85e-6 |             $0.00625 |
+| `Diem.approve`                         |   26,003–46,231 |            0.006 | 1.56e-7 to 2.77e-7 | $0.00034 to $0.00061 |
 
 ETH price taken from Blockscout's `exchange_rate` field at snapshot
 (`$2,190.21`). Base gas prices during the observation window were a flat ~6

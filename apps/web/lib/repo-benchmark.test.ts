@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  clearBenchmarkCache,
-  isBenchmarkRepo,
-  type RepoBenchmarkOctokit,
-} from "./repo-benchmark";
+import { clearBenchmarkCache, isBenchmarkRepo, type RepoBenchmarkOctokit } from "./repo-benchmark";
 
 const captureLogs = (): { calls: string[] } => {
   const calls: string[] = [];

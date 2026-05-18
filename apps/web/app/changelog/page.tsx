@@ -81,7 +81,14 @@ function Hero({ introHtml }: { introHtml: string }) {
   );
 }
 
-function LogSection({ section }: { section: { heading: string; entries: ReturnType<typeof parseChangelog>["sections"][number]["entries"] } }) {
+function LogSection({
+  section,
+}: {
+  section: {
+    heading: string;
+    entries: ReturnType<typeof parseChangelog>["sections"][number]["entries"];
+  };
+}) {
   return (
     <section className="pb-12">
       <ContentWrap>
@@ -91,18 +98,11 @@ function LogSection({ section }: { section: { heading: string; entries: ReturnTy
         <ul className="flex flex-col gap-4 max-w-xl text-sm text-[var(--color-ink-muted)] leading-relaxed">
           {section.entries.map((e, i) => (
             <li key={i} className="flex flex-col gap-1">
-              <div
-                className="prose-text"
-                dangerouslySetInnerHTML={{ __html: e.html }}
-              />
+              <div className="prose-text" dangerouslySetInnerHTML={{ __html: e.html }} />
               {e.children.length > 0 && (
                 <ul className="ml-4 mt-1 flex flex-col gap-1 text-[13px] text-[var(--color-ink-subtle)]">
                   {e.children.map((c, j) => (
-                    <li
-                      key={j}
-                      className="prose-text"
-                      dangerouslySetInnerHTML={{ __html: c }}
-                    />
+                    <li key={j} className="prose-text" dangerouslySetInnerHTML={{ __html: c }} />
                   ))}
                 </ul>
               )}
@@ -114,7 +114,11 @@ function LogSection({ section }: { section: { heading: string; entries: ReturnTy
   );
 }
 
-function Appendix({ appendix }: { appendix: NonNullable<ReturnType<typeof parseChangelog>["appendix"]> }) {
+function Appendix({
+  appendix,
+}: {
+  appendix: NonNullable<ReturnType<typeof parseChangelog>["appendix"]>;
+}) {
   return (
     <section className="pb-20">
       <ContentWrap>
@@ -132,11 +136,7 @@ function Appendix({ appendix }: { appendix: NonNullable<ReturnType<typeof parseC
             </h3>
             <ul className="flex flex-col gap-3 max-w-xl text-sm text-[var(--color-ink-muted)] leading-relaxed">
               {s.entries.map((e, i) => (
-                <li
-                  key={i}
-                  className="prose-text"
-                  dangerouslySetInnerHTML={{ __html: e.html }}
-                />
+                <li key={i} className="prose-text" dangerouslySetInnerHTML={{ __html: e.html }} />
               ))}
             </ul>
           </div>

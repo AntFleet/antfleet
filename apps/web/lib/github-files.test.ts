@@ -64,12 +64,9 @@ describe("isReviewablePath — extension allowlist", () => {
     expect(isReviewablePath(`src/example${ext}`)).toBe(true);
   });
 
-  it.each([".png", ".gif", ".gradle", ".lock", ".bin", ".pdf", ".zip"])(
-    "rejects %s",
-    (ext) => {
-      expect(isReviewablePath(`src/example${ext}`)).toBe(false);
-    },
-  );
+  it.each([".png", ".gif", ".gradle", ".lock", ".bin", ".pdf", ".zip"])("rejects %s", (ext) => {
+    expect(isReviewablePath(`src/example${ext}`)).toBe(false);
+  });
 });
 
 describe("isReviewablePath — basename blocklist", () => {
@@ -104,18 +101,15 @@ describe("isReviewablePath — basename blocklist", () => {
 });
 
 describe("isReviewablePath — path-suffix blocklist", () => {
-  it.each(REVIEW_BLOCKLIST_PATH_SUFFIXES)(
-    "rejects paths containing %s",
-    (suffix) => {
-      // Construct a realistic path that contains the suffix. Suffixes
-      // starting with "/" are directory markers; suffixes starting with "."
-      // are filename suffixes.
-      const sample = suffix.startsWith("/")
-        ? `apps/web${suffix}generated/file.js`
-        : `apps/web/src/file${suffix}`;
-      expect(isReviewablePath(sample)).toBe(false);
-    },
-  );
+  it.each(REVIEW_BLOCKLIST_PATH_SUFFIXES)("rejects paths containing %s", (suffix) => {
+    // Construct a realistic path that contains the suffix. Suffixes
+    // starting with "/" are directory markers; suffixes starting with "."
+    // are filename suffixes.
+    const sample = suffix.startsWith("/")
+      ? `apps/web${suffix}generated/file.js`
+      : `apps/web/src/file${suffix}`;
+    expect(isReviewablePath(sample)).toBe(false);
+  });
 
   it("accepts files in plausible source paths that don't hit any blocklist", () => {
     expect(isReviewablePath("apps/web/lib/foo.ts")).toBe(true);
@@ -242,8 +236,13 @@ describe("fetchChangedFilesWith", () => {
     });
     expect(result).toHaveLength(7);
     expect(result.map((f) => f.filename)).toEqual([
-      "src/f0.ts", "src/f1.ts", "src/f2.ts", "src/f3.ts",
-      "src/f4.ts", "src/f5.ts", "src/f6.ts",
+      "src/f0.ts",
+      "src/f1.ts",
+      "src/f2.ts",
+      "src/f3.ts",
+      "src/f4.ts",
+      "src/f5.ts",
+      "src/f6.ts",
     ]);
   });
 

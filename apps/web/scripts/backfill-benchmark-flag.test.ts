@@ -6,10 +6,7 @@ import {
   type CandidateGroup,
 } from "./backfill-benchmark-flag";
 
-function mkDeps(overrides: {
-  groups: CandidateGroup[];
-  checks: Record<string, BenchmarkCheck>;
-}): {
+function mkDeps(overrides: { groups: CandidateGroup[]; checks: Record<string, BenchmarkCheck> }): {
   deps: BackfillDeps;
   flipped: string[][];
   logs: string[];
@@ -63,9 +60,7 @@ describe("runBenchmarkBackfill", () => {
     expect(summary.errorGroups).toBe(0);
     expect(summary.rowsFlipped).toBe(4);
 
-    const nonBenchDecision = summary.decisions.find(
-      (d) => d.repo === "regular-app",
-    );
+    const nonBenchDecision = summary.decisions.find((d) => d.repo === "regular-app");
     expect(nonBenchDecision?.decision).toBe("not_benchmark");
     expect(nonBenchDecision?.flipped).toBe(0);
   });
@@ -98,9 +93,7 @@ describe("runBenchmarkBackfill", () => {
     expect(summary.errorGroups).toBe(1);
     expect(summary.rowsFlipped).toBe(1);
 
-    const errorDecision = summary.decisions.find(
-      (d) => d.repo === "rate-limited",
-    );
+    const errorDecision = summary.decisions.find((d) => d.repo === "rate-limited");
     expect(errorDecision?.decision).toBe("error");
     expect(errorDecision?.error).toBe("rate limit exceeded");
     expect(errorDecision?.flipped).toBe(0);

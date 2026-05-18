@@ -102,12 +102,8 @@
           "name": "finding_status_review_id_reviews_review_id_fk",
           "tableFrom": "finding_status",
           "tableTo": "reviews",
-          "columnsFrom": [
-            "review_id"
-          ],
-          "columnsTo": [
-            "review_id"
-          ],
+          "columnsFrom": ["review_id"],
+          "columnsTo": ["review_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -117,9 +113,7 @@
         "finding_status_finding_id_unique": {
           "name": "finding_status_finding_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "finding_id"
-          ]
+          "columns": ["finding_id"]
         }
       },
       "policies": {},
@@ -181,12 +175,8 @@
           "name": "maintainer_reactions_review_id_reviews_review_id_fk",
           "tableFrom": "maintainer_reactions",
           "tableTo": "reviews",
-          "columnsFrom": [
-            "review_id"
-          ],
-          "columnsTo": [
-            "review_id"
-          ],
+          "columnsFrom": ["review_id"],
+          "columnsTo": ["review_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -196,12 +186,7 @@
         "maintainer_reactions_dedup": {
           "name": "maintainer_reactions_dedup",
           "nullsNotDistinct": false,
-          "columns": [
-            "review_id",
-            "finding_id",
-            "reaction_at",
-            "action_taken"
-          ]
+          "columns": ["review_id", "finding_id", "reaction_at", "action_taken"]
         }
       },
       "policies": {},
@@ -383,11 +368,7 @@
         "outgoing_prs_upstream_uniq": {
           "name": "outgoing_prs_upstream_uniq",
           "nullsNotDistinct": false,
-          "columns": [
-            "upstream_owner",
-            "upstream_repo",
-            "upstream_pr_number"
-          ]
+          "columns": ["upstream_owner", "upstream_repo", "upstream_pr_number"]
         }
       },
       "policies": {},

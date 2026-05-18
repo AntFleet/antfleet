@@ -56,17 +56,12 @@ export default async function ReceiptsPage({
   const lastUpdatedRelative =
     lastUpdatedAt === null ? null : formatRelativeTime(now, lastUpdatedAt);
   const nextCursor =
-    hasMore && displays.length > 0
-      ? (displays[displays.length - 1]?.closedAtIso ?? null)
-      : null;
+    hasMore && displays.length > 0 ? (displays[displays.length - 1]?.closedAtIso ?? null) : null;
   const isPaginated = before !== undefined;
 
   return (
     <>
-      <ReceiptsHero
-        totalClosed={totalClosed}
-        lastUpdatedRelative={lastUpdatedRelative}
-      />
+      <ReceiptsHero totalClosed={totalClosed} lastUpdatedRelative={lastUpdatedRelative} />
       <SectionDivider />
       {crossRepo.recent.length > 0 && (
         <>
@@ -84,13 +79,7 @@ export default async function ReceiptsPage({
   );
 }
 
-function CrossRepoSection({
-  rows,
-  now,
-}: {
-  rows: CrossRepoReceiptRow[];
-  now: Date;
-}) {
+function CrossRepoSection({ rows, now }: { rows: CrossRepoReceiptRow[]; now: Date }) {
   return (
     <section className="pb-16">
       <ContentWrap>
@@ -103,9 +92,9 @@ function CrossRepoSection({
           </span>
         </div>
         <p className="mb-5 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-          AntFleet flagged a bug on a repo it doesn&apos;t own, and the upstream
-          owner merged the fix. The highest-trust receipt class — the
-          maintainer of a project we don&apos;t control accepted the change.
+          AntFleet flagged a bug on a repo it doesn&apos;t own, and the upstream owner merged the
+          fix. The highest-trust receipt class — the maintainer of a project we don&apos;t control
+          accepted the change.
         </p>
         <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
           {rows.map((row) => (
@@ -119,13 +108,7 @@ function CrossRepoSection({
   );
 }
 
-function CrossRepoRow({
-  row,
-  now,
-}: {
-  row: CrossRepoReceiptRow;
-  now: Date;
-}) {
+function CrossRepoRow({ row, now }: { row: CrossRepoReceiptRow; now: Date }) {
   const arrowLabel = `AntFleet → ${row.upstreamOwner.toLowerCase()}/${row.upstreamRepo.toLowerCase()}`;
   const shortSha = row.mergeSha.slice(0, 7);
   return (
@@ -213,9 +196,9 @@ function ReceiptsHero({
         )}
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-          Every entry below is a comment on a real PR — the closure receipt
-          lives on GitHub&apos;s event log, not ours. Click any link to verify
-          the SHA, the timestamp, and the surrounding diff for yourself.
+          Every entry below is a comment on a real PR — the closure receipt lives on GitHub&apos;s
+          event log, not ours. Click any link to verify the SHA, the timestamp, and the surrounding
+          diff for yourself.
         </p>
         <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
           Showing all public-repo receipts; private repos opt in via{" "}
@@ -385,9 +368,7 @@ function EmptyReceipts({
       <section className="pb-20">
         <ContentWrap>
           <div className="rounded-md border border-dashed border-[var(--color-line-strong)] p-8 text-center">
-            <p className="text-sm text-[var(--color-ink)] mb-2">
-              No older receipts.
-            </p>
+            <p className="text-sm text-[var(--color-ink)] mb-2">No older receipts.</p>
             <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-md mx-auto">
               You&apos;ve scrolled past the earliest closure on file.
             </p>
@@ -409,10 +390,9 @@ function EmptyReceipts({
         <div className="rounded-md border border-dashed border-[var(--color-line-strong)] p-8 text-center">
           <p className="text-sm text-[var(--color-ink)] mb-2">No receipts yet.</p>
           <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-md mx-auto">
-            The first one will appear after a finding is closed on the resolving
-            commit. The daily sweeper checks open findings against{" "}
-            <code className="font-mono text-xs text-[var(--color-ink)]">main</code>{" "}
-            at 06:00 UTC.
+            The first one will appear after a finding is closed on the resolving commit. The daily
+            sweeper checks open findings against{" "}
+            <code className="font-mono text-xs text-[var(--color-ink)]">main</code> at 06:00 UTC.
           </p>
         </div>
       </ContentWrap>

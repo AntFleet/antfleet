@@ -13,14 +13,38 @@
   ],
   "type": "module",
   "exports": {
-    "./provider": { "types": "./dist/provider.d.ts", "default": "./dist/provider.js" },
-    "./providers/stacked": { "types": "./dist/providers/stacked.d.ts", "default": "./dist/providers/stacked.js" },
-    "./providers/agreement": { "types": "./dist/providers/agreement.d.ts", "default": "./dist/providers/agreement.js" },
-    "./providers/anthropic": { "types": "./dist/providers/anthropic.d.ts", "default": "./dist/providers/anthropic.js" },
-    "./providers/openai": { "types": "./dist/providers/openai.d.ts", "default": "./dist/providers/openai.js" },
-    "./spike/build-prompt": { "types": "./dist/spike/build-prompt.d.ts", "default": "./dist/spike/build-prompt.js" },
-    "./spike/cost": { "types": "./dist/spike/cost.d.ts", "default": "./dist/spike/cost.js" },
-    "./types": { "types": "./dist/types.d.ts", "default": "./dist/types.js" }
+    "./provider": {
+      "types": "./dist/provider.d.ts",
+      "default": "./dist/provider.js"
+    },
+    "./providers/stacked": {
+      "types": "./dist/providers/stacked.d.ts",
+      "default": "./dist/providers/stacked.js"
+    },
+    "./providers/agreement": {
+      "types": "./dist/providers/agreement.d.ts",
+      "default": "./dist/providers/agreement.js"
+    },
+    "./providers/anthropic": {
+      "types": "./dist/providers/anthropic.d.ts",
+      "default": "./dist/providers/anthropic.js"
+    },
+    "./providers/openai": {
+      "types": "./dist/providers/openai.d.ts",
+      "default": "./dist/providers/openai.js"
+    },
+    "./spike/build-prompt": {
+      "types": "./dist/spike/build-prompt.d.ts",
+      "default": "./dist/spike/build-prompt.js"
+    },
+    "./spike/cost": {
+      "types": "./dist/spike/cost.d.ts",
+      "default": "./dist/spike/cost.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    }
   },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",

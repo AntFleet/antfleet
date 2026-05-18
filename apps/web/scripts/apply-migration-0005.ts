@@ -79,14 +79,14 @@ async function main() {
     // tables themselves already exist from db:push). For 0005 we also run
     // the SQL since the table doesn't exist yet.
     const onboardingEventsExists = apply
-      ? (
+      ? ((
           await pool.query<{ exists: boolean }>(`
             SELECT EXISTS (
               SELECT 1 FROM information_schema.tables
               WHERE table_schema = 'public' AND table_name = 'onboarding_events'
             ) AS exists
           `)
-        ).rows[0]?.exists ?? false
+        ).rows[0]?.exists ?? false)
       : false;
     console.log(`[public.onboarding_events] exists=${onboardingEventsExists}`);
 
@@ -138,7 +138,9 @@ async function main() {
   if (!apply) {
     console.log("\ndry-run — pass --apply to mutate prod.");
   } else {
-    console.log("\ndone. Future `pnpm db:migrate` runs should be no-ops until the next schema change.");
+    console.log(
+      "\ndone. Future `pnpm db:migrate` runs should be no-ops until the next schema change.",
+    );
   }
 }
 

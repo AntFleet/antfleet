@@ -13,9 +13,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function mkOctokit(impl: (params: { owner: string; repo: string }) => Promise<{
-  data: { private: boolean };
-}>): RepoVisibilityOctokit {
+function mkOctokit(
+  impl: (params: { owner: string; repo: string }) => Promise<{
+    data: { private: boolean };
+  }>,
+): RepoVisibilityOctokit {
   return {
     rest: {
       repos: {

@@ -118,15 +118,15 @@ client-side analytics, no third-party fonts at runtime.
 
 ## The fleet
 
-| Agent | Kind | Cadence | Source of truth |
-|---|---|---|---|
-| Reviewer · Claude Opus 4.7 | language model | per PR | `src/providers/anthropic.ts` |
-| Reviewer · GPT-5 | language model | per PR | `src/providers/openai.ts` |
-| Agreement Gate | deterministic | per review | `src/providers/agreement.ts` |
-| Sweeper | deterministic | daily cron | `apps/web/lib/sweep.ts` |
-| Reaction Poller | deterministic | with sweep | `apps/web/lib/reactions.ts` |
-| Onboarder | language model | webhook + cron | `apps/web/lib/onboarder.ts` |
-| Webhook Receiver | deterministic | per event | `apps/web/app/api/github/webhook/route.ts` |
+| Agent                      | Kind           | Cadence        | Source of truth                            |
+| -------------------------- | -------------- | -------------- | ------------------------------------------ |
+| Reviewer · Claude Opus 4.7 | language model | per PR         | `src/providers/anthropic.ts`               |
+| Reviewer · GPT-5           | language model | per PR         | `src/providers/openai.ts`                  |
+| Agreement Gate             | deterministic  | per review     | `src/providers/agreement.ts`               |
+| Sweeper                    | deterministic  | daily cron     | `apps/web/lib/sweep.ts`                    |
+| Reaction Poller            | deterministic  | with sweep     | `apps/web/lib/reactions.ts`                |
+| Onboarder                  | language model | webhook + cron | `apps/web/lib/onboarder.ts`                |
+| Webhook Receiver           | deterministic  | per event      | `apps/web/app/api/github/webhook/route.ts` |
 
 The agreement gate is the trust primitive. A finding only crosses
 into the PR comment if both reviewers flagged the same code with

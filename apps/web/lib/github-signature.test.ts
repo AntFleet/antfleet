@@ -38,9 +38,7 @@ describe("verifyGitHubSignature", () => {
   });
 
   it("rejects a header with non-hex characters", () => {
-    expect(
-      verifyGitHubSignature("x", `sha256=${"z".repeat(64)}`, SECRET),
-    ).toBe(false);
+    expect(verifyGitHubSignature("x", `sha256=${"z".repeat(64)}`, SECRET)).toBe(false);
   });
 
   it("accepts a Buffer body equivalent to the string body", () => {

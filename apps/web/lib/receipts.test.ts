@@ -30,10 +30,7 @@ describe("toDisplayReceipt", () => {
   });
 
   it("returns null shaLabel, relativeClosedAt, and closedAtIso when closure columns are null", () => {
-    const display = toDisplayReceipt(
-      { ...SAMPLE, closureSha: null, closedAt: null },
-      BASE_NOW,
-    );
+    const display = toDisplayReceipt({ ...SAMPLE, closureSha: null, closedAt: null }, BASE_NOW);
     expect(display.shaLabel).toBeNull();
     expect(display.relativeClosedAt).toBeNull();
     expect(display.closedAtIso).toBeNull();

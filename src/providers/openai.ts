@@ -1,11 +1,7 @@
 import OpenAI from "openai";
 import { FleetError, assertDefined, messageOf } from "../errors.js";
 import type { Provider } from "../provider.js";
-import {
-  fixPlanJsonSchema,
-  reviewJsonSchema,
-  revalidateJsonSchema,
-} from "../provider.js";
+import { fixPlanJsonSchema, reviewJsonSchema, revalidateJsonSchema } from "../provider.js";
 import {
   FixPlanOutput,
   ReviewOutput,
@@ -43,11 +39,7 @@ export const openaiProvider: Provider = {
     });
     return fixPlanOutputSchema.parse(json);
   },
-  async revalidate(
-    _root: string,
-    prompt: string,
-    model: string | null,
-  ): Promise<RevalidateOutput> {
+  async revalidate(_root: string, prompt: string, model: string | null): Promise<RevalidateOutput> {
     const json = await callOpenAI({
       prompt,
       model: model ?? DEFAULT_MODEL,
@@ -86,34 +78,20 @@ async function callOpenAI(opts: CallOptions): Promise<unknown> {
 }
 
 /** Exposed for tests. Pulls the JSON content out of a recorded chat completion. */
-export function extractOpenAIContent(
-  response: OpenAI.Chat.Completions.ChatCompletion,
-): unknown {
+export function extractOpenAIContent(response: OpenAI.Chat.Completions.ChatCompletion): unknown {
   const choice = response.choices[0];
   if (choice === undefined) {
-    throw new FleetError(
-      "openai provider returned no choices",
-      8,
-      "malformed-output",
-    );
+    throw new FleetError("openai provider returned no choices", 8, "malformed-output");
   }
   const content = choice.message.content;
   if (content === null || content === undefined || content.length === 0) {
-    throw new FleetError(
-      "openai provider returned empty message content",
-      8,
-      "malformed-output",
-    );
+    throw new FleetError("openai provider returned empty message content", 8, "malformed-output");
   }
   try {
     return JSON.parse(content);
   } catch (err) {
     const reason = messageOf(err);
-    throw new FleetError(
-      `openai provider returned invalid JSON: ${reason}`,
-      8,
-      "malformed-output",
-    );
+    throw new FleetError(`openai provider returned invalid JSON: ${reason}`, 8, "malformed-output");
   }
 }
 

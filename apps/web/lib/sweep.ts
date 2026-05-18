@@ -1,7 +1,4 @@
-import type {
-  ClosureDecision,
-  FindingForClosureCheck,
-} from "./sweeper";
+import type { ClosureDecision, FindingForClosureCheck } from "./sweeper";
 import { detectClosures as detectClosuresImpl } from "./sweeper";
 import {
   mapToMaintainerReactions,

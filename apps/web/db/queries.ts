@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, desc, eq, gte, lt, max, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, isNotNull, lt, lte, max, ne, or, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
   findingStatus,
@@ -38,6 +38,261 @@ export async function recordReview(input: RecordReviewInput): Promise<string> {
     throw new Error("recordReview: insert returned no row");
   }
   return row.reviewId;
+}
+
+// Mission 7 — idempotent enqueue. The webhook handler inserts the queue
+// row on the (repo_hash, pr_number, commit_sha) idempotency key. A duplicate
+// GitHub delivery (or a race between cron and webhook) lands on the same
+// triple; ON CONFLICT DO NOTHING converts that into a cheap no-op and we
+// return the existing reviewId so the caller can still log a delivery and
+// (optionally) re-trigger the worker. `isNew=false` is the signal that the
+// caller should NOT spawn a fresh after() — the prior delivery owns the row.
+export type EnqueueReviewResult = { reviewId: string; isNew: boolean };
+
+export async function enqueueReview(input: RecordReviewInput): Promise<EnqueueReviewResult> {
+  const inserted = await db
+    .insert(reviews)
+    .values({
+      ...input,
+      costEstimatedUsd: input.costEstimatedUsd.toFixed(4),
+      processingStatus: "pending",
+      processingAttempts: 0,
+    })
+    .onConflictDoNothing({
+      target: [reviews.repoHash, reviews.prNumber, reviews.commitSha],
+    })
+    .returning({ reviewId: reviews.reviewId });
+  const insertedRow = inserted[0];
+  if (insertedRow !== undefined) {
+    return { reviewId: insertedRow.reviewId, isNew: true };
+  }
+  // Conflict path: load the existing row to get its reviewId. The triple is
+  // a unique key so this returns 0 or 1 rows.
+  const existing = await db
+    .select({ reviewId: reviews.reviewId })
+    .from(reviews)
+    .where(
+      and(
+        eq(reviews.repoHash, input.repoHash),
+        eq(reviews.prNumber, input.prNumber),
+        eq(reviews.commitSha, input.commitSha),
+      ),
+    )
+    .limit(1);
+  const row = existing[0];
+  if (row === undefined) {
+    // Race: insert raced with a delete or a constraint mismatch. Fall back
+    // to the legacy insert so the caller still gets a row id.
+    return { reviewId: await recordReview(input), isNew: true };
+  }
+  return { reviewId: row.reviewId, isNew: false };
+}
+
+// Mission 7 — queue lifecycle. The reviews row IS the queue entry; the
+// processing_* columns drive state transitions. Worker calls (webhook
+// after() OR cron retry tick) go through `claimReviewForProcessing` to
+// atomically take ownership, then `markReviewSucceeded` /
+// `markReviewFailedForRetry` / `markReviewTerminallyFailed` to settle.
+
+export const REVIEW_PROCESSING_STATUSES = [
+  "pending",
+  "in_progress",
+  "pending_retry",
+  "done",
+  "failed",
+] as const;
+export type ReviewProcessingStatus = (typeof REVIEW_PROCESSING_STATUSES)[number];
+
+// Atomic claim. Caller specifies which prior states are valid to claim from
+// — webhook after() passes ["pending"], the retry cron passes
+// ["pending", "pending_retry", "in_progress"] (the last only when the row
+// looks stuck; cron applies an age filter on processingStartedAt itself).
+// Returns true iff the row transitioned to in_progress. False means another
+// worker beat us to it — caller should move on without processing.
+export async function claimReviewForProcessing(args: {
+  reviewId: string;
+  fromStatuses: ReadonlyArray<ReviewProcessingStatus>;
+  now: Date;
+}): Promise<boolean> {
+  if (args.fromStatuses.length === 0) return false;
+  // `sql.raw` would invite injection; build the IN list with placeholders.
+  const placeholders = sql.join(
+    args.fromStatuses.map((s) => sql`${s}`),
+    sql`, `,
+  );
+  const result = await db.execute(sql`
+    UPDATE ${reviews}
+    SET
+      ${reviews.processingStatus} = 'in_progress',
+      ${reviews.processingStartedAt} = ${args.now},
+      ${reviews.processingAttempts} = ${reviews.processingAttempts} + 1,
+      ${reviews.nextRetryAt} = NULL
+    WHERE ${reviews.reviewId} = ${args.reviewId}
+      AND ${reviews.processingStatus} IN (${placeholders})
+  `);
+  // neon-http exposes rowCount on the result object.
+  const rowCount = (result as { rowCount?: number | null }).rowCount ?? 0;
+  return rowCount > 0;
+}
+
+export type ReviewQueueRow = {
+  reviewId: string;
+  installationId: number | null;
+  owner: string | null;
+  repo: string | null;
+  prNumber: number;
+  commitSha: string;
+  repoHash: string;
+  prCommentId: number | null;
+  processingStatus: string;
+  processingAttempts: number;
+  processingStartedAt: Date | null;
+  publicReceipt: boolean;
+  isBenchmark: boolean;
+};
+
+export async function loadReviewQueueRow(reviewId: string): Promise<ReviewQueueRow | null> {
+  const rows = await db
+    .select({
+      reviewId: reviews.reviewId,
+      installationId: reviews.installationId,
+      owner: reviews.owner,
+      repo: reviews.repo,
+      prNumber: reviews.prNumber,
+      commitSha: reviews.commitSha,
+      repoHash: reviews.repoHash,
+      prCommentId: reviews.prCommentId,
+      processingStatus: reviews.processingStatus,
+      processingAttempts: reviews.processingAttempts,
+      processingStartedAt: reviews.processingStartedAt,
+      publicReceipt: reviews.publicReceipt,
+      isBenchmark: reviews.isBenchmark,
+    })
+    .from(reviews)
+    .where(eq(reviews.reviewId, reviewId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+// Retry-cron data loader. Returns rows eligible for (re)processing under
+// three predicates joined by OR:
+//   1. processing_status = 'pending' (never started — webhook crashed
+//      between insert and after(), or the row was just enqueued)
+//   2. processing_status = 'pending_retry' AND next_retry_at <= now
+//   3. processing_status = 'in_progress' AND processing_started_at < stuckBefore
+//      (a worker claimed but never settled — Vercel cold-killed the function,
+//      or our process crashed mid-review)
+//
+// Rows missing installation_id/owner/repo (M3-1 smoke rows) are excluded —
+// the worker has no way to act on them. Rows already terminal ('done' or
+// 'failed') are excluded by construction.
+export type RetryCandidate = {
+  reviewId: string;
+  processingStatus: string;
+  processingAttempts: number;
+};
+
+export async function loadReviewsReadyForRetry(args: {
+  now: Date;
+  stuckBefore: Date;
+  limit: number;
+}): Promise<RetryCandidate[]> {
+  const rows = await db
+    .select({
+      reviewId: reviews.reviewId,
+      processingStatus: reviews.processingStatus,
+      processingAttempts: reviews.processingAttempts,
+    })
+    .from(reviews)
+    .where(
+      and(
+        // Worker requires these to dispatch.
+        isNotNull(reviews.installationId),
+        isNotNull(reviews.owner),
+        isNotNull(reviews.repo),
+        or(
+          eq(reviews.processingStatus, "pending"),
+          and(eq(reviews.processingStatus, "pending_retry"), lte(reviews.nextRetryAt, args.now)),
+          and(
+            eq(reviews.processingStatus, "in_progress"),
+            lt(reviews.processingStartedAt, args.stuckBefore),
+          ),
+        ),
+      ),
+    )
+    .orderBy(reviews.createdAt)
+    .limit(args.limit);
+  return rows;
+}
+
+export async function markReviewSucceeded(args: { reviewId: string; now: Date }): Promise<void> {
+  await db
+    .update(reviews)
+    .set({
+      processingStatus: "done",
+      processingFinishedAt: args.now,
+      nextRetryAt: null,
+      processingError: null,
+    })
+    .where(eq(reviews.reviewId, args.reviewId));
+}
+
+export async function markReviewFailedForRetry(args: {
+  reviewId: string;
+  nextRetryAt: Date;
+  error: string;
+}): Promise<void> {
+  await db
+    .update(reviews)
+    .set({
+      processingStatus: "pending_retry",
+      nextRetryAt: args.nextRetryAt,
+      processingError: args.error,
+    })
+    .where(eq(reviews.reviewId, args.reviewId));
+}
+
+export async function markReviewTerminallyFailed(args: {
+  reviewId: string;
+  now: Date;
+  error: string;
+}): Promise<void> {
+  await db
+    .update(reviews)
+    .set({
+      processingStatus: "failed",
+      processingFinishedAt: args.now,
+      nextRetryAt: null,
+      processingError: args.error,
+    })
+    .where(eq(reviews.reviewId, args.reviewId));
+}
+
+// Observability for /api/activity — current queue depth + recent failures.
+export type ReviewQueueDepth = {
+  pending: number;
+  inProgress: number;
+  pendingRetry: number;
+  failed: number;
+};
+
+export async function snapshotReviewQueueDepth(): Promise<ReviewQueueDepth> {
+  const rows = await db
+    .select({
+      processingStatus: reviews.processingStatus,
+      total: sql<number>`count(*)::int`.as("total"),
+    })
+    .from(reviews)
+    .where(ne(reviews.processingStatus, "done"))
+    .groupBy(reviews.processingStatus);
+  const out: ReviewQueueDepth = { pending: 0, inProgress: 0, pendingRetry: 0, failed: 0 };
+  for (const r of rows) {
+    if (r.processingStatus === "pending") out.pending = r.total;
+    else if (r.processingStatus === "in_progress") out.inProgress = r.total;
+    else if (r.processingStatus === "pending_retry") out.pendingRetry = r.total;
+    else if (r.processingStatus === "failed") out.failed = r.total;
+  }
+  return out;
 }
 
 // Post-review patch: slice 4b writes a stub row up front, then updates it
@@ -128,10 +383,7 @@ export async function markFindingClosed(args: {
   if (args.closureCommentUrl !== undefined) {
     values["closureCommentUrl"] = args.closureCommentUrl;
   }
-  await db
-    .update(findingStatus)
-    .set(values)
-    .where(eq(findingStatus.findingId, args.findingId));
+  await db.update(findingStatus).set(values).where(eq(findingStatus.findingId, args.findingId));
 }
 
 // Mission 3 slice 3-5 — sweep orchestrator data loader. Joins finding_status
@@ -272,20 +524,14 @@ export async function loadPublicReceiptsPage(args: {
   // because the count and max queries need the join too.
   const recentConditions =
     args.before === undefined
-      ? and(
-          eq(findingStatus.status, "closed"),
-          eq(reviews.publicReceipt, true),
-        )
+      ? and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true))
       : and(
           eq(findingStatus.status, "closed"),
           eq(reviews.publicReceipt, true),
           lt(findingStatus.closureDetectedAt, args.before),
         );
 
-  const totalConditions = and(
-    eq(findingStatus.status, "closed"),
-    eq(reviews.publicReceipt, true),
-  );
+  const totalConditions = and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true));
 
   const [countRows, fetchedRows, lastUpdatedRows] = await Promise.all([
     db
@@ -379,12 +625,7 @@ export async function loadPublicReceiptDetail(
     })
     .from(findingStatus)
     .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(
-      and(
-        eq(findingStatus.findingId, findingId),
-        eq(reviews.publicReceipt, true),
-      ),
-    )
+    .where(and(eq(findingStatus.findingId, findingId), eq(reviews.publicReceipt, true)))
     .limit(1);
 
   return rows[0] ?? null;
@@ -497,9 +738,7 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     eventClosed,
     eventOnboarder,
   ] = await Promise.all([
-    db
-      .select({ value: max(findingStatus.lastPolledAt) })
-      .from(findingStatus),
+    db.select({ value: max(findingStatus.lastPolledAt) }).from(findingStatus),
     db
       .select({ value: max(findingStatus.closureDetectedAt) })
       .from(findingStatus)
@@ -557,9 +796,7 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       })
       .from(findingStatus)
       .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(
-        and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true)),
-      )
+      .where(and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true)))
       .orderBy(desc(findingStatus.closureDetectedAt))
       .limit(EVENT_STREAM_LIMIT),
     db
@@ -689,14 +926,9 @@ function isOnboarderEventType(value: string): value is OnboarderEventType {
 // One row per agent action. The agent's tool output is stored verbatim in
 // tool_output so we can replay every decision and rebuild prompts later.
 
-export type RecordOnboardingEventInput = Omit<
-  NewOnboardingEvent,
-  "id" | "createdAt"
->;
+export type RecordOnboardingEventInput = Omit<NewOnboardingEvent, "id" | "createdAt">;
 
-export async function recordOnboardingEvent(
-  input: RecordOnboardingEventInput,
-): Promise<string> {
+export async function recordOnboardingEvent(input: RecordOnboardingEventInput): Promise<string> {
   const result = await db
     .insert(onboardingEvents)
     .values(input)
@@ -870,12 +1102,7 @@ export async function snapshotInstallActivity(
       .select({ value: count(findingStatus.id) })
       .from(findingStatus)
       .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(
-        and(
-          eq(reviews.installationId, installationId),
-          eq(findingStatus.status, "closed"),
-        ),
-      ),
+      .where(and(eq(reviews.installationId, installationId), eq(findingStatus.status, "closed"))),
     db
       .select({ value: count(maintainerReactions.reactionId) })
       .from(maintainerReactions)
@@ -964,9 +1191,10 @@ export async function flipPublicReceiptForRepo(args: {
   const totals = await db
     .select({
       total: sql<number>`count(*)::int`.as("total"),
-      atTarget: sql<number>`count(*) filter (where ${reviews.publicReceipt} = ${args.target})::int`.as(
-        "at_target",
-      ),
+      atTarget:
+        sql<number>`count(*) filter (where ${reviews.publicReceipt} = ${args.target})::int`.as(
+          "at_target",
+        ),
     })
     .from(reviews)
     .where(scope);
@@ -985,9 +1213,7 @@ export async function flipPublicReceiptForRepo(args: {
   return { alreadyMatching, flipped: updated.length, totalMatching };
 }
 
-export async function recordMaintainerReactions(
-  rows: NewMaintainerReaction[],
-): Promise<number> {
+export async function recordMaintainerReactions(rows: NewMaintainerReaction[]): Promise<number> {
   if (rows.length === 0) return 0;
   const inserted = await db
     .insert(maintainerReactions)
@@ -1046,10 +1272,7 @@ export async function loadPublicBenchmarksPage(args: {
   before?: Date | undefined;
 }): Promise<PublicBenchmarksPage> {
   const fetchLimit = args.limit + 1;
-  const baseConditions = and(
-    eq(reviews.isBenchmark, true),
-    eq(reviews.publicReceipt, true),
-  );
+  const baseConditions = and(eq(reviews.isBenchmark, true), eq(reviews.publicReceipt, true));
   const recentConditions =
     args.before === undefined
       ? baseConditions
@@ -1069,9 +1292,10 @@ export async function loadPublicBenchmarksPage(args: {
         // Finding count is the length of the agreed[] array inside
         // agreementDecision JSONB. NULL/missing keys collapse to 0.
         // Wrapped in a CAST so the result column is a stable int.
-        findingCount: sql<number>`COALESCE(jsonb_array_length(${reviews.agreementDecision}->'agreed'), 0)::int`.as(
-          "finding_count",
-        ),
+        findingCount:
+          sql<number>`COALESCE(jsonb_array_length(${reviews.agreementDecision}->'agreed'), 0)::int`.as(
+            "finding_count",
+          ),
         filesReviewed: reviews.filesReviewed,
         modelIds: reviews.providerModelIds,
       })
@@ -1079,7 +1303,10 @@ export async function loadPublicBenchmarksPage(args: {
       .where(recentConditions)
       .orderBy(desc(reviews.createdAt))
       .limit(fetchLimit),
-    db.select({ value: max(reviews.createdAt) }).from(reviews).where(baseConditions),
+    db
+      .select({ value: max(reviews.createdAt) })
+      .from(reviews)
+      .where(baseConditions),
   ]);
 
   const hasMore = fetchedRows.length > args.limit;

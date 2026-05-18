@@ -83,7 +83,8 @@ const DOGFOOD_GROUND_TRUTH: PlantedBug[] = [
   {
     id: "null-deref-handler-welcome",
     category: "bug",
-    description: "welcome() dereferences user.profile.displayName without null-checking user.profile.",
+    description:
+      "welcome() dereferences user.profile.displayName without null-checking user.profile.",
     file: "src/handler.ts",
     lineStart: 5,
     lineEnd: 7,
@@ -100,7 +101,8 @@ const DOGFOOD_GROUND_TRUTH: PlantedBug[] = [
   {
     id: "sql-injection-db",
     category: "security",
-    description: "getUserByEmail() builds SQL via string concatenation of an attacker-controlled email.",
+    description:
+      "getUserByEmail() builds SQL via string concatenation of an attacker-controlled email.",
     file: "src/db.ts",
     lineStart: 5,
     lineEnd: 8,
@@ -201,8 +203,7 @@ async function resolveProvider(
  *   3. Trim verbose stderr (codex echoes the full prompt) to the actual error.
  */
 function sanitizeForReport(text: string): string {
-  const redacted = text
-    .replace(/sk-[A-Za-z0-9_-]{20,}/gu, "[REDACTED]");
+  const redacted = text.replace(/sk-[A-Za-z0-9_-]{20,}/gu, "[REDACTED]");
   const lines = redacted.split(/\r?\n/u).filter((l) => l.trim().length > 0);
   if (lines.length === 0) {
     return "";
@@ -287,7 +288,12 @@ type RunResult = {
   agreedCount: number;
   agreedCaughtIds: string[];
   agreedTitles: string[];
-  modes: { mode: AgreementMode; agreedCount: number; disagreementCount: number; agreedTitles: string[] }[];
+  modes: {
+    mode: AgreementMode;
+    agreedCount: number;
+    disagreementCount: number;
+    agreedTitles: string[];
+  }[];
   durationMs: number;
   estimatedCostUsd: number;
 };
@@ -353,7 +359,9 @@ async function runOne(args: {
   // Per-run report
   const lines: string[] = [];
   const corpusName = args.corpusRoot.split("/").pop() ?? "corpus";
-  lines.push(`# Fleet spike (${corpusName}) — run ${args.runIndex}/${args.totalRuns} — ${timestamp}`);
+  lines.push(
+    `# Fleet spike (${corpusName}) — run ${args.runIndex}/${args.totalRuns} — ${timestamp}`,
+  );
   lines.push("");
   lines.push(`- Mode: \`${args.primaryMode}\``);
   lines.push(
@@ -376,9 +384,15 @@ async function runOne(args: {
     const caught = caughtBugIds(r.output.findings, args.groundTruth);
     const missed = args.groundTruth.filter((b) => !caught.has(b.id)).map((b) => b.id);
     lines.push(`- findings: **${r.output.findings.length}**`);
-    lines.push(`- ground-truth caught (${caught.size}/${args.groundTruth.length}): ${fmtSet(caught)}`);
-    lines.push(`- ground-truth missed: ${missed.length === 0 ? "(none)" : missed.toSorted().join(", ")}`);
-    lines.push(`- candidate noise (findings not matching any planted bug): ${r.output.findings.length - caught.size}`);
+    lines.push(
+      `- ground-truth caught (${caught.size}/${args.groundTruth.length}): ${fmtSet(caught)}`,
+    );
+    lines.push(
+      `- ground-truth missed: ${missed.length === 0 ? "(none)" : missed.toSorted().join(", ")}`,
+    );
+    lines.push(
+      `- candidate noise (findings not matching any planted bug): ${r.output.findings.length - caught.size}`,
+    );
     if (r.output.findings.length > 0) {
       lines.push("");
       lines.push("Findings:");
@@ -394,7 +408,9 @@ async function runOne(args: {
   for (const m of modes) {
     const caught = caughtBugIds(mergeFindings(successful, m.mode).agreed, args.groundTruth);
     const tag = m.mode === args.primaryMode ? " (primary)" : "";
-    lines.push(`- \`${m.mode}\`${tag}: ${m.agreedCount} agreed, ${m.disagreementCount} disagreements, caught ${caught.size}/${args.groundTruth.length}`);
+    lines.push(
+      `- \`${m.mode}\`${tag}: ${m.agreedCount} agreed, ${m.disagreementCount} disagreements, caught ${caught.size}/${args.groundTruth.length}`,
+    );
   }
   lines.push("");
 
@@ -458,7 +474,9 @@ async function main(): Promise<void> {
     .map((r) => ({ name: r.name, provider: r.provider }));
 
   for (const r of resolved) {
-    console.error(`[spike] ${r.name}: ${r.provider === null ? `unavailable (${r.reason})` : "ready"}`);
+    console.error(
+      `[spike] ${r.name}: ${r.provider === null ? `unavailable (${r.reason})` : "ready"}`,
+    );
   }
 
   if (live.length === 0) {
@@ -514,6 +532,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((err) => {
-  console.error(`[spike] fatal: ${err instanceof Error ? err.stack ?? err.message : err}`);
+  console.error(`[spike] fatal: ${err instanceof Error ? (err.stack ?? err.message) : err}`);
   process.exit(1);
 });

@@ -31,15 +31,13 @@ async function main() {
   }
 
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  console.log(`\nAntFleet · weekly digest · last ${days} days (since ${since.toISOString().slice(0, 10)})\n`);
+  console.log(
+    `\nAntFleet · weekly digest · last ${days} days (since ${since.toISOString().slice(0, 10)})\n`,
+  );
 
   const { db } = await import("../db/index");
-  const {
-    findingStatus,
-    maintainerReactions,
-    onboardingEvents,
-    reviews,
-  } = await import("../db/schema");
+  const { findingStatus, maintainerReactions, onboardingEvents, reviews } =
+    await import("../db/schema");
   const { and, count, desc, eq, gte, sql, isNotNull } = await import("drizzle-orm");
 
   // 1. Active installs in the window — distinct (installation_id, owner, repo)
@@ -61,7 +59,9 @@ async function main() {
     );
 
   if (installs.length === 0) {
-    console.log("(no installs with activity in the window — Onboarder may be silent, or no real PRs landed)\n");
+    console.log(
+      "(no installs with activity in the window — Onboarder may be silent, or no real PRs landed)\n",
+    );
     return;
   }
 
@@ -76,7 +76,15 @@ async function main() {
     // Per-install rollups. One query block per dimension keeps the SQL
     // simple at the cost of round-trips; weekly cadence + single-digit
     // install count makes this trade fine.
-    const [reviewStats, agreedCount, openCount, closedCount, reactionRows, replyRows, onboarderRows] = await Promise.all([
+    const [
+      reviewStats,
+      agreedCount,
+      openCount,
+      closedCount,
+      reactionRows,
+      replyRows,
+      onboarderRows,
+    ] = await Promise.all([
       db
         .select({
           n: count(reviews.reviewId),
@@ -96,12 +104,7 @@ async function main() {
         .select({ n: count(findingStatus.id) })
         .from(findingStatus)
         .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-        .where(
-          and(
-            eq(reviews.installationId, installationId),
-            gte(reviews.createdAt, since),
-          ),
-        ),
+        .where(and(eq(reviews.installationId, installationId), gte(reviews.createdAt, since))),
       db
         .select({ n: count(findingStatus.id) })
         .from(findingStatus)
@@ -131,12 +134,7 @@ async function main() {
         })
         .from(maintainerReactions)
         .innerJoin(reviews, eq(maintainerReactions.reviewId, reviews.reviewId))
-        .where(
-          and(
-            eq(reviews.installationId, installationId),
-            gte(reviews.createdAt, since),
-          ),
-        )
+        .where(and(eq(reviews.installationId, installationId), gte(reviews.createdAt, since)))
         .groupBy(maintainerReactions.actionTaken),
       db
         .select({
@@ -176,13 +174,29 @@ async function main() {
     const onboarderByType = new Map(onboarderRows.map((row) => [row.eventType, row.n]));
 
     console.log(`━━ ${owner}/${repo}  (install ${installationId}) ━━`);
-    console.log(`  reviews        : ${r?.n ?? 0}` + (r && r.n > 0 ? `   (avg ${Math.round(Number(r.avgMs ?? 0) / 1000)}s, max ${Math.round(Number(r.maxMs ?? 0) / 1000)}s)` : ""));
-    console.log(`  findings       : ${agreedCount[0]?.n ?? 0} agreed   ${openCount[0]?.n ?? 0} open   ${closedCount[0]?.n ?? 0} closed`);
+    console.log(
+      `  reviews        : ${r?.n ?? 0}` +
+        (r && r.n > 0
+          ? `   (avg ${Math.round(Number(r.avgMs ?? 0) / 1000)}s, max ${Math.round(Number(r.maxMs ?? 0) / 1000)}s)`
+          : ""),
+    );
+    console.log(
+      `  findings       : ${agreedCount[0]?.n ?? 0} agreed   ${openCount[0]?.n ?? 0} open   ${closedCount[0]?.n ?? 0} closed`,
+    );
     if (reactionRows.length === 0) {
       console.log(`  reactions      : —`);
     } else {
       const parts: string[] = [];
-      for (const kind of ["reaction:thumbs_up", "reaction:thumbs_down", "reaction:eyes", "reaction:heart", "reaction:rocket", "reaction:laugh", "reaction:confused", "reaction:hooray"]) {
+      for (const kind of [
+        "reaction:thumbs_up",
+        "reaction:thumbs_down",
+        "reaction:eyes",
+        "reaction:heart",
+        "reaction:rocket",
+        "reaction:laugh",
+        "reaction:confused",
+        "reaction:hooray",
+      ]) {
         const n = reactionsByKind.get(kind);
         if (n !== undefined && n > 0) {
           parts.push(`${kind.replace("reaction:", "")}:${n}`);
@@ -190,18 +204,20 @@ async function main() {
       }
       console.log(`  reactions      : ${parts.join("  ")}`);
     }
-    console.log(`  onboarder      : ${
-      ["install_welcome", "first_review_summary", "check_in_7d"]
+    console.log(
+      `  onboarder      : ${["install_welcome", "first_review_summary", "check_in_7d"]
         .map((t) => `${t}=${onboarderByType.get(t) ?? 0}`)
-        .join("  ")
-    }`);
+        .join("  ")}`,
+    );
     console.log(`  partner_replies: ${replyRows.length}`);
     if (replyRows.length > 0) {
       const latest = replyRows[0];
       if (latest !== undefined) {
         const out = latest.toolOutput as { body?: string; sender_login?: string };
         const body = (out.body ?? "").replace(/\s+/g, " ").slice(0, 120);
-        console.log(`    latest ${latest.createdAt.toISOString().slice(0, 10)} by ${out.sender_login ?? "?"}: ${body}${(out.body ?? "").length > 120 ? "…" : ""}`);
+        console.log(
+          `    latest ${latest.createdAt.toISOString().slice(0, 10)} by ${out.sender_login ?? "?"}: ${body}${(out.body ?? "").length > 120 ? "…" : ""}`,
+        );
       }
     }
     console.log("");

@@ -221,11 +221,7 @@ function validateCommandFlags(command: string, flags: Record<string, string | bo
   const allowed = commandFlags[command];
   for (const flag of Object.keys(flags)) {
     if (!allowed.has(flag)) {
-      throw new FleetError(
-        `unsupported flag for ${command}: --${kebab(flag)}`,
-        2,
-        "invalid-usage",
-      );
+      throw new FleetError(`unsupported flag for ${command}: --${kebab(flag)}`, 2, "invalid-usage");
     }
   }
 }

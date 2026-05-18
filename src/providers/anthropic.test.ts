@@ -67,17 +67,16 @@ describe("extractAnthropicToolOutput", () => {
   it("throws FleetError when the response carries no tool_use block matching the tool name", async () => {
     const fixture = await loadFixture("anthropic-review-with-findings.json");
     expect(() => extractAnthropicToolOutput(fixture, "wrong_tool_name")).toThrow(FleetError);
-    expect(() => extractAnthropicToolOutput(fixture, "wrong_tool_name")).toThrow(/wrong_tool_name/u);
+    expect(() => extractAnthropicToolOutput(fixture, "wrong_tool_name")).toThrow(
+      /wrong_tool_name/u,
+    );
   });
 
   it("ignores text content blocks and only returns tool_use input", async () => {
     const fixture = await loadFixture("anthropic-review-with-findings.json");
     const withText: Anthropic.Messages.Message = {
       ...fixture,
-      content: [
-        { type: "text", text: "Here is the review:", citations: null },
-        ...fixture.content,
-      ],
+      content: [{ type: "text", text: "Here is the review:", citations: null }, ...fixture.content],
     };
     const raw = extractAnthropicToolOutput(withText, "submit_review");
     expect(raw).toEqual(

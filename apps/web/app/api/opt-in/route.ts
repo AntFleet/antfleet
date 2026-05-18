@@ -2,11 +2,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { logInfo, logWarn } from "@/lib/log";
 import { tokenLogId, verifyTokenDetailed, type OptInPayload } from "@/lib/optin-token";
-import {
-  flipPublicReceiptForRepo,
-  hashRepo,
-  recordOnboardingEvent,
-} from "@/db/queries";
+import { flipPublicReceiptForRepo, hashRepo, recordOnboardingEvent } from "@/db/queries";
 
 // node:crypto + DB driver are Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
@@ -28,10 +24,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   return handleOptIn(req, DEFAULT_DEPS);
 }
 
-export async function handleOptIn(
-  req: NextRequest,
-  deps: OptInDeps,
-): Promise<NextResponse> {
+export async function handleOptIn(req: NextRequest, deps: OptInDeps): Promise<NextResponse> {
   const url = new URL(req.url);
   const token = url.searchParams.get("t");
   const actionParam = url.searchParams.get("action");
@@ -39,7 +32,13 @@ export async function handleOptIn(
 
   if (token === null || token.length === 0) {
     logWarn("optin.missing_token", { action });
-    return htmlResponse(400, errorPage("Missing token", "This opt-in link is missing its token. Re-open the link from the original GitHub comment."));
+    return htmlResponse(
+      400,
+      errorPage(
+        "Missing token",
+        "This opt-in link is missing its token. Re-open the link from the original GitHub comment.",
+      ),
+    );
   }
 
   const verified = verifyTokenDetailed(token);
@@ -47,17 +46,23 @@ export async function handleOptIn(
 
   if (verified.kind === "expired") {
     logInfo("optin.token_expired", { logId, action });
-    return htmlResponse(410, errorPage(
-      "Link expired",
-      "This opt-in link is more than 30 days old. Reply on the original GitHub comment and we'll resend a fresh link.",
-    ));
+    return htmlResponse(
+      410,
+      errorPage(
+        "Link expired",
+        "This opt-in link is more than 30 days old. Reply on the original GitHub comment and we'll resend a fresh link.",
+      ),
+    );
   }
   if (verified.kind === "invalid") {
     logWarn("optin.token_invalid", { logId, action });
-    return htmlResponse(400, errorPage(
-      "Invalid link",
-      "This opt-in link is malformed or has been tampered with. If you copied it from the GitHub comment, please try again.",
-    ));
+    return htmlResponse(
+      400,
+      errorPage(
+        "Invalid link",
+        "This opt-in link is malformed or has been tampered with. If you copied it from the GitHub comment, please try again.",
+      ),
+    );
   }
 
   const target = action === "enable";
@@ -71,22 +76,33 @@ export async function handleOptIn(
 
   if (result.totalMatching === 0) {
     logInfo("optin.no_reviews", { logId, action, ...debugForPayload(payload) });
-    return htmlResponse(200, infoPage(
-      "No reviews here yet",
-      `We don't have any reviews on file for ${payload.owner}/${payload.repo} yet. Once your first PR is reviewed, the opt-in link in the summary comment will work.`,
-    ));
+    return htmlResponse(
+      200,
+      infoPage(
+        "No reviews here yet",
+        `We don't have any reviews on file for ${payload.owner}/${payload.repo} yet. Once your first PR is reviewed, the opt-in link in the summary comment will work.`,
+      ),
+    );
   }
 
   if (result.flipped === 0) {
-    logInfo("optin.noop", { logId, action, alreadyMatching: result.alreadyMatching, ...debugForPayload(payload) });
-    return htmlResponse(200, successPage(
-      target ? "Already enabled" : "Already disabled",
-      target
-        ? `Public receipts were already enabled for ${payload.owner}/${payload.repo}. Closed findings show up on /receipts.`
-        : `Public receipts were already disabled for ${payload.owner}/${payload.repo}. Nothing on /receipts.`,
-      payload,
+    logInfo("optin.noop", {
+      logId,
       action,
-    ));
+      alreadyMatching: result.alreadyMatching,
+      ...debugForPayload(payload),
+    });
+    return htmlResponse(
+      200,
+      successPage(
+        target ? "Already enabled" : "Already disabled",
+        target
+          ? `Public receipts were already enabled for ${payload.owner}/${payload.repo}. Closed findings show up on /receipts.`
+          : `Public receipts were already disabled for ${payload.owner}/${payload.repo}. Nothing on /receipts.`,
+        payload,
+        action,
+      ),
+    );
   }
 
   try {
@@ -130,14 +146,17 @@ export async function handleOptIn(
     ...debugForPayload(payload),
   });
 
-  return htmlResponse(200, successPage(
-    target ? "Public receipts enabled" : "Public receipts disabled",
-    target
-      ? `Closed findings for ${payload.owner}/${payload.repo} will now appear on /receipts. ${result.flipped} existing review(s) backfilled.`
-      : `${payload.owner}/${payload.repo} is back to private. ${result.flipped} review(s) hidden from /receipts.`,
-    payload,
-    action,
-  ));
+  return htmlResponse(
+    200,
+    successPage(
+      target ? "Public receipts enabled" : "Public receipts disabled",
+      target
+        ? `Closed findings for ${payload.owner}/${payload.repo} will now appear on /receipts. ${result.flipped} existing review(s) backfilled.`
+        : `${payload.owner}/${payload.repo} is back to private. ${result.flipped} review(s) hidden from /receipts.`,
+      payload,
+      action,
+    ),
+  );
 }
 
 function debugForPayload(p: OptInPayload): {
@@ -207,7 +226,8 @@ function successPage(
   _payload: OptInPayload,
   action: OptInAction,
 ): string {
-  const reverseLabel = action === "enable" ? "disable public receipts" : "re-enable public receipts";
+  const reverseLabel =
+    action === "enable" ? "disable public receipts" : "re-enable public receipts";
   return pageShell({
     title,
     body: `

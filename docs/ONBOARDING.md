@@ -9,8 +9,8 @@ autonomously and post receipts of what they did. Three agents
 matter for design partners:
 
 - **Reviewer** — two independent frontier models (Claude Opus 4.7
-  + GPT-5) read every PR in parallel; only unanimous findings get
-  posted. Live since Phase 1.
+  - GPT-5) read every PR in parallel; only unanimous findings get
+    posted. Live since Phase 1.
 - **Sweeper** — daily cron at 06:00 UTC; reconciles open findings
   against `main` and posts SHA-pinned closure receipts. Live since
   Phase 1.
@@ -31,14 +31,14 @@ from "scripted, run-by-augustas" to "agent, run-by-itself" during
 Phase 2. We're being explicit about the seam because trust-
 substrate brand demands not overclaiming.
 
-| Capability | Today | When the agent owns it |
-|---|---|---|
-| Install URL + scope guidance | static doc (this page) | static — agents don't need to own static text |
-| Welcome on first PR | nothing posts | install webhook → model-authored welcome comment |
-| Public-receipts opt-in | email a maintainer, manual script run | structured email → agent reads → flag flip → reply |
-| First-review summary | Reviewer posts findings, nothing else | Onboarder posts a separate partner-private summary framing what fired and what didn't |
-| 7-day check-in | nothing | Onboarder posts reaction-tally + suggested next step |
-| Activity feed surfacing | only review events show | Onboarder events appear on /activity beside review events |
+| Capability                   | Today                                 | When the agent owns it                                                                |
+| ---------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------- |
+| Install URL + scope guidance | static doc (this page)                | static — agents don't need to own static text                                         |
+| Welcome on first PR          | nothing posts                         | install webhook → model-authored welcome comment                                      |
+| Public-receipts opt-in       | email a maintainer, manual script run | structured email → agent reads → flag flip → reply                                    |
+| First-review summary         | Reviewer posts findings, nothing else | Onboarder posts a separate partner-private summary framing what fired and what didn't |
+| 7-day check-in               | nothing                               | Onboarder posts reaction-tally + suggested next step                                  |
+| Activity feed surfacing      | only review events show               | Onboarder events appear on /activity beside review events                             |
 
 The first three rows are the priority for the next ship; the rest
 follow as Phase 2 partner cadence grows.
@@ -124,7 +124,7 @@ agent — proposes the fix and pins a closure SHA on apply) is a
 Phase 3+ surface.
 
 Once Onboarder ships, a second comment from Onboarder will appear
-shortly after your *first* PR review: a partner-private framing of
+shortly after your _first_ PR review: a partner-private framing of
 what fired, what was filtered, and what to do if it looks wrong.
 You'll only see this on the first PR; subsequent PRs are
 Reviewer-only output unless something unusual happens.
@@ -159,7 +159,7 @@ Two things to know:
 
 2. **For public GitHub repos, the link itself reveals you.** The
    receipt URL points at the actual `github.com/<owner>/<repo>/
-   pull/N#issuecomment-...` comment, which is publicly visible
+pull/N#issuecomment-...` comment, which is publicly visible
    anyway since the repo is public. The anonymized label doesn't
    protect you from someone clicking through. This is intentional:
    the link **is** the receipt, and a third-party-witnessed
@@ -234,12 +234,12 @@ exactly what your repo provides.
 
 ## The agent fleet (for orientation)
 
-| Agent | Lives in | What it does | Status |
-|---|---|---|---|
-| **Reviewer** | `apps/web/lib/review-pipeline.ts` (calls `src/providers/{anthropic,openai}.ts`) | Two-model unanimous gate on every PR | Live |
-| **Sweeper** | `apps/web/lib/sweep.ts` | Daily cron; closure receipts pinned to merge SHA | Live |
-| **Onboarder** | `apps/web/lib/onboarder.ts` | Install welcome, first-review summary, 7-day check-in, partner_reply signal capture | Live |
-| **Patch Bot** | not yet implemented | Proposes fixes; pins closure SHA on apply | Phase 3+ |
+| Agent         | Lives in                                                                        | What it does                                                                        | Status   |
+| ------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------- |
+| **Reviewer**  | `apps/web/lib/review-pipeline.ts` (calls `src/providers/{anthropic,openai}.ts`) | Two-model unanimous gate on every PR                                                | Live     |
+| **Sweeper**   | `apps/web/lib/sweep.ts`                                                         | Daily cron; closure receipts pinned to merge SHA                                    | Live     |
+| **Onboarder** | `apps/web/lib/onboarder.ts`                                                     | Install welcome, first-review summary, 7-day check-in, partner_reply signal capture | Live     |
+| **Patch Bot** | not yet implemented                                                             | Proposes fixes; pins closure SHA on apply                                           | Phase 3+ |
 
 The fleet is open source under MIT
 (<https://github.com/AntFleet/antfleet>). The agents you don't see

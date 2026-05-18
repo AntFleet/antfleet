@@ -91,11 +91,7 @@ export async function runBackfill(
   let rowsFlipped = 0;
 
   for (const group of groups) {
-    const check = await deps.checkVisibility(
-      group.installationId,
-      group.owner,
-      group.repo,
-    );
+    const check = await deps.checkVisibility(group.installationId, group.owner, group.repo);
     if (check.kind === "public") {
       publicGroups += 1;
       let flipped = 0;
@@ -128,8 +124,7 @@ export async function runBackfill(
         flipped: 0,
       });
       deps.log(
-        `  private ${group.owner}/${group.repo} — ` +
-          `${group.reviewIds.length} row(s) untouched.`,
+        `  private ${group.owner}/${group.repo} — ${group.reviewIds.length} row(s) untouched.`,
       );
     } else {
       errorGroups += 1;
