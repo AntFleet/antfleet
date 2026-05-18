@@ -46,6 +46,10 @@ export type RssItem = {
   guid: string;
   pubDate: Date;
   description: string;
+  // Optional RSS 2.0 <category> tag. Consumers (Slack /feed, RSS readers)
+  // use this to filter by class — e.g. "cross-repo" for receipts where
+  // AntFleet flagged a bug on a repo it doesn't own.
+  category?: string;
 };
 
 export type RssChannel = {
@@ -76,13 +80,17 @@ export function renderRssFeed(channel: RssChannel): string {
 }
 
 function renderRssItem(item: RssItem): string {
-  return [
+  const lines = [
     `  <item>`,
     `    <title>${escapeXml(item.title)}</title>`,
     `    <link>${escapeXml(item.link)}</link>`,
     `    <guid isPermaLink="false">${escapeXml(item.guid)}</guid>`,
     `    <pubDate>${toRfc822(item.pubDate)}</pubDate>`,
     `    <description>${escapeXml(item.description)}</description>`,
-    `  </item>`,
-  ].join("\n");
+  ];
+  if (item.category !== undefined) {
+    lines.push(`    <category>${escapeXml(item.category)}</category>`);
+  }
+  lines.push(`  </item>`);
+  return lines.join("\n");
 }

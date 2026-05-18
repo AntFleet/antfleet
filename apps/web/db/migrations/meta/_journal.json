@@ -50,6 +50,13 @@
       "when": 1779083173467,
       "tag": "0006_violet_the_executioner",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779091537045,
+      "tag": "0007_colossal_hobgoblin",
+      "breakpoints": true
     }
   ]
 }

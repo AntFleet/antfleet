@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { loadPublicReceiptsPage } from "@/db/queries";
 import {
   formatRelativeTime,
+  loadCrossRepoReceipts,
   toDisplayReceipt,
+  type CrossRepoReceiptRow,
   type DisplayReceipt,
 } from "@/lib/receipts";
 
@@ -14,6 +16,7 @@ import {
 export const dynamic = "force-dynamic";
 
 const RECENT_LIMIT = 50;
+const CROSS_REPO_LIMIT = 10;
 
 export const metadata: Metadata = {
   title: "AntFleet · Receipts",
@@ -37,8 +40,17 @@ export default async function ReceiptsPage({
 }) {
   const params = await searchParams;
   const before = parseBeforeCursor(params["before"]);
-  const { totalClosed, recent, lastUpdatedAt, hasMore } =
-    await loadPublicReceiptsPage({ limit: RECENT_LIMIT, before });
+  const [pageData, crossRepo] = await Promise.all([
+    loadPublicReceiptsPage({ limit: RECENT_LIMIT, before }),
+    // Cross-repo receipts skip pagination — they're a curated stream
+    // surfaced only on the latest view, since the corpus is small (Phase 2
+    // has two known upstream PRs) and the cross-repo lifecycle is rare
+    // enough that scrolling back makes no sense yet.
+    before === undefined
+      ? loadCrossRepoReceipts(CROSS_REPO_LIMIT)
+      : Promise.resolve({ total: 0, recent: [], lastMergedAt: null }),
+  ]);
+  const { totalClosed, recent, lastUpdatedAt, hasMore } = pageData;
   const now = new Date();
   const displays: DisplayReceipt[] = recent.map((row) => toDisplayReceipt(row, now));
   const lastUpdatedRelative =
@@ -56,6 +68,12 @@ export default async function ReceiptsPage({
         lastUpdatedRelative={lastUpdatedRelative}
       />
       <SectionDivider />
+      {crossRepo.recent.length > 0 && (
+        <>
+          <CrossRepoSection rows={crossRepo.recent} now={now} />
+          <SectionDivider />
+        </>
+      )}
       <ReceiptsList
         displays={displays}
         totalClosed={totalClosed}
@@ -63,6 +81,83 @@ export default async function ReceiptsPage({
         nextCursor={nextCursor}
       />
     </>
+  );
+}
+
+function CrossRepoSection({
+  rows,
+  now,
+}: {
+  rows: CrossRepoReceiptRow[];
+  now: Date;
+}) {
+  return (
+    <section className="pb-16">
+      <ContentWrap>
+        <div className="mb-6 flex items-baseline justify-between">
+          <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+            Cross-repo receipts
+          </h2>
+          <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            {rows.length} {rows.length === 1 ? "merge" : "merges"} upstream
+          </span>
+        </div>
+        <p className="mb-5 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
+          AntFleet flagged a bug on a repo it doesn&apos;t own, and the upstream
+          owner merged the fix. The highest-trust receipt class — the
+          maintainer of a project we don&apos;t control accepted the change.
+        </p>
+        <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
+          {rows.map((row) => (
+            <li key={row.id}>
+              <CrossRepoRow row={row} now={now} />
+            </li>
+          ))}
+        </ul>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function CrossRepoRow({
+  row,
+  now,
+}: {
+  row: CrossRepoReceiptRow;
+  now: Date;
+}) {
+  const arrowLabel = `AntFleet → ${row.upstreamOwner.toLowerCase()}/${row.upstreamRepo.toLowerCase()}`;
+  const shortSha = row.mergeSha.slice(0, 7);
+  return (
+    <a
+      href={row.prUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group transition-colors hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md"
+    >
+      <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
+        <span className="rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-ink-muted)]">
+          cross-repo
+        </span>
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-[var(--color-ink)] leading-snug group-hover:underline underline-offset-2 font-mono">
+          {arrowLabel}
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+          <span>PR #{row.upstreamPrNumber}</span>
+          <span className="text-[var(--color-line-strong)]">·</span>
+          <span>
+            merged at <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
+          </span>
+          <span className="text-[var(--color-line-strong)]">·</span>
+          <span>{formatRelativeTime(now, row.mergedAt)}</span>
+        </div>
+      </div>
+      <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
+        view PR →
+      </span>
+    </a>
   );
 }
 

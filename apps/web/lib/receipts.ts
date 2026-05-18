@@ -1,4 +1,7 @@
+import { eq, sql } from "drizzle-orm";
+import { db } from "@/db/index";
 import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
+import { outgoingPrs, type OutgoingPr } from "@/db/schema";
 
 // Pure view-model for the public /receipts page. Lives apart from the DB
 // query so the adapter (privacy labels + relative time) can be unit-tested
@@ -68,6 +71,86 @@ export function formatRelativeTime(now: Date, then: Date): string {
 
 function plural(n: number, unit: string): string {
   return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+}
+
+// ─── Cross-repo receipts (Phase-2 Slice B) ────────────────────────────────
+//
+// Outgoing PRs that AntFleet opens on third-party repos (where the App is
+// not installed) live in the `outgoing_prs` table. The poll loop in
+// lib/outgoing-prs.ts transitions rows open → merged | closed; this loader
+// reads only the merged ones for /receipts and /receipts.rss. Kept here
+// (rather than in outgoing-prs.ts) so the page's two receipt loaders sit
+// side by side — the write/poll path is its own module.
+
+export type CrossRepoReceiptRow = {
+  id: string;
+  sourceFindingId: string;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  upstreamPrNumber: number;
+  mergedAt: Date;
+  mergeSha: string;
+  prUrl: string;
+};
+
+export type CrossRepoReceiptsPage = {
+  total: number;
+  recent: CrossRepoReceiptRow[];
+  lastMergedAt: Date | null;
+};
+
+export function upstreamPrUrl(owner: string, repo: string, number: number): string {
+  return `https://github.com/${owner}/${repo}/pull/${number}`;
+}
+
+// Pure mapping from raw outgoing_prs rows to the display shape. Drops
+// rows missing the receipt-bearing columns (mergedAt / mergeSha) as a
+// belt-and-braces guard; the WHERE status='merged' filter at the query
+// layer should already exclude them, but the table has no CHECK
+// constraint pinning that invariant. Extracted from the DB function so
+// it can be unit-tested without a database.
+export function mapMergedRowsToReceipts(
+  rows: readonly OutgoingPr[],
+): { receipts: CrossRepoReceiptRow[]; lastMergedAt: Date | null } {
+  const receipts: CrossRepoReceiptRow[] = [];
+  let lastMergedAt: Date | null = null;
+  for (const r of rows) {
+    if (r.mergedAt === null || r.mergeSha === null) continue;
+    if (lastMergedAt === null || r.mergedAt > lastMergedAt) {
+      lastMergedAt = r.mergedAt;
+    }
+    receipts.push({
+      id: r.id,
+      sourceFindingId: r.sourceFindingId,
+      upstreamOwner: r.upstreamOwner,
+      upstreamRepo: r.upstreamRepo,
+      upstreamPrNumber: r.upstreamPrNumber,
+      mergedAt: r.mergedAt,
+      mergeSha: r.mergeSha,
+      prUrl: upstreamPrUrl(r.upstreamOwner, r.upstreamRepo, r.upstreamPrNumber),
+    });
+  }
+  return { receipts, lastMergedAt };
+}
+
+export async function loadCrossRepoReceipts(
+  limit: number,
+): Promise<CrossRepoReceiptsPage> {
+  const rows = (await db
+    .select()
+    .from(outgoingPrs)
+    .where(eq(outgoingPrs.status, "merged"))
+    .orderBy(sql`${outgoingPrs.mergedAt} DESC NULLS LAST`)
+    .limit(limit)) as OutgoingPr[];
+
+  const { receipts, lastMergedAt } = mapMergedRowsToReceipts(rows);
+
+  const [countRow] = await db
+    .select({ value: sql<number>`count(*)::int`.as("value") })
+    .from(outgoingPrs)
+    .where(eq(outgoingPrs.status, "merged"));
+
+  return { total: countRow?.value ?? 0, recent: receipts, lastMergedAt };
 }
 
 // Phase-2 P2-E — detail-page adapter. Maps a single-receipt query row into
