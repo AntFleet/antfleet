@@ -187,7 +187,7 @@ async function main() {
           byKey.set(key, { owner: r.owner, repo: r.repo, reviewIds: [r.reviewId] });
         }
       }
-      return Array.from(byKey.values()).sort((a, b) =>
+      return Array.from(byKey.values()).toSorted((a, b) =>
         `${a.owner}/${a.repo}`.localeCompare(`${b.owner}/${b.repo}`),
       );
     },
