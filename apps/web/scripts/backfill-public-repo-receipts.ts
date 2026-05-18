@@ -76,8 +76,9 @@ export async function runBackfill(
   const totalCandidateRows = groups.reduce((sum, g) => sum + g.reviewIds.length, 0);
 
   deps.log(
-    `[pre-state] ${groups.length} group(s) with non-public rows; ` +
-      `${totalCandidateRows} candidate row(s) total.`,
+    `[pre-state] ${groups.length} actionable group(s); ` +
+      `${totalCandidateRows} candidate row(s) total ` +
+      `(rows missing installation_id/owner/repo are reported separately and skipped).`,
   );
   if (opts.dryRun) {
     deps.log("[mode] dry-run — no writes will be issued.");
@@ -180,8 +181,8 @@ async function main(): Promise<void> {
   const { db } = await import("../db/index");
   const { reviews } = await import("../db/schema");
   const { getInstallationToken } = await import("../lib/github-app");
-  const { isPublicRepo } = await import("../lib/repo-visibility");
   const { Octokit } = await import("@octokit/rest");
+  const { logWarn } = await import("../lib/log");
 
   const deps: BackfillDeps = {
     loadCandidateGroups: async () => {
@@ -241,16 +242,19 @@ async function main(): Promise<void> {
             return { kind: "error", error: `installation token: ${error}` };
           }
         }
-        // isPublicRepo already fails closed (returns false on any error and
-        // logs a structured warning). We re-call repos.get here only to
-        // distinguish "private" from "error" in the operator-facing report;
-        // the actual side-effect logic (don't flip on error) is identical
-        // to "don't flip on private" so a single bool would also be safe.
+        // Re-call repos.get directly (rather than going through isPublicRepo)
+        // so the operator-facing report can distinguish "private" from
+        // "error". Both branches are safe — neither flips rows — but the
+        // distinction matters when sizing the universe of repos that need
+        // operator follow-up. Emit the same structured warning the webhook
+        // path produces via isPublicRepo, so ops sees one log shape across
+        // both flows.
         try {
           const { data } = await octokit.rest.repos.get({ owner, repo });
           return data.private === false ? { kind: "public" } : { kind: "private" };
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
+          logWarn("repo_visibility.lookup_failed", { owner, repo, error });
           return { kind: "error", error };
         }
       };
@@ -271,23 +275,24 @@ async function main(): Promise<void> {
     },
   };
 
-  // Reference isPublicRepo so its module-level side effects (logger import)
-  // are loaded even when the script path never directly invokes it — it
-  // shares the fail-closed semantics this script relies on, and surfacing
-  // the symbol in the dep wiring documents that contract.
-  void isPublicRepo;
-
   await runBackfill(deps, { dryRun });
 }
 
-// Don't run main() when this module is imported by a test. tsx/node run
-// the file as the entry script with import.meta.url === file:// of argv[1].
-const isEntry =
-  typeof process !== "undefined" &&
-  process.argv[1] !== undefined &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href;
+// Don't run main() when this module is imported by a test. Compare the
+// realpath-resolved entrypoint to fileURLToPath(import.meta.url) so the
+// check survives symlinks (pnpm workspace links, .bin shims, etc.).
+async function isEntry(): Promise<boolean> {
+  if (typeof process === "undefined" || process.argv[1] === undefined) return false;
+  const { fileURLToPath } = await import("node:url");
+  const { realpathSync } = await import("node:fs");
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
-if (isEntry) {
+if (await isEntry()) {
   main().then(
     () => process.exit(0),
     (err) => {
