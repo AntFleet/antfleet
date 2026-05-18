@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, desc, eq, gte, lt, max } from "drizzle-orm";
+import { and, count, desc, eq, gte, lt, max, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
   findingStatus,
@@ -960,4 +960,111 @@ export async function recordMaintainerReactions(
     })
     .returning({ reactionId: maintainerReactions.reactionId });
   return inserted.length;
+}
+
+// ─── Mission 6 — /benchmarks public view ───────────────────────────────────
+//
+// Benchmark reviews are reviews on benchmark-class repos (BENCHMARK.md at
+// root). They never close — benchmark replays are not meant to merge —
+// so /receipts never shows them. /benchmarks surfaces them regardless of
+// close state. Same privacy gate as /receipts: rows must have
+// public_receipt = true AND is_benchmark = true.
+//
+// Finding count comes from agreementDecision JSONB (cheaper than joining
+// finding_status; matches what the bot comment posts; the JSON already
+// carries the "agreed" array length). Documented in the SQL select.
+
+export type PublicBenchmarkRow = {
+  reviewId: string;
+  owner: string | null;
+  repo: string | null;
+  prNumber: number;
+  commitSha: string;
+  createdAt: Date;
+  prCommentUrl: string | null;
+  findingCount: number;
+  filesReviewed: string[];
+  // From provider_model_ids JSONB. Anthropic+OpenAI strings, used to render
+  // model badges. Empty when the review was skipped before model dispatch.
+  modelIds: Record<string, string>;
+};
+
+export type PublicBenchmarksPage = {
+  totalBenchmarks: number;
+  recent: PublicBenchmarkRow[];
+  lastUpdatedAt: Date | null;
+  hasMore: boolean;
+};
+
+export async function loadPublicBenchmarksPage(args: {
+  limit: number;
+  // Cursor: pass the createdAt of the last row on the current page; next
+  // page returns strictly-older rows. Stable under inserts because newer
+  // benchmarks always come in at the top.
+  before?: Date | undefined;
+}): Promise<PublicBenchmarksPage> {
+  const fetchLimit = args.limit + 1;
+  const baseConditions = and(
+    eq(reviews.isBenchmark, true),
+    eq(reviews.publicReceipt, true),
+  );
+  const recentConditions =
+    args.before === undefined
+      ? baseConditions
+      : and(baseConditions, lt(reviews.createdAt, args.before));
+
+  const [countRows, fetchedRows, lastUpdatedRows] = await Promise.all([
+    db.select({ value: count() }).from(reviews).where(baseConditions),
+    db
+      .select({
+        reviewId: reviews.reviewId,
+        owner: reviews.owner,
+        repo: reviews.repo,
+        prNumber: reviews.prNumber,
+        commitSha: reviews.commitSha,
+        createdAt: reviews.createdAt,
+        prCommentUrl: reviews.prCommentUrl,
+        // Finding count is the length of the agreed[] array inside
+        // agreementDecision JSONB. NULL/missing keys collapse to 0.
+        // Wrapped in a CAST so the result column is a stable int.
+        findingCount: sql<number>`COALESCE(jsonb_array_length(${reviews.agreementDecision}->'agreed'), 0)::int`.as(
+          "finding_count",
+        ),
+        filesReviewed: reviews.filesReviewed,
+        modelIds: reviews.providerModelIds,
+      })
+      .from(reviews)
+      .where(recentConditions)
+      .orderBy(desc(reviews.createdAt))
+      .limit(fetchLimit),
+    db.select({ value: max(reviews.createdAt) }).from(reviews).where(baseConditions),
+  ]);
+
+  const hasMore = fetchedRows.length > args.limit;
+  const recent = (hasMore ? fetchedRows.slice(0, args.limit) : fetchedRows).map((r) => ({
+    reviewId: r.reviewId,
+    owner: r.owner,
+    repo: r.repo,
+    prNumber: r.prNumber,
+    commitSha: r.commitSha,
+    createdAt: r.createdAt,
+    prCommentUrl: r.prCommentUrl,
+    findingCount: r.findingCount,
+    filesReviewed: r.filesReviewed,
+    modelIds: (r.modelIds ?? {}) as Record<string, string>,
+  }));
+  const lastUpdatedRaw = lastUpdatedRows[0]?.value ?? null;
+  const lastUpdatedAt =
+    lastUpdatedRaw === null
+      ? null
+      : lastUpdatedRaw instanceof Date
+        ? lastUpdatedRaw
+        : new Date(lastUpdatedRaw);
+
+  return {
+    totalBenchmarks: countRows[0]?.value ?? 0,
+    recent,
+    lastUpdatedAt,
+    hasMore,
+  };
 }
