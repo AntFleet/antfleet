@@ -6,7 +6,6 @@ import {
   eq,
   gte,
   isNotNull,
-  isNull,
   lt,
   lte,
   max,
