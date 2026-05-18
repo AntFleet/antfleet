@@ -122,6 +122,16 @@ function ReceiptsHero({
           lives on GitHub&apos;s event log, not ours. Click any link to verify
           the SHA, the timestamp, and the surrounding diff for yourself.
         </p>
+        <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
+          Showing all public-repo receipts; private repos opt in via{" "}
+          <a
+            href="mailto:agent@antfleet.dev"
+            className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
+          >
+            agent@antfleet.dev
+          </a>
+          .
+        </p>
       </ContentWrap>
     </section>
   );
