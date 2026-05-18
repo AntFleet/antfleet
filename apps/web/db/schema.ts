@@ -51,6 +51,14 @@ export const reviews = pgTable("reviews", {
   // categories, and finding titles for private-repo installs whose PR
   // comments are auth-walled — that is the leak this column closes.
   publicReceipt: boolean("public_receipt").notNull().default(false),
+  // Mission 6 — benchmark surface. True for reviews on benchmark-class repos
+  // (detected by presence of BENCHMARK.md at repo root). Surfaces the review
+  // on /benchmarks regardless of close state, since benchmark replays are not
+  // meant to merge and therefore never trigger Sweeper closure. Independent
+  // of public_receipt: a benchmark on a public repo gets both flags; on a
+  // private repo, is_benchmark is set but the row never reaches /benchmarks
+  // (still gated on public_receipt = true at the query layer).
+  isBenchmark: boolean("is_benchmark").notNull().default(false),
 });
 
 // One row per agreed finding. Sweeper updates status when reconciliation

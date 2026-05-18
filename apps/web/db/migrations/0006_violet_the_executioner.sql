@@ -1,0 +1,1 @@
+ALTER TABLE "reviews" ADD COLUMN "is_benchmark" boolean DEFAULT false NOT NULL;

@@ -43,6 +43,13 @@
       "when": 1778997515173,
       "tag": "0005_dark_doctor_octopus",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779083173467,
+      "tag": "0006_violet_the_executioner",
+      "breakpoints": true
     }
   ]
 }
