@@ -74,8 +74,6 @@ export async function handleOptIn(
     return htmlResponse(200, infoPage(
       "No reviews here yet",
       `We don't have any reviews on file for ${payload.owner}/${payload.repo} yet. Once your first PR is reviewed, the opt-in link in the summary comment will work.`,
-      payload,
-      action,
     ));
   }
 
@@ -206,11 +204,10 @@ ${args.body}
 function successPage(
   title: string,
   message: string,
-  payload: OptInPayload,
+  _payload: OptInPayload,
   action: OptInAction,
 ): string {
-  const reverseAction: OptInAction = action === "enable" ? "disable" : "enable";
-  const reverseLabel = reverseAction === "disable" ? "disable public receipts" : "re-enable public receipts";
+  const reverseLabel = action === "enable" ? "disable public receipts" : "re-enable public receipts";
   return pageShell({
     title,
     body: `
@@ -218,17 +215,12 @@ function successPage(
 <p>${escapeHtml(message)}</p>
 <p>View the public log at <a href="/receipts">/receipts</a> or read the <a href="/policy">data policy</a>.</p>
 <div class="divider"></div>
-<p class="footer">Need to ${escapeHtml(reverseLabel)}? Reply on the GitHub comment that linked you here — the same comment carries the reversal link. The full opt-in path lives in <code>/policy</code>.</p>
+<p class="footer">Need to ${escapeHtml(reverseLabel)}? Email <a href="mailto:agent@antfleet.dev">agent@antfleet.dev</a> and we'll flip the flag manually. The full opt-in path lives in <code>/policy</code>.</p>
 `,
   });
 }
 
-function infoPage(
-  title: string,
-  message: string,
-  _payload: OptInPayload,
-  _action: OptInAction,
-): string {
+function infoPage(title: string, message: string): string {
   return pageShell({
     title,
     body: `
