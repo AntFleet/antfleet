@@ -43,10 +43,29 @@ const DEFAULT_CORPUS = resolve(ROOT, "examples/dogfood");
 // v1 default stack: two independent frontier providers, unanimous agreement.
 // See ARCHITECTURE.md §Provider roster for why openrouter/codex are deferred.
 const DEFAULT_PROVIDERS = ["anthropic", "openai"] as const;
-// Source-file extensions the walker considers. Real-repo corpora include
-// JSON manifests (dep pins) and TSX/JSX components alongside TS; the dogfood
-// corpus is .ts-only so this is a superset, not a behavior change for it.
-const SOURCE_EXTENSIONS: readonly string[] = [".ts", ".tsx", ".js", ".jsx", ".json"];
+// Source-file extensions the walker considers. Mirrors apps/web/lib/
+// github-files.ts REVIEW_EXTENSIONS so the spike corpus reflects what the
+// production webhook handler would actually pull in. The dogfood corpus is
+// .ts-only so this remains a strict superset for that fixture.
+const SOURCE_EXTENSIONS: readonly string[] = [
+  ".cjs",
+  ".go",
+  ".js",
+  ".json",
+  ".jsx",
+  ".md",
+  ".mdx",
+  ".mjs",
+  ".py",
+  ".rs",
+  ".sh",
+  ".sol",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".yaml",
+  ".yml",
+];
 
 loadDotenv({ path: resolve(ROOT, ".env.local"), quiet: true });
 

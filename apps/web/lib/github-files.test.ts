@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   fetchChangedFilesWith,
   filterReviewableFiles,
+  isReviewablePath,
   isWithinSizeLimit,
+  REVIEW_BLOCKLIST_BASENAMES,
+  REVIEW_BLOCKLIST_PATH_SUFFIXES,
 } from "./github-files";
 
 describe("filterReviewableFiles", () => {
@@ -18,10 +21,10 @@ describe("filterReviewableFiles", () => {
   it("drops files with non-review extensions", () => {
     const result = filterReviewableFiles([
       { filename: "src/foo.ts", status: "modified" },
-      { filename: "README.md", status: "modified" },
       { filename: "image.png", status: "added" },
       { filename: "config.json", status: "modified" },
       { filename: "build.gradle", status: "modified" },
+      { filename: "binary.bin", status: "modified" },
     ]);
     expect(result.map((f) => f.filename)).toEqual(["src/foo.ts", "config.json"]);
   });
@@ -36,16 +39,108 @@ describe("filterReviewableFiles", () => {
     expect(result[0]?.filename).toBe("src/f0.ts");
     expect(result[14]?.filename).toBe("src/f14.ts");
   });
+});
 
-  it("accepts .ts, .tsx, .js, .jsx, .json", () => {
-    const files = [
-      { filename: "a.ts", status: "modified" },
-      { filename: "b.tsx", status: "modified" },
-      { filename: "c.js", status: "modified" },
-      { filename: "d.jsx", status: "modified" },
-      { filename: "e.json", status: "modified" },
-    ];
-    expect(filterReviewableFiles(files)).toHaveLength(5);
+describe("isReviewablePath — extension allowlist", () => {
+  it.each([
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".json",
+    ".md",
+    ".mdx",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".sh",
+    ".sol",
+    ".rs",
+    ".go",
+    ".py",
+  ])("accepts %s", (ext) => {
+    expect(isReviewablePath(`src/example${ext}`)).toBe(true);
+  });
+
+  it.each([".png", ".gif", ".gradle", ".lock", ".bin", ".pdf", ".zip"])(
+    "rejects %s",
+    (ext) => {
+      expect(isReviewablePath(`src/example${ext}`)).toBe(false);
+    },
+  );
+});
+
+describe("isReviewablePath — basename blocklist", () => {
+  it("rejects every entry in REVIEW_BLOCKLIST_BASENAMES even at allowed extensions", () => {
+    // Confidence check: the blocklist isn't empty (catches future refactor
+    // accidents where the constant is reset).
+    expect(REVIEW_BLOCKLIST_BASENAMES.size).toBeGreaterThan(0);
+    for (const name of REVIEW_BLOCKLIST_BASENAMES) {
+      // At the repo root and nested — both should fail.
+      expect(isReviewablePath(name)).toBe(false);
+      expect(isReviewablePath(`packages/foo/${name}`)).toBe(false);
+    }
+  });
+
+  it("rejects package-lock.json even though .json is in the allowlist", () => {
+    expect(isReviewablePath("package-lock.json")).toBe(false);
+    expect(isReviewablePath("apps/web/package-lock.json")).toBe(false);
+    // sanity: regular package.json passes
+    expect(isReviewablePath("apps/web/package.json")).toBe(true);
+  });
+
+  it("rejects pnpm-lock.yaml even though .yaml is in the allowlist", () => {
+    expect(isReviewablePath("pnpm-lock.yaml")).toBe(false);
+    expect(isReviewablePath("apps/web/pnpm-lock.yaml")).toBe(false);
+  });
+
+  it("rejects LICENSE.md even though .md is in the allowlist", () => {
+    expect(isReviewablePath("LICENSE.md")).toBe(false);
+    // sanity: README.md passes (it's NOT in the blocklist)
+    expect(isReviewablePath("README.md")).toBe(true);
+  });
+});
+
+describe("isReviewablePath — path-suffix blocklist", () => {
+  it.each(REVIEW_BLOCKLIST_PATH_SUFFIXES)(
+    "rejects paths containing %s",
+    (suffix) => {
+      // Construct a realistic path that contains the suffix. Suffixes
+      // starting with "/" are directory markers; suffixes starting with "."
+      // are filename suffixes.
+      const sample = suffix.startsWith("/")
+        ? `apps/web${suffix}generated/file.js`
+        : `apps/web/src/file${suffix}`;
+      expect(isReviewablePath(sample)).toBe(false);
+    },
+  );
+
+  it("accepts files in plausible source paths that don't hit any blocklist", () => {
+    expect(isReviewablePath("apps/web/lib/foo.ts")).toBe(true);
+    expect(isReviewablePath("scripts/spike.ts")).toBe(true);
+    expect(isReviewablePath("memory/goals.json")).toBe(true);
+    expect(isReviewablePath("wiki/flywheel.md")).toBe(true);
+    expect(isReviewablePath(".github/workflows/aeon.yml")).toBe(true);
+  });
+});
+
+describe("isReviewablePath — edge cases", () => {
+  it("rejects empty filename", () => {
+    expect(isReviewablePath("")).toBe(false);
+  });
+
+  it("rejects files with no extension", () => {
+    expect(isReviewablePath("Makefile")).toBe(false);
+    expect(isReviewablePath("src/Dockerfile")).toBe(false);
+  });
+
+  it("handles paths with multiple dots — uses last extension", () => {
+    expect(isReviewablePath("file.test.ts")).toBe(true);
+    expect(isReviewablePath("file.config.js")).toBe(true);
+    // .min.js path-suffix blocklist beats .js extension allowlist
+    expect(isReviewablePath("vendor/jquery.min.js")).toBe(false);
   });
 });
 

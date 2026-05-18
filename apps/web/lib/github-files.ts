@@ -1,9 +1,77 @@
-import { extname } from "node:path";
+import { basename, extname } from "node:path";
 import { getInstallationOctokit } from "./github-app";
 
 // Mirrors the spike runner's source-file detection in scripts/spike.ts. Keep
 // in sync if that list changes — the review prompt's behavior is tied to it.
-const REVIEW_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".json"]);
+// Expanded beyond pure-JS/TS to cover the file types where agent repos keep
+// their load-bearing content (.md identity/wiki, .yml CI + agent definitions,
+// .toml config, .sh scripts) plus broader-ecosystem source (.rs, .go, .py,
+// .sol). Generated files in the same extensions are filtered by the
+// blocklist below, not by removing the extension here.
+const REVIEW_EXTENSIONS = new Set([
+  ".cjs",
+  ".go",
+  ".js",
+  ".json",
+  ".jsx",
+  ".md",
+  ".mdx",
+  ".mjs",
+  ".py",
+  ".rs",
+  ".sh",
+  ".sol",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".yaml",
+  ".yml",
+]);
+
+// Files we never review regardless of extension. Matched against the PR
+// file's basename (last path segment). Lockfiles + license + ignore manifests
+// blow up the prompt without producing useful findings.
+export const REVIEW_BLOCKLIST_BASENAMES = new Set([
+  ".gitignore",
+  ".npmignore",
+  ".prettierignore",
+  "Cargo.lock",
+  "COPYING",
+  "Gemfile.lock",
+  "LICENSE",
+  "LICENSE.md",
+  "LICENSE.txt",
+  "Pipfile.lock",
+  "bun.lockb",
+  "composer.lock",
+  "go.sum",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "poetry.lock",
+  "yarn.lock",
+]);
+
+// Path-suffix patterns that mark generated / vendored / minified output.
+// Matched as plain substring against the full filename (relative to repo
+// root) — kept as suffix tests since these are deterministic markers, not
+// regexes.
+export const REVIEW_BLOCKLIST_PATH_SUFFIXES = [
+  "/.next/",
+  "/.vercel/",
+  "/build/",
+  "/coverage/",
+  "/dist/",
+  "/node_modules/",
+  "/out/",
+  ".gen.go",
+  ".gen.ts",
+  ".generated.js",
+  ".generated.ts",
+  ".min.css",
+  ".min.js",
+  ".pb.go",
+  ".pb.ts",
+];
 
 // AGENTS.md §9: "review changed files only — not whole repo". These caps keep
 // any one PR's prompt size within the V2/V3-validated zone (~142k-char
@@ -36,13 +104,26 @@ type FileContentBody = {
   content?: string;
 };
 
+// Predicate split out so tests can hit it directly. Path-only — does not
+// look at file status. True when the path's extension is in the allow set
+// AND neither its basename nor any path segment matches the blocklists.
+export function isReviewablePath(filename: string): boolean {
+  if (filename.length === 0) return false;
+  if (!REVIEW_EXTENSIONS.has(extname(filename))) return false;
+  if (REVIEW_BLOCKLIST_BASENAMES.has(basename(filename))) return false;
+  for (const suffix of REVIEW_BLOCKLIST_PATH_SUFFIXES) {
+    if (filename.includes(suffix)) return false;
+  }
+  return true;
+}
+
 // Filter a raw PR-files list down to what we will review. Pure for testability.
 export function filterReviewableFiles<T extends { filename: string; status: string }>(
   files: T[],
 ): T[] {
   return files
     .filter((f) => f.status !== "removed")
-    .filter((f) => REVIEW_EXTENSIONS.has(extname(f.filename)))
+    .filter((f) => isReviewablePath(f.filename))
     .slice(0, MAX_FILES);
 }
 
