@@ -506,7 +506,9 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
         prNumber: reviews.prNumber,
       })
       .from(reviews)
-      .innerJoin(findingStatus, eq(reviews.reviewId, findingStatus.reviewId))
+      // Left join so zero-finding reviews surface (the aggregate reviewsRun
+      // counter already counts them; the stream should match).
+      .leftJoin(findingStatus, eq(reviews.reviewId, findingStatus.reviewId))
       .where(eq(reviews.publicReceipt, true))
       .orderBy(desc(reviews.createdAt))
       .limit(EVENT_STREAM_LIMIT),
