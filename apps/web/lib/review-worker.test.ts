@@ -42,7 +42,13 @@ function mkFinding(overrides: Record<string, unknown> = {}) {
 }
 
 function mkBundle(overrides: Record<string, unknown> = {}): {
-  perProvider: Array<{ name: string; modelId: string; output: { findings: unknown[] } | null; error: string | null; ms: number }>;
+  perProvider: Array<{
+    name: string;
+    modelId: string;
+    output: { findings: unknown[] } | null;
+    error: string | null;
+    ms: number;
+  }>;
   modelIds: Record<string, string>;
   agreed: ReturnType<typeof mkFinding>[];
   disagreements: unknown[];
@@ -54,7 +60,13 @@ function mkBundle(overrides: Record<string, unknown> = {}): {
 } {
   return {
     perProvider: [
-      { name: "anthropic", modelId: "m1", output: { findings: [mkFinding()] }, error: null, ms: 1000 },
+      {
+        name: "anthropic",
+        modelId: "m1",
+        output: { findings: [mkFinding()] },
+        error: null,
+        ms: 1000,
+      },
       { name: "openai", modelId: "m2", output: { findings: [mkFinding()] }, error: null, ms: 1100 },
     ],
     modelIds: { anthropic: "m1", openai: "m2" },
@@ -72,9 +84,9 @@ function mkBundle(overrides: Record<string, unknown> = {}): {
 function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
   return {
     getInstallationToken: vi.fn().mockResolvedValue("ghs_token"),
-    getChangedFiles: vi.fn().mockResolvedValue([
-      { filename: "src/x.ts", status: "modified", contents: "code" },
-    ]),
+    getChangedFiles: vi
+      .fn()
+      .mockResolvedValue([{ filename: "src/x.ts", status: "modified", contents: "code" }]),
     reviewPR: vi.fn().mockResolvedValue(mkBundle()),
     postPRComment: vi.fn().mockResolvedValue({ id: 9001, htmlUrl: "https://gh/c/9001" }),
     runFirstReviewSummary: vi.fn().mockResolvedValue(undefined),
@@ -138,9 +150,9 @@ describe("runReviewWorker", () => {
 
   it("skips a row that already has a posted comment and fast-paths it to done", async () => {
     const deps = mkDeps({
-      loadReviewQueueRow: vi.fn().mockResolvedValue(
-        mkRow({ prCommentId: 8888, processingStatus: "in_progress" }),
-      ),
+      loadReviewQueueRow: vi
+        .fn()
+        .mockResolvedValue(mkRow({ prCommentId: 8888, processingStatus: "in_progress" })),
     });
     const outcome = await runReviewWorker("rev-1", "cron", deps);
     expect(outcome).toEqual({

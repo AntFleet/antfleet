@@ -3,12 +3,7 @@ import type { Finding } from "./review-types";
 
 // Order matches AGENTS.md §15 framing — direct, technical. Highest-priority
 // items first so reviewers see them before scrolling.
-const SEVERITY_ORDER: readonly Finding["severity"][] = [
-  "critical",
-  "high",
-  "medium",
-  "low",
-];
+const SEVERITY_ORDER: readonly Finding["severity"][] = ["critical", "high", "medium", "low"];
 
 const REASONING_MAX_CHARS = 500;
 const RECOMMENDATION_MAX_CHARS = 300;

@@ -15,7 +15,7 @@ state there. For everyone else: the code, the receipts on
 <https://www.antfleet.dev/changelog>, and the architecture page at
 <https://www.antfleet.dev/architecture> together describe what
 AntFleet does and what has shipped recently. The HANDOFF describes
-what shipped *this session* and what's left for *next session* —
+what shipped _this session_ and what's left for _next session_ —
 distinct material, deliberately kept off the public surface.
 
 This file remains here as an anchor so the rename is discoverable.

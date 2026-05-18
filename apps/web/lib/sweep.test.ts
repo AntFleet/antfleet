@@ -101,9 +101,9 @@ describe("runSweep", () => {
     const batch = mkBatch();
     const deps = mkDeps({
       loadSweepWork: vi.fn().mockResolvedValue([batch]),
-      detectClosures: vi.fn().mockResolvedValue([
-        { findingId: "review-1-0", status: "closed", closureSha: "new-sha" },
-      ]),
+      detectClosures: vi
+        .fn()
+        .mockResolvedValue([{ findingId: "review-1-0", status: "closed", closureSha: "new-sha" }]),
     });
     const out = await runSweep(deps);
     expect(out.closed).toBe(1);
@@ -130,9 +130,9 @@ describe("runSweep", () => {
     const batch = mkBatch();
     const deps = mkDeps({
       loadSweepWork: vi.fn().mockResolvedValue([batch]),
-      detectClosures: vi.fn().mockResolvedValue([
-        { findingId: "review-1-0", status: "closed", closureSha: "new-sha" },
-      ]),
+      detectClosures: vi
+        .fn()
+        .mockResolvedValue([{ findingId: "review-1-0", status: "closed", closureSha: "new-sha" }]),
     });
     await runSweep(deps);
     expect(deps.pollReactions).not.toHaveBeenCalled();
@@ -147,9 +147,9 @@ describe("runSweep", () => {
     ];
     const deps = mkDeps({
       loadSweepWork: vi.fn().mockResolvedValue([batch]),
-      detectClosures: vi.fn().mockResolvedValue([
-        { findingId: "review-1-0", status: "still_open" },
-      ]),
+      detectClosures: vi
+        .fn()
+        .mockResolvedValue([{ findingId: "review-1-0", status: "still_open" }]),
       pollReactions: vi.fn().mockResolvedValue(rawReactions),
       recordMaintainerReactions: vi.fn().mockResolvedValue(2),
     });
@@ -229,9 +229,9 @@ describe("runSweep", () => {
     const deps = mkDeps({
       loadSweepWork: vi.fn().mockResolvedValue([batch]),
       detectClosures: vi.fn().mockRejectedValue(new Error("compareCommits 500")),
-      pollReactions: vi.fn().mockResolvedValue([
-        { content: "+1" as const, created_at: "2026-05-17T09:00:00Z" },
-      ]),
+      pollReactions: vi
+        .fn()
+        .mockResolvedValue([{ content: "+1" as const, created_at: "2026-05-17T09:00:00Z" }]),
       recordMaintainerReactions: vi.fn().mockResolvedValue(1),
     });
     const out = await runSweep(deps);
@@ -255,9 +255,9 @@ describe("runSweep", () => {
         { findingId: "review-1-0", status: "still_open" },
         { findingId: "review-1-1", status: "still_open" },
       ]),
-      pollReactions: vi.fn().mockResolvedValue([
-        { content: "+1" as const, created_at: "2026-05-17T09:00:00Z" },
-      ]),
+      pollReactions: vi
+        .fn()
+        .mockResolvedValue([{ content: "+1" as const, created_at: "2026-05-17T09:00:00Z" }]),
       recordMaintainerReactions: vi
         .fn()
         .mockRejectedValueOnce(new Error("unique constraint missing"))

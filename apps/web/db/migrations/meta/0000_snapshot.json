@@ -59,12 +59,8 @@
           "name": "maintainer_reactions_review_id_reviews_review_id_fk",
           "tableFrom": "maintainer_reactions",
           "tableTo": "reviews",
-          "columnsFrom": [
-            "review_id"
-          ],
-          "columnsTo": [
-            "review_id"
-          ],
+          "columnsFrom": ["review_id"],
+          "columnsTo": ["review_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }

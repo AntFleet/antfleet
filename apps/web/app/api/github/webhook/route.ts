@@ -6,11 +6,7 @@ import { getInstallationToken } from "@/lib/github-app";
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
-import {
-  isWelcomeIssue,
-  recordPartnerReply,
-  runWelcomeOnInstall,
-} from "@/lib/onboarder";
+import { isWelcomeIssue, recordPartnerReply, runWelcomeOnInstall } from "@/lib/onboarder";
 import { runReviewWorker } from "@/lib/review-worker";
 import { enqueueReview, hashRepo } from "@/db/queries";
 
@@ -86,9 +82,7 @@ function asIssueCommentPayload(raw: unknown): IssueCommentPayload | null {
   const owner = repository?.["owner"] as Record<string, unknown> | undefined;
   const issue = p["issue"] as Record<string, unknown> | undefined;
   const comment = p["comment"] as Record<string, unknown> | undefined;
-  const sender = (comment?.["user"] ?? p["sender"]) as
-    | Record<string, unknown>
-    | undefined;
+  const sender = (comment?.["user"] ?? p["sender"]) as Record<string, unknown> | undefined;
   if (
     typeof installationId !== "number" ||
     typeof repository?.["name"] !== "string" ||

@@ -33,10 +33,44 @@ type OnboarderEventTypeJson =
   | "partner_reply";
 
 type FleetActivityEventJson =
-  | { kind: "review_completed"; ts: string; repoHash: string; prNumber: number; owner: string | null; repo: string | null }
-  | { kind: "finding_agreed"; ts: string; findingId: string; severity: string; category: string; title: string; repoHash: string; owner: string | null; repo: string | null }
-  | { kind: "finding_closed"; ts: string; findingId: string; severity: string; category: string; title: string; closureSha: string | null; repoHash: string; owner: string | null; repo: string | null }
-  | { kind: "onboarder_action"; ts: string; eventType: OnboarderEventTypeJson; repoHash: string; commentUrl: string | null };
+  | {
+      kind: "review_completed";
+      ts: string;
+      repoHash: string;
+      prNumber: number;
+      owner: string | null;
+      repo: string | null;
+    }
+  | {
+      kind: "finding_agreed";
+      ts: string;
+      findingId: string;
+      severity: string;
+      category: string;
+      title: string;
+      repoHash: string;
+      owner: string | null;
+      repo: string | null;
+    }
+  | {
+      kind: "finding_closed";
+      ts: string;
+      findingId: string;
+      severity: string;
+      category: string;
+      title: string;
+      closureSha: string | null;
+      repoHash: string;
+      owner: string | null;
+      repo: string | null;
+    }
+  | {
+      kind: "onboarder_action";
+      ts: string;
+      eventType: OnboarderEventTypeJson;
+      repoHash: string;
+      commentUrl: string | null;
+    };
 
 export type FleetActivityJson = {
   lastSweepAt: string | null;
@@ -145,7 +179,9 @@ function LivePill({ polling }: { polling: "live" | "paused" }) {
     <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-[var(--color-ink-muted)]">
       <span className="relative flex h-1.5 w-1.5">
         {polling === "live" && (
-          <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${dotColor} opacity-75`} />
+          <span
+            className={`absolute inline-flex h-full w-full animate-ping rounded-full ${dotColor} opacity-75`}
+          />
         )}
         <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${dotColor}`} />
       </span>
@@ -178,10 +214,9 @@ function Hero({
           What the agents are doing.
         </h1>
         <p className="mt-5 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
-          Counts below cover every install and refresh every 60 seconds.
-          The event stream shows only repos opted in to public receipts —
-          non-opted-in activity contributes to the numbers but stays off
-          this page.
+          Counts below cover every install and refresh every 60 seconds. The event stream shows only
+          repos opted in to public receipts — non-opted-in activity contributes to the numbers but
+          stays off this page.
         </p>
         <div className="mt-6 flex flex-wrap items-baseline gap-x-6 gap-y-2 font-mono text-[11px] text-[var(--color-ink-subtle)]">
           <span>
@@ -199,8 +234,7 @@ function Hero({
           </span>
           <span className="text-[var(--color-line-strong)]">·</span>
           <span>
-            next sweep ·{" "}
-            <span className="text-[var(--color-ink-muted)]">06:00 UTC daily</span>
+            next sweep · <span className="text-[var(--color-ink-muted)]">06:00 UTC daily</span>
           </span>
         </div>
       </ContentWrap>
@@ -208,11 +242,7 @@ function Hero({
   );
 }
 
-function WindowsSection({
-  windows,
-}: {
-  windows: FleetActivityJson["windows"];
-}) {
+function WindowsSection({ windows }: { windows: FleetActivityJson["windows"] }) {
   return (
     <section>
       <ContentWrap>
@@ -360,13 +390,13 @@ function AgentRoster({
           {AGENT_ROSTER.map((agent) => {
             const lastSeenIso =
               agent.cadenceSource === "sweep"
-                ? lastSweepAt ?? lastReceiptAt
+                ? (lastSweepAt ?? lastReceiptAt)
                 : agent.cadenceSource === "onboarder"
                   ? lastOnboarderAt
-                  // perReview agents tick whenever a review runs, not when
-                  // a finding closes — so prefer lastReviewAt over the
-                  // closure-based timestamps.
-                  : lastReviewAt ?? lastReceiptAt ?? lastSweepAt;
+                  : // perReview agents tick whenever a review runs, not when
+                    // a finding closes — so prefer lastReviewAt over the
+                    // closure-based timestamps.
+                    (lastReviewAt ?? lastReceiptAt ?? lastSweepAt);
             return (
               <li
                 key={agent.name}
@@ -374,13 +404,17 @@ function AgentRoster({
               >
                 <div>
                   <p className="text-sm font-semibold text-[var(--color-ink)]">{agent.name}</p>
-                  <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">{agent.role}</p>
+                  <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">
+                    {agent.role}
+                  </p>
                 </div>
                 <p className="font-mono text-[11px] text-[var(--color-ink-subtle)] uppercase tracking-widest sm:text-right">
                   {agent.kind}
                 </p>
                 <p className="font-mono text-[11px] text-[var(--color-ink-subtle)] tabular-nums sm:text-right">
-                  {lastSeenIso === null ? "no signal yet" : `last seen ${formatRelativeTime(now, new Date(lastSeenIso))}`}
+                  {lastSeenIso === null
+                    ? "no signal yet"
+                    : `last seen ${formatRelativeTime(now, new Date(lastSeenIso))}`}
                 </p>
               </li>
             );
@@ -391,13 +425,7 @@ function AgentRoster({
   );
 }
 
-function EventStream({
-  events,
-  now,
-}: {
-  events: FleetActivityEventJson[];
-  now: Date;
-}) {
+function EventStream({ events, now }: { events: FleetActivityEventJson[]; now: Date }) {
   return (
     <section className="pb-20">
       <ContentWrap>
@@ -405,15 +433,16 @@ function EventStream({
           Event stream
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] mb-8 max-w-xl leading-relaxed">
-          Most recent fleet events from opted-in repos. Reviews, agreed
-          findings, and closure receipts merged chronologically.
+          Most recent fleet events from opted-in repos. Reviews, agreed findings, and closure
+          receipts merged chronologically.
         </p>
 
         {events.length === 0 ? (
           <div className="rounded-md border border-dashed border-[var(--color-line-strong)] p-8 text-center">
             <p className="text-sm text-[var(--color-ink)] mb-2">No public events yet.</p>
             <p className="text-sm text-[var(--color-ink-muted)] max-w-md mx-auto leading-relaxed">
-              Either the fleet is just-started, or no opted-in repos have activity. Aggregates above cover all installs.
+              Either the fleet is just-started, or no opted-in repos have activity. Aggregates above
+              cover all installs.
             </p>
           </div>
         ) : (
@@ -527,13 +556,7 @@ function EventRow({ event, now }: { event: FleetActivityEventJson; now: Date }) 
   );
 }
 
-function KindBadge({
-  label,
-  tone,
-}: {
-  label: string;
-  tone: "ink" | "muted" | "subtle";
-}) {
+function KindBadge({ label, tone }: { label: string; tone: "ink" | "muted" | "subtle" }) {
   const colorClass =
     tone === "ink"
       ? "text-[var(--color-ink)]"

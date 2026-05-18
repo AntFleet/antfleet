@@ -673,9 +673,7 @@ export async function fixCommand(
         : commandsRun
             .map((result) => `${result.command} => ${result.exitCode ?? "unknown"}`)
             .join("; "),
-    next: failed
-      ? `inspect ${patchAttemptId}`
-      : `fleet revalidate --finding ${finding.findingId}`,
+    next: failed ? `inspect ${patchAttemptId}` : `fleet revalidate --finding ${finding.findingId}`,
   };
 }
 

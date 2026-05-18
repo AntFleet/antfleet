@@ -23,11 +23,7 @@ import { spawn } from "node:child_process";
 
 type RunResult = { code: number; stderr: string };
 
-function runVercel(
-  name: string,
-  value: string,
-  force: boolean,
-): Promise<RunResult> {
+function runVercel(name: string, value: string, force: boolean): Promise<RunResult> {
   return new Promise((resolve) => {
     const args = ["env", "add", name, "production", "--yes"];
     if (force) args.push("--force");
@@ -67,23 +63,17 @@ async function pushOne(name: string): Promise<void> {
       console.log(`[ok]   ${name}: overwritten (len=${value.length})`);
       return;
     }
-    console.error(
-      `[fail] ${name}: --force retry exited ${forced.code}: ${forced.stderr.trim()}`,
-    );
+    console.error(`[fail] ${name}: --force retry exited ${forced.code}: ${forced.stderr.trim()}`);
     return;
   }
 
-  console.error(
-    `[fail] ${name}: vercel exited ${initial.code}: ${initial.stderr.trim()}`,
-  );
+  console.error(`[fail] ${name}: vercel exited ${initial.code}: ${initial.stderr.trim()}`);
 }
 
 async function main() {
   const names = process.argv.slice(2);
   if (names.length === 0) {
-    console.error(
-      "usage: pnpm exec tsx scripts/push-prod-env.ts <VAR_NAME> [<VAR_NAME> ...]",
-    );
+    console.error("usage: pnpm exec tsx scripts/push-prod-env.ts <VAR_NAME> [<VAR_NAME> ...]");
     process.exit(2);
   }
   console.log(`[plan] pushing ${names.length} var(s) to production env`);

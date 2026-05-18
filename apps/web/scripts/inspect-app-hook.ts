@@ -32,7 +32,12 @@ async function main() {
   const deliveries = await octokit.request("GET /app/hook/deliveries", { per_page: 8 });
   console.log("\n[Last 8 webhook deliveries]");
   for (const d of deliveries.data) {
-    console.log(`  ${d.delivered_at}  ${d.status_code ?? "—"}  ${d.event}.${d.action ?? "?"}  installation=${d.installation_id ?? "—"}  repo_id=${d.repository_id ?? "—"}  delivery=${d.guid}  status=${d.status}`);
+    console.log(
+      `  ${d.delivered_at}  ${d.status_code ?? "—"}  ${d.event}.${d.action ?? "?"}  installation=${d.installation_id ?? "—"}  repo_id=${d.repository_id ?? "—"}  delivery=${d.guid}  status=${d.status}`,
+    );
   }
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

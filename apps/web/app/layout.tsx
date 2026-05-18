@@ -75,34 +75,19 @@ function SiteFooter() {
       <div className="mx-auto flex max-w-5xl flex-col gap-3 px-6 py-8 text-sm text-[var(--color-ink-subtle)] sm:flex-row sm:items-center sm:justify-between">
         <span>AntFleet — the trust layer for code written by agents.</span>
         <nav className="flex items-center gap-5 font-mono text-xs">
-          <a
-            href="/receipts"
-            className="hover:text-[var(--color-ink)] transition-colors"
-          >
+          <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             receipts
           </a>
-          <a
-            href="/benchmarks"
-            className="hover:text-[var(--color-ink)] transition-colors"
-          >
+          <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
             benchmarks
           </a>
-          <a
-            href="/changelog"
-            className="hover:text-[var(--color-ink)] transition-colors"
-          >
+          <a href="/changelog" className="hover:text-[var(--color-ink)] transition-colors">
             changelog
           </a>
-          <a
-            href="/roadmap"
-            className="hover:text-[var(--color-ink)] transition-colors"
-          >
+          <a href="/roadmap" className="hover:text-[var(--color-ink)] transition-colors">
             roadmap
           </a>
-          <a
-            href="/policy"
-            className="hover:text-[var(--color-ink)] transition-colors"
-          >
+          <a href="/policy" className="hover:text-[var(--color-ink)] transition-colors">
             policy
           </a>
           <a

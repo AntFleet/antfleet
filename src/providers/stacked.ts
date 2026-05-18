@@ -10,11 +10,7 @@ export type StackedOptions = {
 
 export function stackedProvider(opts: StackedOptions): Provider {
   if (opts.providers.length === 0) {
-    throw new FleetError(
-      "stacked provider requires at least one child",
-      2,
-      "invalid-config",
-    );
+    throw new FleetError("stacked provider requires at least one child", 2, "invalid-config");
   }
   const stackedName = `stacked[${opts.agreement}](${opts.providers.map((p) => p.name).join("+")})`;
   return {
@@ -107,8 +103,7 @@ export function stackedProvider(opts: StackedOptions): Provider {
           "provider-failure",
         );
       }
-      const failureSuffix =
-        failures.length > 0 ? `; ${failures.length} provider(s) failed` : "";
+      const failureSuffix = failures.length > 0 ? `; ${failures.length} provider(s) failed` : "";
       return {
         ...chosen.plan,
         steps: [
@@ -187,7 +182,5 @@ function formatError(err: unknown): string {
 
 function logFailure(provider: string, op: string, err: unknown): void {
   // Graceful degradation: stderr so operators see it without failing the run.
-  process.stderr.write(
-    `stacked: provider ${provider} ${op} failed: ${formatError(err)}\n`,
-  );
+  process.stderr.write(`stacked: provider ${provider} ${op} failed: ${formatError(err)}\n`);
 }

@@ -31,4 +31,7 @@ async function main() {
   console.log("hook events:", app?.events);
   console.log("permissions:", JSON.stringify(app?.permissions, null, 2));
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

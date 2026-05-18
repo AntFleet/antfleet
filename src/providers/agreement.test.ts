@@ -116,17 +116,23 @@ describe("findingsAgree", () => {
 
   it("treats null line ranges as covering the whole file", () => {
     const a = makeFinding({
-      evidence: [{ path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+      evidence: [
+        { path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null },
+      ],
     });
     const b = makeFinding({
-      evidence: [{ path: "src/handler.ts", startLine: 100, endLine: 200, symbol: null, quote: null }],
+      evidence: [
+        { path: "src/handler.ts", startLine: 100, endLine: 200, symbol: null, quote: null },
+      ],
     });
     expect(findingsAgree(a, b)).toBe(true);
   });
 
   it("normalizes leading ./ in evidence paths before comparing", () => {
     const a = makeFinding({
-      evidence: [{ path: "./src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+      evidence: [
+        { path: "./src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null },
+      ],
     });
     const b = makeFinding({
       evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],

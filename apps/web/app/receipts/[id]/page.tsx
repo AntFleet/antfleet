@@ -28,11 +28,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function ReceiptDetailPage({
-  params,
-}: {
-  params: Promise<RouteParams>;
-}) {
+export default async function ReceiptDetailPage({ params }: { params: Promise<RouteParams> }) {
   const { id } = await params;
   const row = await loadPublicReceiptDetail(id);
   if (row === null) {
@@ -74,9 +70,7 @@ function Header({ detail }: { detail: ReturnType<typeof toDisplayReceiptDetail> 
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <Badge>{detail.finding.category}</Badge>
           <Badge>{detail.finding.severity}</Badge>
-          {detail.shaLabel !== null && (
-            <Badge>closed in {detail.shaLabel}</Badge>
-          )}
+          {detail.shaLabel !== null && <Badge>closed in {detail.shaLabel}</Badge>}
           {detail.closureLagText !== null && <Badge>{detail.closureLagText}</Badge>}
         </div>
         <div className="mt-6 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -133,11 +127,7 @@ function FindingBody({ detail }: { detail: ReturnType<typeof toDisplayReceiptDet
   );
 }
 
-function AgentAttribution({
-  detail,
-}: {
-  detail: ReturnType<typeof toDisplayReceiptDetail>;
-}) {
+function AgentAttribution({ detail }: { detail: ReturnType<typeof toDisplayReceiptDetail> }) {
   return (
     <section>
       <ContentWrap>
@@ -145,14 +135,17 @@ function AgentAttribution({
           Agent attribution
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
-          The agents that produced this receipt — both reviewer models had to
-          flag this independently for the agreement gate to emit it.
+          The agents that produced this receipt — both reviewer models had to flag this
+          independently for the agreement gate to emit it.
         </p>
 
         <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] divide-y divide-[var(--color-line)]">
           {detail.providerTimings.length > 0
             ? detail.providerTimings.map((t) => (
-                <div key={t.name} className="px-5 py-4 grid grid-cols-1 gap-1 sm:grid-cols-[140px_1fr_auto] sm:gap-4 sm:items-baseline">
+                <div
+                  key={t.name}
+                  className="px-5 py-4 grid grid-cols-1 gap-1 sm:grid-cols-[140px_1fr_auto] sm:gap-4 sm:items-baseline"
+                >
                   <p className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
                     {t.name}
                   </p>
@@ -178,7 +171,8 @@ function AgentAttribution({
               wall-clock review time · est. inference cost
             </p>
             <p className="font-mono text-[11px] text-[var(--color-ink-subtle)] sm:text-right">
-              {(detail.totalReviewMs / 1000).toFixed(1)}s · ${Number(detail.estimatedCostUsd).toFixed(2)}
+              {(detail.totalReviewMs / 1000).toFixed(1)}s · $
+              {Number(detail.estimatedCostUsd).toFixed(2)}
             </p>
           </div>
           <div className="px-5 py-4 grid grid-cols-1 gap-1 sm:grid-cols-[140px_1fr_auto] sm:gap-4 sm:items-baseline">
@@ -194,7 +188,8 @@ function AgentAttribution({
           </div>
         </div>
         <p className="mt-3 font-mono text-[11px] text-[var(--color-ink-subtle)]">
-          internal review id · <span className="text-[var(--color-ink-muted)]">{detail.reviewIdShort}</span>
+          internal review id ·{" "}
+          <span className="text-[var(--color-ink-muted)]">{detail.reviewIdShort}</span>
         </p>
       </ContentWrap>
     </section>
@@ -209,9 +204,8 @@ function ReceiptLinks({ detail }: { detail: ReturnType<typeof toDisplayReceiptDe
           Third-party witnesses
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] mb-5 max-w-xl leading-relaxed">
-          Everything below lives on GitHub&apos;s event log, not ours. Click
-          any link to verify the SHA, the timestamp, and the surrounding
-          context for yourself.
+          Everything below lives on GitHub&apos;s event log, not ours. Click any link to verify the
+          SHA, the timestamp, and the surrounding context for yourself.
         </p>
         <ul className="flex flex-col gap-3">
           {detail.receiptUrl !== null && (

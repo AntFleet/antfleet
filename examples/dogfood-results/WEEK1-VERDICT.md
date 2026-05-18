@@ -27,40 +27,41 @@ Findings emitted per provider per run:
 
 | Provider   | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Mean | Stddev |
 | ---------- | ----: | ----: | ----: | ----: | ----: | ---: | -----: |
-| anthropic  |   10  |    8  |    9  |   10  |    9  | 9.2  |  0.84  |
-| openai     |    7  |    6  |    6  |    7  |    7  | 6.6  |  0.55  |
-| openrouter |    1  |    1  |    1  |    1  |    1  | 1.0  |  0.00  |
+| anthropic  |    10 |     8 |     9 |    10 |     9 |  9.2 |   0.84 |
+| openai     |     7 |     6 |     6 |     7 |     7 |  6.6 |   0.55 |
+| openrouter |     1 |     1 |     1 |     1 |     1 |  1.0 |   0.00 |
 
 Ground-truth bugs caught per provider per run (out of 5):
 
 | Provider   | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Mean | Stddev |
 | ---------- | ----: | ----: | ----: | ----: | ----: | ---: | -----: |
-| anthropic  |   5   |   5   |   5   |   5   |   5   |  5.0 |  0.00  |
-| openai     |   5   |   4   |   5   |   5   |   5   |  4.8 |  0.45  |
-| openrouter |   1   |   1   |   1   |   1   |   1   |  1.0 |  0.00  |
+| anthropic  |     5 |     5 |     5 |     5 |     5 |  5.0 |   0.00 |
+| openai     |     5 |     4 |     5 |     5 |     5 |  4.8 |   0.45 |
+| openrouter |     1 |     1 |     1 |     1 |     1 |  1.0 |   0.00 |
 
 Stacked-agreement output (computed across all three providers each run):
 
-| Mode       | Agreed mean | Agreed stddev | Bugs caught mean | Noise mean (agreed − ground-truth-caught) |
-| ---------- | ----------: | ------------: | ---------------: | ----------------------------------------: |
-| unanimous  | 0.8         | 0.45          | 0.8 / 5          | 0.0                                       |
-| majority   | 5.0         | 0.71          | 4.4 / 5          | 0.6                                       |
-| any        | 10.2        | 0.84          | 5.0 / 5          | 5.2                                       |
+| Mode      | Agreed mean | Agreed stddev | Bugs caught mean | Noise mean (agreed − ground-truth-caught) |
+| --------- | ----------: | ------------: | ---------------: | ----------------------------------------: |
+| unanimous |         0.8 |          0.45 |          0.8 / 5 |                                       0.0 |
+| majority  |         5.0 |          0.71 |          4.4 / 5 |                                       0.6 |
+| any       |        10.2 |          0.84 |          5.0 / 5 |                                       5.2 |
 
 ## Per-planted-bug detection rate
 
 For each of the 5 planted bugs, how often did the listed mode/provider catch
 it across the 5 runs:
 
-| Bug                                       | Anthropic | OpenAI | OpenRouter | Unanimous | Majority | Any |
-| ----------------------------------------- | --------: | -----: | ---------: | --------: | -------: | --: |
-| `null-deref-handler-welcome`              | 5/5       | 5/5    | 0/5        | 0/5       | 5/5      | 5/5 |
-| `input-validation-handler-deletePost`     | 5/5       | 5/5    | 0/5        | 0/5       | 5/5      | 5/5 |
-| `sql-injection-db`                        | 5/5       | 5/5    | 5/5        | 4/5       | 5/5      | 5/5 |
-| `race-condition-counter-bulk`             | 5/5       | 5/5    | 0/5        | 0/5       | 5/5      | 5/5 |
-| `deceptive-comment-format-escapeHtml`     | 5/5       | 4/5    | 0/5        | 0/5       | 2/5      | 5/5 |
+| Bug                                   | Anthropic | OpenAI | OpenRouter | Unanimous | Majority | Any |
+| ------------------------------------- | --------: | -----: | ---------: | --------: | -------: | --: |
+| `null-deref-handler-welcome`          |       5/5 |    5/5 |        0/5 |       0/5 |      5/5 | 5/5 |
+| `input-validation-handler-deletePost` |       5/5 |    5/5 |        0/5 |       0/5 |      5/5 | 5/5 |
+| `sql-injection-db`                    |       5/5 |    5/5 |        5/5 |       4/5 |      5/5 | 5/5 |
+| `race-condition-counter-bulk`         |       5/5 |    5/5 |        0/5 |       0/5 |      5/5 | 5/5 |
+| `deceptive-comment-format-escapeHtml` |       5/5 |    4/5 |        0/5 |       0/5 |      2/5 | 5/5 |
 
 Notes:
+
 - The single unanimous miss on `sql-injection-db` (run 2) is openai narrowing its evidence to lines that did not overlap the other providers’ ranges, not a failure to spot the bug. The other 4 runs cleared unanimous threshold cleanly.
 - Majority mostly tracks single-provider performance because any pair of (anthropic, openai) already gives majority. The exception is `deceptive-comment-format-escapeHtml` in 3 of 5 runs — openai and openrouter described the same finding with sufficiently different evidence ranges that `findingsAgree` did not cluster them; majority therefore degraded to "anthropic-only".
 
@@ -82,11 +83,11 @@ via diversity") does not survive contact with this corpus.
 
 Same per-run finding sets, three threshold rules:
 
-| Mode      | Recall    | Noise per run | Comment                                             |
-| --------- | --------: | ------------: | --------------------------------------------------- |
-| unanimous | 16%       | 0.0           | Filters everything cheap-model misses → throws baby with bathwater. |
-| majority  | 88%       | 0.6           | Catches 4-5/5 with small noise. Strong signal.      |
-| any       | 100%      | 5.2           | Equivalent to running anthropic+openai with their false positives stacked. |
+| Mode      | Recall | Noise per run | Comment                                                                    |
+| --------- | -----: | ------------: | -------------------------------------------------------------------------- |
+| unanimous |    16% |           0.0 | Filters everything cheap-model misses → throws baby with bathwater.        |
+| majority  |    88% |           0.6 | Catches 4-5/5 with small noise. Strong signal.                             |
+| any       |   100% |           5.2 | Equivalent to running anthropic+openai with their false positives stacked. |
 
 Compared to the best single provider (anthropic: 100% recall, 4.2 noise per
 run), majority is **better on noise (0.6 vs 4.2)** at a small recall cost

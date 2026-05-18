@@ -159,10 +159,7 @@ export function realPollDeps(): PollOutgoingDeps {
         .where(
           and(
             eq(outgoingPrs.status, "open"),
-            or(
-              isNull(outgoingPrs.lastPolledAt),
-              lt(outgoingPrs.lastPolledAt, threshold),
-            ),
+            or(isNull(outgoingPrs.lastPolledAt), lt(outgoingPrs.lastPolledAt, threshold)),
           ),
         );
       return rows;
@@ -205,10 +202,7 @@ export function realPollDeps(): PollOutgoingDeps {
         .where(eq(outgoingPrs.id, id));
     },
     stampPolled: async ({ id, polledAt }) => {
-      await db
-        .update(outgoingPrs)
-        .set({ lastPolledAt: polledAt })
-        .where(eq(outgoingPrs.id, id));
+      await db.update(outgoingPrs).set({ lastPolledAt: polledAt }).where(eq(outgoingPrs.id, id));
     },
   };
 }

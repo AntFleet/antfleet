@@ -71,11 +71,7 @@ function buildStackedFromEnv(): Provider {
   }
   const children = childNames.map((n) => {
     if (n === "stacked") {
-      throw new FleetError(
-        "stacked provider cannot nest stacked as a child",
-        2,
-        "invalid-config",
-      );
+      throw new FleetError("stacked provider cannot nest stacked as a child", 2, "invalid-config");
     }
     return providerByName(n);
   });

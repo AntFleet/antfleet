@@ -11,10 +11,7 @@
 import { Octokit } from "@octokit/rest";
 import { getInstallationToken as realGetInstallationToken } from "./github-app";
 import { getChangedFiles as realGetChangedFiles } from "./github-files";
-import {
-  formatPRComment,
-  postPRComment as realPostPRComment,
-} from "./pr-comment";
+import { formatPRComment, postPRComment as realPostPRComment } from "./pr-comment";
 import { reviewPR as realReviewPR } from "./review-pipeline";
 import { runFirstReviewSummary as realRunFirstReviewSummary } from "./onboarder";
 import { logError, logInfo, messageOf } from "./log";
@@ -124,7 +121,12 @@ export async function runReviewWorker(
       now: deps.now(),
       error: "missing installation/owner/repo on row",
     });
-    return { kind: "failed", reviewId, attempts: row.processingAttempts, error: "missing dispatch context" };
+    return {
+      kind: "failed",
+      reviewId,
+      attempts: row.processingAttempts,
+      error: "missing dispatch context",
+    };
   }
   const dispatchRow = { ...row, installationId, owner, repo };
 
@@ -370,13 +372,22 @@ export function isTransientError(err: unknown): boolean {
   if (lower.includes("429") || lower.includes("rate limit") || lower.includes("rate_limit")) {
     return true;
   }
-  if (lower.includes("500") || lower.includes("502") || lower.includes("503") || lower.includes("504")) {
+  if (
+    lower.includes("500") ||
+    lower.includes("502") ||
+    lower.includes("503") ||
+    lower.includes("504")
+  ) {
     return true;
   }
   if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("aborted")) {
     return true;
   }
-  if (lower.includes("etimedout") || lower.includes("econnreset") || lower.includes("econnrefused")) {
+  if (
+    lower.includes("etimedout") ||
+    lower.includes("econnreset") ||
+    lower.includes("econnrefused")
+  ) {
     return true;
   }
   if (lower.includes("fetch failed") || lower.includes("network")) {

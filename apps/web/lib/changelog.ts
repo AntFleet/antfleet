@@ -56,10 +56,7 @@ export function parseChangelog(markdown: string): ChangelogDocument {
       const heading = line.slice(3).trim();
       cursor++;
       const bodyLines: string[] = [];
-      while (
-        cursor < lines.length &&
-        !(lines[cursor] ?? "").startsWith("## ")
-      ) {
+      while (cursor < lines.length && !(lines[cursor] ?? "").startsWith("## ")) {
         bodyLines.push(lines[cursor] ?? "");
         cursor++;
       }
@@ -97,10 +94,7 @@ export function parseChangelog(markdown: string): ChangelogDocument {
           const subHeading = (raw.bodyLines[i] ?? "").slice(4).trim();
           i++;
           const subBuf: string[] = [];
-          while (
-            i < raw.bodyLines.length &&
-            !(raw.bodyLines[i] ?? "").startsWith("### ")
-          ) {
+          while (i < raw.bodyLines.length && !(raw.bodyLines[i] ?? "").startsWith("### ")) {
             subBuf.push(raw.bodyLines[i] ?? "");
             i++;
           }
@@ -175,7 +169,10 @@ function parseBulletBody(bodyLines: string[]): ChangelogEntry[] {
 
 function renderEntriesAsList(entries: ChangelogEntry[]): string {
   const items = entries
-    .map((e) => `<li>${e.html}${e.children.length > 0 ? `<ul>${e.children.map((c) => `<li>${c}</li>`).join("")}</ul>` : ""}</li>`)
+    .map(
+      (e) =>
+        `<li>${e.html}${e.children.length > 0 ? `<ul>${e.children.map((c) => `<li>${c}</li>`).join("")}</ul>` : ""}</li>`,
+    )
     .join("");
   return `<ul>${items}</ul>`;
 }
@@ -213,10 +210,7 @@ function renderInline(text: string): string {
 }
 
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function escapeAttr(text: string): string {

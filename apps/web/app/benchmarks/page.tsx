@@ -39,16 +39,13 @@ export default async function BenchmarksPage({
     lastUpdatedAt === null ? null : formatRelativeTime(now, lastUpdatedAt);
   const nextCursor =
     hasMore && recent.length > 0
-      ? recent[recent.length - 1]?.createdAt.toISOString() ?? null
+      ? (recent[recent.length - 1]?.createdAt.toISOString() ?? null)
       : null;
   const isPaginated = before !== undefined;
 
   return (
     <>
-      <BenchmarksHero
-        totalBenchmarks={totalBenchmarks}
-        lastUpdatedRelative={lastUpdatedRelative}
-      />
+      <BenchmarksHero totalBenchmarks={totalBenchmarks} lastUpdatedRelative={lastUpdatedRelative} />
       <SectionDivider />
       <BenchmarksList
         rows={recent}
@@ -111,10 +108,10 @@ function BenchmarksHero({
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
           Benchmark-class repos are public repos with a{" "}
-          <code className="font-mono text-xs text-[var(--color-ink)]">BENCHMARK.md</code>{" "}
-          file at the root. PRs there are not meant to merge — they exist to
-          run a known diff past AntFleet&apos;s two-model unanimous consensus and
-          publish the result. Click any row to read the bot review on GitHub.
+          <code className="font-mono text-xs text-[var(--color-ink)]">BENCHMARK.md</code> file at
+          the root. PRs there are not meant to merge — they exist to run a known diff past
+          AntFleet&apos;s two-model unanimous consensus and publish the result. Click any row to
+          read the bot review on GitHub.
         </p>
         <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
           Looking for closed-finding receipts instead?{" "}
@@ -215,8 +212,7 @@ function BenchmarkRow({ row, now }: { row: PublicBenchmarkRow; now: Date }) {
   // (i.e. there were findings); otherwise the PR itself. Whichever the
   // operator follows, it lands on a verifiable GitHub artifact.
   const ownerRepo = row.owner !== null && row.repo !== null ? `${row.owner}/${row.repo}` : null;
-  const prUrl =
-    ownerRepo === null ? null : `https://github.com/${ownerRepo}/pull/${row.prNumber}`;
+  const prUrl = ownerRepo === null ? null : `https://github.com/${ownerRepo}/pull/${row.prNumber}`;
   const primaryHref = row.prCommentUrl ?? prUrl;
   const relative = formatRelativeTime(now, row.createdAt);
   const findingLabel =
@@ -224,7 +220,9 @@ function BenchmarkRow({ row, now }: { row: PublicBenchmarkRow; now: Date }) {
       ? "0 findings (clean)"
       : `${row.findingCount} finding${row.findingCount === 1 ? "" : "s"}`;
   const fileCount = row.filesReviewed.length;
-  const modelLabels = Object.values(row.modelIds).filter((m) => typeof m === "string" && m.length > 0);
+  const modelLabels = Object.values(row.modelIds).filter(
+    (m) => typeof m === "string" && m.length > 0,
+  );
 
   const content = (
     <div className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group">
@@ -249,9 +247,7 @@ function BenchmarkRow({ row, now }: { row: PublicBenchmarkRow; now: Date }) {
               {m}
             </span>
           ))}
-          {modelLabels.length > 0 && (
-            <span className="text-[var(--color-line-strong)]">·</span>
-          )}
+          {modelLabels.length > 0 && <span className="text-[var(--color-line-strong)]">·</span>}
           <span>commit {row.commitSha.slice(0, 7)}</span>
           <span className="text-[var(--color-line-strong)]">·</span>
           <span>{relative}</span>
@@ -265,9 +261,7 @@ function BenchmarkRow({ row, now }: { row: PublicBenchmarkRow; now: Date }) {
   );
 
   if (primaryHref === null) {
-    return (
-      <div className="-mx-3 px-3 rounded-md transition-colors">{content}</div>
-    );
+    return <div className="-mx-3 px-3 rounded-md transition-colors">{content}</div>;
   }
   return (
     <a
@@ -324,9 +318,8 @@ function EmptyBenchmarks({
           <p className="text-sm text-[var(--color-ink)] mb-2">No benchmarks yet.</p>
           <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-md mx-auto">
             AntFleet benchmarks public repos that include a{" "}
-            <code className="font-mono text-xs text-[var(--color-ink)]">BENCHMARK.md</code>{" "}
-            file at the root. The first benchmark will appear after AntFleet
-            reviews a PR on such a repo.
+            <code className="font-mono text-xs text-[var(--color-ink)]">BENCHMARK.md</code> file at
+            the root. The first benchmark will appear after AntFleet reviews a PR on such a repo.
           </p>
         </div>
       </ContentWrap>

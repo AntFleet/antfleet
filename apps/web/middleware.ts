@@ -52,7 +52,5 @@ export function middleware(_req: NextRequest): NextResponse {
 // Apply to every path except Next.js internals and static asset files.
 // API routes are included — they benefit from the security headers too.
 export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.png$|.*\\.svg$|.*\\.ico$).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.png$|.*\\.svg$|.*\\.ico$).*)"],
 };

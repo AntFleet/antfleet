@@ -163,11 +163,7 @@ function onboarderBaseUrl(): string {
 
 // ─── prompts ────────────────────────────────────────────────────────────────
 
-export function welcomePrompt(args: {
-  owner: string;
-  repo: string;
-  meta: RepoMeta;
-}): string {
+export function welcomePrompt(args: { owner: string; repo: string; meta: RepoMeta }): string {
   const metaLines = [
     args.meta.description !== null ? `Description: ${args.meta.description}` : null,
     args.meta.language !== null ? `Primary language: ${args.meta.language}` : null,
@@ -287,7 +283,12 @@ export async function runWelcomeOnInstall(args: {
 
   // Idempotency: a repo can be added to an install multiple times via
   // installation_repositories.added; we only welcome once per (install, repo).
-  const already = await hasOnboardingEventForInstall(args.installationId, args.owner, args.repo, "install_welcome");
+  const already = await hasOnboardingEventForInstall(
+    args.installationId,
+    args.owner,
+    args.repo,
+    "install_welcome",
+  );
   if (already) {
     logInfo("onboarder.welcome_already_posted", {
       installationId: args.installationId,

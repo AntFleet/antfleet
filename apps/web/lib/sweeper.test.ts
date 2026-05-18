@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  classifyFindings,
-  detectClosuresWith,
-  type FindingForClosureCheck,
-} from "./sweeper";
+import { classifyFindings, detectClosuresWith, type FindingForClosureCheck } from "./sweeper";
 
 const findings: FindingForClosureCheck[] = [
   { findingId: "abc12345-0", evidencePath: "src/handler.ts" },

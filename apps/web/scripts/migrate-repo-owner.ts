@@ -49,11 +49,13 @@ async function main() {
 
   console.log(`\n[scope] repo=${repoName}`);
   console.log(`[pre-state] ${pre.length} review(s) under repo=${repoName}:`);
-  console.table(pre.map((r) => ({
-    reviewId: r.reviewId,
-    owner: r.owner,
-    pr: r.prNumber,
-  })));
+  console.table(
+    pre.map((r) => ({
+      reviewId: r.reviewId,
+      owner: r.owner,
+      pr: r.prNumber,
+    })),
+  );
 
   const targetCount = pre.filter((r) => r.owner === oldOwner).length;
   if (targetCount === 0) {
@@ -74,11 +76,13 @@ async function main() {
     });
 
   console.log(`\n[update] migrated ${updated.length} row(s).`);
-  console.table(updated.map((r) => ({
-    reviewId: r.reviewId,
-    owner: r.owner,
-    pr: r.prNumber,
-  })));
+  console.table(
+    updated.map((r) => ({
+      reviewId: r.reviewId,
+      owner: r.owner,
+      pr: r.prNumber,
+    })),
+  );
 
   // Post-state — read back the affected rows to confirm.
   const post = await db
@@ -92,11 +96,13 @@ async function main() {
     .where(eq(reviews.repo, repoName));
 
   console.log(`\n[post-state] ${post.length} review(s) under repo=${repoName}:`);
-  console.table(post.map((r) => ({
-    reviewId: r.reviewId,
-    owner: r.owner,
-    pr: r.prNumber,
-  })));
+  console.table(
+    post.map((r) => ({
+      reviewId: r.reviewId,
+      owner: r.owner,
+      pr: r.prNumber,
+    })),
+  );
 }
 
 main().then(

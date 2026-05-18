@@ -1,18 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  and,
-  count,
-  desc,
-  eq,
-  gte,
-  isNotNull,
-  lt,
-  lte,
-  max,
-  ne,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, count, desc, eq, gte, isNotNull, lt, lte, max, ne, or, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
   findingStatus,
@@ -225,10 +212,7 @@ export async function loadReviewsReadyForRetry(args: {
         isNotNull(reviews.repo),
         or(
           eq(reviews.processingStatus, "pending"),
-          and(
-            eq(reviews.processingStatus, "pending_retry"),
-            lte(reviews.nextRetryAt, args.now),
-          ),
+          and(eq(reviews.processingStatus, "pending_retry"), lte(reviews.nextRetryAt, args.now)),
           and(
             eq(reviews.processingStatus, "in_progress"),
             lt(reviews.processingStartedAt, args.stuckBefore),
@@ -241,10 +225,7 @@ export async function loadReviewsReadyForRetry(args: {
   return rows;
 }
 
-export async function markReviewSucceeded(args: {
-  reviewId: string;
-  now: Date;
-}): Promise<void> {
+export async function markReviewSucceeded(args: { reviewId: string; now: Date }): Promise<void> {
   await db
     .update(reviews)
     .set({
@@ -402,10 +383,7 @@ export async function markFindingClosed(args: {
   if (args.closureCommentUrl !== undefined) {
     values["closureCommentUrl"] = args.closureCommentUrl;
   }
-  await db
-    .update(findingStatus)
-    .set(values)
-    .where(eq(findingStatus.findingId, args.findingId));
+  await db.update(findingStatus).set(values).where(eq(findingStatus.findingId, args.findingId));
 }
 
 // Mission 3 slice 3-5 — sweep orchestrator data loader. Joins finding_status
@@ -546,20 +524,14 @@ export async function loadPublicReceiptsPage(args: {
   // because the count and max queries need the join too.
   const recentConditions =
     args.before === undefined
-      ? and(
-          eq(findingStatus.status, "closed"),
-          eq(reviews.publicReceipt, true),
-        )
+      ? and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true))
       : and(
           eq(findingStatus.status, "closed"),
           eq(reviews.publicReceipt, true),
           lt(findingStatus.closureDetectedAt, args.before),
         );
 
-  const totalConditions = and(
-    eq(findingStatus.status, "closed"),
-    eq(reviews.publicReceipt, true),
-  );
+  const totalConditions = and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true));
 
   const [countRows, fetchedRows, lastUpdatedRows] = await Promise.all([
     db
@@ -653,12 +625,7 @@ export async function loadPublicReceiptDetail(
     })
     .from(findingStatus)
     .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(
-      and(
-        eq(findingStatus.findingId, findingId),
-        eq(reviews.publicReceipt, true),
-      ),
-    )
+    .where(and(eq(findingStatus.findingId, findingId), eq(reviews.publicReceipt, true)))
     .limit(1);
 
   return rows[0] ?? null;
@@ -771,9 +738,7 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     eventClosed,
     eventOnboarder,
   ] = await Promise.all([
-    db
-      .select({ value: max(findingStatus.lastPolledAt) })
-      .from(findingStatus),
+    db.select({ value: max(findingStatus.lastPolledAt) }).from(findingStatus),
     db
       .select({ value: max(findingStatus.closureDetectedAt) })
       .from(findingStatus)
@@ -831,9 +796,7 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
       })
       .from(findingStatus)
       .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(
-        and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true)),
-      )
+      .where(and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true)))
       .orderBy(desc(findingStatus.closureDetectedAt))
       .limit(EVENT_STREAM_LIMIT),
     db
@@ -963,14 +926,9 @@ function isOnboarderEventType(value: string): value is OnboarderEventType {
 // One row per agent action. The agent's tool output is stored verbatim in
 // tool_output so we can replay every decision and rebuild prompts later.
 
-export type RecordOnboardingEventInput = Omit<
-  NewOnboardingEvent,
-  "id" | "createdAt"
->;
+export type RecordOnboardingEventInput = Omit<NewOnboardingEvent, "id" | "createdAt">;
 
-export async function recordOnboardingEvent(
-  input: RecordOnboardingEventInput,
-): Promise<string> {
+export async function recordOnboardingEvent(input: RecordOnboardingEventInput): Promise<string> {
   const result = await db
     .insert(onboardingEvents)
     .values(input)
@@ -1144,12 +1102,7 @@ export async function snapshotInstallActivity(
       .select({ value: count(findingStatus.id) })
       .from(findingStatus)
       .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(
-        and(
-          eq(reviews.installationId, installationId),
-          eq(findingStatus.status, "closed"),
-        ),
-      ),
+      .where(and(eq(reviews.installationId, installationId), eq(findingStatus.status, "closed"))),
     db
       .select({ value: count(maintainerReactions.reactionId) })
       .from(maintainerReactions)
@@ -1238,9 +1191,10 @@ export async function flipPublicReceiptForRepo(args: {
   const totals = await db
     .select({
       total: sql<number>`count(*)::int`.as("total"),
-      atTarget: sql<number>`count(*) filter (where ${reviews.publicReceipt} = ${args.target})::int`.as(
-        "at_target",
-      ),
+      atTarget:
+        sql<number>`count(*) filter (where ${reviews.publicReceipt} = ${args.target})::int`.as(
+          "at_target",
+        ),
     })
     .from(reviews)
     .where(scope);
@@ -1259,9 +1213,7 @@ export async function flipPublicReceiptForRepo(args: {
   return { alreadyMatching, flipped: updated.length, totalMatching };
 }
 
-export async function recordMaintainerReactions(
-  rows: NewMaintainerReaction[],
-): Promise<number> {
+export async function recordMaintainerReactions(rows: NewMaintainerReaction[]): Promise<number> {
   if (rows.length === 0) return 0;
   const inserted = await db
     .insert(maintainerReactions)
@@ -1320,10 +1272,7 @@ export async function loadPublicBenchmarksPage(args: {
   before?: Date | undefined;
 }): Promise<PublicBenchmarksPage> {
   const fetchLimit = args.limit + 1;
-  const baseConditions = and(
-    eq(reviews.isBenchmark, true),
-    eq(reviews.publicReceipt, true),
-  );
+  const baseConditions = and(eq(reviews.isBenchmark, true), eq(reviews.publicReceipt, true));
   const recentConditions =
     args.before === undefined
       ? baseConditions
@@ -1343,9 +1292,10 @@ export async function loadPublicBenchmarksPage(args: {
         // Finding count is the length of the agreed[] array inside
         // agreementDecision JSONB. NULL/missing keys collapse to 0.
         // Wrapped in a CAST so the result column is a stable int.
-        findingCount: sql<number>`COALESCE(jsonb_array_length(${reviews.agreementDecision}->'agreed'), 0)::int`.as(
-          "finding_count",
-        ),
+        findingCount:
+          sql<number>`COALESCE(jsonb_array_length(${reviews.agreementDecision}->'agreed'), 0)::int`.as(
+            "finding_count",
+          ),
         filesReviewed: reviews.filesReviewed,
         modelIds: reviews.providerModelIds,
       })
@@ -1353,7 +1303,10 @@ export async function loadPublicBenchmarksPage(args: {
       .where(recentConditions)
       .orderBy(desc(reviews.createdAt))
       .limit(fetchLimit),
-    db.select({ value: max(reviews.createdAt) }).from(reviews).where(baseConditions),
+    db
+      .select({ value: max(reviews.createdAt) })
+      .from(reviews)
+      .where(baseConditions),
   ]);
 
   const hasMore = fetchedRows.length > args.limit;

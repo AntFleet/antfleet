@@ -17,86 +17,90 @@ import {
 // added pr_comment_id/url to reviews + the finding_status table so Sweeper
 // has a lifecycle row per finding to reconcile against main.
 
-export const reviews = pgTable("reviews", {
-  reviewId: uuid("review_id").primaryKey().defaultRandom(),
-  repoHash: text("repo_hash").notNull(),
-  prNumber: integer("pr_number").notNull(),
-  commitSha: text("commit_sha").notNull(),
-  filesReviewed: text("files_reviewed").array().notNull(),
-  promptVersion: text("prompt_version").notNull(),
-  providerModelIds: jsonb("provider_model_ids").notNull(),
-  providerResponses: jsonb("provider_responses").notNull(),
-  agreementDecision: jsonb("agreement_decision").notNull(),
-  timingMs: integer("timing_ms").notNull(),
-  costEstimatedUsd: numeric("cost_estimated_usd", { precision: 10, scale: 4 }).notNull(),
-  schemaVersion: integer("schema_version").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  // Set by setReviewComment() after slice 4c posts the markdown comment on
-  // the PR. Null when degraded/skipped or before posting succeeded.
-  prCommentId: bigint("pr_comment_id", { mode: "number" }),
-  prCommentUrl: text("pr_comment_url"),
-  // Mission 3 slice 3-5 — the cron sweep needs to re-auth as the App
-  // installation and call the GitHub REST API on the source repo to detect
-  // closure and poll reactions. None of that is derivable from repo_hash
-  // (sha256 is one-way). Persisted nullable so the slice 3-1 smoke rows
-  // (which predate this column) don't blow up the schema migration; the
-  // sweep skips findings on reviews where any of the three are null.
-  installationId: bigint("installation_id", { mode: "number" }),
-  owner: text("owner"),
-  repo: text("repo"),
-  // Mission 4 slice 4-5 — gates whether closed findings from this review
-  // appear on the public /receipts page. Default false: new installs are
-  // private until explicitly opted in. Design partners get the flag
-  // flipped per repo (manual SQL until the v1.5 dashboard ships). Without
-  // this gate, a competitor visiting /receipts could see severities,
-  // categories, and finding titles for private-repo installs whose PR
-  // comments are auth-walled — that is the leak this column closes.
-  publicReceipt: boolean("public_receipt").notNull().default(false),
-  // Mission 6 — benchmark surface. True for reviews on benchmark-class repos
-  // (detected by presence of BENCHMARK.md at repo root). Surfaces the review
-  // on /benchmarks regardless of close state, since benchmark replays are not
-  // meant to merge and therefore never trigger Sweeper closure. Independent
-  // of public_receipt: a benchmark on a public repo gets both flags; on a
-  // private repo, is_benchmark is set but the row never reaches /benchmarks
-  // (still gated on public_receipt = true at the query layer).
-  isBenchmark: boolean("is_benchmark").notNull().default(false),
-  // Mission 7 — durable review queue. The webhook handler used to call
-  // reviewPR() inline inside Next.js after(); a 30-PR burst on
-  // antfleet/aeon-bench (2026-05-18) produced only 10 reviews because the
-  // rest hit LLM rate limits or function concurrency with nowhere to
-  // retry. These columns turn the reviews row itself into the queue entry:
-  // the webhook attempts the review immediately as a best-effort first
-  // pass; a higher-frequency cron at /api/cron/review-retry sweeps any
-  // row whose status is not 'done'.
-  //
-  // processingStatus state machine:
-  //   pending        — row inserted, not yet attempted (rare: the webhook
-  //                    crashed between insert and after())
-  //   in_progress    — a worker has claimed the row; processingStartedAt
-  //                    is the claim timestamp. If older than 5 minutes the
-  //                    cron treats the row as stuck and re-claims.
-  //   pending_retry  — last attempt failed; nextRetryAt holds the earliest
-  //                    next-attempt time (exponential backoff).
-  //   done           — terminal success.
-  //   failed         — terminal failure (max attempts exhausted).
-  processingStatus: text("processing_status").notNull().default("pending"),
-  processingAttempts: integer("processing_attempts").notNull().default(0),
-  processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
-  processingFinishedAt: timestamp("processing_finished_at", { withTimezone: true }),
-  nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
-  processingError: text("processing_error"),
-}, (t) => [
-  // Idempotency key. GitHub may re-deliver a webhook, our cron may race
-  // the webhook's after(), or an operator may push the same head-sha twice;
-  // the (repo_hash, pr_number, commit_sha) triple uniquely identifies a
-  // single review's worth of work. Webhook handler INSERT … ON CONFLICT
-  // DO NOTHING uses this index to convert duplicate deliveries into a
-  // cheap no-op without spawning a second review.
-  unique("reviews_idempotency_uniq").on(t.repoHash, t.prNumber, t.commitSha),
-  // Index on the retry cron's hot path: scanning for non-terminal rows
-  // whose nextRetryAt is due. Partial index keeps it tight.
-  index("reviews_processing_lookup_idx").on(t.processingStatus, t.nextRetryAt),
-]);
+export const reviews = pgTable(
+  "reviews",
+  {
+    reviewId: uuid("review_id").primaryKey().defaultRandom(),
+    repoHash: text("repo_hash").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    commitSha: text("commit_sha").notNull(),
+    filesReviewed: text("files_reviewed").array().notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    providerModelIds: jsonb("provider_model_ids").notNull(),
+    providerResponses: jsonb("provider_responses").notNull(),
+    agreementDecision: jsonb("agreement_decision").notNull(),
+    timingMs: integer("timing_ms").notNull(),
+    costEstimatedUsd: numeric("cost_estimated_usd", { precision: 10, scale: 4 }).notNull(),
+    schemaVersion: integer("schema_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Set by setReviewComment() after slice 4c posts the markdown comment on
+    // the PR. Null when degraded/skipped or before posting succeeded.
+    prCommentId: bigint("pr_comment_id", { mode: "number" }),
+    prCommentUrl: text("pr_comment_url"),
+    // Mission 3 slice 3-5 — the cron sweep needs to re-auth as the App
+    // installation and call the GitHub REST API on the source repo to detect
+    // closure and poll reactions. None of that is derivable from repo_hash
+    // (sha256 is one-way). Persisted nullable so the slice 3-1 smoke rows
+    // (which predate this column) don't blow up the schema migration; the
+    // sweep skips findings on reviews where any of the three are null.
+    installationId: bigint("installation_id", { mode: "number" }),
+    owner: text("owner"),
+    repo: text("repo"),
+    // Mission 4 slice 4-5 — gates whether closed findings from this review
+    // appear on the public /receipts page. Default false: new installs are
+    // private until explicitly opted in. Design partners get the flag
+    // flipped per repo (manual SQL until the v1.5 dashboard ships). Without
+    // this gate, a competitor visiting /receipts could see severities,
+    // categories, and finding titles for private-repo installs whose PR
+    // comments are auth-walled — that is the leak this column closes.
+    publicReceipt: boolean("public_receipt").notNull().default(false),
+    // Mission 6 — benchmark surface. True for reviews on benchmark-class repos
+    // (detected by presence of BENCHMARK.md at repo root). Surfaces the review
+    // on /benchmarks regardless of close state, since benchmark replays are not
+    // meant to merge and therefore never trigger Sweeper closure. Independent
+    // of public_receipt: a benchmark on a public repo gets both flags; on a
+    // private repo, is_benchmark is set but the row never reaches /benchmarks
+    // (still gated on public_receipt = true at the query layer).
+    isBenchmark: boolean("is_benchmark").notNull().default(false),
+    // Mission 7 — durable review queue. The webhook handler used to call
+    // reviewPR() inline inside Next.js after(); a 30-PR burst on
+    // antfleet/aeon-bench (2026-05-18) produced only 10 reviews because the
+    // rest hit LLM rate limits or function concurrency with nowhere to
+    // retry. These columns turn the reviews row itself into the queue entry:
+    // the webhook attempts the review immediately as a best-effort first
+    // pass; a higher-frequency cron at /api/cron/review-retry sweeps any
+    // row whose status is not 'done'.
+    //
+    // processingStatus state machine:
+    //   pending        — row inserted, not yet attempted (rare: the webhook
+    //                    crashed between insert and after())
+    //   in_progress    — a worker has claimed the row; processingStartedAt
+    //                    is the claim timestamp. If older than 5 minutes the
+    //                    cron treats the row as stuck and re-claims.
+    //   pending_retry  — last attempt failed; nextRetryAt holds the earliest
+    //                    next-attempt time (exponential backoff).
+    //   done           — terminal success.
+    //   failed         — terminal failure (max attempts exhausted).
+    processingStatus: text("processing_status").notNull().default("pending"),
+    processingAttempts: integer("processing_attempts").notNull().default(0),
+    processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
+    processingFinishedAt: timestamp("processing_finished_at", { withTimezone: true }),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    processingError: text("processing_error"),
+  },
+  (t) => [
+    // Idempotency key. GitHub may re-deliver a webhook, our cron may race
+    // the webhook's after(), or an operator may push the same head-sha twice;
+    // the (repo_hash, pr_number, commit_sha) triple uniquely identifies a
+    // single review's worth of work. Webhook handler INSERT … ON CONFLICT
+    // DO NOTHING uses this index to convert duplicate deliveries into a
+    // cheap no-op without spawning a second review.
+    unique("reviews_idempotency_uniq").on(t.repoHash, t.prNumber, t.commitSha),
+    // Index on the retry cron's hot path: scanning for non-terminal rows
+    // whose nextRetryAt is due. Partial index keeps it tight.
+    index("reviews_processing_lookup_idx").on(t.processingStatus, t.nextRetryAt),
+  ],
+);
 
 // One row per agreed finding. Sweeper updates status when reconciliation
 // detects the file has changed; reaction polling stamps last_polled_at.
@@ -144,12 +148,7 @@ export const maintainerReactions = pgTable(
   // reaction within the system: which review, which finding, when GitHub
   // recorded it, and what it was.
   (t) => [
-    unique("maintainer_reactions_dedup").on(
-      t.reviewId,
-      t.findingId,
-      t.reactionAt,
-      t.actionTaken,
-    ),
+    unique("maintainer_reactions_dedup").on(t.reviewId, t.findingId, t.reactionAt, t.actionTaken),
   ],
 );
 
@@ -206,35 +205,35 @@ export const onboardingEvents = pgTable("onboarding_events", {
 // transitions open → merged | closed. Merged rows surface on /receipts
 // as the "cross-repo" visual class. Declined (closed-without-merge)
 // rows are logged but never publicly surfaced — honest-report principle.
-export const outgoingPrs = pgTable("outgoing_prs", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  // App-level reference (no FK) to finding_status.finding_id. Finding rows
-  // can be superseded by re-reviews; the outgoing PR's provenance should
-  // survive that transition.
-  sourceFindingId: text("source_finding_id").notNull(),
-  upstreamOwner: text("upstream_owner").notNull(),
-  upstreamRepo: text("upstream_repo").notNull(),
-  upstreamPrNumber: integer("upstream_pr_number").notNull(),
-  // Branch on the antfleet-ops fork that the PR was opened from. Helpful
-  // for operator audit when reconciling a merged upstream back into the
-  // bench corpus.
-  branchOnFork: text("branch_on_fork").notNull(),
-  openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
-  // open | merged | closed. "closed" means closed-without-merge (declined);
-  // not surfaced publicly. "merged" is the receipt-eligible state.
-  status: text("status").notNull().default("open"),
-  mergedAt: timestamp("merged_at", { withTimezone: true }),
-  mergeSha: text("merge_sha"),
-  lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
-}, (t) => [
-  // GitHub guarantees PR numbers are unique per (owner, repo); the unique
-  // index lets seed-outgoing-pr.ts upsert idempotently.
-  unique("outgoing_prs_upstream_uniq").on(
-    t.upstreamOwner,
-    t.upstreamRepo,
-    t.upstreamPrNumber,
-  ),
-]);
+export const outgoingPrs = pgTable(
+  "outgoing_prs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // App-level reference (no FK) to finding_status.finding_id. Finding rows
+    // can be superseded by re-reviews; the outgoing PR's provenance should
+    // survive that transition.
+    sourceFindingId: text("source_finding_id").notNull(),
+    upstreamOwner: text("upstream_owner").notNull(),
+    upstreamRepo: text("upstream_repo").notNull(),
+    upstreamPrNumber: integer("upstream_pr_number").notNull(),
+    // Branch on the antfleet-ops fork that the PR was opened from. Helpful
+    // for operator audit when reconciling a merged upstream back into the
+    // bench corpus.
+    branchOnFork: text("branch_on_fork").notNull(),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    // open | merged | closed. "closed" means closed-without-merge (declined);
+    // not surfaced publicly. "merged" is the receipt-eligible state.
+    status: text("status").notNull().default("open"),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+    mergeSha: text("merge_sha"),
+    lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+  },
+  (t) => [
+    // GitHub guarantees PR numbers are unique per (owner, repo); the unique
+    // index lets seed-outgoing-pr.ts upsert idempotently.
+    unique("outgoing_prs_upstream_uniq").on(t.upstreamOwner, t.upstreamRepo, t.upstreamPrNumber),
+  ],
+);
 
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;

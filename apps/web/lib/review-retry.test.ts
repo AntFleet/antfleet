@@ -115,9 +115,7 @@ describe("runReviewRetryTick", () => {
   });
 
   it("calls the worker with source='cron'", async () => {
-    const candidates = [
-      { reviewId: "a", processingStatus: "pending", processingAttempts: 0 },
-    ];
+    const candidates = [{ reviewId: "a", processingStatus: "pending", processingAttempts: 0 }];
     const worker = vi.fn().mockResolvedValue(mkOutcome({ kind: "done", reviewId: "a" }));
     const deps = mkDeps({
       loadReviewsReadyForRetry: vi.fn().mockResolvedValue(candidates),

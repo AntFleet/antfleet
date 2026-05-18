@@ -48,7 +48,12 @@ describe("security headers middleware", () => {
     const ref = res.headers.get("Referrer-Policy");
     expect(ref).not.toBeNull();
     // Any of these are acceptable; weaker ones (e.g., unsafe-url) are not.
-    const strict = ["no-referrer", "same-origin", "strict-origin", "strict-origin-when-cross-origin"];
+    const strict = [
+      "no-referrer",
+      "same-origin",
+      "strict-origin",
+      "strict-origin-when-cross-origin",
+    ];
     expect(strict).toContain(ref);
   });
 

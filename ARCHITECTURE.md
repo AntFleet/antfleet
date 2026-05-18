@@ -2,7 +2,7 @@
 
 AntFleet is a fork of [clawpatch](https://github.com/openclaw/clawpatch) (MIT). The inherited engine maps a repository into semantic feature slices, reviews each slice against a strict finding schema, and (in clawpatch) lands fixes through a patch loop. AntFleet keeps all of that and adds two things on top: a **stacked provider** that runs N independent models and emits only the findings they agree on, and a **GitHub App surface** (`apps/web/`) that turns those agreed findings into SHA-pinned receipts on real pull requests.
 
-This document maps the inherited surface, then describes what AntFleet adds in two halves: the CLI engine in `src/` (provider stacking, agreement, dogfood) and the GitHub App surface in `apps/web/` (webhook, sweeper, onboarder, public receipt pages). The "Week 1 lock" sections are preserved where they explain the *why* of a current design choice.
+This document maps the inherited surface, then describes what AntFleet adds in two halves: the CLI engine in `src/` (provider stacking, agreement, dogfood) and the GitHub App surface in `apps/web/` (webhook, sweeper, onboarder, public receipt pages). The "Week 1 lock" sections are preserved where they explain the _why_ of a current design choice.
 
 ## Inherited surface
 
@@ -25,7 +25,7 @@ type Provider = {
 - `fix` produces a fix plan for one finding. Plan-only — no file mutation; applying patches is a separate concern.
 - `revalidate` re-checks a finding against the current repo state (typically after a fix).
 
-A factory `providerByName(name)` returns the implementation. Five are registered: `mock`, `mock-fail`, `anthropic`, `openai`, and `stacked`. Two more (`openrouter`, `codex`) ship as source in the tree but are not registered — see *Provider roster* below for why. Output is constrained by JSON schemas (`reviewJsonSchema`, `fixPlanJsonSchema`, `revalidateJsonSchema`) defined in this file and parsed by the Zod schemas in `src/types.ts`.
+A factory `providerByName(name)` returns the implementation. Five are registered: `mock`, `mock-fail`, `anthropic`, `openai`, and `stacked`. Two more (`openrouter`, `codex`) ship as source in the tree but are not registered — see _Provider roster_ below for why. Output is constrained by JSON schemas (`reviewJsonSchema`, `fixPlanJsonSchema`, `revalidateJsonSchema`) defined in this file and parsed by the Zod schemas in `src/types.ts`.
 
 **This is the seam we stack on.** A stacked provider is also a `Provider` — it just fans out and merges.
 
@@ -81,7 +81,7 @@ A `Provider` that wraps N child providers and fans out every call. `review` / `f
 stackedProvider({
   providers: [anthropicProvider, openaiProvider],
   agreement: "unanimous" | "majority" | "any",
-})
+});
 ```
 
 Registered in `providerByName` as `stacked`. Selectable via `FLEET_PROVIDER=stacked`; child set comes from `FLEET_STACKED_PROVIDERS` (default `anthropic,openai`) and gate from `FLEET_STACKED_AGREEMENT` (default `unanimous`).
@@ -102,7 +102,7 @@ Two `Provider` implementations using the official SDKs. Structured output constr
 
 ### Dogfood corpus — `examples/dogfood/`
 
-A small synthetic TypeScript repo with planted bugs of varying difficulty (null-deref, race, SQL injection, missing input validation, deceptive comment). `scripts/spike.ts` runs the stacked provider against it and writes a markdown report. The first run is committed as `examples/dogfood-results/spike-baseline.md` and answers one question: **does agreement separate signal from noise on a known corpus?** The verdict lives in `examples/dogfood-results/WEEK1-VERDICT.md` and locks the v1 stack composition (see *Provider roster*).
+A small synthetic TypeScript repo with planted bugs of varying difficulty (null-deref, race, SQL injection, missing input validation, deceptive comment). `scripts/spike.ts` runs the stacked provider against it and writes a markdown report. The first run is committed as `examples/dogfood-results/spike-baseline.md` and answers one question: **does agreement separate signal from noise on a known corpus?** The verdict lives in `examples/dogfood-results/WEEK1-VERDICT.md` and locks the v1 stack composition (see _Provider roster_).
 
 ## GitHub App surface — `apps/web/`
 

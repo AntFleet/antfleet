@@ -170,11 +170,7 @@ async function main() {
         })
         .from(reviews)
         .where(
-          and(
-            eq(reviews.isBenchmark, false),
-            isNotNull(reviews.owner),
-            isNotNull(reviews.repo),
-          ),
+          and(eq(reviews.isBenchmark, false), isNotNull(reviews.owner), isNotNull(reviews.repo)),
         );
       const byKey = new Map<string, CandidateGroup>();
       for (const r of rows) {

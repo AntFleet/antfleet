@@ -49,10 +49,9 @@ function Hero() {
           AntFleet is operated by a small fleet of agents.
         </h1>
         <p className="mt-5 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
-          Two of them are reviewer-fleet language models (Claude Opus 4.7,
-          GPT-5). A third — Onboarder — owns the partner-facing lifecycle.
-          The rest are deterministic workers: a webhook receiver, an
-          agreement gate, a daily sweeper, a reaction poller. Together they
+          Two of them are reviewer-fleet language models (Claude Opus 4.7, GPT-5). A third —
+          Onboarder — owns the partner-facing lifecycle. The rest are deterministic workers: a
+          webhook receiver, an agreement gate, a daily sweeper, a reaction poller. Together they
           manufacture the receipts you see on{" "}
           <a
             href="/receipts"
@@ -161,29 +160,45 @@ function ReviewPipelineSection() {
           The review pipeline
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-8">
-          Each PR event triggers one pass through this pipeline. The agents on
-          the left are stateless workers; the row on the right is the durable
-          artifact that gets written to Postgres and (when agreement happens)
-          to GitHub.
+          Each PR event triggers one pass through this pipeline. The agents on the left are
+          stateless workers; the row on the right is the durable artifact that gets written to
+          Postgres and (when agreement happens) to GitHub.
         </p>
 
         <PipelineDiagram
           rows={[
             { actor: "Pull-request event", arrow: "↓", target: "Webhook Receiver" },
-            { actor: "Webhook Receiver", arrow: "↓ verifies HMAC, inserts stub", target: "reviews row" },
-            { actor: "Webhook Receiver", arrow: "↓ dispatches", target: "Reviewer Fleet (2 agents)" },
-            { actor: "Reviewer · Claude Opus 4.7", arrow: "↓ findings[]", target: "Agreement Gate" },
+            {
+              actor: "Webhook Receiver",
+              arrow: "↓ verifies HMAC, inserts stub",
+              target: "reviews row",
+            },
+            {
+              actor: "Webhook Receiver",
+              arrow: "↓ dispatches",
+              target: "Reviewer Fleet (2 agents)",
+            },
+            {
+              actor: "Reviewer · Claude Opus 4.7",
+              arrow: "↓ findings[]",
+              target: "Agreement Gate",
+            },
             { actor: "Reviewer · GPT-5", arrow: "↓ findings[]", target: "Agreement Gate" },
-            { actor: "Agreement Gate", arrow: "↓ unanimous only", target: "finding_status rows + PR comment" },
+            {
+              actor: "Agreement Gate",
+              arrow: "↓ unanimous only",
+              target: "finding_status rows + PR comment",
+            },
           ]}
         />
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl">
-          The Agreement Gate is the trust primitive. A finding only crosses
-          into the PR comment if both reviewers flagged the same code with
-          overlapping evidence. Silence on a PR means &quot;no unanimous
-          finding,&quot; not &quot;no findings at all&quot; — individual
-          reviewer outputs are persisted to <code className="font-mono text-xs">reviews.provider_responses</code> for analysis but never posted.
+          The Agreement Gate is the trust primitive. A finding only crosses into the PR comment if
+          both reviewers flagged the same code with overlapping evidence. Silence on a PR means
+          &quot;no unanimous finding,&quot; not &quot;no findings at all&quot; — individual reviewer
+          outputs are persisted to{" "}
+          <code className="font-mono text-xs">reviews.provider_responses</code> for analysis but
+          never posted.
         </p>
       </ContentWrap>
     </section>
@@ -200,28 +215,53 @@ function SweepLoopSection() {
           The sweep loop
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-8">
-          A finding stays open in Postgres until the Sweeper detects that the
-          flagged file changed on the repo&apos;s default branch. The closure
-          mechanic is intentionally cheap — &quot;evidence file touched&quot;
-          is a strong proxy for &quot;bug addressed&quot; on a corpus where
-          unanimous findings are ~100% real.
+          A finding stays open in Postgres until the Sweeper detects that the flagged file changed
+          on the repo&apos;s default branch. The closure mechanic is intentionally cheap —
+          &quot;evidence file touched&quot; is a strong proxy for &quot;bug addressed&quot; on a
+          corpus where unanimous findings are ~100% real.
         </p>
 
         <PipelineDiagram
           rows={[
             { actor: "Cron · 06:00 UTC daily", arrow: "↓", target: "Sweeper" },
-            { actor: "Sweeper", arrow: "↓ loadSweepWork()", target: "open findings grouped by repo" },
-            { actor: "Sweeper", arrow: "↓ per-repo: getRef + compareCommits", target: "changed-files set" },
-            { actor: "Sweeper", arrow: "↓ if evidence file changed", target: "markFindingClosed + closure SHA" },
-            { actor: "Sweeper", arrow: "↓ posts on original PR", target: "Closure receipt comment" },
-            { actor: "Reaction Poller", arrow: "↓ at 24h / 7d / 30d", target: "maintainer_reactions rows" },
+            {
+              actor: "Sweeper",
+              arrow: "↓ loadSweepWork()",
+              target: "open findings grouped by repo",
+            },
+            {
+              actor: "Sweeper",
+              arrow: "↓ per-repo: getRef + compareCommits",
+              target: "changed-files set",
+            },
+            {
+              actor: "Sweeper",
+              arrow: "↓ if evidence file changed",
+              target: "markFindingClosed + closure SHA",
+            },
+            {
+              actor: "Sweeper",
+              arrow: "↓ posts on original PR",
+              target: "Closure receipt comment",
+            },
+            {
+              actor: "Reaction Poller",
+              arrow: "↓ at 24h / 7d / 30d",
+              target: "maintainer_reactions rows",
+            },
           ]}
         />
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl">
-          The closure receipt comment is the artifact. It lives on
-          GitHub&apos;s event log — third-party-witnessed — and it is what the
-          public <a href="/receipts" className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity">/receipts</a> counter is counting.
+          The closure receipt comment is the artifact. It lives on GitHub&apos;s event log —
+          third-party-witnessed — and it is what the public{" "}
+          <a
+            href="/receipts"
+            className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity"
+          >
+            /receipts
+          </a>{" "}
+          counter is counting.
         </p>
       </ContentWrap>
     </section>
@@ -238,39 +278,60 @@ function OnboarderLifecycleSection() {
           The Onboarder lifecycle
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-8">
-          Onboarder is the third language-model agent in the fleet. It owns
-          everything partner-facing that isn&apos;t a PR review: the welcome
-          on install, a one-time framing comment on the partner&apos;s first
-          PR, and a 7-day check-in. Each action is structured tool output
-          from <code className="font-mono text-xs">claude-opus-4-7</code> and
-          persists a row in{" "}
-          <code className="font-mono text-xs">onboarding_events</code> with
-          the prompt, output, and GitHub artifact ids — the same audit shape
-          as <code className="font-mono text-xs">reviews</code>.
+          Onboarder is the third language-model agent in the fleet. It owns everything
+          partner-facing that isn&apos;t a PR review: the welcome on install, a one-time framing
+          comment on the partner&apos;s first PR, and a 7-day check-in. Each action is structured
+          tool output from <code className="font-mono text-xs">claude-opus-4-7</code> and persists a
+          row in <code className="font-mono text-xs">onboarding_events</code> with the prompt,
+          output, and GitHub artifact ids — the same audit shape as{" "}
+          <code className="font-mono text-xs">reviews</code>.
         </p>
 
         <PipelineDiagram
           rows={[
             { actor: "installation.created webhook", arrow: "↓", target: "Webhook Receiver" },
             { actor: "Webhook Receiver", arrow: "↓ dispatches", target: "Onboarder · welcome" },
-            { actor: "Onboarder · welcome", arrow: "↓ repos.get + LLM tool call", target: "issues.create on partner repo" },
-            { actor: "(first PR per install)", arrow: "↓ after Reviewer posts", target: "Onboarder · first-review summary" },
-            { actor: "Onboarder · first-review summary", arrow: "↓ LLM tool call", target: "issues.createComment on the PR" },
-            { actor: "Cron · 06:00 UTC daily", arrow: "↓ alongside Sweeper", target: "Onboarder · check-in driver" },
-            { actor: "Onboarder · check-in driver", arrow: "↓ for installs aged 7-8d", target: "Onboarder · 7-day check-in" },
-            { actor: "Onboarder · 7-day check-in", arrow: "↓ LLM tool call", target: "issues.createComment on welcome issue" },
+            {
+              actor: "Onboarder · welcome",
+              arrow: "↓ repos.get + LLM tool call",
+              target: "issues.create on partner repo",
+            },
+            {
+              actor: "(first PR per install)",
+              arrow: "↓ after Reviewer posts",
+              target: "Onboarder · first-review summary",
+            },
+            {
+              actor: "Onboarder · first-review summary",
+              arrow: "↓ LLM tool call",
+              target: "issues.createComment on the PR",
+            },
+            {
+              actor: "Cron · 06:00 UTC daily",
+              arrow: "↓ alongside Sweeper",
+              target: "Onboarder · check-in driver",
+            },
+            {
+              actor: "Onboarder · check-in driver",
+              arrow: "↓ for installs aged 7-8d",
+              target: "Onboarder · 7-day check-in",
+            },
+            {
+              actor: "Onboarder · 7-day check-in",
+              arrow: "↓ LLM tool call",
+              target: "issues.createComment on welcome issue",
+            },
           ]}
         />
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl">
           The whole lifecycle is gated behind an{" "}
-          <code className="font-mono text-xs">ONBOARDER_ENABLED</code> env
-          flag — default off in every environment. Cutover is operator-
-          controlled, not webhook-controlled: a fresh install on a repo with
-          the flag off generates a server log line and nothing else.
-          Idempotency is per-<code className="font-mono text-xs">(installation_id, owner, repo, event_type)</code>
-          {" "}so a repeated webhook never produces a duplicate issue or
-          comment.
+          <code className="font-mono text-xs">ONBOARDER_ENABLED</code> env flag — default off in
+          every environment. Cutover is operator- controlled, not webhook-controlled: a fresh
+          install on a repo with the flag off generates a server log line and nothing else.
+          Idempotency is per-
+          <code className="font-mono text-xs">(installation_id, owner, repo, event_type)</code> so a
+          repeated webhook never produces a duplicate issue or comment.
         </p>
       </ContentWrap>
     </section>
@@ -299,9 +360,7 @@ function PipelineDiagram({
             <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] sm:text-center">
               {r.arrow}
             </span>
-            <span className="font-mono text-xs text-[var(--color-ink-muted)]">
-              {r.target}
-            </span>
+            <span className="font-mono text-xs text-[var(--color-ink-muted)]">{r.target}</span>
           </li>
         ))}
       </ol>
@@ -319,10 +378,9 @@ function ReceiptAnatomySection() {
           What is in a receipt
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-8">
-          A closure receipt is the artifact the Sweeper posts on the original
-          PR when a finding closes. Every field below is either authored by
-          AntFleet or third-party-witnessed by GitHub&apos;s event log. Nothing
-          is rendered from a database we control alone.
+          A closure receipt is the artifact the Sweeper posts on the original PR when a finding
+          closes. Every field below is either authored by AntFleet or third-party-witnessed by
+          GitHub&apos;s event log. Nothing is rendered from a database we control alone.
         </p>
 
         <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] overflow-hidden">
@@ -368,15 +426,7 @@ function ReceiptAnatomySection() {
   );
 }
 
-function AnnotatedLine({
-  field,
-  text,
-  witness,
-}: {
-  field: string;
-  text: string;
-  witness: string;
-}) {
+function AnnotatedLine({ field, text, witness }: { field: string; text: string; witness: string }) {
   return (
     <div className="grid grid-cols-1 gap-1 sm:grid-cols-[120px_1fr] sm:gap-4">
       <p className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">

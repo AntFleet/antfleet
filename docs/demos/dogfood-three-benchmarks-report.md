@@ -87,13 +87,13 @@ The brief's "three receipts on antfleet.dev/receipts" assumption was based on a 
 
 ## Costs
 
-| PR | Review ID | Anthropic ms | OpenAI ms | Estimated USD |
-|---|---|---|---|---|
-| Smoke (PR #1) | `7bfb8839` | — | — | $0.00 (skipped) |
-| Bench 1 (PR #2) | `7739d5f2` | 24729 | 87076 | $0.40 |
-| Bench 2 (PR #3) | `a90a7a59` | — | — | $0.00 (skipped) |
-| Bench 3 (PR #4) | `7acb8d8e` | 33460 | 44432 | $0.40 |
-| **Total** | | | | **$0.80** |
+| PR              | Review ID  | Anthropic ms | OpenAI ms | Estimated USD   |
+| --------------- | ---------- | ------------ | --------- | --------------- |
+| Smoke (PR #1)   | `7bfb8839` | —            | —         | $0.00 (skipped) |
+| Bench 1 (PR #2) | `7739d5f2` | 24729        | 87076     | $0.40           |
+| Bench 2 (PR #3) | `a90a7a59` | —            | —         | $0.00 (skipped) |
+| Bench 3 (PR #4) | `7acb8d8e` | 33460        | 44432     | $0.40           |
+| **Total**       |            |              |           | **$0.80**       |
 
 ## Next decisions for the operator
 
@@ -101,7 +101,7 @@ The brief's "three receipts on antfleet.dev/receipts" assumption was based on a 
 - **Pick a substantive TypeScript-heavy commit** as a fourth benchmark target if the existing three feel underspecified. The Liquid agent has TypeScript source elsewhere in the repo; pick a commit that touches it.
 - **The three open benchmark PRs are kept open** as demo artifacts. They show the PR titles, the upstream-SHA references in their bodies, and the lack of bot comment (which itself is the calibration story).
 - **No X/social posting was done.** Out of scope per the brief.
-- **No upstream Liquid-Protocol-Ops/* repo was touched.** Verified — no API calls were made to that repo other than reads of the three target objects.
+- **No upstream Liquid-Protocol-Ops/\* repo was touched.** Verified — no API calls were made to that repo other than reads of the three target objects.
 
 ## Deviation from brief
 
@@ -121,13 +121,14 @@ After v1 surfaced zero consensus findings on three real Liquid Protocol agent PR
 
 ### Files reviewed — v1 vs v2
 
-| Benchmark | v1 files reviewed | v2 files reviewed | v2 review ID |
-|---|---|---|---|
-| c7a4502 | 1 (`memory/goals.json`) | **5** (`.claude/skills/build.md`, `.claude/skills/heartbeat.md`, `identity/SOUL.md`, `memory/goals.json`, `wiki/flywheel.md`) | `d8976a54` |
-| afe7e0c | 0 (skipped — no reviewable files) | **1** (`aeon.yml`) — two `.github/workflows/*.yml` siblings dropped by the 20KB-per-file size cap, not the extension/blocklist filter | `650efab1` |
-| dependabot-viem | 1 (`package.json`) | **1** (`package.json`) — `package-lock.json` now blocked by the new basename blocklist | `3376e50a` |
+| Benchmark       | v1 files reviewed                 | v2 files reviewed                                                                                                                     | v2 review ID |
+| --------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| c7a4502         | 1 (`memory/goals.json`)           | **5** (`.claude/skills/build.md`, `.claude/skills/heartbeat.md`, `identity/SOUL.md`, `memory/goals.json`, `wiki/flywheel.md`)         | `d8976a54`   |
+| afe7e0c         | 0 (skipped — no reviewable files) | **1** (`aeon.yml`) — two `.github/workflows/*.yml` siblings dropped by the 20KB-per-file size cap, not the extension/blocklist filter | `650efab1`   |
+| dependabot-viem | 1 (`package.json`)                | **1** (`package.json`) — `package-lock.json` now blocked by the new basename blocklist                                                | `3376e50a`   |
 
 ### Benchmark 1 — c7a4502 (v2)
+
 - v2 review comment: https://github.com/AntFleet/agent-autonomopoly-bench/pull/2#issuecomment-4474296146
 - Consensus findings: **2**
 - Timing: anthropic 89.4s, openai 150.5s, total 150.5s
@@ -164,6 +165,7 @@ Both reviewers flagged the items below on the changed files. AntFleet posts only
 The first finding (Medium, mode-switch trigger inconsistency) is exactly the kind of cross-file consistency issue that humans regularly miss but that compounds in agent systems — the same threshold described four different ways across heartbeat, flywheel, goals, and a milestone, where the agent's autonomous behavior depends on which interpretation wins at runtime. Hard to manufacture, hard to fake.
 
 ### Benchmark 2 — afe7e0c (v2)
+
 - v2 review comment: https://github.com/AntFleet/agent-autonomopoly-bench/pull/3#issuecomment-4474293661
 - Consensus findings: **1**
 - Timing: anthropic 30.4s, openai 65.0s, total 65.0s
@@ -191,6 +193,7 @@ Both reviewers flagged the items below on the changed files. AntFleet posts only
 Subtle but real: per-skill model overrides duplicating the default create future drift risk on partial model bumps. The reviewer caught this from `aeon.yml` alone; if the two workflow files were not size-capped out it might have surfaced more.
 
 ### Benchmark 3 — dependabot-viem (v2 — calibration anchor)
+
 - v2 review comment: https://github.com/AntFleet/agent-autonomopoly-bench/pull/4#issuecomment-4474295846
 - Consensus findings: **1** (expected: 0)
 - Timing: anthropic 28.4s, openai 53.0s, total 53.0s
@@ -224,14 +227,14 @@ Both interpretations make this a useful finding, not a calibration failure. The 
 
 ### v1 → v2 comparison
 
-| Metric | v1 | v2 |
-|---|---|---|
-| Total consensus findings across 3 PRs | 0 | **4** |
-| PRs with at least one finding | 0 | **3 of 3** |
-| Files reviewed across 3 PRs | 2 | **7** |
-| Total cost across 3 PRs | $0.80 | $1.20 |
-| Wall-clock per PR (median) | n/a | 65s |
-| `degraded: false` on all runs | yes | yes |
+| Metric                                | v1    | v2         |
+| ------------------------------------- | ----- | ---------- |
+| Total consensus findings across 3 PRs | 0     | **4**      |
+| PRs with at least one finding         | 0     | **3 of 3** |
+| Files reviewed across 3 PRs           | 2     | **7**      |
+| Total cost across 3 PRs               | $0.80 | $1.20      |
+| Wall-clock per PR (median)            | n/a   | 65s        |
+| `degraded: false` on all runs         | yes   | yes        |
 
 ### Interpretation
 

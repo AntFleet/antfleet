@@ -23,9 +23,7 @@ loadDotenv({ path: ".env.local", quiet: true });
 async function main() {
   const [ownerArg, repoArg] = process.argv.slice(2);
   if (ownerArg === undefined || ownerArg.length === 0) {
-    console.error(
-      "usage: pnpm exec tsx scripts/enable-public-receipts.ts <owner> [<repo>]",
-    );
+    console.error("usage: pnpm exec tsx scripts/enable-public-receipts.ts <owner> [<repo>]");
     process.exit(2);
   }
 
@@ -97,9 +95,7 @@ async function main() {
     .where(scopeCondition);
 
   const post = postRows[0] ?? { total: 0, nowPublic: 0 };
-  console.log(
-    `[post-state] ${post.total} review(s) in scope; ${post.nowPublic} now public.`,
-  );
+  console.log(`[post-state] ${post.total} review(s) in scope; ${post.nowPublic} now public.`);
 }
 
 main().then(

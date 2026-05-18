@@ -1,11 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { FleetError, assertDefined } from "../errors.js";
 import type { Provider } from "../provider.js";
-import {
-  fixPlanJsonSchema,
-  reviewJsonSchema,
-  revalidateJsonSchema,
-} from "../provider.js";
+import { fixPlanJsonSchema, reviewJsonSchema, revalidateJsonSchema } from "../provider.js";
 import {
   FixPlanOutput,
   ReviewOutput,
@@ -57,11 +53,7 @@ export const anthropicProvider: Provider = {
     });
     return fixPlanOutputSchema.parse(json);
   },
-  async revalidate(
-    _root: string,
-    prompt: string,
-    model: string | null,
-  ): Promise<RevalidateOutput> {
+  async revalidate(_root: string, prompt: string, model: string | null): Promise<RevalidateOutput> {
     const json = await callAnthropic({
       prompt,
       model: model ?? DEFAULT_MODEL,
@@ -160,9 +152,7 @@ export function tolerateReviewShape(raw: unknown): unknown {
   const obj = { ...(raw as Record<string, unknown>) };
   const inspected = obj["inspected"];
   const inspectedOk =
-    inspected !== null &&
-    typeof inspected === "object" &&
-    !Array.isArray(inspected);
+    inspected !== null && typeof inspected === "object" && !Array.isArray(inspected);
   if (!inspectedOk) {
     obj["inspected"] = { files: [], symbols: [], notes: [] };
   }

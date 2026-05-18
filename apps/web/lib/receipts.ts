@@ -109,9 +109,10 @@ export function upstreamPrUrl(owner: string, repo: string, number: number): stri
 // layer should already exclude them, but the table has no CHECK
 // constraint pinning that invariant. Extracted from the DB function so
 // it can be unit-tested without a database.
-export function mapMergedRowsToReceipts(
-  rows: readonly OutgoingPr[],
-): { receipts: CrossRepoReceiptRow[]; lastMergedAt: Date | null } {
+export function mapMergedRowsToReceipts(rows: readonly OutgoingPr[]): {
+  receipts: CrossRepoReceiptRow[];
+  lastMergedAt: Date | null;
+} {
   const receipts: CrossRepoReceiptRow[] = [];
   let lastMergedAt: Date | null = null;
   for (const r of rows) {
@@ -133,9 +134,7 @@ export function mapMergedRowsToReceipts(
   return { receipts, lastMergedAt };
 }
 
-export async function loadCrossRepoReceipts(
-  limit: number,
-): Promise<CrossRepoReceiptsPage> {
+export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoReceiptsPage> {
   const rows = (await db
     .select()
     .from(outgoingPrs)
@@ -196,9 +195,7 @@ export function toDisplayReceiptDetail(
     evidence: [],
   };
   const closureLagText =
-    row.closedAt === null
-      ? null
-      : `closed in ${closureLag(row.reviewCreatedAt, row.closedAt)}`;
+    row.closedAt === null ? null : `closed in ${closureLag(row.reviewCreatedAt, row.closedAt)}`;
 
   return {
     ...base,
@@ -219,9 +216,7 @@ export function toDisplayReceiptDetail(
     // load-bearing per §18.2. Strip the `#issuecomment-<id>` fragment to
     // get to the PR top.
     prLinkUrl:
-      row.closureCommentUrl === null
-        ? null
-        : row.closureCommentUrl.split("#")[0] ?? null,
+      row.closureCommentUrl === null ? null : (row.closureCommentUrl.split("#")[0] ?? null),
   };
 }
 
@@ -286,8 +281,7 @@ function extractFindingAtIndex(
   const title = typeof ff["title"] === "string" ? ff["title"] : null;
   if (severity === null || category === null || title === null) return null;
   const reasoning = typeof ff["reasoning"] === "string" ? ff["reasoning"] : null;
-  const recommendation =
-    typeof ff["recommendation"] === "string" ? ff["recommendation"] : null;
+  const recommendation = typeof ff["recommendation"] === "string" ? ff["recommendation"] : null;
   const evRaw = ff["evidence"];
   const evidence: Array<{ path: string; startLine: number | null; endLine: number | null }> = [];
   if (Array.isArray(evRaw)) {

@@ -25,15 +25,15 @@ ${JSON.stringify({ name: args.projectName, root: args.projectRoot }, null, 2)}
 
 Feature:
 ${JSON.stringify(
-    {
-      featureId: args.featureId,
-      title: args.featureTitle,
-      kind: "library",
-      ownedFiles: args.files.map((f) => ({ path: f.path, reason: "owned" })),
-    },
-    null,
-    2,
-  )}
+  {
+    featureId: args.featureId,
+    title: args.featureTitle,
+    kind: "library",
+    ownedFiles: args.files.map((f) => ({ path: f.path, reason: "owned" })),
+  },
+  null,
+  2,
+)}
 
 Review categories:
 - correctness bugs (null derefs, off-by-one, wrong branch)
