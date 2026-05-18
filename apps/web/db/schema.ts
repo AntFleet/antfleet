@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  index,
   integer,
   jsonb,
   numeric,
@@ -59,7 +60,43 @@ export const reviews = pgTable("reviews", {
   // private repo, is_benchmark is set but the row never reaches /benchmarks
   // (still gated on public_receipt = true at the query layer).
   isBenchmark: boolean("is_benchmark").notNull().default(false),
-});
+  // Mission 7 — durable review queue. The webhook handler used to call
+  // reviewPR() inline inside Next.js after(); a 30-PR burst on
+  // antfleet/aeon-bench (2026-05-18) produced only 10 reviews because the
+  // rest hit LLM rate limits or function concurrency with nowhere to
+  // retry. These columns turn the reviews row itself into the queue entry:
+  // the webhook attempts the review immediately as a best-effort first
+  // pass; a higher-frequency cron at /api/cron/review-retry sweeps any
+  // row whose status is not 'done'.
+  //
+  // processingStatus state machine:
+  //   pending        — row inserted, not yet attempted (rare: the webhook
+  //                    crashed between insert and after())
+  //   in_progress    — a worker has claimed the row; processingStartedAt
+  //                    is the claim timestamp. If older than 5 minutes the
+  //                    cron treats the row as stuck and re-claims.
+  //   pending_retry  — last attempt failed; nextRetryAt holds the earliest
+  //                    next-attempt time (exponential backoff).
+  //   done           — terminal success.
+  //   failed         — terminal failure (max attempts exhausted).
+  processingStatus: text("processing_status").notNull().default("pending"),
+  processingAttempts: integer("processing_attempts").notNull().default(0),
+  processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
+  processingFinishedAt: timestamp("processing_finished_at", { withTimezone: true }),
+  nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+  processingError: text("processing_error"),
+}, (t) => [
+  // Idempotency key. GitHub may re-deliver a webhook, our cron may race
+  // the webhook's after(), or an operator may push the same head-sha twice;
+  // the (repo_hash, pr_number, commit_sha) triple uniquely identifies a
+  // single review's worth of work. Webhook handler INSERT … ON CONFLICT
+  // DO NOTHING uses this index to convert duplicate deliveries into a
+  // cheap no-op without spawning a second review.
+  unique("reviews_idempotency_uniq").on(t.repoHash, t.prNumber, t.commitSha),
+  // Index on the retry cron's hot path: scanning for non-terminal rows
+  // whose nextRetryAt is due. Partial index keeps it tight.
+  index("reviews_processing_lookup_idx").on(t.processingStatus, t.nextRetryAt),
+]);
 
 // One row per agreed finding. Sweeper updates status when reconciliation
 // detects the file has changed; reaction polling stamps last_polled_at.
