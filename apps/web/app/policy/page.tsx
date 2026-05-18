@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 // §10 (owner/repo is per-customer data; only repo_hash is public) is the
 // load-bearing fact on this page.
 
-const LAST_UPDATED = "2026-05-17";
+const LAST_UPDATED = "2026-05-18";
 
 export const metadata: Metadata = {
   title: "AntFleet · Data policy",
@@ -91,19 +91,45 @@ export default function PolicyPage() {
           <PolicyLink href="/receipts">
             <code className="font-mono text-xs">/receipts</code>
           </PolicyLink>{" "}
-          page is the public artifact, and it is <em>opt-in per install</em>{" "}
-          (default: off). Until you explicitly enable public receipts for a
-          repo, none of its closed findings reach the public page — the
-          review still runs, the comment still posts to your PR, the sweeper
-          still closes findings — but the resulting receipts stay private to
-          your install. New installs are private by default; the v1.5
-          customer dashboard will expose the toggle, and until it ships
-          enabling public receipts requires a request to{" "}
-          <PolicyLink href="mailto:agent@antfleet.dev">
-            agent@antfleet.dev
-          </PolicyLink>
-          .
+          page is the public artifact. The default for whether a closed
+          finding lands there mirrors the visibility of the repo it came
+          from on GitHub:
         </p>
+        <DefinitionList>
+          <Definition term="Public repos">
+            Receipts are public by default. A public GitHub repo carries no
+            privacy expectation around its diff or PR comments, so the
+            corresponding closure receipts appear on{" "}
+            <code className="font-mono text-xs">/receipts</code> as soon as
+            the sweeper closes a finding.
+          </Definition>
+          <Definition term="Private repos">
+            Receipts stay private by default. The review still runs, the
+            comment still posts to your PR, the sweeper still closes
+            findings — but none of it reaches the public page. Email{" "}
+            <PolicyLink href="mailto:agent@antfleet.dev">
+              agent@antfleet.dev
+            </PolicyLink>{" "}
+            from a maintainer address to opt in.
+          </Definition>
+          <Definition term="Override either way">
+            Either default can be reversed by emailing{" "}
+            <PolicyLink href="mailto:agent@antfleet.dev">
+              agent@antfleet.dev
+            </PolicyLink>
+            : a public-repo install can opt out of the public page, and a
+            private-repo install can opt in. Until the v1.5 customer
+            dashboard ships, email is the only channel for the override.
+          </Definition>
+          <Definition term="Visibility is snapshotted at review time">
+            We record the repo&apos;s public/private state when the review
+            row is written. If a repo&apos;s visibility changes later
+            (public → private or vice versa), already-recorded receipts are{" "}
+            <em>not</em> retroactively flipped. New reviews after the change
+            pick up the new default. If a flip happened and you want the
+            old rows reconsidered, email the address above.
+          </Definition>
+        </DefinitionList>
         <p>
           When public visibility is enabled, each row contains the severity,
           category, finding title, PR number, the closing commit SHA
@@ -119,9 +145,10 @@ export default function PolicyPage() {
           owner/repo and the comment content is publicly visible. This is
           intentional and load-bearing: the link <em>is</em> the receipt, and
           a third-party-witnessed artifact only counts because anyone can
-          click and verify the SHA on GitHub. The opt-in gate above is what
-          ensures you choose whether your repo participates in this public
-          surface at all.
+          click and verify the SHA on GitHub. For private repos, the same
+          link auth-walls naturally — only the people who already have
+          repo access can read it — which is why the default for private
+          installs stays off.
         </p>
         <p>
           The raw owner/repo, raw diff content, raw provider responses, and
