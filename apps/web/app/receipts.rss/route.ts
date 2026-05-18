@@ -1,4 +1,8 @@
 import { loadPublicReceiptsPage, type PublicReceiptRow } from "@/db/queries";
+import {
+  loadCrossRepoReceipts,
+  type CrossRepoReceiptRow,
+} from "@/lib/outgoing-prs";
 import { renderRssFeed, type RssItem } from "@/lib/rss";
 
 // RSS 2.0 feed for the public receipt corpus. Consumed by monitoring tools
@@ -6,16 +10,24 @@ import { renderRssFeed, type RssItem } from "@/lib/rss";
 // feed is the same gate as the /receipts page — only reviews with
 // public_receipt = true reach this surface, and aggregates count blind
 // across all installs but the per-item stream is opt-in only.
+// Cross-repo receipts (outgoing PRs that upstream owners merged) are
+// interleaved by pubDate with a <category>cross-repo</category> tag so
+// subscribers can filter — same trust surface but different artifact
+// shape, and the consumer should know which they're looking at.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const FEED_LIMIT = 50;
+const CROSS_REPO_LIMIT = 20;
 const SITE_URL = "https://www.antfleet.dev";
 
 export async function GET(): Promise<Response> {
-  const { recent, lastUpdatedAt } = await loadPublicReceiptsPage({ limit: FEED_LIMIT });
+  const [{ recent, lastUpdatedAt }, crossRepo] = await Promise.all([
+    loadPublicReceiptsPage({ limit: FEED_LIMIT }),
+    loadCrossRepoReceipts(CROSS_REPO_LIMIT),
+  ]);
 
-  const items: RssItem[] = recent
+  const sameRepoItems: RssItem[] = recent
     .filter((r): r is PublicReceiptRow & { closedAt: Date } => r.closedAt !== null)
     .map((r) => ({
       title: `${r.category} · ${r.severity} — ${r.title}`,
@@ -25,13 +37,38 @@ export async function GET(): Promise<Response> {
       description: buildDescription(r),
     }));
 
+  const crossRepoItems: RssItem[] = crossRepo.recent.map((r) => ({
+    title: `cross-repo · AntFleet → ${r.upstreamOwner}/${r.upstreamRepo} PR #${r.upstreamPrNumber}`,
+    link: r.prUrl,
+    // guid prefixed with `cross-repo:` so it can never collide with a
+    // same-repo finding_id even if both happen to share the same uuid prefix.
+    guid: `cross-repo:${r.id}`,
+    pubDate: r.mergedAt,
+    description: buildCrossRepoDescription(r),
+    category: "cross-repo",
+  }));
+
+  const items = [...sameRepoItems, ...crossRepoItems].toSorted(
+    (a, b) => b.pubDate.getTime() - a.pubDate.getTime(),
+  );
+  const newestCrossRepo = crossRepo.lastMergedAt;
+  const newestSameRepo = lastUpdatedAt;
+  const lastBuildDate =
+    newestSameRepo === null
+      ? (newestCrossRepo ?? new Date())
+      : newestCrossRepo === null
+        ? newestSameRepo
+        : newestSameRepo > newestCrossRepo
+          ? newestSameRepo
+          : newestCrossRepo;
+
   const xml = renderRssFeed({
     title: "AntFleet · Receipts",
     link: `${SITE_URL}/receipts`,
     description:
       "Public, SHA-pinned closure receipts from the AntFleet agreement gate. Every entry is third-party-witnessed on GitHub.",
     selfLink: `${SITE_URL}/receipts.rss`,
-    lastBuildDate: lastUpdatedAt ?? new Date(),
+    lastBuildDate,
     items,
   });
 
@@ -52,4 +89,12 @@ function buildDescription(row: PublicReceiptRow): string {
     parts.push(`closed in ${row.closureSha.slice(0, 7)}`);
   }
   return parts.join(" · ");
+}
+
+function buildCrossRepoDescription(row: CrossRepoReceiptRow): string {
+  return [
+    `AntFleet → ${row.upstreamOwner}/${row.upstreamRepo}`,
+    `PR #${row.upstreamPrNumber}`,
+    `merged at ${row.mergeSha.slice(0, 7)}`,
+  ].join(" · ");
 }

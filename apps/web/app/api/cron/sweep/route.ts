@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { runDailyOnboarderCheckIns } from "@/lib/onboarder";
+import { runOutgoingPrsPoll } from "@/lib/outgoing-prs";
 import { runSweep } from "@/lib/sweep";
 
 // node:crypto + DB driver are Node-only — lock this off Edge.
@@ -69,10 +70,26 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       logError("cron.onboarder_checkins_failed", { message });
     }
 
+    // Cross-repo receipts — poll the merge state of outgoing PRs that
+    // antfleet-ops opened on third-party repos. Wraps its own try/catch
+    // internally (runOutgoingPrsPoll returns null on failure) so it can
+    // never destabilize the cron tick. Skipped silently in environments
+    // without ANTFLEET_OPS_GH_TOKEN — the lazy token read inside
+    // realPollDeps throws and is converted to a log line.
+    const tOutgoing = Date.now();
+    const outgoingResult = await runOutgoingPrsPoll();
+    if (outgoingResult !== null) {
+      logInfo("cron.outgoing_prs_poll_complete", {
+        ...outgoingResult,
+        elapsedMs: Date.now() - tOutgoing,
+      });
+    }
+
     const elapsedMs = Date.now() - t0;
     return NextResponse.json({
       ...result,
       onboarder: onboarderResult,
+      outgoingPrs: outgoingResult,
       elapsedMs,
     });
   } catch (err) {

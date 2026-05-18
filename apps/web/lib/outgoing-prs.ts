@@ -1,0 +1,276 @@
+import { Octokit } from "@octokit/rest";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { db } from "@/db/index";
+import { outgoingPrs, type OutgoingPr } from "@/db/schema";
+import { logError, logInfo, logWarn } from "./log";
+
+// Cross-repo receipts — Slice B of Phase-2 receipt density work.
+//
+// AntFleet's GitHub App is not installed on third-party repos where
+// antfleet-ops opens upstream PRs. The standard sweep (finding_status →
+// reviews) is therefore blind to those PRs' merge state. This module
+// is the parallel data path: rows in outgoing_prs are seeded by an
+// operator script when an upstream PR is opened, then this poll loop
+// runs on the cron tick to transition status open → merged | closed.
+// Merged rows surface on /receipts as cross-repo receipts; declined
+// rows are logged only (honest-report: a closed-without-merge PR is
+// not a receipt).
+//
+// The poll rate limit (one hour per row) is two things at once: a
+// politeness budget toward the upstream owner's GitHub rate limit, and
+// a guard on antfleet-ops's PAT which is shared with manual `gh` work.
+
+const POLL_INTERVAL_MS = 60 * 60 * 1000;
+
+export type OpenOutgoingPr = {
+  id: string;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  upstreamPrNumber: number;
+};
+
+export type UpstreamPrState = {
+  // True only when GitHub returned a non-null merged_at. A PR can be
+  // closed without merging — in which case merged_at is null and
+  // state === "closed".
+  merged: boolean;
+  mergedAt: Date | null;
+  mergeSha: string | null;
+  // The raw GitHub `state` field: "open" or "closed".
+  state: "open" | "closed";
+};
+
+export type PollOutgoingDeps = {
+  loadOpenPrs: (now: Date) => Promise<OpenOutgoingPr[]>;
+  getUpstreamPrState: (args: {
+    owner: string;
+    repo: string;
+    number: number;
+  }) => Promise<UpstreamPrState>;
+  markMerged: (args: {
+    id: string;
+    mergedAt: Date;
+    mergeSha: string;
+    polledAt: Date;
+  }) => Promise<void>;
+  markClosed: (args: { id: string; polledAt: Date }) => Promise<void>;
+  stampPolled: (args: { id: string; polledAt: Date }) => Promise<void>;
+};
+
+export type PollOutgoingResult = {
+  attempted: number;
+  merged: number;
+  closed: number;
+  unchanged: number;
+  errors: number;
+};
+
+export async function pollOutgoingPrs(
+  deps: PollOutgoingDeps,
+  now: Date = new Date(),
+): Promise<PollOutgoingResult> {
+  const open = await deps.loadOpenPrs(now);
+  let merged = 0;
+  let closed = 0;
+  let unchanged = 0;
+  let errors = 0;
+  for (const pr of open) {
+    try {
+      const state = await deps.getUpstreamPrState({
+        owner: pr.upstreamOwner,
+        repo: pr.upstreamRepo,
+        number: pr.upstreamPrNumber,
+      });
+      if (state.merged && state.mergedAt !== null && state.mergeSha !== null) {
+        await deps.markMerged({
+          id: pr.id,
+          mergedAt: state.mergedAt,
+          mergeSha: state.mergeSha,
+          polledAt: now,
+        });
+        merged += 1;
+        logInfo("outgoing_prs.merged", {
+          id: pr.id,
+          upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+          mergeSha: state.mergeSha,
+        });
+      } else if (state.state === "closed") {
+        await deps.markClosed({ id: pr.id, polledAt: now });
+        closed += 1;
+        logInfo("outgoing_prs.declined", {
+          id: pr.id,
+          upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+        });
+      } else {
+        await deps.stampPolled({ id: pr.id, polledAt: now });
+        unchanged += 1;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logWarn("outgoing_prs.poll_failed", {
+        id: pr.id,
+        upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+        message,
+      });
+      errors += 1;
+    }
+  }
+  return { attempted: open.length, merged, closed, unchanged, errors };
+}
+
+// ─── Real-deps wiring (used by cron sweep) ─────────────────────────────────
+
+function getAntfleetOpsToken(): string {
+  const token = process.env["ANTFLEET_OPS_GH_TOKEN"];
+  if (token === undefined || token.length === 0) {
+    throw new Error("ANTFLEET_OPS_GH_TOKEN is required to poll outgoing PRs");
+  }
+  return token;
+}
+
+export function realPollDeps(now: Date = new Date()): PollOutgoingDeps {
+  // Lazy Octokit construction so the cron route only instantiates when
+  // there's actually work to do. Token is read each call so a rotated
+  // PAT picks up without a deploy.
+  const tokenReader = () => new Octokit({ auth: getAntfleetOpsToken() });
+  return {
+    loadOpenPrs: async (now: Date) => {
+      const threshold = new Date(now.getTime() - POLL_INTERVAL_MS);
+      const rows = await db
+        .select({
+          id: outgoingPrs.id,
+          upstreamOwner: outgoingPrs.upstreamOwner,
+          upstreamRepo: outgoingPrs.upstreamRepo,
+          upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+        })
+        .from(outgoingPrs)
+        .where(
+          and(
+            eq(outgoingPrs.status, "open"),
+            or(
+              isNull(outgoingPrs.lastPolledAt),
+              lt(outgoingPrs.lastPolledAt, threshold),
+            ),
+          ),
+        );
+      return rows;
+    },
+    getUpstreamPrState: async ({ owner, repo, number }) => {
+      const octokit = tokenReader();
+      const resp = await octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: number,
+      });
+      const data = resp.data;
+      const mergedAt = data.merged_at !== null ? new Date(data.merged_at) : null;
+      const merged = data.merged === true && mergedAt !== null;
+      // GitHub's `state` for pulls is "open" | "closed"; we never
+      // expect anything else but tighten via a fallback to "open".
+      const state: "open" | "closed" = data.state === "closed" ? "closed" : "open";
+      return {
+        merged,
+        mergedAt,
+        mergeSha: data.merge_commit_sha ?? null,
+        state,
+      };
+    },
+    markMerged: async ({ id, mergedAt, mergeSha, polledAt }) => {
+      await db
+        .update(outgoingPrs)
+        .set({
+          status: "merged",
+          mergedAt,
+          mergeSha,
+          lastPolledAt: polledAt,
+        })
+        .where(eq(outgoingPrs.id, id));
+    },
+    markClosed: async ({ id, polledAt }) => {
+      await db
+        .update(outgoingPrs)
+        .set({ status: "closed", lastPolledAt: polledAt })
+        .where(eq(outgoingPrs.id, id));
+    },
+    stampPolled: async ({ id, polledAt }) => {
+      await db
+        .update(outgoingPrs)
+        .set({ lastPolledAt: polledAt })
+        .where(eq(outgoingPrs.id, id));
+    },
+  };
+}
+
+// ─── Display layer — used by /receipts page ────────────────────────────────
+
+export type CrossRepoReceiptRow = {
+  id: string;
+  sourceFindingId: string;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  upstreamPrNumber: number;
+  mergedAt: Date;
+  mergeSha: string;
+  prUrl: string;
+};
+
+export type CrossRepoReceiptsPage = {
+  total: number;
+  recent: CrossRepoReceiptRow[];
+  lastMergedAt: Date | null;
+};
+
+export async function loadCrossRepoReceipts(
+  limit: number,
+): Promise<CrossRepoReceiptsPage> {
+  const rows = await db
+    .select()
+    .from(outgoingPrs)
+    .where(eq(outgoingPrs.status, "merged"))
+    .orderBy(sql`${outgoingPrs.mergedAt} DESC NULLS LAST`)
+    .limit(limit);
+
+  const recent: CrossRepoReceiptRow[] = [];
+  let lastMergedAt: Date | null = null;
+  for (const r of rows as OutgoingPr[]) {
+    if (r.mergedAt === null || r.mergeSha === null) continue;
+    if (lastMergedAt === null || r.mergedAt > lastMergedAt) {
+      lastMergedAt = r.mergedAt;
+    }
+    recent.push({
+      id: r.id,
+      sourceFindingId: r.sourceFindingId,
+      upstreamOwner: r.upstreamOwner,
+      upstreamRepo: r.upstreamRepo,
+      upstreamPrNumber: r.upstreamPrNumber,
+      mergedAt: r.mergedAt,
+      mergeSha: r.mergeSha,
+      prUrl: upstreamPrUrl(r.upstreamOwner, r.upstreamRepo, r.upstreamPrNumber),
+    });
+  }
+
+  const [{ value }] = await db
+    .select({ value: sql<number>`count(*)::int`.as("value") })
+    .from(outgoingPrs)
+    .where(eq(outgoingPrs.status, "merged"));
+
+  return { total: value ?? 0, recent, lastMergedAt };
+}
+
+export function upstreamPrUrl(owner: string, repo: string, number: number): string {
+  return `https://github.com/${owner}/${repo}/pull/${number}`;
+}
+
+// Wrapping for the cron tick — never throw out of the poll loop. The
+// cron handler treats sweep success as the load-bearing outcome; an
+// outgoing-PR poll failure logs and continues.
+export async function runOutgoingPrsPoll(): Promise<PollOutgoingResult | null> {
+  try {
+    const deps = realPollDeps();
+    return await pollOutgoingPrs(deps);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("outgoing_prs.poll_orchestrator_failed", { message });
+    return null;
+  }
+}

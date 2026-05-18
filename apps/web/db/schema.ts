@@ -160,6 +160,45 @@ export const onboardingEvents = pgTable("onboarding_events", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Mission Phase-2 cross-repo receipts — outgoing PRs that AntFleet opens
+// on third-party repos where the GitHub App is NOT installed. The sweep
+// can't see those PRs via finding_status (no review row exists on the
+// upstream), so this is a parallel data path. Row lifecycle: seed via
+// scripts/seed-outgoing-pr.ts when the operator opens an upstream PR;
+// pollOutgoingPrs() (on the cron sweep tick) reads GitHub PR state and
+// transitions open → merged | closed. Merged rows surface on /receipts
+// as the "cross-repo" visual class. Declined (closed-without-merge)
+// rows are logged but never publicly surfaced — honest-report principle.
+export const outgoingPrs = pgTable("outgoing_prs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // App-level reference (no FK) to finding_status.finding_id. Finding rows
+  // can be superseded by re-reviews; the outgoing PR's provenance should
+  // survive that transition.
+  sourceFindingId: text("source_finding_id").notNull(),
+  upstreamOwner: text("upstream_owner").notNull(),
+  upstreamRepo: text("upstream_repo").notNull(),
+  upstreamPrNumber: integer("upstream_pr_number").notNull(),
+  // Branch on the antfleet-ops fork that the PR was opened from. Helpful
+  // for operator audit when reconciling a merged upstream back into the
+  // bench corpus.
+  branchOnFork: text("branch_on_fork").notNull(),
+  openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+  // open | merged | closed. "closed" means closed-without-merge (declined);
+  // not surfaced publicly. "merged" is the receipt-eligible state.
+  status: text("status").notNull().default("open"),
+  mergedAt: timestamp("merged_at", { withTimezone: true }),
+  mergeSha: text("merge_sha"),
+  lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+}, (t) => [
+  // GitHub guarantees PR numbers are unique per (owner, repo); the unique
+  // index lets seed-outgoing-pr.ts upsert idempotently.
+  unique("outgoing_prs_upstream_uniq").on(
+    t.upstreamOwner,
+    t.upstreamRepo,
+    t.upstreamPrNumber,
+  ),
+]);
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -168,3 +207,5 @@ export type MaintainerReaction = typeof maintainerReactions.$inferSelect;
 export type NewMaintainerReaction = typeof maintainerReactions.$inferInsert;
 export type OnboardingEvent = typeof onboardingEvents.$inferSelect;
 export type NewOnboardingEvent = typeof onboardingEvents.$inferInsert;
+export type OutgoingPr = typeof outgoingPrs.$inferSelect;
+export type NewOutgoingPr = typeof outgoingPrs.$inferInsert;
