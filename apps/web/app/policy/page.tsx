@@ -106,20 +106,27 @@ export default function PolicyPage() {
           <Definition term="Private repos">
             Receipts stay private by default. The review still runs, the
             comment still posts to your PR, the sweeper still closes
-            findings — but none of it reaches the public page. Email{" "}
+            findings — but none of it reaches the public page. After your
+            first PR is reviewed, the Onboarder posts a summary comment that
+            includes a one-click opt-in link signed for your install — no
+            email round-trip. The link is good for 30 days; clicking it
+            flips every closed finding on that repo onto{" "}
+            <code className="font-mono text-xs">/receipts</code>. The same
+            link works in reverse (with{" "}
+            <code className="font-mono text-xs">&amp;action=disable</code>)
+            to opt back out.
+          </Definition>
+          <Definition term="Override either way">
+            Either default can be reversed via the signed opt-in link the
+            Onboarder posts on the first-review summary comment. If you
+            lose that comment, or you want to opt out from the public-by-
+            default state, email{" "}
             <PolicyLink href="mailto:agent@antfleet.dev">
               agent@antfleet.dev
             </PolicyLink>{" "}
-            from a maintainer address to opt in.
-          </Definition>
-          <Definition term="Override either way">
-            Either default can be reversed by emailing{" "}
-            <PolicyLink href="mailto:agent@antfleet.dev">
-              agent@antfleet.dev
-            </PolicyLink>
-            : a public-repo install can opt out of the public page, and a
-            private-repo install can opt in. Until the v1.5 customer
-            dashboard ships, email is the only channel for the override.
+            and we&apos;ll flip the flag manually. Until the v1.5 customer
+            dashboard ships, those two channels — the signed link and the
+            email fallback — are how overrides happen.
           </Definition>
           <Definition term="Visibility is snapshotted at review time">
             We record the repo&apos;s public/private state when the review
