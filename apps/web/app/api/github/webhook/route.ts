@@ -7,6 +7,7 @@ import { getChangedFiles } from "@/lib/github-files";
 import { reviewPR } from "@/lib/review-pipeline";
 import { formatPRComment, postPRComment } from "@/lib/pr-comment";
 import { isPublicRepo } from "@/lib/repo-visibility";
+import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import {
   isWelcomeIssue,
@@ -317,12 +318,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // private repos and any lookup failure default to false. The schema-level
   // default also stays false (see db/schema.ts) so any code path bypassing
   // this site lands on the safe side. isPublicRepo never throws.
+  // Mission 6 — benchmark-class detection runs in parallel: a repo with
+  // BENCHMARK.md at root opts into /benchmarks regardless of close state.
   const visibilityOctokit = new Octokit({ auth: installationToken });
-  const publicReceipt = await isPublicRepo(
-    visibilityOctokit,
-    pr.repository.owner.login,
-    pr.repository.name,
-  );
+  const [publicReceipt, isBenchmark] = await Promise.all([
+    isPublicRepo(visibilityOctokit, pr.repository.owner.login, pr.repository.name),
+    isBenchmarkRepo(visibilityOctokit, pr.repository.owner.login, pr.repository.name),
+  ]);
 
   const repoHash = hashRepo(pr.repository.owner.login, pr.repository.name);
   let reviewId: string;
@@ -346,6 +348,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       owner: pr.repository.owner.login,
       repo: pr.repository.name,
       publicReceipt,
+      isBenchmark,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
