@@ -130,6 +130,13 @@ function ReceiptsHero({
           >
             agent@antfleet.dev
           </a>
+          . Want to see all reviewer activity, not just closed findings?{" "}
+          <a
+            href="/benchmarks"
+            className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
+          >
+            /benchmarks
+          </a>
           .
         </p>
       </ContentWrap>

@@ -129,6 +129,25 @@ export default function PolicyPage() {
             pick up the new default. If a flip happened and you want the
             old rows reconsidered, email the address above.
           </Definition>
+          <Definition term="Benchmarks">
+            Reviews on benchmark-class repos — public repos that include a{" "}
+            <code className="font-mono text-xs">BENCHMARK.md</code> at the
+            root — additionally appear on{" "}
+            <PolicyLink href="/benchmarks">
+              <code className="font-mono text-xs">/benchmarks</code>
+            </PolicyLink>{" "}
+            under the same public/private gate. Benchmark replays are not
+            meant to merge, so they never reach the sweeper&apos;s closed
+            state and don&apos;t appear on{" "}
+            <code className="font-mono text-xs">/receipts</code>;{" "}
+            <code className="font-mono text-xs">/benchmarks</code> is the
+            sibling catalog that surfaces them. Either default can still be
+            overridden via{" "}
+            <PolicyLink href="mailto:agent@antfleet.dev">
+              agent@antfleet.dev
+            </PolicyLink>
+            .
+          </Definition>
         </DefinitionList>
         <p>
           When public visibility is enabled, each row contains the severity,
