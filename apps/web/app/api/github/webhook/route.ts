@@ -1,10 +1,12 @@
 import type { NextRequest } from "next/server";
 import { NextResponse, after } from "next/server";
+import { Octokit } from "@octokit/rest";
 import { verifyGitHubSignature } from "@/lib/github-signature";
 import { getInstallationToken } from "@/lib/github-app";
 import { getChangedFiles } from "@/lib/github-files";
 import { reviewPR } from "@/lib/review-pipeline";
 import { formatPRComment, postPRComment } from "@/lib/pr-comment";
+import { isPublicRepo } from "@/lib/repo-visibility";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import {
   isWelcomeIssue,
@@ -297,8 +299,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // stub reviews row so the receipt is durable even if the review itself
   // fails downstream. Failure here returns 5xx so GitHub retries; failure
   // inside after() updates the row with the error.
+  let installationToken: string;
   try {
-    await getInstallationToken(pr.installation.id);
+    installationToken = await getInstallationToken(pr.installation.id);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logError("webhook.installation_token_failed", {
@@ -308,6 +311,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
     return new NextResponse("auth failure", { status: 500 });
   }
+
+  // Mission 5 — public-repo receipt visibility default. Public GitHub repos
+  // have no privacy expectation, so their receipts default to public;
+  // private repos and any lookup failure default to false. The schema-level
+  // default also stays false (see db/schema.ts) so any code path bypassing
+  // this site lands on the safe side. isPublicRepo never throws.
+  const visibilityOctokit = new Octokit({ auth: installationToken });
+  const publicReceipt = await isPublicRepo(
+    visibilityOctokit,
+    pr.repository.owner.login,
+    pr.repository.name,
+  );
 
   const repoHash = hashRepo(pr.repository.owner.login, pr.repository.name);
   let reviewId: string;
@@ -330,6 +345,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       installationId: pr.installation.id,
       owner: pr.repository.owner.login,
       repo: pr.repository.name,
+      publicReceipt,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
