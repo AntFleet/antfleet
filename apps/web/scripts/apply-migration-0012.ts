@@ -1,11 +1,10 @@
 /**
- * One-off — apply migration 0011 (roast_submissions table) when older
- * pending migrations block drizzle-kit's runner. Mirrors
- * apply-migration-0010.ts.
+ * One-off — apply migration 0012 (factory_launches + cron_cursors tables,
+ * source column on roast_submissions). Mirrors apply-migration-0011.ts.
  *
  * Usage (from apps/web):
- *   pnpm exec tsx scripts/apply-migration-0011.ts            # dry-run
- *   pnpm exec tsx scripts/apply-migration-0011.ts --apply    # mutate
+ *   pnpm exec tsx scripts/apply-migration-0012.ts            # dry-run
+ *   pnpm exec tsx scripts/apply-migration-0012.ts --apply    # mutate
  */
 import { config as loadDotenv } from "dotenv";
 loadDotenv({ path: ".env.local", quiet: true });
@@ -14,7 +13,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const TAG = "0011_roast_submissions";
+const TAG = "0012_factory_launches";
 const JOURNAL_PATH = resolve("db/migrations/meta/_journal.json");
 const SQL_PATH = resolve("db/migrations", `${TAG}.sql`);
 
@@ -37,16 +36,24 @@ async function main() {
   }
   const pool = new Pool({ connectionString: databaseUrl });
   try {
-    const tableExists =
+    const checks = await pool.query<{ table_name: string }>(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name IN ('factory_launches', 'cron_cursors')
+      ORDER BY table_name
+    `);
+    console.log(
+      `[public.factory_launches/cron_cursors] present=${JSON.stringify(checks.rows.map((r) => r.table_name))}`,
+    );
+    const sourceColumn =
       (
         await pool.query<{ exists: boolean }>(`
         SELECT EXISTS (
-          SELECT 1 FROM information_schema.tables
-          WHERE table_schema = 'public' AND table_name = 'roast_submissions'
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'roast_submissions' AND column_name = 'source'
         ) AS exists
       `)
       ).rows[0]?.exists ?? false;
-    console.log(`[public.roast_submissions] exists=${tableExists}`);
+    console.log(`[roast_submissions.source] exists=${sourceColumn}`);
 
     if (!apply) {
       console.log("\ndry-run — pass --apply to mutate.");

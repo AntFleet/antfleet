@@ -3,6 +3,7 @@ import { and, count, desc, eq, gte, isNotNull, lt, lte, max, ne, or, sql } from 
 import { db } from "./index";
 import {
   agentFindings,
+  factoryLaunches,
   findingStatus,
   maintainerReactions,
   onboardingEvents,
@@ -10,6 +11,7 @@ import {
   outgoingPrs,
   reviews,
   type AgentFinding,
+  type FactoryLaunch,
   type NewAgentFinding,
   type NewMaintainerReaction,
   type NewOnboardingEvent,
@@ -1457,6 +1459,72 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
     benchmarkReviews: benchmarkRows,
     crossRepoMerges,
   };
+}
+
+// Auto-stub agent shape for factory_launches rows that don't yet have any
+// agent_findings. The /agents/[address] page renders this when loadAgentDetail
+// returns null but the address matches a known on-chain launch — gives the
+// agent a permanent URL the moment the factory deploys it, even before the
+// pre-launch benchmark publishes.
+export type FactoryLaunchAgentDetail = {
+  agentTokenAddress: string;
+  agentName: string;
+  launch: FactoryLaunch;
+};
+
+export async function loadFactoryLaunchDetail(
+  address: string,
+): Promise<FactoryLaunchAgentDetail | null> {
+  const normalized = address.toLowerCase();
+  const rows = await db
+    .select()
+    .from(factoryLaunches)
+    .where(sql`lower(${factoryLaunches.tokenAddress}) = ${normalized}`)
+    .limit(1);
+  const launch = rows[0];
+  if (launch === undefined) return null;
+  return {
+    agentTokenAddress: launch.tokenAddress,
+    agentName: launch.tokenSymbol ?? launch.tokenName ?? launch.tokenAddress.slice(0, 10),
+    launch,
+  };
+}
+
+export type FactoryLaunchIndexRow = {
+  tokenAddress: string;
+  tokenName: string | null;
+  tokenSymbol: string | null;
+  deployedAt: Date;
+  repoFullName: string | null;
+  prelaunchStatus: string;
+};
+
+// Index of factory-detected launches that do NOT yet have an agent_findings
+// row. The /agents page unions this with the findings-bound index so newly-
+// launched agents appear immediately, even before any benchmark publishes.
+// Existing findings-bound rows take precedence — we don't want a "depth" agent
+// (autonomopoly) to also show up as an "auto-stub".
+export async function loadFactoryLaunchIndex(): Promise<FactoryLaunchIndexRow[]> {
+  const rows = await db
+    .select({
+      tokenAddress: factoryLaunches.tokenAddress,
+      tokenName: factoryLaunches.tokenName,
+      tokenSymbol: factoryLaunches.tokenSymbol,
+      deployedAt: factoryLaunches.deployedAt,
+      repoFullName: factoryLaunches.repoFullName,
+      prelaunchStatus: factoryLaunches.prelaunchStatus,
+    })
+    .from(factoryLaunches)
+    .where(
+      sql`lower(${factoryLaunches.tokenAddress}) NOT IN (
+        SELECT lower(${agentFindings.agentTokenAddress}) FROM ${agentFindings}
+      )`,
+    )
+    .orderBy(desc(factoryLaunches.deployedAt));
+  return rows.map((r) => ({
+    ...r,
+    deployedAt: r.deployedAt instanceof Date ? r.deployedAt : new Date(r.deployedAt),
+  }));
 }
 
 export type RoastDetail = {

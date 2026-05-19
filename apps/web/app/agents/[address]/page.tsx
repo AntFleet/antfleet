@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
   loadAgentDetail,
+  loadFactoryLaunchDetail,
   type AgentBenchmarkReference,
   type AgentCrossRepoMerge,
+  type FactoryLaunchAgentDetail,
 } from "@/db/queries";
 import type { AgentFinding } from "@/db/schema";
 import { findAgentByAddress } from "@/lib/agent-registry";
@@ -30,23 +32,37 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { address } = await params;
   const detail = await loadAgentDetail(address);
-  if (detail === null) {
-    return { title: "AntFleet · Agent not found" };
+  if (detail !== null) {
+    const first = detail.findings[0]!;
+    return {
+      title: `AntFleet · ${detail.agentName}`,
+      description: first.title,
+    };
   }
-  const first = detail.findings[0]!;
-  return {
-    title: `AntFleet · ${detail.agentName}`,
-    description: first.title,
-  };
+  const stub = await loadFactoryLaunchDetail(address);
+  if (stub !== null) {
+    return {
+      title: `AntFleet · ${stub.agentName}`,
+      description: `Liquid Protocol agent detected on Base — pre-launch verdict pending.`,
+    };
+  }
+  return { title: "AntFleet · Agent not found" };
 }
 
 export default async function AgentDetailPage({ params }: { params: Promise<RouteParams> }) {
   const { address } = await params;
   const detail = await loadAgentDetail(address);
-  if (detail === null) {
-    notFound();
-  }
   const now = new Date();
+
+  if (detail === null) {
+    // Auto-stub from factory_launches — page exists the moment the factory
+    // deploys, even before any benchmark publishes. See db/queries.ts §
+    // FactoryLaunchAgentDetail.
+    const stub = await loadFactoryLaunchDetail(address);
+    if (stub === null) notFound();
+    return <FactoryLaunchStubPage stub={stub} now={now} />;
+  }
+
   const registryEntry = findAgentByAddress(address);
 
   return (
@@ -73,6 +89,87 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
         </>
       )}
     </>
+  );
+}
+
+function FactoryLaunchStubPage({ stub, now }: { stub: FactoryLaunchAgentDetail; now: Date }) {
+  const { launch, agentName, agentTokenAddress } = stub;
+  const deployRelative = formatRelativeTime(now, launch.deployedAt);
+  const repoUrl = launch.repoFullName !== null ? `https://github.com/${launch.repoFullName}` : null;
+  const statusLabel = (() => {
+    switch (launch.prelaunchStatus) {
+      case "pending":
+        return "looking for repo";
+      case "benchmarking":
+        return "benchmarking";
+      case "published":
+        return "pre-launch verdict published";
+      case "repo_not_found":
+        return "repo not found";
+      case "benchmark_failed":
+        return "benchmark failed";
+      default:
+        return launch.prelaunchStatus;
+    }
+  })();
+
+  return (
+    <section className="py-20 pb-20">
+      <ContentWrap>
+        <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
+          Liquid Protocol agent · {shortAddress(agentTokenAddress)}
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug">
+          {agentName}
+          {launch.tokenName !== null &&
+            launch.tokenSymbol !== null &&
+            launch.tokenName !== launch.tokenSymbol && (
+              <span className="ml-3 font-mono text-base text-[var(--color-ink-muted)]">
+                ({launch.tokenName})
+              </span>
+            )}
+        </h1>
+        <div className="mt-5 flex flex-wrap items-center gap-2">
+          <Badge>auto-stub</Badge>
+          <Badge>{statusLabel}</Badge>
+          <Badge>deployed {deployRelative}</Badge>
+        </div>
+        <div className="mt-6 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1 break-all">
+          <span>token</span>
+          <span className="text-[var(--color-ink)]">{agentTokenAddress}</span>
+          <a
+            href={`https://basescan.org/address/${agentTokenAddress}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
+          >
+            basescan ↗
+          </a>
+        </div>
+        <div className="mt-1 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1 break-all">
+          <span>deployer</span>
+          <span className="text-[var(--color-ink)]">{launch.deployerAddress}</span>
+        </div>
+        {repoUrl !== null && (
+          <div className="mt-1 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1 break-all">
+            <span>repo</span>
+            <a
+              href={repoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[var(--color-ink)] underline underline-offset-2 hover:opacity-80 transition-opacity"
+            >
+              {launch.repoFullName}
+            </a>
+          </div>
+        )}
+        <p className="mt-10 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
+          AntFleet detected this agent the moment its factory transaction confirmed on Base. No
+          investigative findings have been filed yet — the row will populate here once the
+          pre-launch benchmark runs or an operator publishes the first finding.
+        </p>
+      </ContentWrap>
+    </section>
   );
 }
 

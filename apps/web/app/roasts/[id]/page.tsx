@@ -139,7 +139,9 @@ function Header({
           {status === "published" && (
             <>
               <Badge>{`${findings.length} finding${findings.length === 1 ? "" : "s"}`}</Badge>
-              {highestSeverity !== null && <Badge>top severity: {severityLabel(highestSeverity)}</Badge>}
+              {highestSeverity !== null && (
+                <Badge>top severity: {severityLabel(highestSeverity)}</Badge>
+              )}
             </>
           )}
         </div>

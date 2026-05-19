@@ -1,7 +1,12 @@
 node_modules/
 dist/
 coverage/
-.omc/
+.omc/codex-out/
+.omc/state/
+.omc/research/
+.omc/notepad.md
+.omc/project-memory.json
+.omc/logs/
 .claude/
 .DS_Store
 .env
