@@ -55,9 +55,17 @@ describe("currentIsoWeekMondayUtc", () => {
 describe("compareCandidates", () => {
   it("orders by severity, upstream PR, merge sha, then recency", () => {
     const ranked = [
-      row({ finding_id: "old-low", severity: "low", published_at: new Date("2026-05-10T00:00:00Z") }),
+      row({
+        finding_id: "old-low",
+        severity: "low",
+        published_at: new Date("2026-05-10T00:00:00Z"),
+      }),
       row({ finding_id: "high-no-pr", severity: "high", upstream_pr_url: null }),
-      row({ finding_id: "high-pr", severity: "high", upstream_pr_url: "https://github.com/o/r/pull/1" }),
+      row({
+        finding_id: "high-pr",
+        severity: "high",
+        upstream_pr_url: "https://github.com/o/r/pull/1",
+      }),
       row({
         finding_id: "high-merged-old",
         severity: "high",
