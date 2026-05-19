@@ -591,6 +591,63 @@ export async function loadPublicReceiptsPage(args: {
   };
 }
 
+// Window-bounded top-closures helper for the weekly /digest/[date]
+// permalink. Returns the N highest-severity public receipts whose
+// closure landed inside [since, until). Ranking is done in JS (info <
+// low < med < high) since the weekly window is small enough that
+// fetching the whole set and sorting is cheaper than a CASE expression
+// the optimizer can't index. Tie-breaks on closureDetectedAt DESC so
+// same-severity siblings stay newest-first.
+export async function loadTopClosuresBetween(
+  since: Date,
+  until: Date,
+  limit: number,
+): Promise<PublicReceiptRow[]> {
+  if (until.getTime() <= since.getTime() || limit <= 0) return [];
+  const rows = await db
+    .select({
+      findingId: findingStatus.findingId,
+      severity: findingStatus.severity,
+      category: findingStatus.category,
+      title: findingStatus.title,
+      repoHash: reviews.repoHash,
+      prNumber: reviews.prNumber,
+      closureSha: findingStatus.closureSha,
+      closureCommentUrl: findingStatus.closureCommentUrl,
+      closedAt: findingStatus.closureDetectedAt,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(
+      and(
+        eq(findingStatus.status, "closed"),
+        eq(reviews.publicReceipt, true),
+        gte(findingStatus.closureDetectedAt, since),
+        lt(findingStatus.closureDetectedAt, until),
+      ),
+    )
+    .orderBy(desc(findingStatus.closureDetectedAt));
+  const ranked = rows.toSorted((a, b) => {
+    const sevDelta =
+      (DIGEST_SEVERITY_RANK[a.severity.toLowerCase()] ?? -1) -
+      (DIGEST_SEVERITY_RANK[b.severity.toLowerCase()] ?? -1);
+    if (sevDelta !== 0) return -sevDelta;
+    const at = a.closedAt?.getTime() ?? 0;
+    const bt = b.closedAt?.getTime() ?? 0;
+    return bt - at;
+  });
+  return ranked.slice(0, limit);
+}
+
+const DIGEST_SEVERITY_RANK: Record<string, number> = {
+  info: 0,
+  low: 1,
+  med: 2,
+  medium: 2,
+  high: 3,
+  critical: 4,
+};
+
 // Mission Phase-2 P2-E — single-receipt detail page. Returns the full
 // receipt context for one finding: same column projection as
 // loadPublicReceiptsPage plus the JSONB that carries the per-provider
