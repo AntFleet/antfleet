@@ -21,7 +21,7 @@ This file is shaped to autopilot's consensus-plan detector — its presence at `
 ### Decision drivers (top 3)
 
 1. **Maximize X-attention without compromising the trust-layer brand.** The receipts-are-the-artifact thesis means every share is also a brag — but only if previews land.
-2. **Don't disrupt Sprint 5 (Public JSON API).** This work touches *presentation* + one shared helper (`activityWindow()`); Sprint 5 touches *transport*. Concurrent execution OK; the activityWindow signature change is sequenced first so Sprint 5 inherits it.
+2. **Don't disrupt Sprint 5 (Public JSON API).** This work touches _presentation_ + one shared helper (`activityWindow()`); Sprint 5 touches _transport_. Concurrent execution OK; the activityWindow signature change is sequenced first so Sprint 5 inherits it.
 3. **Fix three real counter mismatches that any digest tweet would otherwise inherit and amplify.** Specifically: (a) `/activity` not gated by `public_receipt`; (b) handoff gate-check counts reviews instead of closed findings; (c) `reactionsObserved=0` everywhere because of the krisskross_shops orphan rows.
 
 ### Viable options considered
@@ -34,11 +34,11 @@ This file is shaped to autopilot's consensus-plan detector — its presence at `
 
 ### Pre-mortem (deliberate mode)
 
-| Scenario | Likelihood | Mitigation |
-|---|---|---|
-| OG images render with system fonts that differ across CDN edges, producing visual drift between previews and the rendered card | Low | Use Next's `nodejs` runtime for `opengraph-image.tsx` (not edge) so the same `node` version renders everywhere. Snapshot the rendered PNG in a test. |
-| `activityWindow()` gate change drops the `/activity` numbers visibly (41→32) and looks like a regression | High | Pair the change with a copy update on `/activity` clarifying the gate, and ship in the same commit. The drop is real and intentional; surface the *why*. |
-| Digest page is hit with invalid date strings — `/digest/invalid`, `/digest/2026-13-99`, `/digest/'; DROP TABLE` | High | Strict YYYY-MM-DD parse in `loadDigestForWeek()`; reject anything else with `notFound()`. security-reviewer agent reviews specifically this route. |
+| Scenario                                                                                                                       | Likelihood | Mitigation                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OG images render with system fonts that differ across CDN edges, producing visual drift between previews and the rendered card | Low        | Use Next's `nodejs` runtime for `opengraph-image.tsx` (not edge) so the same `node` version renders everywhere. Snapshot the rendered PNG in a test.     |
+| `activityWindow()` gate change drops the `/activity` numbers visibly (41→32) and looks like a regression                       | High       | Pair the change with a copy update on `/activity` clarifying the gate, and ship in the same commit. The drop is real and intentional; surface the _why_. |
+| Digest page is hit with invalid date strings — `/digest/invalid`, `/digest/2026-13-99`, `/digest/'; DROP TABLE`                | High       | Strict YYYY-MM-DD parse in `loadDigestForWeek()`; reject anything else with `notFound()`. security-reviewer agent reviews specifically this route.       |
 
 ### Expanded test plan (deliberate mode)
 
@@ -62,12 +62,14 @@ This file is shaped to autopilot's consensus-plan detector — its presence at `
 **Why chosen.** Option A maximizes leverage per hour: every Codex chunk is contained, the data layer is already done, no new schema, no new external service, no new credentials. The five chunks ship value independently — even partial completion (just CODEX-2 OG images) materially improves AntFleet's X presence.
 
 **Consequences.**
+
 - `/activity` headline numbers will drop (41→32 for "receipts closed all-time"). Required copy update.
 - New routes: `/digest/[yyyy-mm-dd]`, `/roasts` (index). Both `force-dynamic` for v1; can flip to `generateStaticParams` in iteration 2.
 - One new component: `apps/web/components/TweetIntent.tsx`. No new dependencies.
 - Three new `opengraph-image.tsx` files use Next.js `ImageResponse`; runtime: `nodejs`.
 
 **Follow-ups (NOT in scope for this sprint).**
+
 - `outgoing_posts` table + admin queue (Option B) — reconsider after 4 weeks of manual operator tweeting.
 - `/wall` hall-of-receipts grid — gate on N≥50 closed public receipts.
 - Week-over-week delta arrows on `/digest` — gate on N≥2 prior weeks of digest data.
@@ -80,6 +82,7 @@ This file is shaped to autopilot's consensus-plan detector — its presence at `
 These three steps unblock the rest. Run before opening the branch.
 
 1. **Orphan reaction-poller row cleanup.** Unblocks `reactionsObserved` becoming non-zero.
+
    ```bash
    cd apps/web
    DATABASE_URL="$(grep '^DATABASE_URL=' .env.local.bak.prod-main | cut -d= -f2- | tr -d '"')" \
@@ -92,6 +95,7 @@ These three steps unblock the rest. Run before opening the branch.
    ```
 
 2. **Flip AntFleet/antfleet dogfood opt-in.** Closes the 41-vs-32 gap.
+
    ```bash
    cd apps/web
    DATABASE_URL="$(grep '^DATABASE_URL=' .env.local.bak.prod-main | cut -d= -f2- | tr -d '"')" \
@@ -105,6 +109,7 @@ These three steps unblock the rest. Run before opening the branch.
 ## Phase 2 execution chunks
 
 Working contract for every chunk:
+
 ```bash
 OMC_SHELL_READY_TIMEOUT_MS=90000 omc team 1:codex \
   "Read .omc/codex-out/xattn-NN-<slug>/TASK.md and execute it. \
@@ -119,6 +124,7 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 **File scope:** `apps/web/db/queries.ts` + the existing test file that covers `activityWindow` (find via `grep -l activityWindow apps/web/db/*.test.ts apps/web/lib/*.test.ts`).
 
 **Task:**
+
 - Extend signature: `activityWindow(since: Date | null, until: Date | null = null): Promise<ActivityWindow>`. When `until === null`, behavior is "up to now" (matches current).
 - Apply `inner join reviews on reviews.review_id = finding_status.review_id` + `eq(reviews.publicReceipt, true)` to **all four** counters in `activityWindow()` ([queries.ts:1129](apps/web/db/queries.ts:1129)). The `reviews` and `maintainerReactions` counts also need the gate (reactions are polled on opted-in findings only).
 - Update callers in `loadFleetActivity()` at [queries.ts:760](apps/web/db/queries.ts:760) — no signature change at call sites since `until` defaults to null.
@@ -131,6 +137,7 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 ### CODEX-2 · `xattn-02-og-images`
 
 **File scope:** three new files; no existing files touched.
+
 - `apps/web/app/receipts/[id]/opengraph-image.tsx`
 - `apps/web/app/agents/[address]/opengraph-image.tsx`
 - `apps/web/app/roasts/[id]/opengraph-image.tsx`
@@ -138,6 +145,7 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 **Task:** Each file exports default `async function` returning `ImageResponse` from `next/og`. Runtime: `nodejs` (queries hit Neon over HTTP). Size: 1200×630. Background `#0a0a0a`, ink `#ffffff`, line `#27272a`, accent ink-muted `#a1a1aa`. System fonts only (no `next/font` remote fetch — matches existing no-third-party-fonts rule in `apps/web/app/layout.tsx`).
 
 **Per-route shape:**
+
 - **receipt:** top bar with `antfleet[bot]` + `closed in <sha7>` · severity pill (border-rounded, monospace) · category pill · finding title (3xl, semibold) · `repo <hash-prefix>` + PR number · bottom footer `antfleet.dev/receipts/<short-id>`
 - **agent:** `Public investigation` label · agent display name + short address (`0x1234…abcd`) · big findings count (6xl tabular-nums) · highest severity pill · footer `antfleet.dev/agents/<short-addr>`
 - **roast:** `AntFleet roast` label · repo full name (3xl) · status badge (queued / running / published / rejected) · published-only: finding count + highest severity · footer `antfleet.dev/roasts/<id>`
@@ -149,12 +157,14 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 ### CODEX-3 · `xattn-03-tweet-intents`
 
 **File scope:**
+
 - New: `apps/web/components/TweetIntent.tsx`
 - Edit: `apps/web/app/roasts/[id]/page.tsx` (`ShareSection` only)
 - Edit: `apps/web/app/receipts/page.tsx` (add per-row "Tweet ↗")
 - Edit: `apps/web/app/agents/[address]/page.tsx` (header area)
 
 **Task:**
+
 - Component: `<TweetIntent text url via?="AntFleetDev" className?>`. Renders `<a target="_blank" rel="noopener noreferrer" href="https://x.com/intent/tweet?…">` with URL-encoded `text`, `url`, `via`. No client JS, no state.
 - Insert into `ShareSection` at [roasts/[id]/page.tsx:303](apps/web/app/roasts/[id]/page.tsx:303) when `submission.status === "published"`, above the existing `CopyBadgeSnippet`.
 - Add per-row tweet affordance on `/receipts` listing — small `Tweet ↗` link beside each receipt.
@@ -162,6 +172,7 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 - Insert copy placeholders `__TWEET_COPY_RECEIPT__`, `__TWEET_COPY_ROAST__`, `__TWEET_COPY_AGENT__` — Claude finalizes voice after Codex commits scaffold.
 
 **Voice templates (Claude swaps in during integration step, not Codex):**
+
 - receipt: `"AntFleet caught a <severity> <category> bug in <repo-hash>. Closed in <sha7>. Two frontier models, both agreed."`
 - roast: `"AntFleet just roasted <repo>: <N> agreed findings."`
 - agent: `"Public investigation on <agent-name> (<short-addr>): <N> findings on file."`
@@ -171,12 +182,14 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 ### CODEX-4 · `xattn-04-digest-page`
 
 **File scope:**
+
 - New: `apps/web/app/digest/[yyyy-mm-dd]/page.tsx`
 - New: `apps/web/app/digest/[yyyy-mm-dd]/opengraph-image.tsx`
 - New: `apps/web/lib/digest.ts`
 - Edit: `apps/web/db/queries.ts` (add `loadTopClosuresBetween(since, until, limit)` helper)
 
 **Task:**
+
 - `loadDigestForWeek(weekEndingIsoDate: string)` in `apps/web/lib/digest.ts`:
   - Parse `YYYY-MM-DD` as UTC midnight. Reject anything else via `null` return.
   - Compute `since = ending - 7d`, `until = ending`.
@@ -194,12 +207,14 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 ### CODEX-5 · `xattn-05-roasts-index-and-counter`
 
 **File scope:**
+
 - New: `apps/web/app/roasts/page.tsx`
 - Edit: `apps/web/app/roast/page.tsx` (add counter strip above form)
 - Edit: `apps/web/app/layout.tsx` (add `/roasts` to header nav between `/agents` and `/roadmap`)
 - Edit: `apps/web/db/queries.ts` (add `loadRoastStats()` returning `{ totalPublished, totalFindingsFromRoasts }`; add `loadPublishedRoasts(limit, before?)` for the index page)
 
 **Task:**
+
 - `/roasts` lists `status='published'` submissions, newest first, repo full name visible, finding count, severity-of-highest, relative timestamp. Paginated via `before=` cursor (mirrors `/receipts` pattern).
 - `/roast` counter strip: `"<N> repos roasted to date · <M> findings filed"` above the form. Renders as a small monospaced line in `--color-ink-subtle`, consistent with existing visual language.
 - Header nav addition is a single `<a href="/roasts">roasts</a>` between `/agents` and `/roadmap` in `apps/web/app/layout.tsx`.
@@ -213,6 +228,7 @@ Codex writes patches under `.omc/codex-out/xattn-NN-<slug>/`. Claude integrates 
 ## Phase 3 (QA) gates
 
 After all five chunks integrated:
+
 - `pnpm lint` → 0 errors
 - `pnpm format:check` → clean
 - `pnpm -F @antfleet/web test` → 321 + new tests passing
@@ -222,6 +238,7 @@ After all five chunks integrated:
 ## Phase 4 (Validation) — parallel agent review
 
 After QA green, spawn in parallel:
+
 - **architect** subagent — functional completeness against this plan's chunks
 - **security-reviewer** subagent — focus on `/digest/[yyyy-mm-dd]` route param handling and `<TweetIntent>` URL construction (XSS in tweet text)
 - **code-reviewer** subagent — quality / style / typing
