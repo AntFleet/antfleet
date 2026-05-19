@@ -70,6 +70,12 @@ export default async function RoastResultPage({ params }: { params: Promise<Rout
   return (
     <>
       <Header submission={detail.submission} findings={detail.findings} now={now} />
+      {detail.submission.status === "awaiting_approval" && (
+        <>
+          <SectionDivider />
+          <AwaitingApprovalSection submission={detail.submission} now={now} />
+        </>
+      )}
       {detail.submission.status === "queued" && (
         <>
           <SectionDivider />
@@ -150,6 +156,27 @@ function Header({
   );
 }
 
+function AwaitingApprovalSection({ submission, now }: { submission: RoastSubmission; now: Date }) {
+  const relative = formatRelativeTime(now, submission.createdAt);
+  return (
+    <section>
+      <ContentWrap>
+        <h2 className="mb-5 text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+          Roast
+        </h2>
+        <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">
+          Awaiting review · submitted {relative}
+        </p>
+        <p className="mt-4 max-w-xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
+          AntFleet reviews every submission before running the consensus pipeline. If this roast is
+          promoted, findings appear here within 24h. If it&apos;s rejected, the reason will show up
+          on this page.
+        </p>
+      </ContentWrap>
+    </section>
+  );
+}
+
 function QueuedSection({ submission, now }: { submission: RoastSubmission; now: Date }) {
   const relative = formatRelativeTime(now, submission.createdAt);
   return (
@@ -162,10 +189,10 @@ function QueuedSection({ submission, now }: { submission: RoastSubmission; now: 
           Queued · submitted {relative}
         </p>
         <p className="mt-4 max-w-xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
-          We publish one roast every 24h. You&apos;ll see findings appear here when this one runs.
+          Promoted by an operator. The consensus pipeline picks this up on the next runner tick.
         </p>
         <p className="mt-3 font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
-          ETA: within 24h of submission.
+          ETA: within 24h of promotion.
         </p>
       </ContentWrap>
     </section>
@@ -341,6 +368,9 @@ function metadataTitle(submission: RoastSubmission): string {
   if (submission.status === "rejected") {
     return `AntFleet roast (rejected): ${submission.repoFullName}`;
   }
+  if (submission.status === "awaiting_approval") {
+    return `AntFleet roast (awaiting review): ${submission.repoFullName}`;
+  }
   if (submission.status === "queued" || submission.status === "running") {
     return `AntFleet roast (in progress): ${submission.repoFullName}`;
   }
@@ -351,7 +381,8 @@ function metadataDescription(submission: RoastSubmission, findings: AgentFinding
   if (submission.status === "published") {
     return findings[0]?.title ?? "Published roast findings.";
   }
-  if (submission.status === "queued") return "In the queue.";
+  if (submission.status === "awaiting_approval") return "Submission awaiting operator review.";
+  if (submission.status === "queued") return "Promoted; waiting for the runner.";
   if (submission.status === "running") return "Running now.";
   if (submission.status === "rejected") {
     const reason = submission.rejectionReason?.trim() || "Submission did not meet roast criteria.";
@@ -361,6 +392,7 @@ function metadataDescription(submission: RoastSubmission, findings: AgentFinding
 }
 
 function statusLine(status: string, relative: string): string {
+  if (status === "awaiting_approval") return `Awaiting review · submitted ${relative}`;
   if (status === "queued") return `Queued · submitted ${relative}`;
   if (status === "running") return `Running · started ${relative}`;
   if (status === "published") return `Published ${relative}`;
