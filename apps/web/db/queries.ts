@@ -1126,36 +1126,94 @@ export async function snapshotInstallActivity(
   };
 }
 
-async function activityWindow(sinceDate: Date | null): Promise<ActivityWindow> {
-  const reviewsWhere = sinceDate === null ? undefined : gte(reviews.createdAt, sinceDate);
-  const findingsCreatedWhere =
-    sinceDate === null ? undefined : gte(findingStatus.createdAt, sinceDate);
-  const findingsClosedWhere =
-    sinceDate === null
-      ? eq(findingStatus.status, "closed")
-      : and(eq(findingStatus.status, "closed"), gte(findingStatus.closureDetectedAt, sinceDate));
-  const reactionsWhere =
-    sinceDate === null ? undefined : gte(maintainerReactions.polledAt, sinceDate);
+// Pure clamping for the activityWindow() time bounds. Three rules:
+//   1. until in the future ⇒ treat as null ("up to now") so a digest URL
+//      rendered today renders the same numbers next week.
+//   2. until < since ⇒ short-circuit to a zero-counter result (caller
+//      avoids issuing impossible-range queries against the DB).
+//   3. since/until null are passed through; the SQL builder turns them
+//      into open-ended bounds.
+export function normalizeActivityWindow(
+  since: Date | null,
+  until: Date | null,
+  now: Date,
+): { since: Date | null; until: Date | null; zero: boolean } {
+  const clampedUntil = until === null ? null : until.getTime() > now.getTime() ? null : until;
+  if (since !== null && clampedUntil !== null && clampedUntil.getTime() < since.getTime()) {
+    return { since: null, until: null, zero: true };
+  }
+  return { since, until: clampedUntil, zero: false };
+}
 
-  const reviewsCountQuery =
-    reviewsWhere === undefined
-      ? db.select({ value: count() }).from(reviews)
-      : db.select({ value: count() }).from(reviews).where(reviewsWhere);
+// Counters for the /activity dashboard and any future digest page.
+//
+// Every counter is gated by reviews.publicReceipt = true so the headline
+// numbers always equal what the public /receipts page can substantiate.
+// Before this gate the page showed "receipts closed all-time = 41" while
+// /receipts itself listed only 32; the delta was non-opted-in dogfood
+// rows. Public-facing copy must use this helper or the JSON it backs.
+//
+// untilDate defaults to null = "up to now". Pass an explicit upper bound
+// for reproducible digest permalinks (the weekly /digest page renders the
+// same numbers no matter when the URL is re-opened).
+export async function activityWindow(
+  sinceDate: Date | null,
+  untilDate: Date | null = null,
+): Promise<ActivityWindow> {
+  const { since, until, zero } = normalizeActivityWindow(sinceDate, untilDate, new Date());
+  if (zero) {
+    return {
+      reviewsRun: 0,
+      findingsAgreed: 0,
+      receiptsClosed: 0,
+      reactionsObserved: 0,
+    };
+  }
 
-  const agreedCountQuery =
-    findingsCreatedWhere === undefined
-      ? db.select({ value: count() }).from(findingStatus)
-      : db.select({ value: count() }).from(findingStatus).where(findingsCreatedWhere);
+  // Build inclusive lower / exclusive upper bounds on each timestamp so
+  // back-to-back weekly digests don't double-count the boundary moment.
+  const reviewsRange = and(
+    since === null ? undefined : gte(reviews.createdAt, since),
+    until === null ? undefined : lt(reviews.createdAt, until),
+  );
+  const findingsCreatedRange = and(
+    since === null ? undefined : gte(findingStatus.createdAt, since),
+    until === null ? undefined : lt(findingStatus.createdAt, until),
+  );
+  const findingsClosedRange = and(
+    eq(findingStatus.status, "closed"),
+    since === null ? undefined : gte(findingStatus.closureDetectedAt, since),
+    until === null ? undefined : lt(findingStatus.closureDetectedAt, until),
+  );
+  const reactionsRange = and(
+    since === null ? undefined : gte(maintainerReactions.polledAt, since),
+    until === null ? undefined : lt(maintainerReactions.polledAt, until),
+  );
+
+  const publicGate = eq(reviews.publicReceipt, true);
+
+  const reviewsCountQuery = db
+    .select({ value: count() })
+    .from(reviews)
+    .where(and(publicGate, reviewsRange));
+
+  const agreedCountQuery = db
+    .select({ value: count() })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(and(publicGate, findingsCreatedRange));
 
   const closedCountQuery = db
     .select({ value: count() })
     .from(findingStatus)
-    .where(findingsClosedWhere);
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(and(publicGate, findingsClosedRange));
 
-  const reactionsCountQuery =
-    reactionsWhere === undefined
-      ? db.select({ value: count() }).from(maintainerReactions)
-      : db.select({ value: count() }).from(maintainerReactions).where(reactionsWhere);
+  const reactionsCountQuery = db
+    .select({ value: count() })
+    .from(maintainerReactions)
+    .innerJoin(reviews, eq(maintainerReactions.reviewId, reviews.reviewId))
+    .where(and(publicGate, reactionsRange));
 
   const [r, a, c, x] = await Promise.all([
     reviewsCountQuery,

@@ -7,10 +7,12 @@ import { ActivityView, type FleetActivityJson } from "./ActivityView";
 // the client-side ActivityView takes over on hydration to tick relative
 // timestamps every second and poll /api/activity every 60s.
 //
-// Privacy: aggregate counters are repo-blind so they include every
-// install (no leak). Event stream gates on reviews.public_receipt = true
-// so non-opted-in installs never surface as visible rows even though
-// their counts contribute to the aggregates.
+// Privacy + headline-honesty: as of the X-attention sprint, aggregate
+// counters AND the event stream both gate on reviews.public_receipt =
+// true. Before the gate the page showed "receipts closed all-time" >
+// the public /receipts list (non-opted-in installs leaked into the
+// aggregate); after, the headline equals what /receipts can render.
+// Required for tweet-intent + /digest permalinks to stay truthful.
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
