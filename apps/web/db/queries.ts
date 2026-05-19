@@ -6,6 +6,7 @@ import {
   findingStatus,
   maintainerReactions,
   onboardingEvents,
+  roastSubmissions,
   outgoingPrs,
   reviews,
   type AgentFinding,
@@ -14,6 +15,7 @@ import {
   type NewOnboardingEvent,
   type NewReview,
   type OnboardingEvent,
+  type RoastSubmission,
 } from "./schema";
 import { writePostDraft } from "@/lib/post-drafts";
 
@@ -1455,6 +1457,33 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
     benchmarkReviews: benchmarkRows,
     crossRepoMerges,
   };
+}
+
+export type RoastDetail = {
+  submission: RoastSubmission;
+  findings: AgentFinding[];
+};
+
+export async function loadRoastDetail(id: string): Promise<RoastDetail | null> {
+  const submissions = await db
+    .select()
+    .from(roastSubmissions)
+    .where(eq(roastSubmissions.id, id))
+    .limit(1);
+  const submission = submissions[0];
+  if (submission === undefined) return null;
+
+  if (submission.status !== "published") {
+    return { submission, findings: [] };
+  }
+
+  const findings = await db
+    .select()
+    .from(agentFindings)
+    .where(sql`lower(${agentFindings.agentTokenAddress}) = lower(${"roast:" + id})`)
+    .orderBy(desc(agentFindings.publishedAt));
+
+  return { submission, findings };
 }
 
 // /agents — index of all agents that have at least one finding. We don't
