@@ -3,6 +3,7 @@ import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { db } from "@/db/index";
 import { outgoingPrs } from "@/db/schema";
 import { logError, logInfo, logWarn } from "./log";
+import { writePostDraft } from "./post-drafts";
 
 // Cross-repo receipts — Slice B of Phase-2 receipt density work.
 //
@@ -185,6 +186,14 @@ export function realPollDeps(): PollOutgoingDeps {
       };
     },
     markMerged: async ({ id, mergedAt, mergeSha, polledAt }) => {
+      const rows = await db
+        .select({
+          upstreamOwner: outgoingPrs.upstreamOwner,
+          upstreamRepo: outgoingPrs.upstreamRepo,
+          upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+        })
+        .from(outgoingPrs)
+        .where(eq(outgoingPrs.id, id));
       await db
         .update(outgoingPrs)
         .set({
@@ -194,12 +203,36 @@ export function realPollDeps(): PollOutgoingDeps {
           lastPolledAt: polledAt,
         })
         .where(eq(outgoingPrs.id, id));
+      const row = rows[0];
+      if (row !== undefined) {
+        await writePostDraft({
+          slug: `outgoing-pr-merged-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
+          title: "Outgoing PR merged",
+          body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} merged at ${mergeSha} on ${mergedAt.toISOString()}.`,
+        });
+      }
     },
     markClosed: async ({ id, polledAt }) => {
+      const rows = await db
+        .select({
+          upstreamOwner: outgoingPrs.upstreamOwner,
+          upstreamRepo: outgoingPrs.upstreamRepo,
+          upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+        })
+        .from(outgoingPrs)
+        .where(eq(outgoingPrs.id, id));
       await db
         .update(outgoingPrs)
         .set({ status: "closed", lastPolledAt: polledAt })
         .where(eq(outgoingPrs.id, id));
+      const row = rows[0];
+      if (row !== undefined) {
+        await writePostDraft({
+          slug: `outgoing-pr-closed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
+          title: "Outgoing PR closed",
+          body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} closed without merge at ${polledAt.toISOString()}.`,
+        });
+      }
     },
     stampPolled: async ({ id, polledAt }) => {
       await db.update(outgoingPrs).set({ lastPolledAt: polledAt }).where(eq(outgoingPrs.id, id));

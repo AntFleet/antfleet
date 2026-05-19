@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/review-retry",
       "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/drift",
+      "schedule": "0 * * * *"
     }
   ]
 }
