@@ -67,6 +67,7 @@ Routes:
 - `/agents/[address]/claim`, `/api/claim` (Sprint 4 — operator portal for repo attribution via EIP-191 signature)
 - `/badge/[owner]/[repo].svg`
 - `/roast`, `/api/roast`, `/roasts/[id]`
+- `/api/cron/curate-weekly` (Sprint 5 follow-up — Monday 00:00 UTC)
 - `/api/cron/poll-factory` (Sprint 3 — route present; **dormant**, no schedule. Activates when `AGENTS_FACTORY_ADDRESS` env is set on prod, i.e. once an agents-specific Liquid factory contract deploys)
 - `/api/cron/run-prelaunch` (Sprint 3 — route present; **dormant**, no schedule. Reactivates alongside poll-factory)
 - `/` (homepage — Sprint 4 added the "Receipt of the week" card above-fold when a `weekly_features` row exists for the current ISO week)
@@ -177,7 +178,7 @@ Each sprint has a re-check gate. If the gate fails, do not execute — re-sequen
 
 ### Sprint 4 — Operator portal + receipt-of-the-week ✅ DONE
 
-**Shipped:** `agent_claims` + `weekly_features` tables (migrations `0013_agent_claims.sql`, `0014_weekly_features.sql`, `0015_agent_claims_unique_indexes.sql`); `/api/claim` POST with EIP-191 signature verification + transactional INSERT/UPDATE + unique-index race protection; `/agents/[address]/claim` page with wallet-sign flow; unclaimed banner on `/agents/[address]` for `repo_not_found` rows; `/agents?filter=unclaimed` filtered view + hero count; `lib/claim-message.ts` canonical message helper; `scripts/curate-weekly.ts` auto-curator (Monday 00:00 UTC ranking by severity → upstream PR → merged-sha → recency); `scripts/feature-finding.ts` manual operator override; Receipt-of-the-week card on homepage above-fold; `writeClaimVerifiedDraft` + `writeWeeklyFeatureDraft` post-draft helpers.
+**Shipped:** `agent_claims` + `weekly_features` tables (migrations `0013_agent_claims.sql`, `0014_weekly_features.sql`, `0015_agent_claims_unique_indexes.sql`); `/api/claim` POST with EIP-191 signature verification + transactional INSERT/UPDATE + unique-index race protection; `/agents/[address]/claim` page with wallet-sign flow; unclaimed banner on `/agents/[address]` for `repo_not_found` rows; `/agents?filter=unclaimed` filtered view + hero count; `lib/claim-message.ts` canonical message helper; `scripts/curate-weekly.ts` auto-curator (Monday 00:00 UTC ranking by severity → upstream PR → merged-sha → recency; cron wiring landed in Sprint 5 follow-up (PR TBD — Claude will fill in)); `scripts/feature-finding.ts` manual operator override; Receipt-of-the-week card on homepage above-fold; `writeClaimVerifiedDraft` + `writeWeeklyFeatureDraft` post-draft helpers.
 
 **Gate-failure operator override:** Re-check gates both failed at start (0 `repo_not_found` rows since factory watcher dormant; only 1 `agent_findings` row). Operator authorized full execution as a forward investment — the operator portal becomes useful the moment an agents-specific factory contract deploys + reactivates the watcher, and the receipt-of-the-week surface activates as `agent_findings` grows.
 
