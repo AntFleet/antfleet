@@ -29,6 +29,21 @@ export async function runPrelaunchOnce(): Promise<PrelaunchTickResult> {
     publishedDetected: 0,
   };
 
+  // Gate on the same env var that controls poll-factory. Without an agents-
+  // specific factory contract address, factory_launches rows can only be
+  // garbage left from a prior misconfigured backfill (Sprint 3 sequel
+  // 2026-05-19) and discoverRepoForAgent can false-positive on github_search
+  // for completely unrelated repos. Refuse to publish under those conditions.
+  if (
+    process.env["AGENTS_FACTORY_ADDRESS"] === undefined ||
+    process.env["AGENTS_FACTORY_ADDRESS"].length === 0
+  ) {
+    logInfo("prelaunch_dispatcher.skip", {
+      reason: "AGENTS_FACTORY_ADDRESS not set",
+    });
+    return result;
+  }
+
   await processPending(result);
   await processBenchmarking(result);
 
