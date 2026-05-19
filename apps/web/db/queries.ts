@@ -625,8 +625,9 @@ export async function loadTopClosuresBetween(
         gte(findingStatus.closureDetectedAt, since),
         lt(findingStatus.closureDetectedAt, until),
       ),
-    )
-    .orderBy(desc(findingStatus.closureDetectedAt));
+    );
+  // JS toSorted below severity-DESC + closedAt-DESC; the SQL ORDER BY
+  // would be redundant, so we sort entirely in JS for clarity.
   const ranked = rows.toSorted((a, b) => {
     const sevDelta =
       (DIGEST_SEVERITY_RANK[a.severity.toLowerCase()] ?? -1) -

@@ -45,7 +45,11 @@ export async function loadDigestForWeek(
     ]);
 
     return { weekEndingAt, since, until: weekEndingAt, counts, topClosures };
-  } catch {
+  } catch (error) {
+    // Swallow DB errors so a transient Neon outage 404s the digest URL
+    // rather than leaking a 500 + stack trace to anonymous visitors.
+    // Visible to ops via Vercel function logs.
+    console.error("[digest] loadDigestForWeek failed", { weekEndingIsoDate, error });
     return null;
   }
 }
