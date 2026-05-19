@@ -36,8 +36,9 @@ async function main() {
   }
   const pool = new Pool({ connectionString: databaseUrl });
   try {
-    const columnExists = (
-      await pool.query<{ exists: boolean }>(`
+    const columnExists =
+      (
+        await pool.query<{ exists: boolean }>(`
         SELECT EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_schema = 'public'
@@ -45,15 +46,16 @@ async function main() {
             AND column_name = 'repo_full_name'
         ) AS exists
       `)
-    ).rows[0]?.exists ?? false;
-    const tableExists = (
-      await pool.query<{ exists: boolean }>(`
+      ).rows[0]?.exists ?? false;
+    const tableExists =
+      (
+        await pool.query<{ exists: boolean }>(`
         SELECT EXISTS (
           SELECT 1 FROM information_schema.tables
           WHERE table_schema = 'public' AND table_name = 'drift_snapshots'
         ) AS exists
       `)
-    ).rows[0]?.exists ?? false;
+      ).rows[0]?.exists ?? false;
     console.log(`[agent_findings.repo_full_name] exists=${columnExists}`);
     console.log(`[public.drift_snapshots] exists=${tableExists}`);
 
@@ -76,17 +78,18 @@ async function main() {
       .filter((s) => s.length > 0)) {
       await pool.query(stmt);
     }
-    const tracked = (
-      await pool.query<{ exists: boolean }>(
-        "SELECT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE hash = $1) AS exists",
-        [hash],
-      )
-    ).rows[0]?.exists ?? false;
+    const tracked =
+      (
+        await pool.query<{ exists: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE hash = $1) AS exists",
+          [hash],
+        )
+      ).rows[0]?.exists ?? false;
     if (!tracked) {
-      await pool.query("INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)", [
-        hash,
-        entry.when,
-      ]);
+      await pool.query(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+        [hash, entry.when],
+      );
     }
     console.log("done.");
   } finally {

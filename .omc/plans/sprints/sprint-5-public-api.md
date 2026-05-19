@@ -4,7 +4,7 @@
 
 ## Goal
 
-Expose AntFleet's code-quality data layer as a stable, paginated, public JSON API. Downstream consumers (third-party dashboards, ecosystem watchers, agent-operator tooling, eventual Liquid Dune dashboards) become *downstream of our data layer*. Owning the canonical data shape is the long-term moat.
+Expose AntFleet's code-quality data layer as a stable, paginated, public JSON API. Downstream consumers (third-party dashboards, ecosystem watchers, agent-operator tooling, eventual Liquid Dune dashboards) become _downstream of our data layer_. Owning the canonical data shape is the long-term moat.
 
 ## Re-check gate
 
@@ -31,6 +31,7 @@ Public API = public contract. Once a downstream tool consumes a field, breaking 
 ### 1. [CLAUDE] API design doc
 
 Write `.omc/plans/sprints/sprint-5-api-contract.md` BEFORE any code. Includes:
+
 - Endpoint list with method, path, params.
 - Response schemas (JSON Schema or TypeScript types).
 - Pagination model (cursor-based, not offset).
@@ -39,6 +40,7 @@ Write `.omc/plans/sprints/sprint-5-api-contract.md` BEFORE any code. Includes:
 - Error response shape.
 
 Minimum endpoints to design:
+
 - `GET /api/v1/findings` — list, filterable by `agent_token_address`, `repo_full_name`, `severity`, `since`.
 - `GET /api/v1/findings/:findingId` — detail.
 - `GET /api/v1/agents` — list (merged hardcoded registry + `factory_launches`).
@@ -113,6 +115,7 @@ Output to .omc/codex-out/04-openapi/.
 ### 5. [CLAUDE] Public docs page
 
 `apps/web/app/api/page.tsx`. Plain documentation:
+
 - What the API is.
 - Link to `/api/v1/openapi.json`.
 - Curl examples for each endpoint.
@@ -165,6 +168,7 @@ openapi spec: antfleet.dev/api/v1/openapi.json
 ## On completion
 
 Update `.omc/plans/antfleet-runbook.md`:
+
 1. Mark Sprint 5 ✅ DONE with merged PR; move ▶ NEXT to Sprint 6.
 2. Append to §1 "Active surface":
    - Routes: `/api/v1/findings`, `/api/v1/findings/:id`, `/api/v1/agents`, `/api/v1/agents/:address`, `/api/v1/agents/:address/findings`, `/api/v1/agents/:address/drift`, `/api/v1/stats`, `/api` docs, `/api/v1/openapi.json`

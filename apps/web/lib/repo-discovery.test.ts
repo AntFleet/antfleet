@@ -104,7 +104,9 @@ describe("discoverRepoForAgent", () => {
     searchRepos.mockResolvedValueOnce({ data: { items: [repo("Foo/Agent-One")] } });
     searchRepos.mockResolvedValueOnce({ data: { items: [] } });
 
-    await expect(discoverRepoForAgent(launch({ tokenName: "Agent One", tokenSymbol: "ONE" }))).resolves.toEqual({
+    await expect(
+      discoverRepoForAgent(launch({ tokenName: "Agent One", tokenSymbol: "ONE" })),
+    ).resolves.toEqual({
       repo: "foo/agent-one",
       method: "github_search",
     });
@@ -122,7 +124,9 @@ describe("discoverRepoForAgent", () => {
       }),
     );
 
-    await expect(discoverRepoForAgent(launch({ tokenName: "Agent", tokenSymbol: "AG" }))).resolves.toEqual({
+    await expect(
+      discoverRepoForAgent(launch({ tokenName: "Agent", tokenSymbol: "AG" })),
+    ).resolves.toEqual({
       repo: null,
       method: null,
     });
@@ -130,7 +134,9 @@ describe("discoverRepoForAgent", () => {
 
   it("discovers the autonomopoly fixture shape", async () => {
     readContract.mockRejectedValue(new Error("revert"));
-    searchRepos.mockResolvedValueOnce({ data: { items: [repo("Liquid-Protocol-Ops/agent-autonomopoly")] } });
+    searchRepos.mockResolvedValueOnce({
+      data: { items: [repo("Liquid-Protocol-Ops/agent-autonomopoly")] },
+    });
     searchRepos.mockResolvedValueOnce({ data: { items: [] } });
 
     await expect(

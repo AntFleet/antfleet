@@ -6,7 +6,7 @@
 
 ---
 
-```
+````
 /omc-plan
 
 # Responsible-disclosure PRs for AntFleet-flagged findings in aaronjmars/aeon
@@ -101,9 +101,10 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
 - Happy to revise the patch to match your project conventions if requested.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-```
+````
 
 ### Tone
+
 - Strictly courteous. Maintainer's project tagline is "no approval loops, no
   babysitting" — they may be philosophically resistant to gated review.
   Frame each PR as "FYI, the agreement gate flagged this; here's a patch in
@@ -112,6 +113,7 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
 - No claims about AntFleet capabilities beyond what's directly relevant.
 
 ### Safety
+
 - Do NOT push to `aaronjmars/aeon` directly (you don't have rights anyway).
 - Do NOT force-push, even on your own fork branches.
 - Do NOT modify `antfleet/aeon-bench`'s main branch — branches only.
@@ -125,6 +127,7 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
 ### Critical batch (first PRs — open these only)
 
 #### Finding 1: Unauthenticated GitHub Actions trigger
+
 - Upstream PR: aaronjmars/aeon#158 (merged 2026-05-06)
 - File: `dashboard/app/api/skills/[name]/run/route.ts:11-18`
 - Finding: "Unauthenticated endpoint can trigger GitHub Actions via gh CLI"
@@ -136,6 +139,7 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
   significantly and may need to be raised as an issue first instead of a PR.
 
 #### Finding 2: Missing auth on secrets API
+
 - Upstream PR: aaronjmars/aeon#150 (merged 2026-05-03)
 - File: `dashboard/app/api/secrets/route.ts:59-119`
 - Finding: "Missing authentication/authorization on secrets API exposes credentials"
@@ -146,6 +150,7 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
   (#150 and #169) so the maintainer's mental model may keep them separate.
 
 #### Finding 3: Missing auth on secret-management endpoint
+
 - Upstream PR: aaronjmars/aeon#169 (merged 2026-05-14)
 - File: `dashboard/app/api/secrets/route.ts:95-145`
 - Finding: "Missing authentication/authorization on secret-management endpoint"
@@ -156,6 +161,7 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
   include Finding 3's range, OR vice versa.
 
 ### Out of scope for this prompt
+
 - The 9 High-severity bugs. Decide after Critical batch lands or gets feedback.
 - The 13 Medium and 2 Low findings.
 - Any PR to the VVVKernel Venice integration (aaronjmars/aeon#180 — closed
@@ -171,9 +177,9 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
    c. Inspect related dashboard files for the auth convention used elsewhere
    d. Design the minimal fix
    e. Present the fix plan + diff to the user; wait for explicit approval
-      before pushing or opening the PR
+   before pushing or opening the PR
    f. On approval: branch on antfleet/aeon-bench fork (`disclosure/<slug>`),
-      commit, push, open PR to aaronjmars/aeon:main with the body template
+   commit, push, open PR to aaronjmars/aeon:main with the body template
    g. Record the PR URL
 3. **At end:** report PRs opened, PRs skipped (with reason), any
    open question for the user.
@@ -194,6 +200,7 @@ scoped fix. Acknowledge alternative approaches and explain the choice.>
 ## Handoff
 
 When done, report:
+
 - PRs opened: list of URLs
 - PRs skipped: list with one-line reason each
 - Any unresolved questions for the user
@@ -201,6 +208,7 @@ When done, report:
   proposing a 200-line auth scaffold, that's a multi-hour review for the
   maintainer; that's signal that the PR is too big and probably shouldn't
   have been opened)
+
 ```
 
 ---
@@ -225,3 +233,4 @@ When done, report:
   (visible from recent commit activity), wait a day or two.
 - Do not run this in parallel with other AntFleet work that touches the
   bench repo — branch namespace is shared.
+```

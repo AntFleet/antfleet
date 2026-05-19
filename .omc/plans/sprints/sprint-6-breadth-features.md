@@ -87,6 +87,7 @@ Output to .omc/codex-out/02-leaderboard-page/.
 `apps/web/lib/fork-detection.ts`. Touches repo content analysis — Claude owns.
 
 Approach:
+
 - For each `factory_launches` row with `repo_full_name` set, fetch file tree via `gh api repos/<owner>/<repo>/git/trees/HEAD?recursive=1`.
 - Compute file-path Jaccard against autonomopoly (canonical base).
 - If overlap >50%: classify as fork.
@@ -97,6 +98,7 @@ Approach:
   - Identity Jaccard distance from autonomopoly's `identity.autonomopoly.json`.
 
 Store in new table `agent_forks`:
+
 ```
   agent_token_address text pk,
   base_agent_token_address text not null,
@@ -135,10 +137,12 @@ Output to .omc/codex-out/04-forks-page/.
 `apps/web/lib/finding-patterns.ts`. Pattern detection — Claude owns.
 
 Approach:
+
 - Group `agent_findings` by normalized `title` (lowercase, stripped of agent-specific tokens like names, addresses, paths).
 - For each pattern: count distinct agents affected, list them.
 
 Store in `finding_patterns` table:
+
 ```
   pattern_id text pk,
   normalized_title text,
@@ -174,6 +178,7 @@ Output to .omc/codex-out/06-patterns-page/.
 Three new draft paths:
 
 **a. New top-of-leaderboard agent:**
+
 ```
 TODO(voice)
 
@@ -184,6 +189,7 @@ antfleet.dev/agents/leaderboard
 ```
 
 **b. New fork detected:**
+
 ```
 TODO(voice)
 
@@ -194,6 +200,7 @@ antfleet.dev/agents/forks
 ```
 
 **c. Finding pattern crosses threshold (≥3 agents):**
+
 ```
 TODO(voice)
 
@@ -236,6 +243,7 @@ Highest-payoff content in this entire runbook. Each fires automatically when its
 ## On completion
 
 Update `.omc/plans/antfleet-runbook.md`:
+
 1. Mark Sprint 6 ✅ DONE with merged PR.
 2. Append to §1 "Active surface":
    - Routes: `/agents/leaderboard`, `/agents/forks`, `/findings/patterns`

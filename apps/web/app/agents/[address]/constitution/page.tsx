@@ -7,10 +7,16 @@ export const dynamic = "force-dynamic";
 
 type RouteParams = { address: string };
 
-export async function generateMetadata({ params }: { params: Promise<RouteParams> }): Promise<Metadata> {
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<RouteParams>;
+}): Promise<Metadata> {
   const { address } = await params;
   const agent = findAgentByAddress(address);
-  return { title: agent === null ? "AntFleet · Agent not found" : `AntFleet · ${agent.name} constitution` };
+  return {
+    title: agent === null ? "AntFleet · Agent not found" : `AntFleet · ${agent.name} constitution`,
+  };
 }
 
 export default async function ConstitutionPage({ params }: { params: Promise<RouteParams> }) {
@@ -21,7 +27,10 @@ export default async function ConstitutionPage({ params }: { params: Promise<Rou
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-16">
-      <a href={`/agents/${agent.address}`} className="font-mono text-xs text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)]">
+      <a
+        href={`/agents/${agent.address}`}
+        className="font-mono text-xs text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)]"
+      >
         agent / {agent.name}
       </a>
       <div className="mt-6 flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
@@ -55,7 +64,12 @@ export default async function ConstitutionPage({ params }: { params: Promise<Rou
         <div className="mt-10 grid gap-4 md:grid-cols-2">
           {/* TODO when N>=2 agents: add a cross-agent constitution diff view. */}
           {Object.entries(identity.parsed).map(([key, value]) => (
-            <ConstitutionCard key={key} name={key} value={value} emphasized={key === "what_the_agent_will_not_do"} />
+            <ConstitutionCard
+              key={key}
+              name={key}
+              value={value}
+              emphasized={key === "what_the_agent_will_not_do"}
+            />
           ))}
         </div>
       )}
@@ -80,10 +94,14 @@ function ConstitutionCard({
           : "border-[var(--color-line)] bg-white text-[var(--color-ink)]"
       }`}
     >
-      <h2 className={`font-mono text-xs uppercase tracking-widest ${emphasized ? "text-white/70" : "text-[var(--color-ink-subtle)]"}`}>
+      <h2
+        className={`font-mono text-xs uppercase tracking-widest ${emphasized ? "text-white/70" : "text-[var(--color-ink-subtle)]"}`}
+      >
         {name}
       </h2>
-      <pre className={`mt-4 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed ${emphasized ? "text-white" : "text-[var(--color-ink-muted)]"}`}>
+      <pre
+        className={`mt-4 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed ${emphasized ? "text-white" : "text-[var(--color-ink-muted)]"}`}
+      >
         {formatValue(value)}
       </pre>
     </section>

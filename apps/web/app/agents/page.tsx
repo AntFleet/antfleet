@@ -22,10 +22,7 @@ export const metadata: Metadata = {
 };
 
 export default async function AgentsIndexPage() {
-  const [agents, factoryStubs] = await Promise.all([
-    loadAgentIndex(),
-    loadFactoryLaunchIndex(),
-  ]);
+  const [agents, factoryStubs] = await Promise.all([loadAgentIndex(), loadFactoryLaunchIndex()]);
   const now = new Date();
   const totalCount = agents.length + factoryStubs.length;
 
@@ -44,13 +41,7 @@ export default async function AgentsIndexPage() {
   );
 }
 
-function FactoryStubsList({
-  rows,
-  now,
-}: {
-  rows: FactoryLaunchIndexRow[];
-  now: Date;
-}) {
+function FactoryStubsList({ rows, now }: { rows: FactoryLaunchIndexRow[]; now: Date }) {
   return (
     <section className="pb-20">
       <ContentWrap>
@@ -59,8 +50,8 @@ function FactoryStubsList({
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
           On-chain agent deployments AntFleet detected via the Liquid Protocol factory. No
-          investigative findings on file yet — the pre-launch benchmark fires automatically once
-          the repo is discovered.
+          investigative findings on file yet — the pre-launch benchmark fires automatically once the
+          repo is discovered.
         </p>
         <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
           {rows.map((r) => (

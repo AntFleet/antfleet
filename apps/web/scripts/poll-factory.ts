@@ -46,12 +46,13 @@ const TOKEN_CREATED_ABI = parseAbi([
 ]);
 
 // Verified at script start against viem's ABI encoder so selector drift fails loudly.
-const TOKEN_CREATED_TOPIC =
-  "0x9299d1d1a88d8e1abdc591ae7a167a6bc63a8f17d695804e9091ee33aa89fb67";
+const TOKEN_CREATED_TOPIC = "0x9299d1d1a88d8e1abdc591ae7a167a6bc63a8f17d695804e9091ee33aa89fb67";
 
 const computedTopic = encodeEventTopics({ abi: TOKEN_CREATED_ABI, eventName: "TokenCreated" })[0];
 if (computedTopic !== TOKEN_CREATED_TOPIC) {
-  throw new Error(`TokenCreated topic mismatch: expected ${TOKEN_CREATED_TOPIC}, got ${computedTopic}`);
+  throw new Error(
+    `TokenCreated topic mismatch: expected ${TOKEN_CREATED_TOPIC}, got ${computedTopic}`,
+  );
 }
 
 type Db = ReturnType<typeof drizzle>;
@@ -77,7 +78,10 @@ function requireDatabaseUrl(): string {
 }
 
 async function readCursor(db: Db, key: string): Promise<bigint | null> {
-  const rows = await db.select({ value: cronCursors.value }).from(cronCursors).where(eq(cronCursors.key, key));
+  const rows = await db
+    .select({ value: cronCursors.value })
+    .from(cronCursors)
+    .where(eq(cronCursors.key, key));
   const value = rows[0]?.value;
   return value === undefined ? null : BigInt(value);
 }
@@ -116,7 +120,10 @@ export async function pollFactoryOnce(): Promise<PollFactoryResult> {
     const toBlock = currentBlock > CONFIRMATION_DEPTH ? currentBlock - CONFIRMATION_DEPTH : 0n;
     const factoryDeployBlock = await getFactoryDeployBlock(db, client);
     const lastProcessed = await readCursor(db, LAST_PROCESSED_CURSOR_KEY);
-    const fromBlock = lastProcessed === null ? factoryDeployBlock : maxBigInt(lastProcessed + 1n, factoryDeployBlock);
+    const fromBlock =
+      lastProcessed === null
+        ? factoryDeployBlock
+        : maxBigInt(lastProcessed + 1n, factoryDeployBlock);
 
     if (fromBlock > toBlock) {
       logInfo("factory_poll.tick", {
@@ -207,7 +214,10 @@ function maxBigInt(a: bigint, b: bigint): bigint {
   return a > b ? a : b;
 }
 
-export async function discoverFactoryDeployBlock(client: BaseClient, address: Address): Promise<bigint> {
+export async function discoverFactoryDeployBlock(
+  client: BaseClient,
+  address: Address,
+): Promise<bigint> {
   const currentBlock = await client.getBlockNumber();
   const latestCode = await client.getCode({ address, blockNumber: currentBlock });
   if (latestCode === undefined || latestCode === "0x") {

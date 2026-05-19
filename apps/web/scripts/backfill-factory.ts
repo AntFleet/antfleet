@@ -38,12 +38,13 @@ const TOKEN_CREATED_ABI = parseAbi([
 ]);
 
 // SOURCE-OF-TRUTH: scripts/poll-factory.ts
-const TOKEN_CREATED_TOPIC =
-  "0x9299d1d1a88d8e1abdc591ae7a167a6bc63a8f17d695804e9091ee33aa89fb67";
+const TOKEN_CREATED_TOPIC = "0x9299d1d1a88d8e1abdc591ae7a167a6bc63a8f17d695804e9091ee33aa89fb67";
 
 const computedTopic = encodeEventTopics({ abi: TOKEN_CREATED_ABI, eventName: "TokenCreated" })[0];
 if (computedTopic !== TOKEN_CREATED_TOPIC) {
-  throw new Error(`TokenCreated topic mismatch: expected ${TOKEN_CREATED_TOPIC}, got ${computedTopic}`);
+  throw new Error(
+    `TokenCreated topic mismatch: expected ${TOKEN_CREATED_TOPIC}, got ${computedTopic}`,
+  );
 }
 
 type TokenCreatedLog = Awaited<ReturnType<BaseClient["getLogs"]>>[number] & {
@@ -66,7 +67,10 @@ function requireDatabaseUrl(): string {
 }
 
 async function readCursor(db: Db, key: string): Promise<bigint | null> {
-  const rows = await db.select({ value: cronCursors.value }).from(cronCursors).where(eq(cronCursors.key, key));
+  const rows = await db
+    .select({ value: cronCursors.value })
+    .from(cronCursors)
+    .where(eq(cronCursors.key, key));
   const value = rows[0]?.value;
   return value === undefined ? null : BigInt(value);
 }
@@ -198,12 +202,16 @@ async function main(): Promise<void> {
         }
 
         // eslint-disable-next-line no-console
-        console.log(`[${chunkFrom}-${chunkTo}] scanned=${logs.length} inserted=${insertedThisChunk}`);
+        console.log(
+          `[${chunkFrom}-${chunkTo}] scanned=${logs.length} inserted=${insertedThisChunk}`,
+        );
       }
     }
 
     // eslint-disable-next-line no-console
-    console.log(`done — chunks=${chunks}, scanned=${scanned}, inserted=${inserted}, elapsed=${Date.now() - t0}ms`);
+    console.log(
+      `done — chunks=${chunks}, scanned=${scanned}, inserted=${inserted}, elapsed=${Date.now() - t0}ms`,
+    );
   } finally {
     await pool.end();
   }

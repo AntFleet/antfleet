@@ -124,7 +124,9 @@ describe("pollFactoryOnce", () => {
     state.getBlockNumber.mockReset().mockResolvedValue(5_012n);
     state.getCode.mockReset().mockResolvedValue("0x1234");
     state.getBlock.mockReset().mockImplementation(({ blockNumber }: { blockNumber: bigint }) => {
-      return Promise.resolve(state.blocks.get(blockNumber) ?? { timestamp: 1_800_000_000n + blockNumber });
+      return Promise.resolve(
+        state.blocks.get(blockNumber) ?? { timestamp: 1_800_000_000n + blockNumber },
+      );
     });
     process.env["DATABASE_URL"] = "postgres://example";
   });

@@ -160,6 +160,7 @@ gh + RPC clients.
 `apps/web/scripts/run-prelaunch.ts`. Touches `run-roast.ts` state machine — Claude owns.
 
 Logic:
+
 - Poll `factory_launches WHERE prelaunch_status='pending' ORDER BY deployed_at ASC`.
 - For each:
   1. If `repo_full_name` null: call `discoverRepoForAgent`. Success: persist repo + method + discovered_at. Null: set `prelaunch_status='repo_not_found'`, skip.
@@ -175,6 +176,7 @@ Cron: every 10min (match existing cron pattern under `apps/web/app/api/cron/`). 
 Extend `apps/web/lib/post-drafts.ts`. On these transitions, write `.omc/state/posts/factory-<ts>-<symbol>.md`:
 
 **a. New `factory_launches` row inserted:**
+
 ```
 TODO(voice)
 
@@ -185,6 +187,7 @@ antfleet is looking for the repo →
 ```
 
 **b. `repo_discovered_at` set, `prelaunch_status=benchmarking`:**
+
 ```
 TODO(voice)
 
@@ -193,6 +196,7 @@ antfleet is benchmarking inside the deposit window →
 ```
 
 **c. `prelaunch_status=published`:**
+
 ```
 TODO(voice)
 
@@ -235,6 +239,7 @@ Claude writes — voice-sensitive.
 ## On completion
 
 Update `.omc/plans/antfleet-runbook.md`:
+
 1. Mark Sprint 3 ✅ DONE with the merged PR number; move ▶ NEXT to Sprint 4.
 2. Append to §1 "Active surface":
    - Tables: `factory_launches`, `cron_cursors`

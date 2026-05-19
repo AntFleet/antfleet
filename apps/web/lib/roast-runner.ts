@@ -126,7 +126,9 @@ export function realRunnerDeps(): RoastRunnerDeps {
   };
 }
 
-export async function runOneRoast(deps: RoastRunnerDeps = realRunnerDeps()): Promise<RoastRunResult> {
+export async function runOneRoast(
+  deps: RoastRunnerDeps = realRunnerDeps(),
+): Promise<RoastRunResult> {
   const since24h = new Date(deps.now().getTime() - DAY_MS);
   const publishedCount = await deps.countPublishedSince(since24h);
   if (publishedCount > 0) {
@@ -316,10 +318,7 @@ async function fetchFileContents(
   }
 }
 
-function buildFindingRows(
-  submission: RoastSubmission,
-  findings: Finding[],
-): NewAgentFinding[] {
+function buildFindingRows(submission: RoastSubmission, findings: Finding[]): NewAgentFinding[] {
   return findings.map((f, idx) => {
     const findingId = `roast-${submission.id}-${idx + 1}`;
     return {

@@ -87,9 +87,11 @@ fix work entirely to the maintainer's discretion.
 For each, the AntFleet receipt URL is the antfleet[bot] comment on the
 corresponding bench PR. To get the URL for a given bench PR N:
 ```
+
 gh api repos/antfleet/aeon-bench/issues/<N>/comments \
-  --jq '.[] | select(.user.login=="antfleet[bot]") | .html_url' | head -1
-```
+ --jq '.[] | select(.user.login=="antfleet[bot]") | .html_url' | head -1
+
+````
 The mapping: bench #1 = upstream #158 = C1; bench #3 = upstream #150 = C2;
 bench #25 = upstream #169 = C3.
 
@@ -171,7 +173,7 @@ Happy to send focused PRs on any subset if useful — just reply.
   not by AntFleet operators.
 
 — AntFleet
-```
+````
 
 ## Workflow
 
@@ -185,10 +187,10 @@ Happy to send focused PRs on any subset if useful — just reply.
    "likely fixed" and omit from the issue body.
 4. Compose the full issue body using the template
 5. Present the EXACT title + body to the user. Title: `"AntFleet two-model
-   review surfaced 12 findings on recent merged PRs"`. Wait for explicit
+review surfaced 12 findings on recent merged PRs"`. Wait for explicit
    approval.
 6. On approval: `gh issue create --repo aaronjmars/aeon --title "<TITLE>"
-   --body-file <PATH_TO_TEMP_BODY_FILE>`. Use `--body-file`, not `--body`,
+--body-file <PATH_TO_TEMP_BODY_FILE>`. Use `--body-file`, not `--body`,
    to avoid shell-quote mangling.
 7. Capture the returned issue URL; report in handoff.
 
@@ -207,6 +209,7 @@ Happy to send focused PRs on any subset if useful — just reply.
 ## Handoff
 
 When done, report:
+
 - Issue URL (or "user rejected the draft" / "all findings appeared already
   fixed in current main")
 - Findings omitted (with one-line reason each)
@@ -215,6 +218,7 @@ When done, report:
 - Suggested follow-up: if the maintainer responds positively, the
   PR-version prompt (`aeon-disclosure-prs-prompt.md`) is the natural
   next step.
+
 ```
 
 ---
@@ -235,3 +239,4 @@ When done, report:
 - Today's date (2026-05-19) is fresh — aaronjmars's last PR activity was
   2026-05-17. Probably a fine time to file. Avoid filing on weekends if
   you can — Tuesday/Wednesday GitHub mornings see best response rates.
+```

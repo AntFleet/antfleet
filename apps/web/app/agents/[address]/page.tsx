@@ -92,17 +92,10 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
   );
 }
 
-function FactoryLaunchStubPage({
-  stub,
-  now,
-}: {
-  stub: FactoryLaunchAgentDetail;
-  now: Date;
-}) {
+function FactoryLaunchStubPage({ stub, now }: { stub: FactoryLaunchAgentDetail; now: Date }) {
   const { launch, agentName, agentTokenAddress } = stub;
   const deployRelative = formatRelativeTime(now, launch.deployedAt);
-  const repoUrl =
-    launch.repoFullName !== null ? `https://github.com/${launch.repoFullName}` : null;
+  const repoUrl = launch.repoFullName !== null ? `https://github.com/${launch.repoFullName}` : null;
   const statusLabel = (() => {
     switch (launch.prelaunchStatus) {
       case "pending":
@@ -128,11 +121,13 @@ function FactoryLaunchStubPage({
         </p>
         <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug">
           {agentName}
-          {launch.tokenName !== null && launch.tokenSymbol !== null && launch.tokenName !== launch.tokenSymbol && (
-            <span className="ml-3 font-mono text-base text-[var(--color-ink-muted)]">
-              ({launch.tokenName})
-            </span>
-          )}
+          {launch.tokenName !== null &&
+            launch.tokenSymbol !== null &&
+            launch.tokenName !== launch.tokenSymbol && (
+              <span className="ml-3 font-mono text-base text-[var(--color-ink-muted)]">
+                ({launch.tokenName})
+              </span>
+            )}
         </h1>
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <Badge>auto-stub</Badge>

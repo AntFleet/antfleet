@@ -18,15 +18,25 @@ type RepoRef = { owner: string; repo: string; fullName: string };
 type BaseClient = ReturnType<typeof createPublicClient<ReturnType<typeof http>, typeof base>>;
 
 const TOKEN_URI_ABIS = [
-  { functionName: "tokenURI", abi: parseAbi(["function tokenURI(uint256) view returns (string)"]), args: [0n] },
-  { functionName: "metadataURI", abi: parseAbi(["function metadataURI() view returns (string)"]), args: [] },
+  {
+    functionName: "tokenURI",
+    abi: parseAbi(["function tokenURI(uint256) view returns (string)"]),
+    args: [0n],
+  },
+  {
+    functionName: "metadataURI",
+    abi: parseAbi(["function metadataURI() view returns (string)"]),
+    args: [],
+  },
   { functionName: "uri", abi: parseAbi(["function uri() view returns (string)"]), args: [] },
 ] as const;
 
 const GITHUB_REPO_URL_RE = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/?$/i;
 const FETCH_TIMEOUT_MS = 5_000;
 
-export async function discoverRepoForAgent(launch: FactoryLaunchLike): Promise<RepoDiscoveryResult> {
+export async function discoverRepoForAgent(
+  launch: FactoryLaunchLike,
+): Promise<RepoDiscoveryResult> {
   if (!isAddress(launch.tokenAddress)) {
     throw new Error(`Malformed tokenAddress: ${launch.tokenAddress}`);
   }
@@ -57,7 +67,10 @@ function makeOctokit(): Octokit {
   return new Octokit(auth === undefined || auth.length === 0 ? {} : { auth });
 }
 
-async function discoverViaTokenUri(tokenAddress: Address, octokit: Octokit): Promise<string | null> {
+async function discoverViaTokenUri(
+  tokenAddress: Address,
+  octokit: Octokit,
+): Promise<string | null> {
   try {
     const client = createPublicClient({
       chain: base,
@@ -75,7 +88,10 @@ async function discoverViaTokenUri(tokenAddress: Address, octokit: Octokit): Pro
   }
 }
 
-async function readFirstMetadataUri(client: BaseClient, tokenAddress: Address): Promise<string | null> {
+async function readFirstMetadataUri(
+  client: BaseClient,
+  tokenAddress: Address,
+): Promise<string | null> {
   for (const candidate of TOKEN_URI_ABIS) {
     try {
       const value = await client.readContract({
@@ -150,7 +166,10 @@ async function isPublicGithubRepo(octokit: Octokit, ref: RepoRef): Promise<boole
   }
 }
 
-async function discoverViaGithubSearch(launch: FactoryLaunchLike, octokit: Octokit): Promise<string | null> {
+async function discoverViaGithubSearch(
+  launch: FactoryLaunchLike,
+  octokit: Octokit,
+): Promise<string | null> {
   try {
     const queries = buildSearchQueries(launch);
     if (queries.length === 0) return null;
@@ -175,7 +194,8 @@ async function discoverViaGithubSearch(launch: FactoryLaunchLike, octokit: Octok
 
     const structurallyValid = [];
     for (const repo of repos.values()) {
-      if (await passesStructuralCheck(octokit, repo)) structurallyValid.push(repo.full_name.toLowerCase());
+      if (await passesStructuralCheck(octokit, repo))
+        structurallyValid.push(repo.full_name.toLowerCase());
     }
     return structurallyValid.length === 1 ? structurallyValid[0] : null;
   } catch {

@@ -55,11 +55,7 @@ export async function writeRoastPostDraft(
     input.topSeverity !== null
       ? `${input.findingsCount} findings · top severity: ${input.topSeverity}`
       : `${input.findingsCount} findings`;
-  const lines = [
-    sevLine,
-    input.topFindingTitle ?? "",
-    input.pageUrl,
-  ];
+  const lines = [sevLine, input.topFindingTitle ?? "", input.pageUrl];
   if (input.submitterHandle !== null && input.submitterHandle.trim().length > 0) {
     const handle = input.submitterHandle.replace(/^@+/, "");
     lines.push(`submitted by @${handle}`);

@@ -8,17 +8,18 @@
 **Date drafted:** 2026-05-18
 **Revised:** 2026-05-18 — added Phase -1 (aeon-bench mirror) which resolves the R2 corpus-size mismatch by producing a real 30+ PR public benchmark
 **Revised again:** 2026-05-18 (post-Phase-1 amendments, pre-Phase-2):
-  - **Corpus scope: 15/30** — baseline production-app stall left 15 PRs without baseline receipts; Phase 2 runs only on the 15 with baselines (see [`webhook-queuing-fix-prompt.md`](./webhook-queuing-fix-prompt.md))
-  - **Dropped dogfood supplement** — synthetic planted-bug corpus dilutes the narrative; aeon-bench only
-  - **Skip baseline re-runs in Phase 2** — antfleet[bot] receipts on aeon-bench PRs ARE the baseline; harness reads them via markdown parser instead of re-calling Opus+GPT-5
-  - **Model trio refined** — kept best-in-class qwen3-coder-480b; replaced stale `llama-3.3-70b` → `kimi-k2-6` (best agentic open model, trending); renamed `venice-deepseek-r1` → `venice-deepseek-v4` for slug honesty (the registered slug is already `deepseek-v4-pro`)
-  - **Cost: ~$5-10 realistic** (down from $75-95 previously stated, which was double-buffered)
+
+- **Corpus scope: 15/30** — baseline production-app stall left 15 PRs without baseline receipts; Phase 2 runs only on the 15 with baselines (see [`webhook-queuing-fix-prompt.md`](./webhook-queuing-fix-prompt.md))
+- **Dropped dogfood supplement** — synthetic planted-bug corpus dilutes the narrative; aeon-bench only
+- **Skip baseline re-runs in Phase 2** — antfleet[bot] receipts on aeon-bench PRs ARE the baseline; harness reads them via markdown parser instead of re-calling Opus+GPT-5
+- **Model trio refined** — kept best-in-class qwen3-coder-480b; replaced stale `llama-3.3-70b` → `kimi-k2-6` (best agentic open model, trending); renamed `venice-deepseek-r1` → `venice-deepseek-v4` for slug honesty (the registered slug is already `deepseek-v4-pro`)
+- **Cost: ~$5-10 realistic** (down from $75-95 previously stated, which was double-buffered)
 
 ---
 
 ## Requirements summary
 
-Validate whether Venice-hosted open models (Qwen 2.5 Coder 32B, DeepSeek R1, Llama 3.3 70B) can add real signal to AntFleet's unanimous-agreement gate alongside Claude Opus 4.7 and GPT-5. The output is a publishable lab artifact regardless of outcome (GOOD / MIXED / BAD), with pre-registered methodology committed *before* any code lands.
+Validate whether Venice-hosted open models (Qwen 2.5 Coder 32B, DeepSeek R1, Llama 3.3 70B) can add real signal to AntFleet's unanimous-agreement gate alongside Claude Opus 4.7 and GPT-5. The output is a publishable lab artifact regardless of outcome (GOOD / MIXED / BAD), with pre-registered methodology committed _before_ any code lands.
 
 ---
 
@@ -42,18 +43,19 @@ The actual name→implementation lookup is `src/provider.ts:32-49` `providerByNa
 
 **Resolution (Phase -1):** build a new public mirror `antfleet/aeon-bench` of `aaronjmars/aeon` (366 stars, MIT-licensed, 179 merged PRs, TypeScript-primary, active daily, already Venice-aware via VVV skills). Cherry-pick 30+ PRs across categories using the same replay convention `agent-autonomopoly-bench` already uses. This produces real PR diffs with public per-PR receipts and lets the brief's **original** per-PR metric definitions stand without adaptation. Phase -1 details are in the Implementation Steps section below.
 
-| Brief term | Definition (post Phase -1) |
-|---|---|
-| "per PR" | one bench-repo PR, reviewed as its diff against the mirror's main |
-| "≥30 PRs" | ≥30 cherry-picked PRs in `antfleet/aeon-bench`, mix of feature/fix/security/chore |
-| `frontier_recall` | per PR: % of baseline (Opus+GPT-5 unanimous) findings the Venice model also flags |
-| `venice_precision` | per PR: % of Venice-only findings rated "real" by manual review (sampled from `marginal-contribution-shortlist.md`) |
-| `marginal_contribution` | count of real bugs caught only because Venice was in the fleet, summed across all PRs |
-| `cost_per_agreed_finding` | Σ(per-call USD from `src/spike/cost.ts`) ÷ agreed-finding count, per Venice model |
+| Brief term                | Definition (post Phase -1)                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| "per PR"                  | one bench-repo PR, reviewed as its diff against the mirror's main                                                   |
+| "≥30 PRs"                 | ≥30 cherry-picked PRs in `antfleet/aeon-bench`, mix of feature/fix/security/chore                                   |
+| `frontier_recall`         | per PR: % of baseline (Opus+GPT-5 unanimous) findings the Venice model also flags                                   |
+| `venice_precision`        | per PR: % of Venice-only findings rated "real" by manual review (sampled from `marginal-contribution-shortlist.md`) |
+| `marginal_contribution`   | count of real bugs caught only because Venice was in the fleet, summed across all PRs                               |
+| `cost_per_agreed_finding` | Σ(per-call USD from `src/spike/cost.ts`) ÷ agreed-finding count, per Venice model                                   |
 
 **Corpus scope (post-decision 2026-05-18):** aeon-bench only. The earlier plan included `examples/dogfood/` as a ground-truth-labeled supplement for automated precision; dropped because the brief explicitly targets aeon as the corpus, and synthetic-planted-bug data dilutes the narrative. All precision is manually rated from the marginal-contribution shortlist.
 
 **Decision gates (per-PR, original brief thresholds, rescaled to 15-PR corpus):**
+
 - **GOOD:** any Venice model achieves ≥60% frontier_recall (averaged across PRs) AND ≥2 marginal_contribution across the 15-PR corpus (= ≥1 per 10 PRs at the brief's original rate, rounded up for the smaller sample)
 - **MIXED:** 40–60% recall with non-zero marginal_contribution
 - **BAD:** <40% recall AND ≈0 marginal_contribution
@@ -67,6 +69,7 @@ The actual name→implementation lookup is `src/provider.ts:32-49` `providerByNa
 `src/providers/openai.ts` uses OpenAI strict `response_format: { type: "json_schema", schema, strict: true }`. Venice-hosted open models almost certainly **don't** honor that mode (this is exactly why `openrouter.ts:82-122` falls back to `response_format: { type: "json_object" }` with the schema embedded in the system prompt, plus a fence-stripping parser at `openrouter.ts:171-178`).
 
 **Resolution:** `src/providers/venice.ts` is a near-copy of `openrouter.ts` with:
+
 - `BASE_URL = "https://api.venice.ai/api/v1"`
 - env key `VENICE_API_KEY`
 - no `HTTP-Referer` / `X-Title` headers (those are OpenRouter-specific)
@@ -106,6 +109,7 @@ The actual name→implementation lookup is `src/provider.ts:32-49` `providerByNa
 **Why this work happens first:** the spike's pre-registration in `SPIKE.md` (Phase 0) needs to name the exact PR set being evaluated and link to the bench repo. Building the bench after pre-registering would be backwards.
 
 **Step -1.0 — Verify GitHub identity (BLOCKING — runs before any write).** AntFleet writes must go through `antfleet-ops`, not the operator's personal `Augustas11` account.
+
 - `gh auth status` → confirm active account line shows `antfleet-ops`. If it shows `Augustas11`, run `gh auth switch --user antfleet-ops` and re-verify.
 - Set the antfleet-repo commit identity so commits LINK to the antfleet-ops GitHub user (verified id 285575208). The `ops@antfleet.dev` address used in some legacy bench-repo commits is NOT linked to any GitHub user — use the noreply email instead:
   ```bash
@@ -118,6 +122,7 @@ The actual name→implementation lookup is `src/provider.ts:32-49` `providerByNa
 **Step -1.1 — Fork aeon into antfleet org.** `gh repo fork aaronjmars/aeon --org antfleet --fork-name aeon-bench --clone=false --default-branch-only`. This matches the existing convention (`antfleet/agent-autonomopoly-bench` is also a true fork of `Liquid-Protocol-Ops/agent-autonomopoly`). The AntFleet GitHub App (org install ID 133030324, `repository_selection: "all"`) automatically covers any new repo or fork in the antfleet org — no per-repo install step needed. Then add a `BENCHMARK.md` modeled exactly on `antfleet/agent-autonomopoly-bench/BENCHMARK.md` (fetch via `gh api repos/antfleet/agent-autonomopoly-bench/contents/BENCHMARK.md` for the template; preserve the "not maintained" + "not affiliated" disclaimers and the "to stop being benchmarked, open an issue on antfleet/antfleet" opt-out line).
 
 **Step -1.2 — Pick the PR shortlist (30 PRs).** Cherry-pick from `aaronjmars/aeon`'s 162 merged PRs across these categories for reviewer-breadth coverage:
+
 - 5 security/hardening: must include **#158** (`fix(dashboard/skills/run): use execFileSync to harden against shell injection`); find 4 more via `gh pr list --repo aaronjmars/aeon --search "security OR injection OR sanitize OR escape OR vulnerab"`
 - 10 feature PRs across subsystems: skills, dashboard, CI. Candidates from recent activity: #180 (VVVKernel Venice — extra resonance for the spike), #179, #176, #175, #168, #165, #162, #160, #157, #152
 - 5 dependabot/chore PRs (calibration anchors — expected ≈0 findings; tests false-positive rate)
@@ -126,6 +131,7 @@ The actual name→implementation lookup is `src/provider.ts:32-49` `providerByNa
 Persist the final shortlist as `.spike/venice-2026-05/pr-shortlist.json` with `[{ upstream_pr, upstream_sha, category, expected_signal }]` BEFORE Phase 0 commits, so SPIKE.md can reference it.
 
 **Step -1.3 — Replay each PR.** For each entry in the shortlist, mirror the replay procedure from `agent-autonomopoly-bench/BENCHMARK.md`:
+
 ```bash
 git fetch upstream <upstream-sha>
 git checkout -b bench/<short-sha> <upstream-sha>^   # branch from parent
@@ -139,6 +145,7 @@ See [BENCHMARK.md](../blob/main/BENCHMARK.md).
 EOF
 )"
 ```
+
 Automate via a script (`scripts/build-aeon-bench.sh`) so the replay is reproducible. The script must be idempotent (skip if branch exists, skip if PR exists).
 
 **Step -1.4 — Let the production AntFleet GitHub App review each replay PR.** The AntFleet App is already org-wide on antfleet (verified: install 133030324, `repository_selection: "all"`), so no install action is needed — `antfleet[bot]` will post review comments automatically. Wait for it to complete on all 30 PRs — this is the baseline (anthropic+openai unanimous). Verify on `antfleet.dev/receipts` that the count increases.
@@ -156,6 +163,7 @@ Automate via a script (`scripts/build-aeon-bench.sh`) so the replay is reproduci
 **Step 0.2 — Branch.** `git checkout -b spike/venice-consensus`. Confirm `main` is the upstream.
 
 **Step 0.3 — Write `SPIKE.md`** at repo root containing:
+
 - Goal (one paragraph, lifted from brief)
 - Models under test (with verified Venice slugs from 0.1)
 - Corpus statement: the 30 cherry-picked PRs in `antfleet/aeon-bench` (link to repo + commit-pinned `pr-shortlist.json` SHA from Phase -1) as the primary corpus, plus `examples/dogfood/` as the ground-truth-labeled supplement (5 planted bugs at `scripts/spike.ts:82-126`)
@@ -171,12 +179,14 @@ Automate via a script (`scripts/build-aeon-bench.sh`) so the replay is reproduci
 ### Phase 1 — Venice provider
 
 **Step 1.1 — Add `.env.example` entries** (`apps/web/.env.example` if web, repo-root `.env.example` actually exists):
+
 ```
 VENICE_API_KEY=
 VENICE_FALLBACK_MODEL=
 ```
 
 **Step 1.2 — Create `src/providers/venice.ts`.** Copy `src/providers/openrouter.ts` and adapt:
+
 - `BASE_URL = "https://api.venice.ai/api/v1"`
 - Remove `HTTP_REFERER`, `X_TITLE`, the `defaultHeaders` block
 - env key `VENICE_API_KEY`, fallback env `VENICE_FALLBACK_MODEL`
@@ -184,21 +194,26 @@ VENICE_FALLBACK_MODEL=
 - Export `extractVeniceContent` for tests (mirror `extractOpenRouterContent`).
 
 **Step 1.3 — Register in `src/provider.ts`.** Add the import and three named branches to `providerByName`:
+
 ```ts
 import { makeVeniceProvider } from "./providers/venice.js";
 // ...
-if (name === "venice-qwen-coder") return makeVeniceProvider("qwen-2.5-coder-32b", "venice-qwen-coder");
+if (name === "venice-qwen-coder")
+  return makeVeniceProvider("qwen-2.5-coder-32b", "venice-qwen-coder");
 if (name === "venice-deepseek-r1") return makeVeniceProvider("deepseek-r1", "venice-deepseek-r1");
-if (name === "venice-llama-70b")  return makeVeniceProvider("llama-3.3-70b", "venice-llama-70b");
+if (name === "venice-llama-70b") return makeVeniceProvider("llama-3.3-70b", "venice-llama-70b");
 ```
+
 Substitute the verified slugs from Step 0.1.
 
 **Step 1.4 — Add cost estimates to `src/spike/cost.ts`** (the brief forbids changes to `anthropic.ts`/`openai.ts` but not to cost.ts, and per-call cost is a hard requirement for `cost_per_agreed_finding`). Use Venice's published per-MTok prices; if not yet listed, use OpenRouter's price for the equivalent model as a stand-in and document the substitution. Approximate per-call:
+
 ```ts
 "venice-qwen-coder": 0.02,    // ~$0.50/MTok in, $1.50/MTok out × ~6k/2k chars
 "venice-deepseek-r1": 0.05,   // R1 is reasoning-heavy; conservative
 "venice-llama-70b": 0.03,
 ```
+
 Real-world calibration happens in Phase 2 from the actual token counts.
 
 **Step 1.5 — Tests.** Create `src/providers/venice.test.ts` and `src/providers/__fixtures__/venice-review-with-findings.json`, `venice-review-malformed.json`, `venice-review-fenced.json`. Mirror `src/providers/openai.test.ts:1-95` structure. Critical extra case: a fixture with a JSON response wrapped in `\`\`\`json … \`\`\`` to verify the fence-stripping path.
@@ -210,6 +225,7 @@ Real-world calibration happens in Phase 2 from the actual token counts.
 ### Phase 2 — Spike execution
 
 **Step 2.0 — Phase 1 amendments (commit on `spike/venice-consensus` before harness work).**
+
 - Rename provider `venice-llama-70b` → `venice-kimi-k2` in `src/provider.ts:providerByName` (slug: `kimi-k2-6`)
 - Rename provider `venice-deepseek-r1` → `venice-deepseek-v4` in `src/provider.ts:providerByName` (slug stays `deepseek-v4-pro`, just label honesty)
 - Update `src/spike/cost.ts`: drop `venice-llama-70b` entry, add `venice-kimi-k2: 0.05` (Kimi K2 pricing on Venice; calibrate after first call), rename `venice-deepseek-r1` → `venice-deepseek-v4`
@@ -218,17 +234,20 @@ Real-world calibration happens in Phase 2 from the actual token counts.
 - **SPIKE.md amendment commit** documenting the rename: pre-registration honesty allows refining BEFORE execution as long as it's disclosed and the gates don't move (gates are unchanged). Commit: `chore(spike): amend pre-registration — refine venice trio to qwen-coder/kimi-k2/deepseek-v4`
 
 **Step 2.1 — Smoke-test the two new models** (~$0.05 each):
+
 ```bash
 pnpm spike --providers venice-kimi-k2 --runs 1 --corpus examples/dogfood --ceiling 1
 pnpm spike --providers venice-deepseek-v4 --runs 1 --corpus examples/dogfood --ceiling 1
 ```
+
 Confirm: provider ready, Venice catalog accepts the slug, response parses through Zod schemas. If either errors on slug-not-found, check Venice catalog and substitute (e.g., `kimi-k2-5` if `k2-6` is gone).
 
 **Step 2.2 — Build the per-PR Venice harness.** Simpler than the prior plan version because **we skip frontier re-runs entirely** — the published `antfleet[bot]` receipts on each aeon-bench PR ARE the baseline. Create `scripts/spike-per-pr.ts` that:
+
 1. Reads `.spike/venice-2026-05/pr-shortlist.json` and `.spike/venice-2026-05/baseline-aeon-bench.json`
 2. **Filters to PRs with completed baseline receipts.** Skip any PR with no `antfleet[bot]` comment in the baseline snapshot. Print `[spike-per-pr] running against N/30 PRs with baselines` at startup. Refuse to run if N < 10; prompt to re-snapshot.
 3. **Parses each baseline antfleet[bot] comment markdown into structured findings.** Format is consistent (see PR #3 example: `**<Category> · <Severity>** — <title>\n\`<path>:<lines>\`\n\n> <quote>`). Helper `parseBaselineFinding(commentBody): Finding[]` — ~30 lines of regex + line-range parsing. Unit tested with 3-5 real comment fixtures.
-4. For each filtered PR: fetch head SHA from `antfleet/aeon-bench`, materialize a temp working tree of *only the files touched by that PR* (`gh pr diff <N> --repo antfleet/aeon-bench --name-only` + copy from shallow clone at head).
+4. For each filtered PR: fetch head SHA from `antfleet/aeon-bench`, materialize a temp working tree of _only the files touched by that PR_ (`gh pr diff <N> --repo antfleet/aeon-bench --name-only` + copy from shallow clone at head).
 5. For each of the **3 Venice models** (qwen-coder, kimi-k2, deepseek-v4), call the Venice provider's `review()` directly on the mini-corpus.
 6. Persist per-PR-per-venice-model JSON to `.spike/venice-2026-05/aeon-bench/pr-<N>-<model>.json` containing: raw `ReviewOutput`, parsed baseline findings, computed `frontier_recall` (= |baseline ∩ venice_findings| / |baseline|), venice-only findings list.
 7. Enforces the $200 cumulative cost ceiling from `src/spike/cost.ts:51-69`. With $5-10 realistic spend, this is trivially satisfied.
@@ -236,12 +255,15 @@ Confirm: provider ready, Venice catalog accepts the slug, response parses throug
 This is ~120-150 lines of new TS (smaller than the prior version because no stackedProvider invocation, no frontier calls). It shares the `Provider` type and `providerByName` factory; no changes to `src/provider.ts` beyond Step 2.0.
 
 **Step 2.3 — Per-PR harness smoke test** (~$0.15): run the new harness on a single PR with all 3 Venice models to confirm baseline parsing + per-model JSON output:
+
 ```bash
 pnpm spike-per-pr --shortlist .spike/venice-2026-05/pr-shortlist.json --limit 1 --models all
 ```
+
 Inspect the resulting JSON to confirm: baseline parsed cleanly (findings list non-empty for that PR), all 3 Venice models returned valid `ReviewOutput`, `frontier_recall` computed.
 
 **Step 2.4 — Full execution.**
+
 - **Pre-step:** refresh baseline snapshot — `bash scripts/snapshot-aeon-bench-baseline.sh`. The current snapshot captures 15/30; if more have trickled in since, the harness automatically picks them up. Commit the refreshed JSON.
 - **Primary:** `pnpm spike-per-pr --shortlist .spike/venice-2026-05/pr-shortlist.json --models all`. Runs on whatever N PRs currently have baselines (15 minimum) × 3 Venice models. Output → `.spike/venice-2026-05/aeon-bench/`. Expected count at N=15: **45 JSON files** (one per PR per Venice model). Estimated spend: **~$5-10** ($0.02-0.10 per Venice call × 45, depending on PR size, retries).
 - **No supplement runs.** Dogfood dropped. All metrics computed from aeon-bench data only.
@@ -255,6 +277,7 @@ Inspect the resulting JSON to confirm: baseline parsed cleanly (findings list no
 **Step 3.1 — Write `scripts/analyze-venice-spike.ts`.** Pure TypeScript, runs via `tsx`. Inputs: `.spike/venice-2026-05/aeon-bench/` (per-PR-per-venice-model data) + `.spike/venice-2026-05/baseline-aeon-bench.json` (production-app receipts = the baseline). Outputs: `SPIKE_RESULTS.md`, `spike-intersection.json`, `marginal-contribution-shortlist.md`.
 
 Computes, per Venice model:
+
 - `frontier_recall`: per PR, the fraction of baseline (Opus+GPT-5 unanimous) findings the Venice model also flags. Finding identity matched via `category + first-evidence-path + start-line bucket` (titles vary). Averaged across the N PRs (≥15). Each PR's recall is already pre-computed by the harness; analyzer just averages.
 - `venice_precision`: aeon-bench has no labeled ground truth; precision is computed from a manual rating pass. Analyzer collects all Venice-only findings (Venice flagged, baseline didn't), ranks by category severity, takes top 20, writes them to `marginal-contribution-shortlist.md` with explicit "rate as real/false-positive" markers. After human pass, re-run analyzer with `--ratings ratings.json` and it reports `venice_precision_sampled = <real> / <total>`.
 - `marginal_contribution`: count of distinct Venice-only findings rated "real" in the manual pass.
@@ -271,6 +294,7 @@ Computes, per Venice model:
 **Step 4.1 — `BLOG_DRAFT_open_agent_stack.md`.** Word count 1500–2500. Structure from brief. Source the SPIKE.md SHA via `git log --reverse -1 --format=%H -- SPIKE.md`.
 
 For the **Implications** section, embed all three swap-in variants commented out, then uncomment the one matching the verdict:
+
 ```markdown
 <!-- GOOD: "Open-model agreement is real — Venice's <model> caught X% of frontier consensus
      plus N marginal bugs neither frontier caught. This unlocks…" -->
@@ -286,19 +310,19 @@ For the **Implications** section, embed all three swap-in variants commented out
 
 ## Risks and mitigations
 
-| # | Risk | Likelihood | Mitigation |
-|---|---|---|---|
-| 1 | Venice model slugs in the brief don't match Venice's actual catalog | High | Step 0.1 verifies the catalog *before* commitment; SPIKE.md records the slugs actually used |
-| 2 | Venice rejects `response_format: json_object` (some hosts ignore it) | Medium | Mirror `openrouter.ts`'s system-prompt-embedded schema; the fence-stripping parser handles models that wrap JSON in code fences |
-| 3 | Per-PR ground truth in aeon-bench requires manual rating (no labels exist upstream) | High | `marginal-contribution-shortlist.md` flags the candidates; user does a human pass before the verdict is finalized. Dogfood's 5 labeled bugs serve as the automated precision anchor. |
-| 3b | Building 30+ replay PRs in a new public mirror creates noise for aaronjmars (notifications via cross-repo references) | Medium | The replays don't link to upstream PRs in their body — only to the upstream commit SHAs (no cross-PR reference). The BENCHMARK.md disclaimer + opt-out instructions are present. Stop creating new replays immediately if upstream objects. |
-| 4 | Live spend exceeds $200 cap | Low | `--ceiling 200` aborts before any run that would exceed; per-run cost is logged each iteration |
-| 5 | Accidental commit of `VENICE_API_KEY` | Medium | Only `.env.example` is edited; `.env.local` is gitignored; acceptance criterion #12 grep-checks before handoff |
-| 6 | Accidental push of `spike/venice-consensus` to GitHub | Low | Plan explicitly says no push, no PR; acceptance criterion #13 checks |
-| 7 | Pre-registration commit ordering breaks (e.g., adding venice.ts before SPIKE.md) | Medium | Phase ordering is enforced; Step 0.5 verifies via `git log --reverse` before any provider code is written |
-| 8 | Brief says "wire into stacked.ts" but reality is `provider.ts` — reviewer flags it as deviation | Low | R1 explanation above; provider.ts:32-49 is the actual registry |
-| 9 | Anonymization rules: corpus paths/contents in spike artifacts | Low | Both `examples/dogfood/` and `examples/antseed-corpus/` are in-repo and public; no customer PR data is touched |
-| 10 | Venice returns rate-limit errors mid-run, all 5 runs error out before getting useful data | Medium | The 3-attempt retry in venice.ts handles transient errors; persistent failures mark the run as `venice_error` and the analyzer reports degraded coverage instead of failing |
+| #   | Risk                                                                                                                  | Likelihood | Mitigation                                                                                                                                                                                                                                  |
+| --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Venice model slugs in the brief don't match Venice's actual catalog                                                   | High       | Step 0.1 verifies the catalog _before_ commitment; SPIKE.md records the slugs actually used                                                                                                                                                 |
+| 2   | Venice rejects `response_format: json_object` (some hosts ignore it)                                                  | Medium     | Mirror `openrouter.ts`'s system-prompt-embedded schema; the fence-stripping parser handles models that wrap JSON in code fences                                                                                                             |
+| 3   | Per-PR ground truth in aeon-bench requires manual rating (no labels exist upstream)                                   | High       | `marginal-contribution-shortlist.md` flags the candidates; user does a human pass before the verdict is finalized. Dogfood's 5 labeled bugs serve as the automated precision anchor.                                                        |
+| 3b  | Building 30+ replay PRs in a new public mirror creates noise for aaronjmars (notifications via cross-repo references) | Medium     | The replays don't link to upstream PRs in their body — only to the upstream commit SHAs (no cross-PR reference). The BENCHMARK.md disclaimer + opt-out instructions are present. Stop creating new replays immediately if upstream objects. |
+| 4   | Live spend exceeds $200 cap                                                                                           | Low        | `--ceiling 200` aborts before any run that would exceed; per-run cost is logged each iteration                                                                                                                                              |
+| 5   | Accidental commit of `VENICE_API_KEY`                                                                                 | Medium     | Only `.env.example` is edited; `.env.local` is gitignored; acceptance criterion #12 grep-checks before handoff                                                                                                                              |
+| 6   | Accidental push of `spike/venice-consensus` to GitHub                                                                 | Low        | Plan explicitly says no push, no PR; acceptance criterion #13 checks                                                                                                                                                                        |
+| 7   | Pre-registration commit ordering breaks (e.g., adding venice.ts before SPIKE.md)                                      | Medium     | Phase ordering is enforced; Step 0.5 verifies via `git log --reverse` before any provider code is written                                                                                                                                   |
+| 8   | Brief says "wire into stacked.ts" but reality is `provider.ts` — reviewer flags it as deviation                       | Low        | R1 explanation above; provider.ts:32-49 is the actual registry                                                                                                                                                                              |
+| 9   | Anonymization rules: corpus paths/contents in spike artifacts                                                         | Low        | Both `examples/dogfood/` and `examples/antseed-corpus/` are in-repo and public; no customer PR data is touched                                                                                                                              |
+| 10  | Venice returns rate-limit errors mid-run, all 5 runs error out before getting useful data                             | Medium     | The 3-attempt retry in venice.ts handles transient errors; persistent failures mark the run as `venice_error` and the analyzer reports degraded coverage instead of failing                                                                 |
 
 ---
 
@@ -325,9 +349,11 @@ Before final handoff, **verify each item explicitly:**
 ## Files changed (estimated)
 
 **External (Phase -1, separate repo):**
+
 - `antfleet/aeon-bench` repo created public, with `BENCHMARK.md`, 30+ replay PR branches, 30+ open PRs
 
 **New (Phase 1-4 on `spike/venice-consensus`):**
+
 - `SPIKE.md` (repo root) — committed Phase 0, **amendment commit pending Step 2.0**
 - `src/providers/venice.ts`
 - `src/providers/venice.test.ts`
@@ -346,12 +372,14 @@ Before final handoff, **verify each item explicitly:**
 - `.spike/venice-2026-05/marginal-contribution-shortlist.md` (Phase 3 manual-rating queue)
 
 **Modified:**
+
 - `src/provider.ts` — Step 2.0 amendment: rename `venice-llama-70b` → `venice-kimi-k2` (slug `kimi-k2-6`), rename `venice-deepseek-r1` → `venice-deepseek-v4` (slug unchanged)
 - `src/spike/cost.ts` — drop `venice-llama-70b`, add `venice-kimi-k2`, rename `venice-deepseek-r1` → `venice-deepseek-v4`
 - `.env.example` (2 new env vars; already done in Phase 1)
 - `package.json` (add `spike-per-pr` script)
 
 **Untouched (per brief):**
+
 - `src/providers/anthropic.ts`
 - `src/providers/openai.ts`
 - `src/providers/stacked.ts` (R1 explains why)
@@ -380,7 +408,7 @@ These design calls were made unilaterally to keep the plan executable; flag any 
 
 1. **Provider naming.** Three separately-named provider instances (`venice-qwen-coder`, `venice-deepseek-r1`, `venice-llama-70b`) rather than one `venice` with env-selected model. Matches brief's `--providers` syntax; lets `stacked.ts` report them distinctly in the agreement output.
 2. **Mirroring openrouter.ts vs openai.ts.** Plan mirrors openrouter (json_object + fence-stripping). The brief is silent on the JSON-mode choice; this is the only choice that's likely to actually work against open models on Venice.
-3. **Corpus adaptation in R2.** Treating each antseed sub-app as a separate corpus + 5× dogfood runs to reach the 30-invocation denominator, *instead of* asking the user to assemble a 30-PR fixture. If the user wants strict per-PR data, this is a 1–2 day prep blocker and the spike pauses.
+3. **Corpus adaptation in R2.** Treating each antseed sub-app as a separate corpus + 5× dogfood runs to reach the 30-invocation denominator, _instead of_ asking the user to assemble a 30-PR fixture. If the user wants strict per-PR data, this is a 1–2 day prep blocker and the spike pauses.
 4. **Cost estimates in `cost.ts`.** Brief says don't modify `anthropic.ts`/`openai.ts`; `cost.ts` is not mentioned, and adding Venice entries is necessary for `cost_per_agreed_finding`. Treated as in-scope.
 5. **JSON output via `--json-out` flag** rather than always-on. Less disruptive to existing spike invocations and to baseline tests.
 

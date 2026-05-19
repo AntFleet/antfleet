@@ -109,6 +109,7 @@ Output to .omc/codex-out/03-claim-page/.
 Touches `/agents/[address]` rendering — Claude owns.
 
 For `factory_launches` rows with `repo_full_name = null` AND `prelaunch_status = 'repo_not_found'`:
+
 - Banner on `/agents/[address]`: "AntFleet couldn't find this agent's source repo. Are you the deployer? [Claim →]"
 - Link to `/agents/[address]/claim`.
 
@@ -138,6 +139,7 @@ Generate migration. Output to .omc/codex-out/05-weekly-schema/.
 `apps/web/scripts/curate-weekly.ts`. Runs every Monday 00:00 UTC via cron.
 
 Selection:
+
 - Eligible: `agent_findings` published in the last 7d.
 - Rank by: severity DESC (high > med > low > info), then `upstreamPrUrl IS NOT NULL`, then `upstreamMergedSha IS NOT NULL`, then `publishedAt DESC`.
 - Pick top 1. Insert into `weekly_features` with `curated_by='auto'`.
@@ -166,6 +168,7 @@ Output to .omc/codex-out/07-homepage/.
 Extend `post-drafts.ts`:
 
 **a. Claim verified:**
+
 ```
 TODO(voice)
 
@@ -175,6 +178,7 @@ antfleet.dev/agents/<address>
 ```
 
 **b. Weekly feature published:**
+
 ```
 TODO(voice)
 
@@ -214,6 +218,7 @@ antfleet.dev/agents/<address>
 ## On completion
 
 Update `.omc/plans/antfleet-runbook.md`:
+
 1. Mark Sprint 4 ✅ DONE with merged PR number; move ▶ NEXT to Sprint 5.
 2. Append to §1 "Active surface":
    - Routes: `/agents/[address]/claim`, `/api/claim`

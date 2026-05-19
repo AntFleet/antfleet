@@ -7,16 +7,18 @@ import { writePostDraft } from "./post-drafts";
 const USER_AGENT = "antfleet-depth-track";
 const SPIKE_MARGIN = 0.05;
 
-export type IdentityFetchResult = {
-  ok: true;
-  content: string;
-  parsed: Record<string, unknown>;
-  fetchedAt: Date;
-} | {
-  ok: false;
-  fetchedAt: Date;
-  error: string;
-};
+export type IdentityFetchResult =
+  | {
+      ok: true;
+      content: string;
+      parsed: Record<string, unknown>;
+      fetchedAt: Date;
+    }
+  | {
+      ok: false;
+      fetchedAt: Date;
+      error: string;
+    };
 
 type GitHubCommit = {
   sha: string;
@@ -66,7 +68,12 @@ export async function fetchSoulGenesis(agent: AgentRegistryEntry): Promise<strin
 }
 
 function tokens(input: string): Set<string> {
-  return new Set(input.toLowerCase().split(/[\s\p{P}\p{S}]+/u).filter(Boolean));
+  return new Set(
+    input
+      .toLowerCase()
+      .split(/[\s\p{P}\p{S}]+/u)
+      .filter(Boolean),
+  );
 }
 
 export function jaccardDistance(a: string, b: string): number {
@@ -126,7 +133,11 @@ async function insertDriftSnapshot(args: {
   return inserted.length > 0;
 }
 
-async function recordDriftSpikeFinding(agent: AgentRegistryEntry, driftScore: number, threshold: number): Promise<void> {
+async function recordDriftSpikeFinding(
+  agent: AgentRegistryEntry,
+  driftScore: number,
+  threshold: number,
+): Promise<void> {
   const findingId = `identity-drift-${new Date().toISOString().slice(0, 10)}`;
   await db
     .insert(agentFindings)
@@ -153,7 +164,10 @@ export async function backfillIdentityDrift(agent: AgentRegistryEntry): Promise<
   inserted: number;
   spikes: number;
 }> {
-  const [genesis, commits] = await Promise.all([fetchSoulGenesis(agent), listIdentityCommits(agent)]);
+  const [genesis, commits] = await Promise.all([
+    fetchSoulGenesis(agent),
+    listIdentityCommits(agent),
+  ]);
   let inserted = 0;
   let spikes = 0;
   for (const commit of commits.toReversed()) {

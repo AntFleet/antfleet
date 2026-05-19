@@ -3,17 +3,13 @@ import { nanoid } from "nanoid";
 import { db } from "@/db";
 import { factoryLaunches, roastSubmissions, type FactoryLaunch } from "@/db/schema";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
-import {
-  writeFactoryRepoFoundDraft,
-  writeFactoryVerdictDraft,
-} from "@/lib/post-drafts";
+import { writeFactoryRepoFoundDraft, writeFactoryVerdictDraft } from "@/lib/post-drafts";
 import { discoverRepoForAgent } from "@/lib/repo-discovery";
 
 const DISCOVERY_TIMEOUT_MS = 24 * 60 * 60 * 1000;
-const PUBLIC_BASE_URL = (process.env["ANTFLEET_PUBLIC_BASE_URL"] ?? "https://www.antfleet.dev").replace(
-  /\/+$/,
-  "",
-);
+const PUBLIC_BASE_URL = (
+  process.env["ANTFLEET_PUBLIC_BASE_URL"] ?? "https://www.antfleet.dev"
+).replace(/\/+$/, "");
 
 export type PrelaunchTickResult = {
   pendingProcessed: number;
@@ -65,7 +61,10 @@ async function processPending(result: PrelaunchTickResult): Promise<void> {
   }
 }
 
-async function processOnePending(launch: FactoryLaunch, result: PrelaunchTickResult): Promise<void> {
+async function processOnePending(
+  launch: FactoryLaunch,
+  result: PrelaunchTickResult,
+): Promise<void> {
   let repoFullName = launch.repoFullName;
   let method = launch.repoDiscoveryMethod;
 
@@ -172,7 +171,10 @@ async function processBenchmarking(result: PrelaunchTickResult): Promise<void> {
   }
 }
 
-async function checkOneBenchmarking(launch: FactoryLaunch, result: PrelaunchTickResult): Promise<void> {
+async function checkOneBenchmarking(
+  launch: FactoryLaunch,
+  result: PrelaunchTickResult,
+): Promise<void> {
   const submissionId = launch.prelaunchFindingId;
   if (submissionId === null) {
     // Inconsistent state — benchmarking without a linked roast. Log and skip;

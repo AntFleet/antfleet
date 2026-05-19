@@ -12,6 +12,7 @@ Updated: 2026-05-19
 ## 1. INVARIANTS — never re-state in sprint prompts
 
 ### Identity & authorship
+
 - All git writes use the `antfleet-ops` GitHub account.
   - Run `gh auth switch --user antfleet-ops` before any push.
   - Commit author: `antfleet-ops <285575208+antfleet-ops@users.noreply.github.com>`
@@ -21,6 +22,7 @@ Updated: 2026-05-19
   - Never force-push; never `reset --hard` without explicit user approval.
 
 ### Conventions
+
 - Route param for agent pages: `[address]`.
 - Table-name prefix: `agent_*`, `drift_*`, `roast_*`, `factory_*`.
 - Schema migrations via drizzle-kit (current: through `0011_roast_submissions.sql`). Never hand-edit a landed migration.
@@ -32,11 +34,13 @@ Updated: 2026-05-19
 - Open every new route in a real browser before declaring done.
 
 ### Voice & brand
+
 - AntFleet ≠ AntFeed. Never apply Colony Scout voice or @AntFeed channel to AntFleet.
 - Tweet drafts → `.omc/state/posts/<ts>-<slug>.md` with `TODO(voice)` header.
 - No auto-posting. Drafts await human approval.
 
 ### Delegation policy (Codex via OMC tmux)
+
 - Orchestrator: Claude. Mechanical chunks → Codex via `omc-teams` tmux panes.
 - Codex outputs to `.omc/codex-out/<deliverable>/`. Claude reviews, integrates, commits.
 - Codex never commits. Codex never pushes.
@@ -56,7 +60,9 @@ Claude is the orchestrator, not a silent fallback. Codex must actually be runnin
 - If the operator authorizes Claude-inline override, note in the PR body: `Codex dispatch failed (<reason>); operator-authorized Claude-inline override on chunks: <list>`.
 
 ### Active surface (current — verified on main 2026-05-19)
+
 Routes:
+
 - `/agents`, `/agents/[address]`, `/agents/[address]/constitution`, `/agents/[address]/drift`
 - `/badge/[owner]/[repo].svg`
 - `/roast`, `/api/roast`, `/roasts/[id]`
@@ -66,6 +72,7 @@ Routes:
 - `/api/cron/*`, `/api/github/*`, `/api/opt-in/*` (pre-existing)
 
 Tables (apps/web/db/schema.ts):
+
 - `agent_findings` — curated AntFleet findings
 - `drift_snapshots` — per-commit drift timeseries
 - `roast_submissions` — public roast intake + state machine (Sprint 3: `source` column distinguishes `public` vs `factory_watcher`)
@@ -77,6 +84,7 @@ Tables (apps/web/db/schema.ts):
 Migrations through: `0012_factory_launches.sql`
 
 Libraries:
+
 - `apps/web/lib/identity-drift.ts`
 - `apps/web/lib/post-drafts.ts` — tweet draft pipeline (Sprint 3: `writeFactoryDetectedDraft`, `writeFactoryRepoFoundDraft`, `writeFactoryVerdictDraft`)
 - `apps/web/lib/prelaunch-dispatcher.ts` — Sprint 3 state-machine driver
@@ -90,6 +98,7 @@ Libraries:
 - `apps/web/scripts/publish-feelocker-finding.ts`
 
 Existing infra to reuse, not re-build:
+
 - Webhook + retry cron (commit `4b9cc39`)
 - Benchmark pipeline (invoked from `run-roast.ts`)
 - Existing form components and styles — grep before rolling your own.
@@ -99,9 +108,11 @@ Existing infra to reuse, not re-build:
 ## 2. STRATEGIC FRAME
 
 ### Constraint
+
 AntFleet is the **code-quality data layer** for launchpad agents. Nothing else.
 
 Not in scope, ever:
+
 - Launchpad explorer (mcap, volume, vault state) — Liquid + Dune cover this.
 - Trading interface for $FLEET or any token.
 - Wallet.
@@ -109,11 +120,13 @@ Not in scope, ever:
 - Anything that doesn't pivot on code quality or agent identity integrity.
 
 ### Coupling discipline
+
 - Decouple AntFleet's attention engine from Liquid's launchpad timeline where possible.
 - Factory watcher (Sprint 3) is the latent bridge — silent until Liquid drives launches, then auto-activates.
 - Until launchpad goes live, depth + roast are the attention surface (both work on N=1).
 
 ### Posting cadence
+
 Every shipped feature defines what gets drafted when its events fire. Wire posts into `.omc/state/posts/` from the same pipeline that produces the data. The attention layer is not free — it must be wired into the data layer.
 
 ---
@@ -123,32 +136,41 @@ Every shipped feature defines what gets drafted when its events fire. Wire posts
 Each sprint has a re-check gate. If the gate fails, do not execute — re-sequence or update the runbook first.
 
 ### Sprint 1 — Depth track ✅ DONE (PR #16)
+
 **Shipped:** `/agents/[address]`, `/agents`, `/badge/[owner]/[repo].svg`, constitution inspector, drift monitor, `agent_findings` + `drift_snapshots` tables, `agent-registry`, `post-drafts` pipeline.
 
 ### Sprint 2 — Roast engine ✅ DONE (PR #18)
+
 **Shipped:** `/roast`, `/api/roast`, `/roasts/[id]`, `roast_submissions` table, runner (`run-roast.ts`), rate limiting, OG tags.
 
 ### Sprint 3 — Factory watcher + pre-launch health check ✅ DONE
+
 **Shipped:** `factory_launches` + `cron_cursors` tables (migration `0012_factory_launches.sql`), `roast_submissions.source` column, `poll-factory.ts` + `/api/cron/poll-factory` (5min cron), `backfill-factory.ts` one-shot, `repo-discovery.ts` (tokenURI + github_search), `prelaunch-dispatcher.ts` + `/api/cron/run-prelaunch` (10min cron), `run-prelaunch.ts` CLI, auto-stub `/agents/[address]` page + `/agents` index merging factory_launches with findings-bound rows, three factory tweet-draft helpers in `post-drafts.ts`.
 
 **Codex orchestration note:** CODEX-1 (schema) executed Claude-inline after omc-teams dispatch failed twice (operator-authorized retroactively after omc-teams root cause was fixed). CODEX-2/3/5 executed via real `omc team 1:codex` with `OMC_SHELL_READY_TIMEOUT_MS=90000` (the fix from PR upstream).
 
 ### Sprint 4 — Operator portal + receipt-of-the-week ▶ NEXT
+
 **Re-check gate:**
+
 - [ ] ≥3 production `factory_launches` rows with `prelaunch_status='repo_not_found'`. If 0 after 4 weeks of factory watcher running, **defer indefinitely**.
 - [ ] ≥10 published `agent_findings` rows in production.
 
 **Detail:** [`sprints/sprint-4-operator-portal.md`](sprints/sprint-4-operator-portal.md)
 
 ### Sprint 5 — Public JSON API
+
 **Re-check gate:**
+
 - [ ] No schema changes to `agent_findings` for ≥2 weeks.
 - [ ] ≥30 receipts in corpus.
 
 **Detail:** [`sprints/sprint-5-public-api.md`](sprints/sprint-5-public-api.md)
 
 ### Sprint 6 — Breadth features (leaderboard, forks tracker, cross-agent catalog)
+
 **Re-check gate:**
+
 - [ ] N ≥ 5 distinct agents with at least one published finding each — verify: `SELECT COUNT(DISTINCT agent_token_address) FROM agent_findings WHERE agent_token_address NOT LIKE 'roast:%'` ≥ 5.
 - [ ] ≥ 2 forks of `agent-autonomopoly` (or any base template) exist on chain.
 
