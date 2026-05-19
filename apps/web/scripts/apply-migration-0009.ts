@@ -75,12 +75,12 @@ async function main() {
     console.log(`[public.agent_findings] exists=${tableExists}`);
 
     const tracked = apply
-      ? (
+      ? ((
           await pool.query<{ exists: boolean }>(
             "SELECT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE hash = $1) AS exists",
             [hash],
           )
-        ).rows[0]?.exists ?? false
+        ).rows[0]?.exists ?? false)
       : false;
     console.log(`[drizzle.__drizzle_migrations] tag=${TAG} tracked=${tracked}`);
 
