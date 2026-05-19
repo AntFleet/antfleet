@@ -71,6 +71,13 @@
       "when": 1779151723324,
       "tag": "0009_bright_radioactive_man",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1779171600000,
+      "tag": "0010_depth_track",
+      "breakpoints": true
     }
   ]
 }

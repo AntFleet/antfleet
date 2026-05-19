@@ -6,8 +6,10 @@ import {
   type AgentCrossRepoMerge,
 } from "@/db/queries";
 import type { AgentFinding } from "@/db/schema";
+import { findAgentByAddress } from "@/lib/agent-registry";
 import { formatRelativeTime } from "@/lib/receipts";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
+import { CopyBadgeSnippet } from "./CopyBadgeSnippet";
 
 // Per-agent finding page. Reads agent_findings WHERE lower(address) = lower
 // (slug) and renders every finding inline (info → high), most recent first.
@@ -45,10 +47,17 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
     notFound();
   }
   const now = new Date();
+  const registryEntry = findAgentByAddress(address);
 
   return (
     <>
       <Header detail={detail} now={now} />
+      {registryEntry !== null && (
+        <>
+          <SectionDivider />
+          <BadgeEmbedSection repo={registryEntry.repo} />
+        </>
+      )}
       {detail.crossRepoMerges.length > 0 && (
         <>
           <SectionDivider />
@@ -64,6 +73,21 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
         </>
       )}
     </>
+  );
+}
+
+function BadgeEmbedSection({ repo }: { repo: string }) {
+  const badgeUrl = `https://www.antfleet.dev/badge/${repo}.svg`;
+  const snippet = `[![AntFleet findings](${badgeUrl})](https://www.antfleet.dev/agents/0xB3D7e0c3C39A1D3F1B304663065A2F83Ddf56d8e)`;
+  return (
+    <section>
+      <ContentWrap>
+        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+          Badge
+        </h2>
+        <CopyBadgeSnippet snippet={snippet} />
+      </ContentWrap>
+    </section>
   );
 }
 

@@ -253,6 +253,7 @@ export const agentFindings = pgTable("agent_findings", {
   // Human-readable repo name (e.g. "agent-autonomopoly"). Lets us cross-link
   // to AntFleet reviews on agent-<name>-bench without exposing internal ids.
   agentName: text("agent_name").notNull(),
+  repoFullName: text("repo_full_name"),
   title: text("title").notNull(),
   // info | low | med | high. Free text rather than a pg enum so new levels
   // are application-only.
@@ -270,6 +271,16 @@ export const agentFindings = pgTable("agent_findings", {
   publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const driftSnapshots = pgTable("drift_snapshots", {
+  id: text("id").primaryKey(),
+  agentTokenAddress: text("agent_token_address").notNull(),
+  commitSha: text("commit_sha").notNull(),
+  commitTimestamp: timestamp("commit_timestamp", { withTimezone: true }).notNull(),
+  driftScore: numeric("drift_score").notNull(),
+  threshold: numeric("threshold").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -282,3 +293,5 @@ export type OutgoingPr = typeof outgoingPrs.$inferSelect;
 export type NewOutgoingPr = typeof outgoingPrs.$inferInsert;
 export type AgentFinding = typeof agentFindings.$inferSelect;
 export type NewAgentFinding = typeof agentFindings.$inferInsert;
+export type DriftSnapshot = typeof driftSnapshots.$inferSelect;
+export type NewDriftSnapshot = typeof driftSnapshots.$inferInsert;

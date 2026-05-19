@@ -15,6 +15,7 @@ import {
   type NewReview,
   type OnboardingEvent,
 } from "./schema";
+import { writePostDraft } from "@/lib/post-drafts";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -1511,6 +1512,10 @@ function pickHighestSeverity(severities: string[]): string {
 // publishedAt = now() from the column default; updates set every column
 // except publishedAt + findingId so the historical timestamp is preserved.
 export async function upsertAgentFinding(input: NewAgentFinding): Promise<void> {
+  const existing = await db
+    .select({ findingId: agentFindings.findingId })
+    .from(agentFindings)
+    .where(eq(agentFindings.findingId, input.findingId));
   await db
     .insert(agentFindings)
     .values(input)
@@ -1519,6 +1524,7 @@ export async function upsertAgentFinding(input: NewAgentFinding): Promise<void> 
       set: {
         agentTokenAddress: input.agentTokenAddress,
         agentName: input.agentName,
+        repoFullName: input.repoFullName ?? null,
         title: input.title,
         severity: input.severity,
         summary: input.summary,
@@ -1527,4 +1533,11 @@ export async function upsertAgentFinding(input: NewAgentFinding): Promise<void> 
         upstreamMergedSha: input.upstreamMergedSha ?? null,
       },
     });
+  if (existing.length === 0) {
+    await writePostDraft({
+      slug: input.findingId,
+      title: input.title,
+      body: `New ${input.severity} agent finding for ${input.agentName}: ${input.summary}`,
+    });
+  }
 }
