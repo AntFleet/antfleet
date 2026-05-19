@@ -163,6 +163,9 @@ function FactoryLaunchStubPage({ stub, now }: { stub: FactoryLaunchAgentDetail; 
             </a>
           </div>
         )}
+        {launch.repoFullName === null && launch.prelaunchStatus === "repo_not_found" && (
+          <UnclaimedBanner address={agentTokenAddress} />
+        )}
         <p className="mt-10 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
           AntFleet detected this agent the moment its factory transaction confirmed on Base. No
           investigative findings have been filed yet — the row will populate here once the
@@ -170,6 +173,26 @@ function FactoryLaunchStubPage({ stub, now }: { stub: FactoryLaunchAgentDetail; 
         </p>
       </ContentWrap>
     </section>
+  );
+}
+
+function UnclaimedBanner({ address }: { address: string }) {
+  return (
+    <div className="mt-8 max-w-xl rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] p-5">
+      <p className="text-sm leading-relaxed text-[var(--color-ink)]">
+        AntFleet couldn&apos;t find this agent&apos;s source repo. Are you the deployer?
+      </p>
+      <p className="mt-2 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+        Sign a message with the deployer wallet to attribute a GitHub repo. The page populates here
+        once the pre-launch benchmark runs against your repo.
+      </p>
+      <a
+        href={`/agents/${address}/claim`}
+        className="mt-4 inline-block rounded-md border border-[var(--color-line-strong)] px-3 py-1.5 font-mono text-[11px] text-[var(--color-ink)] hover:bg-white transition-colors"
+      >
+        Claim this agent →
+      </a>
+    </div>
   );
 }
 

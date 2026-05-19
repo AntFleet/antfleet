@@ -1,4 +1,7 @@
+import { loadCurrentWeeklyFeature, type WeeklyFeatureRow } from "@/db/queries";
+import { severityLabel, shortAddress } from "@/lib/agent-findings";
 import { getGitHubAppInstallUrl } from "@/lib/install-url";
+import { formatRelativeTime } from "@/lib/receipts";
 
 // ─── constants ──────────────────────────────────────────────────────────────
 
@@ -12,6 +15,70 @@ function ContentWrap({ children }: { children: React.ReactNode }) {
 
 function SectionDivider() {
   return <div className="border-t border-[var(--color-line)] my-16" />;
+}
+
+// ─── receipt of the week ────────────────────────────────────────────────────
+
+function ReceiptOfTheWeekCard({ feature }: { feature: WeeklyFeatureRow }) {
+  const agentHref = `/agents/${feature.agentTokenAddress}`;
+  const relative = formatRelativeTime(new Date(), feature.featuredAt);
+  const summary = toPlaintextPreview(feature.summary, 200);
+
+  return (
+    <section className="py-20 pb-8">
+      <ContentWrap>
+        <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
+          Receipt of the week
+        </p>
+
+        <article className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] px-5 py-6 sm:px-7 sm:py-7">
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={agentHref}
+              className="font-mono text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:underline underline-offset-2 transition-colors"
+            >
+              {feature.agentName} · {shortAddress(feature.agentTokenAddress)}
+            </a>
+            <span className="rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-ink-muted)]">
+              {severityLabel(feature.severity)}
+            </span>
+          </div>
+
+          <h2 className="mt-5 max-w-2xl text-2xl sm:text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-tight">
+            {feature.title}
+          </h2>
+
+          <p className="mt-4 max-w-2xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
+            {summary}
+          </p>
+
+          <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            <a
+              href={agentHref}
+              className="inline-flex w-fit items-center gap-2 rounded-md bg-[var(--color-ink)] px-4 py-2 text-sm font-medium text-[var(--color-accent-fg)] transition-opacity hover:opacity-80"
+            >
+              See full receipt →
+            </a>
+            <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
+              Featured {relative}
+            </span>
+          </div>
+        </article>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function toPlaintextPreview(markdown: string, maxChars: number): string {
+  const plain = markdown
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[#>*_~-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (plain.length <= maxChars) return plain;
+  return `${plain.slice(0, maxChars).trimEnd()}…`;
 }
 
 // ─── hero ────────────────────────────────────────────────────────────────────
@@ -355,11 +422,18 @@ function BottomCta({ installUrl }: { installUrl: string }) {
 
 // ─── page ─────────────────────────────────────────────────────────────────────
 
-export default function Home() {
+export default async function Home() {
+  const feature = await loadCurrentWeeklyFeature();
   const installUrl = getGitHubAppInstallUrl();
 
   return (
     <>
+      {feature !== null && (
+        <>
+          <ReceiptOfTheWeekCard feature={feature} />
+          <SectionDivider />
+        </>
+      )}
       <Hero installUrl={installUrl} />
       <SectionDivider />
       <ProofSection />

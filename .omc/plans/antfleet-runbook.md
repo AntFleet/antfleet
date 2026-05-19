@@ -64,10 +64,12 @@ Claude is the orchestrator, not a silent fallback. Codex must actually be runnin
 Routes:
 
 - `/agents`, `/agents/[address]`, `/agents/[address]/constitution`, `/agents/[address]/drift`
+- `/agents/[address]/claim`, `/api/claim` (Sprint 4 — operator portal for repo attribution via EIP-191 signature)
 - `/badge/[owner]/[repo].svg`
 - `/roast`, `/api/roast`, `/roasts/[id]`
 - `/api/cron/poll-factory` (Sprint 3 — route present; **dormant**, no schedule. Activates when `AGENTS_FACTORY_ADDRESS` env is set on prod, i.e. once an agents-specific Liquid factory contract deploys)
 - `/api/cron/run-prelaunch` (Sprint 3 — route present; **dormant**, no schedule. Reactivates alongside poll-factory)
+- `/` (homepage — Sprint 4 added the "Receipt of the week" card above-fold when a `weekly_features` row exists for the current ISO week)
 - `/receipts`, `/benchmarks` (pre-existing — do not modify)
 - `/api/cron/*`, `/api/github/*`, `/api/opt-in/*` (pre-existing)
 
@@ -75,24 +77,31 @@ Tables (apps/web/db/schema.ts):
 
 - `agent_findings` — curated AntFleet findings
 - `drift_snapshots` — per-commit drift timeseries
-- `roast_submissions` — public roast intake + state machine (Sprint 3: `source` column distinguishes `public` vs `factory_watcher`)
+- `roast_submissions` — public roast intake + state machine (Sprint 3: `source` column distinguishes `public` vs `factory_watcher`; Sprint 4 moderation pipeline: status now `awaiting_approval | queued | running | published | rejected | failed`)
 - `factory_launches` — Liquid factory TokenCreated index (Sprint 3)
 - `cron_cursors` — generic key-value cursors for cron scripts (Sprint 3)
+- `agent_claims` — Sprint 4 operator signature attestations (FK-by-convention to `factory_launches.token_address`)
+- `weekly_features` — Sprint 4 receipt-of-the-week curation (PK `week_start`)
 - `outgoing_prs` — cross-repo PR linkage
 - (plus webhook/cron tables from earlier sprints)
 
-Migrations through: `0012_factory_launches.sql`
+Migrations through: `0015_agent_claims_unique_indexes.sql`
 
 Libraries:
 
+- `apps/web/lib/claim-message.ts` — Sprint 4 EIP-191 message format (`buildClaimMessage`, `parseClaimMessage`)
 - `apps/web/lib/identity-drift.ts`
-- `apps/web/lib/post-drafts.ts` — tweet draft pipeline (Sprint 3: `writeFactoryDetectedDraft`, `writeFactoryRepoFoundDraft`, `writeFactoryVerdictDraft`)
+- `apps/web/lib/post-drafts.ts` — tweet draft pipeline (Sprint 3 factory drafts + Sprint 4 `writeClaimVerifiedDraft`, `writeWeeklyFeatureDraft`)
 - `apps/web/lib/prelaunch-dispatcher.ts` — Sprint 3 state-machine driver
 - `apps/web/lib/repo-discovery.ts` — Sprint 3 tokenURI + github_search heuristic
 - `apps/web/lib/roast-intake.ts`
 - `apps/web/lib/roast-runner.ts`
+- `apps/web/lib/roast-status.ts` — Sprint 4 `ROAST_STATUSES` source of truth
 - `apps/web/scripts/backfill-factory.ts` — Sprint 3 historical one-shot
+- `apps/web/scripts/curate-weekly.ts` — Sprint 4 auto-curator (Monday 00:00 UTC)
+- `apps/web/scripts/feature-finding.ts` — Sprint 4 manual operator weekly-feature override
 - `apps/web/scripts/poll-factory.ts` — Sprint 3 factory event poller
+- `apps/web/scripts/roast-moderate.ts` — Sprint 4 moderation CLI (list/promote/reject)
 - `apps/web/scripts/run-prelaunch.ts` — Sprint 3 dispatcher CLI
 - `apps/web/scripts/run-roast.ts`
 - `apps/web/scripts/publish-feelocker-finding.ts`
@@ -158,16 +167,15 @@ Each sprint has a re-check gate. If the gate fails, do not execute — re-sequen
 
 **To reactivate** when the agents factory deploys: set `AGENTS_FACTORY_ADDRESS=0x…` in Vercel prod env, re-add the two cron schedules to `vercel.json`, optionally run `backfill-factory.ts` once.
 
-### Sprint 4 — Operator portal + receipt-of-the-week ▶ NEXT
+### Sprint 4 — Operator portal + receipt-of-the-week ✅ DONE
 
-**Re-check gate:**
+**Shipped:** `agent_claims` + `weekly_features` tables (migrations `0013_agent_claims.sql`, `0014_weekly_features.sql`, `0015_agent_claims_unique_indexes.sql`); `/api/claim` POST with EIP-191 signature verification + transactional INSERT/UPDATE + unique-index race protection; `/agents/[address]/claim` page with wallet-sign flow; unclaimed banner on `/agents/[address]` for `repo_not_found` rows; `/agents?filter=unclaimed` filtered view + hero count; `lib/claim-message.ts` canonical message helper; `scripts/curate-weekly.ts` auto-curator (Monday 00:00 UTC ranking by severity → upstream PR → merged-sha → recency); `scripts/feature-finding.ts` manual operator override; Receipt-of-the-week card on homepage above-fold; `writeClaimVerifiedDraft` + `writeWeeklyFeatureDraft` post-draft helpers.
 
-- [ ] ≥3 production `factory_launches` rows with `prelaunch_status='repo_not_found'`. If 0 after 4 weeks of factory watcher running, **defer indefinitely**.
-- [ ] ≥10 published `agent_findings` rows in production.
+**Gate-failure operator override:** Re-check gates both failed at start (0 `repo_not_found` rows since factory watcher dormant; only 1 `agent_findings` row). Operator authorized full execution as a forward investment — the operator portal becomes useful the moment an agents-specific factory contract deploys + reactivates the watcher, and the receipt-of-the-week surface activates as `agent_findings` grows.
 
-**Detail:** [`sprints/sprint-4-operator-portal.md`](sprints/sprint-4-operator-portal.md)
+**Codex orchestration:** CODEX-1/2/3/4/5/7 all dispatched via `omc team 1:codex` with `OMC_SHELL_READY_TIMEOUT_MS=90000`. CODEX-4 (security fixes on /api/claim) followed an explicit security-reviewer pass that ruled "block — requires fix" on HIGH (race + non-transactional INSERT/UPDATE) — addressed via DB unique indexes + transaction wrap + `isPublicRepo`-after-signature reordering + tighter clock-skew tolerance. CLAUDE-4/6/8 handled voice-sensitive UI copy, auto-curation logic, and tweet drafts per runbook §1 delegation policy.
 
-### Sprint 5 — Public JSON API
+### Sprint 5 — Public JSON API ▶ NEXT
 
 **Re-check gate:**
 
