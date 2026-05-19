@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import { and, count, desc, eq, gte, isNotNull, lt, lte, max, ne, or, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
+  agentFindings,
   findingStatus,
   maintainerReactions,
   onboardingEvents,
   reviews,
+  type AgentFinding,
+  type NewAgentFinding,
   type NewMaintainerReaction,
   type NewOnboardingEvent,
   type NewReview,
@@ -1336,4 +1339,142 @@ export async function loadPublicBenchmarksPage(args: {
     lastUpdatedAt,
     hasMore,
   };
+}
+
+// /agents/[address] — return findings for one agent, plus any benchmark
+// reviews tied to the agent's repo (cross-reference by repo name pattern
+// `agent-<name>-bench`). The address is matched case-insensitively because
+// users will paste mixed-case checksummed addresses from explorers.
+export type AgentDetail = {
+  agentTokenAddress: string;
+  agentName: string;
+  findings: AgentFinding[];
+  benchmarkReviews: AgentBenchmarkReference[];
+};
+
+export type AgentBenchmarkReference = {
+  reviewId: string;
+  owner: string | null;
+  repo: string | null;
+  prNumber: number;
+  commitSha: string;
+  createdAt: Date;
+  prCommentUrl: string | null;
+};
+
+export async function loadAgentDetail(address: string): Promise<AgentDetail | null> {
+  const normalized = address.toLowerCase();
+  const findings = await db
+    .select()
+    .from(agentFindings)
+    .where(sql`lower(${agentFindings.agentTokenAddress}) = ${normalized}`)
+    .orderBy(desc(agentFindings.publishedAt));
+
+  if (findings.length === 0) return null;
+
+  const first = findings[0]!;
+  const benchRepoPattern = `agent-${first.agentName.replace(/^agent-/, "")}-bench`;
+
+  // Public benchmark reviews tied to this agent's bench repo. Gated on
+  // publicReceipt + isBenchmark like /benchmarks. Repo names are
+  // case-insensitive on GitHub, so match lower() on both sides.
+  const benchmarkRows = await db
+    .select({
+      reviewId: reviews.reviewId,
+      owner: reviews.owner,
+      repo: reviews.repo,
+      prNumber: reviews.prNumber,
+      commitSha: reviews.commitSha,
+      createdAt: reviews.createdAt,
+      prCommentUrl: reviews.prCommentUrl,
+    })
+    .from(reviews)
+    .where(
+      and(
+        eq(reviews.isBenchmark, true),
+        eq(reviews.publicReceipt, true),
+        sql`lower(${reviews.repo}) = ${benchRepoPattern.toLowerCase()}`,
+      ),
+    )
+    .orderBy(desc(reviews.createdAt));
+
+  return {
+    agentTokenAddress: first.agentTokenAddress,
+    agentName: first.agentName,
+    findings,
+    benchmarkReviews: benchmarkRows,
+  };
+}
+
+// /agents — index of all agents that have at least one finding. We don't
+// have a separate agents table; agents are implicit in the
+// (agent_token_address, agent_name) pairs in agent_findings.
+export type AgentIndexRow = {
+  agentTokenAddress: string;
+  agentName: string;
+  findingCount: number;
+  highestSeverity: string;
+  lastFindingAt: Date;
+};
+
+export async function loadAgentIndex(): Promise<AgentIndexRow[]> {
+  // GROUP BY (agent_token_address, agent_name) so a typo in agent_name
+  // would surface as two rows rather than silently collapse. Severity is
+  // ranked client-side rather than via a pg enum.
+  const rows = await db
+    .select({
+      agentTokenAddress: agentFindings.agentTokenAddress,
+      agentName: agentFindings.agentName,
+      findingCount: sql<number>`count(*)::int`.as("finding_count"),
+      lastFindingAt: sql<Date>`max(${agentFindings.publishedAt})`.as("last_finding_at"),
+      severities: sql<string[]>`array_agg(${agentFindings.severity})`.as("severities"),
+    })
+    .from(agentFindings)
+    .groupBy(agentFindings.agentTokenAddress, agentFindings.agentName)
+    .orderBy(sql`max(${agentFindings.publishedAt}) desc`);
+
+  return rows.map((r) => ({
+    agentTokenAddress: r.agentTokenAddress,
+    agentName: r.agentName,
+    findingCount: r.findingCount,
+    highestSeverity: pickHighestSeverity(r.severities),
+    lastFindingAt: r.lastFindingAt instanceof Date ? r.lastFindingAt : new Date(r.lastFindingAt),
+  }));
+}
+
+const SEVERITY_RANK: Record<string, number> = { info: 0, low: 1, med: 2, high: 3 };
+
+function pickHighestSeverity(severities: string[]): string {
+  let best = "info";
+  let bestRank = -1;
+  for (const s of severities) {
+    const rank = SEVERITY_RANK[s] ?? -1;
+    if (rank > bestRank) {
+      bestRank = rank;
+      best = s;
+    }
+  }
+  return best;
+}
+
+// Idempotent upsert used by publish-feelocker-finding.ts. New rows get
+// publishedAt = now() from the column default; updates set every column
+// except publishedAt + findingId so the historical timestamp is preserved.
+export async function upsertAgentFinding(input: NewAgentFinding): Promise<void> {
+  await db
+    .insert(agentFindings)
+    .values(input)
+    .onConflictDoUpdate({
+      target: agentFindings.findingId,
+      set: {
+        agentTokenAddress: input.agentTokenAddress,
+        agentName: input.agentName,
+        title: input.title,
+        severity: input.severity,
+        summary: input.summary,
+        evidence: input.evidence ?? null,
+        upstreamPrUrl: input.upstreamPrUrl ?? null,
+        upstreamMergedSha: input.upstreamMergedSha ?? null,
+      },
+    });
 }
