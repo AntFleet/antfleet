@@ -63,6 +63,9 @@ importers:
       drizzle-orm:
         specifier: ^0.36.4
         version: 0.36.4(@neondatabase/serverless@0.10.4)(@types/pg@8.11.6)(@types/react@19.2.14)(react@19.2.6)
+      nanoid:
+        specifier: ^3.3.12
+        version: 3.3.12
       next:
         specifier: ^16.0.0
         version: 16.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -72,6 +75,9 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.2.6(react@19.2.6)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.3.0
