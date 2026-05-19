@@ -92,6 +92,27 @@
       "when": 1779200000000,
       "tag": "0012_factory_launches",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1779210000000,
+      "tag": "0013_agent_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1779220000000,
+      "tag": "0014_weekly_features",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1779230000000,
+      "tag": "0015_agent_claims_unique_indexes",
+      "breakpoints": true
     }
   ]
 }

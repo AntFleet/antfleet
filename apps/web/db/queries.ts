@@ -1531,6 +1531,64 @@ export async function loadFactoryLaunchIndex(): Promise<FactoryLaunchIndexRow[]>
   }));
 }
 
+export type WeeklyFeatureRow = {
+  weekStart: Date;
+  findingId: string;
+  curatedBy: string;
+  rationale: string | null;
+  featuredAt: Date;
+  // Joined from agent_findings
+  agentName: string;
+  agentTokenAddress: string;
+  title: string;
+  severity: string;
+  summary: string;
+};
+
+type RawWeeklyFeatureRow = Omit<WeeklyFeatureRow, "weekStart" | "featuredAt"> & {
+  weekStart: Date | string;
+  featuredAt: Date | string;
+};
+
+/**
+ * Read the current ISO-week feature. The week boundary is Monday 00:00 UTC;
+ * "current" is the row whose week_start = the most recent Monday <= now().
+ * Returns null when there is no row for the current week (or the linked
+ * finding is missing — defensive read since finding_id is FK-by-convention).
+ */
+export async function loadCurrentWeeklyFeature(): Promise<WeeklyFeatureRow | null> {
+  const result = await db.execute(sql`
+    WITH current_week AS (
+      SELECT date_trunc('week', now() AT TIME ZONE 'UTC')::date AS this_monday
+    )
+    SELECT
+      wf.week_start AS "weekStart",
+      wf.finding_id AS "findingId",
+      wf.curated_by AS "curatedBy",
+      wf.rationale AS "rationale",
+      wf.featured_at AS "featuredAt",
+      ${agentFindings.agentName} AS "agentName",
+      ${agentFindings.agentTokenAddress} AS "agentTokenAddress",
+      ${agentFindings.title} AS "title",
+      ${agentFindings.severity} AS "severity",
+      ${agentFindings.summary} AS "summary"
+    FROM weekly_features wf
+    JOIN ${agentFindings} ON ${agentFindings.findingId} = wf.finding_id
+    JOIN current_week cw ON wf.week_start = cw.this_monday
+    LIMIT 1
+  `);
+  const rows = Array.isArray(result)
+    ? (result as unknown as RawWeeklyFeatureRow[])
+    : ((result as unknown as { rows?: RawWeeklyFeatureRow[] }).rows ?? []);
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
+    ...row,
+    weekStart: row.weekStart instanceof Date ? row.weekStart : new Date(row.weekStart),
+    featuredAt: row.featuredAt instanceof Date ? row.featuredAt : new Date(row.featuredAt),
+  };
+}
+
 export type RoastDetail = {
   submission: RoastSubmission;
   findings: AgentFinding[];

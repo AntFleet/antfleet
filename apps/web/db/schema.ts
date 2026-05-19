@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  date,
   index,
   integer,
   jsonb,
@@ -333,6 +334,40 @@ export const cronCursors = pgTable("cron_cursors", {
   value: text("value").notNull(),
 });
 
+// Sprint 4 — Receipt of the week. PK on week_start so re-running the curator
+// is idempotent; manual operator override (feature-finding.ts) upserts.
+export const weeklyFeatures = pgTable("weekly_features", {
+  // ISO date of Monday 00:00 UTC for the week this row represents.
+  weekStart: date("week_start").primaryKey(),
+  // FK-by-convention to agent_findings.finding_id.
+  findingId: text("finding_id").notNull(),
+  // 'auto' (auto-curator) or operator handle.
+  curatedBy: text("curated_by").notNull(),
+  rationale: text("rationale"),
+  featuredAt: timestamp("featured_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Claim rows link by convention to factory_launches.token_address; /api/claim
+// enforces existence because the first dispatcher tick may not have persisted
+// the launch row yet.
+export const agentClaims = pgTable("agent_claims", {
+  id: text("id").primaryKey(),
+  tokenAddress: text("token_address").notNull(),
+  repoFullName: text("repo_full_name").notNull(),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+  // EIP-191 personal_sign over the message defined in /api/claim. Stored for
+  // audit so a third party can reproduce the recover.
+  claimerSignature: text("claimer_signature").notNull(),
+  // Address recovered from the signature. Verified against
+  // factory_launches.deployer_address at write time; persisted so reviews can
+  // re-check without re-signing.
+  claimerAddress: text("claimer_address").notNull(),
+  // 'pending' | 'verified' | 'rejected'.
+  status: text("status").notNull().default("pending"),
+  rejectionReason: text("rejection_reason"),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+});
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -353,3 +388,7 @@ export type FactoryLaunch = typeof factoryLaunches.$inferSelect;
 export type NewFactoryLaunch = typeof factoryLaunches.$inferInsert;
 export type CronCursor = typeof cronCursors.$inferSelect;
 export type NewCronCursor = typeof cronCursors.$inferInsert;
+export type AgentClaim = typeof agentClaims.$inferSelect;
+export type NewAgentClaim = typeof agentClaims.$inferInsert;
+export type WeeklyFeature = typeof weeklyFeatures.$inferSelect;
+export type NewWeeklyFeature = typeof weeklyFeatures.$inferInsert;

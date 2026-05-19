@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
-import { loadAgentIndex, type AgentIndexRow } from "@/db/queries";
+import {
+  loadAgentIndex,
+  loadFactoryLaunchIndex,
+  type AgentIndexRow,
+  type FactoryLaunchIndexRow,
+} from "@/db/queries";
 import { formatRelativeTime } from "@/lib/receipts";
 import { severityLabel, shortAddress } from "@/lib/agent-findings";
 
@@ -16,13 +21,31 @@ export const metadata: Metadata = {
     "Investigative findings AntFleet has filed against running agents — protocol bugs, on-chain anomalies, and reproducible reads from Base.",
 };
 
-export default async function AgentsIndexPage() {
-  const agents = await loadAgentIndex();
+export default async function AgentsIndexPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ filter?: string }>;
+}) {
+  const { filter } = await searchParams;
+  const [agents, factoryStubs] = await Promise.all([loadAgentIndex(), loadFactoryLaunchIndex()]);
+  const unclaimed = factoryStubs.filter(
+    (r) => r.repoFullName === null && r.prelaunchStatus === "repo_not_found",
+  );
   const now = new Date();
+
+  if (filter === "unclaimed") {
+    return (
+      <>
+        <UnclaimedHero count={unclaimed.length} />
+        <SectionDivider />
+        <UnclaimedList rows={unclaimed} now={now} />
+      </>
+    );
+  }
 
   return (
     <>
-      <AgentsHero count={agents.length} />
+      <AgentsHero count={agents.length} unclaimedCount={unclaimed.length} />
       <SectionDivider />
       <AgentsList rows={agents} now={now} />
     </>
@@ -37,7 +60,7 @@ function SectionDivider() {
   return <div className="border-t border-[var(--color-line)] my-16" />;
 }
 
-function AgentsHero({ count }: { count: number }) {
+function AgentsHero({ count, unclaimedCount }: { count: number; unclaimedCount: number }) {
   return (
     <section className="py-20 pb-12">
       <ContentWrap>
@@ -81,6 +104,17 @@ function AgentsHero({ count }: { count: number }) {
           </a>
           .
         </p>
+        {unclaimedCount > 0 && (
+          <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
+            {unclaimedCount} {unclaimedCount === 1 ? "agent" : "agents"} awaiting attribution.{" "}
+            <a
+              href="/agents?filter=unclaimed"
+              className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
+            >
+              Are you the deployer? Claim one →
+            </a>
+          </p>
+        )}
       </ContentWrap>
     </section>
   );
@@ -148,6 +182,105 @@ function AgentRow({ row, now }: { row: AgentIndexRow; now: Date }) {
         </div>
         <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
           findings →
+        </span>
+      </div>
+    </a>
+  );
+}
+
+function UnclaimedHero({ count }: { count: number }) {
+  return (
+    <section className="py-20 pb-12">
+      <ContentWrap>
+        <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
+          Awaiting attribution
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug max-w-xl">
+          Agents AntFleet detected but couldn&apos;t link to a repo.
+        </h1>
+        <div className="mt-10 flex items-baseline gap-4">
+          <p className="text-6xl font-mono font-semibold tracking-tight text-[var(--color-ink)] tabular-nums">
+            {count.toLocaleString()}
+          </p>
+          <p className="text-sm text-[var(--color-ink-muted)]">
+            {count === 1 ? "agent" : "agents"}
+          </p>
+        </div>
+        <p className="mt-8 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
+          Auto-discovery couldn&apos;t resolve a public GitHub repo for these tokens. If you&apos;re
+          the deployer, click through to sign a message with your wallet and attribute a repo. Once
+          attributed, the pre-launch benchmark runs and findings land on the agent&apos;s page.
+        </p>
+        <p className="mt-3 text-xs text-[var(--color-ink-subtle)]">
+          Back to{" "}
+          <a
+            href="/agents"
+            className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
+          >
+            /agents
+          </a>
+          .
+        </p>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function UnclaimedList({ rows, now }: { rows: FactoryLaunchIndexRow[]; now: Date }) {
+  if (rows.length === 0) {
+    return (
+      <section className="pb-20">
+        <ContentWrap>
+          <div className="rounded-md border border-dashed border-[var(--color-line-strong)] p-8 text-center">
+            <p className="text-sm text-[var(--color-ink)] mb-2">No unclaimed agents right now.</p>
+            <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-md mx-auto">
+              The list populates when the factory watcher detects a Liquid agent deploy whose source
+              repo can&apos;t be auto-discovered.
+            </p>
+          </div>
+        </ContentWrap>
+      </section>
+    );
+  }
+  return (
+    <section className="pb-20">
+      <ContentWrap>
+        <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
+          {rows.map((r) => (
+            <li key={r.tokenAddress}>
+              <UnclaimedRow row={r} now={now} />
+            </li>
+          ))}
+        </ul>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function UnclaimedRow({ row, now }: { row: FactoryLaunchIndexRow; now: Date }) {
+  const display = row.tokenSymbol ?? row.tokenName ?? shortAddress(row.tokenAddress);
+  const relative = formatRelativeTime(now, row.deployedAt);
+  return (
+    <a
+      href={`/agents/${row.tokenAddress}/claim`}
+      className="block hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md transition-colors"
+    >
+      <div className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group">
+        <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
+          <Badge>unclaimed</Badge>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-[var(--color-ink)] leading-snug group-hover:underline underline-offset-2">
+            {display}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            <span>{shortAddress(row.tokenAddress)}</span>
+            <span className="text-[var(--color-line-strong)]">·</span>
+            <span>deployed {relative}</span>
+          </div>
+        </div>
+        <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
+          claim →
         </span>
       </div>
     </a>

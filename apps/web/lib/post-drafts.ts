@@ -171,3 +171,75 @@ export async function writeFactoryVerdictDraft(
     now,
   );
 }
+
+// Sprint 4 — operator-claim verification draft. Fires when /api/claim
+// verifies a signature and attributes a repo to a factory_launches row.
+export type ClaimVerifiedDraftInput = FactoryDraftBase & {
+  repoFullName: string;
+};
+
+export async function writeClaimVerifiedDraft(
+  input: ClaimVerifiedDraftInput,
+  now = new Date(),
+): Promise<string> {
+  const display = factoryDraftDisplay(input);
+  const body = [
+    `operator-verified: ${display} is github.com/${input.repoFullName}`,
+    "agent now has a source-of-truth code surface on antfleet",
+    `antfleet.dev/agents/${input.tokenAddress}`,
+  ].join("\n");
+  return writePostDraft(
+    {
+      slug: factoryDraftSlug(input, "claimed"),
+      title: `claim verified: ${display} → ${input.repoFullName}`,
+      body,
+    },
+    now,
+  );
+}
+
+// Sprint 4 — receipt of the week draft. Fires when curate-weekly.ts inserts a
+// new weekly_features row (auto or operator-curated).
+export type WeeklyFeatureDraftInput = {
+  agentName: string;
+  agentTokenAddress: string;
+  findingTitle: string;
+  severity: string;
+  summary: string;
+};
+
+export async function writeWeeklyFeatureDraft(
+  input: WeeklyFeatureDraftInput,
+  now = new Date(),
+): Promise<string> {
+  const body = [
+    `receipt of the week: ${input.agentName}`,
+    `${input.findingTitle} (${input.severity})`,
+    truncateOneLine(input.summary, 200),
+    `antfleet.dev/agents/${input.agentTokenAddress}`,
+  ].join("\n");
+  const isoWeek = isoWeekSlug(now);
+  return writePostDraft(
+    {
+      slug: `weekly-${isoWeek}-${input.agentName}`,
+      title: `receipt of the week: ${input.agentName}`,
+      body,
+    },
+    now,
+  );
+}
+
+function truncateOneLine(value: string, maxChars: number): string {
+  const stripped = value.replace(/\s+/g, " ").trim();
+  return stripped.length <= maxChars ? stripped : `${stripped.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function isoWeekSlug(now: Date): string {
+  // ISO week starts Monday. Compute the year and week number for the slug.
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNum = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+}
