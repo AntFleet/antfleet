@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { TweetIntent } from "@/components/TweetIntent";
 import { loadPublicReceiptsPage } from "@/db/queries";
 import {
   formatRelativeTime,
@@ -7,6 +8,19 @@ import {
   type CrossRepoReceiptRow,
   type DisplayReceipt,
 } from "@/lib/receipts";
+
+const SITE_URL = "https://www.antfleet.dev";
+
+// Tweet copy template per plan principle 1: the number on a tweet must
+// equal the number behind the link. Severity + category + repo-hash come
+// from the same DisplayReceipt the row renders, so the brag matches the
+// row visible on the page.
+function receiptTweetText(d: DisplayReceipt): string {
+  const repoHash = d.repoLabel.replace(/^repo\s+/i, "");
+  const sevCat = `${d.severity} ${d.category}`.toLowerCase();
+  const sha = d.shaLabel ?? "the merging PR";
+  return `AntFleet caught a ${sevCat} bug in ${repoHash}. Closed in ${sha}. Two frontier models, both agreed.`;
+}
 
 // Receipts are the moat (§18.2). The counter must be fresh on every visit —
 // caching this page would let stale numbers persist past closures and break
@@ -300,48 +314,60 @@ function Pagination({
 }
 
 function ReceiptRow({ display }: { display: DisplayReceipt }) {
+  const tweetUrl = `${SITE_URL}/receipts/${encodeURIComponent(display.findingId)}`;
   return (
-    <a
-      href={`/receipts/${encodeURIComponent(display.findingId)}`}
-      className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group transition-colors hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md"
-    >
-      {/* meta column — fixed-width on desktop, stacked on mobile */}
-      <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
-        <Badge>{display.category}</Badge>
-        <Badge>{display.severity}</Badge>
-      </div>
-
-      {/* body */}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm text-[var(--color-ink)] leading-snug group-hover:underline underline-offset-2">
-          {display.title}
-        </p>
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
-          <span>{display.repoLabel}</span>
-          <span className="text-[var(--color-line-strong)]">·</span>
-          <span>{display.prLabel}</span>
-          {display.shaLabel !== null && (
-            <>
-              <span className="text-[var(--color-line-strong)]">·</span>
-              <span>
-                closed in <span className="text-[var(--color-ink-muted)]">{display.shaLabel}</span>
-              </span>
-            </>
-          )}
-          {display.relativeClosedAt !== null && (
-            <>
-              <span className="text-[var(--color-line-strong)]">·</span>
-              <span>{display.relativeClosedAt}</span>
-            </>
-          )}
+    <div className="group -mx-3 flex flex-col gap-3 rounded-md px-3 py-5 transition-colors hover:bg-[var(--color-bg-elevated)] sm:flex-row sm:items-start sm:gap-6">
+      <a
+        href={`/receipts/${encodeURIComponent(display.findingId)}`}
+        className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-start sm:gap-6 min-w-0"
+      >
+        {/* meta column — fixed-width on desktop, stacked on mobile */}
+        <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
+          <Badge>{display.category}</Badge>
+          <Badge>{display.severity}</Badge>
         </div>
-      </div>
 
-      {/* affordance — right-aligned on desktop */}
-      <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
-        detail →
-      </span>
-    </a>
+        {/* body */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm leading-snug text-[var(--color-ink)] underline-offset-2 group-hover:underline">
+            {display.title}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            <span>{display.repoLabel}</span>
+            <span className="text-[var(--color-line-strong)]">·</span>
+            <span>{display.prLabel}</span>
+            {display.shaLabel !== null && (
+              <>
+                <span className="text-[var(--color-line-strong)]">·</span>
+                <span>
+                  closed in{" "}
+                  <span className="text-[var(--color-ink-muted)]">{display.shaLabel}</span>
+                </span>
+              </>
+            )}
+            {display.relativeClosedAt !== null && (
+              <>
+                <span className="text-[var(--color-line-strong)]">·</span>
+                <span>{display.relativeClosedAt}</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* affordance — right-aligned on desktop */}
+        <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] transition-colors group-hover:text-[var(--color-ink)] sm:shrink-0 sm:self-center">
+          detail →
+        </span>
+      </a>
+      <TweetIntent
+        text={receiptTweetText(display)}
+        url={tweetUrl}
+        ariaLabel={`Tweet this receipt: ${display.title}`}
+        className="self-start font-mono text-[11px] text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)] sm:self-center sm:shrink-0"
+      >
+        Tweet ↗
+      </TweetIntent>
+    </div>
   );
 }
 

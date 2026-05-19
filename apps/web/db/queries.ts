@@ -591,6 +591,64 @@ export async function loadPublicReceiptsPage(args: {
   };
 }
 
+// Window-bounded top-closures helper for the weekly /digest/[date]
+// permalink. Returns the N highest-severity public receipts whose
+// closure landed inside [since, until). Ranking is done in JS (info <
+// low < med < high) since the weekly window is small enough that
+// fetching the whole set and sorting is cheaper than a CASE expression
+// the optimizer can't index. Tie-breaks on closureDetectedAt DESC so
+// same-severity siblings stay newest-first.
+export async function loadTopClosuresBetween(
+  since: Date,
+  until: Date,
+  limit: number,
+): Promise<PublicReceiptRow[]> {
+  if (until.getTime() <= since.getTime() || limit <= 0) return [];
+  const rows = await db
+    .select({
+      findingId: findingStatus.findingId,
+      severity: findingStatus.severity,
+      category: findingStatus.category,
+      title: findingStatus.title,
+      repoHash: reviews.repoHash,
+      prNumber: reviews.prNumber,
+      closureSha: findingStatus.closureSha,
+      closureCommentUrl: findingStatus.closureCommentUrl,
+      closedAt: findingStatus.closureDetectedAt,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(
+      and(
+        eq(findingStatus.status, "closed"),
+        eq(reviews.publicReceipt, true),
+        gte(findingStatus.closureDetectedAt, since),
+        lt(findingStatus.closureDetectedAt, until),
+      ),
+    );
+  // JS toSorted below severity-DESC + closedAt-DESC; the SQL ORDER BY
+  // would be redundant, so we sort entirely in JS for clarity.
+  const ranked = rows.toSorted((a, b) => {
+    const sevDelta =
+      (DIGEST_SEVERITY_RANK[a.severity.toLowerCase()] ?? -1) -
+      (DIGEST_SEVERITY_RANK[b.severity.toLowerCase()] ?? -1);
+    if (sevDelta !== 0) return -sevDelta;
+    const at = a.closedAt?.getTime() ?? 0;
+    const bt = b.closedAt?.getTime() ?? 0;
+    return bt - at;
+  });
+  return ranked.slice(0, limit);
+}
+
+const DIGEST_SEVERITY_RANK: Record<string, number> = {
+  info: 0,
+  low: 1,
+  med: 2,
+  medium: 2,
+  high: 3,
+  critical: 4,
+};
+
 // Mission Phase-2 P2-E — single-receipt detail page. Returns the full
 // receipt context for one finding: same column projection as
 // loadPublicReceiptsPage plus the JSONB that carries the per-provider
@@ -1126,36 +1184,94 @@ export async function snapshotInstallActivity(
   };
 }
 
-async function activityWindow(sinceDate: Date | null): Promise<ActivityWindow> {
-  const reviewsWhere = sinceDate === null ? undefined : gte(reviews.createdAt, sinceDate);
-  const findingsCreatedWhere =
-    sinceDate === null ? undefined : gte(findingStatus.createdAt, sinceDate);
-  const findingsClosedWhere =
-    sinceDate === null
-      ? eq(findingStatus.status, "closed")
-      : and(eq(findingStatus.status, "closed"), gte(findingStatus.closureDetectedAt, sinceDate));
-  const reactionsWhere =
-    sinceDate === null ? undefined : gte(maintainerReactions.polledAt, sinceDate);
+// Pure clamping for the activityWindow() time bounds. Three rules:
+//   1. until in the future ⇒ treat as null ("up to now") so a digest URL
+//      rendered today renders the same numbers next week.
+//   2. until < since ⇒ short-circuit to a zero-counter result (caller
+//      avoids issuing impossible-range queries against the DB).
+//   3. since/until null are passed through; the SQL builder turns them
+//      into open-ended bounds.
+export function normalizeActivityWindow(
+  since: Date | null,
+  until: Date | null,
+  now: Date,
+): { since: Date | null; until: Date | null; zero: boolean } {
+  const clampedUntil = until === null ? null : until.getTime() > now.getTime() ? null : until;
+  if (since !== null && clampedUntil !== null && clampedUntil.getTime() < since.getTime()) {
+    return { since: null, until: null, zero: true };
+  }
+  return { since, until: clampedUntil, zero: false };
+}
 
-  const reviewsCountQuery =
-    reviewsWhere === undefined
-      ? db.select({ value: count() }).from(reviews)
-      : db.select({ value: count() }).from(reviews).where(reviewsWhere);
+// Counters for the /activity dashboard and any future digest page.
+//
+// Every counter is gated by reviews.publicReceipt = true so the headline
+// numbers always equal what the public /receipts page can substantiate.
+// Before this gate the page showed "receipts closed all-time = 41" while
+// /receipts itself listed only 32; the delta was non-opted-in dogfood
+// rows. Public-facing copy must use this helper or the JSON it backs.
+//
+// untilDate defaults to null = "up to now". Pass an explicit upper bound
+// for reproducible digest permalinks (the weekly /digest page renders the
+// same numbers no matter when the URL is re-opened).
+export async function activityWindow(
+  sinceDate: Date | null,
+  untilDate: Date | null = null,
+): Promise<ActivityWindow> {
+  const { since, until, zero } = normalizeActivityWindow(sinceDate, untilDate, new Date());
+  if (zero) {
+    return {
+      reviewsRun: 0,
+      findingsAgreed: 0,
+      receiptsClosed: 0,
+      reactionsObserved: 0,
+    };
+  }
 
-  const agreedCountQuery =
-    findingsCreatedWhere === undefined
-      ? db.select({ value: count() }).from(findingStatus)
-      : db.select({ value: count() }).from(findingStatus).where(findingsCreatedWhere);
+  // Build inclusive lower / exclusive upper bounds on each timestamp so
+  // back-to-back weekly digests don't double-count the boundary moment.
+  const reviewsRange = and(
+    since === null ? undefined : gte(reviews.createdAt, since),
+    until === null ? undefined : lt(reviews.createdAt, until),
+  );
+  const findingsCreatedRange = and(
+    since === null ? undefined : gte(findingStatus.createdAt, since),
+    until === null ? undefined : lt(findingStatus.createdAt, until),
+  );
+  const findingsClosedRange = and(
+    eq(findingStatus.status, "closed"),
+    since === null ? undefined : gte(findingStatus.closureDetectedAt, since),
+    until === null ? undefined : lt(findingStatus.closureDetectedAt, until),
+  );
+  const reactionsRange = and(
+    since === null ? undefined : gte(maintainerReactions.polledAt, since),
+    until === null ? undefined : lt(maintainerReactions.polledAt, until),
+  );
+
+  const publicGate = eq(reviews.publicReceipt, true);
+
+  const reviewsCountQuery = db
+    .select({ value: count() })
+    .from(reviews)
+    .where(and(publicGate, reviewsRange));
+
+  const agreedCountQuery = db
+    .select({ value: count() })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(and(publicGate, findingsCreatedRange));
 
   const closedCountQuery = db
     .select({ value: count() })
     .from(findingStatus)
-    .where(findingsClosedWhere);
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(and(publicGate, findingsClosedRange));
 
-  const reactionsCountQuery =
-    reactionsWhere === undefined
-      ? db.select({ value: count() }).from(maintainerReactions)
-      : db.select({ value: count() }).from(maintainerReactions).where(reactionsWhere);
+  const reactionsCountQuery = db
+    .select({ value: count() })
+    .from(maintainerReactions)
+    .innerJoin(reviews, eq(maintainerReactions.reviewId, reviews.reviewId))
+    .where(and(publicGate, reactionsRange));
 
   const [r, a, c, x] = await Promise.all([
     reviewsCountQuery,
@@ -1658,6 +1774,102 @@ export async function countRoastsPublishedSince(since: Date): Promise<number> {
     .from(roastSubmissions)
     .where(and(eq(roastSubmissions.status, "published"), gte(roastSubmissions.publishedAt, since)));
   return row?.value ?? 0;
+}
+
+// Public counter strip on /roast and footer of /roasts index. Findings
+// from roast submissions live in agent_findings under
+// agent_token_address LIKE 'roast:%' (Sprint 2 pseudo-key); this query
+// counts them in a single roundtrip alongside the published-submission
+// count so the form page renders one bragging line above the input.
+export interface RoastStats {
+  totalPublished: number;
+  totalFindingsFromRoasts: number;
+}
+
+export async function loadRoastStats(): Promise<RoastStats> {
+  const [pubRows, findingRows] = await Promise.all([
+    db
+      .select({ value: count() })
+      .from(roastSubmissions)
+      .where(eq(roastSubmissions.status, "published")),
+    db
+      .select({ value: count() })
+      .from(agentFindings)
+      .where(sql`lower(${agentFindings.agentTokenAddress}) like 'roast:%'`),
+  ]);
+  return {
+    totalPublished: pubRows[0]?.value ?? 0,
+    totalFindingsFromRoasts: findingRows[0]?.value ?? 0,
+  };
+}
+
+export interface PublishedRoastRow {
+  id: string;
+  repoFullName: string;
+  publishedAt: Date | null;
+  findingCount: number;
+  highestSeverity: string | null;
+}
+
+export interface PublishedRoastsPage {
+  rows: PublishedRoastRow[];
+  hasMore: boolean;
+}
+
+// Index listing for /roasts. Newest-first by publishedAt, cursor via
+// publishedAt < before (mirrors /receipts pattern so the visual language
+// stays consistent). Each row carries an aggregated finding count + the
+// highest-severity label so the index row matches what the OG card
+// shows.
+export async function loadPublishedRoasts(
+  limit: number,
+  before?: Date,
+): Promise<PublishedRoastsPage> {
+  if (limit <= 0) return { rows: [], hasMore: false };
+  const fetchLimit = limit + 1;
+  const conditions =
+    before === undefined
+      ? eq(roastSubmissions.status, "published")
+      : and(eq(roastSubmissions.status, "published"), lt(roastSubmissions.publishedAt, before));
+  const submissions = await db
+    .select({
+      id: roastSubmissions.id,
+      repoFullName: roastSubmissions.repoFullName,
+      publishedAt: roastSubmissions.publishedAt,
+    })
+    .from(roastSubmissions)
+    .where(conditions)
+    .orderBy(desc(roastSubmissions.publishedAt))
+    .limit(fetchLimit);
+  const hasMore = submissions.length > limit;
+  const visible = hasMore ? submissions.slice(0, limit) : submissions;
+  // Batch-fetch per-roast findings so we can attach count + highest
+  // severity without N+1.
+  const rows: PublishedRoastRow[] = await Promise.all(
+    visible.map(async (sub) => {
+      const findings = await db
+        .select({ severity: agentFindings.severity })
+        .from(agentFindings)
+        .where(sql`lower(${agentFindings.agentTokenAddress}) = lower(${"roast:" + sub.id})`);
+      let bestRank = -1;
+      let bestSeverity: string | null = null;
+      for (const f of findings) {
+        const rank = DIGEST_SEVERITY_RANK[f.severity.toLowerCase()] ?? -1;
+        if (rank > bestRank) {
+          bestRank = rank;
+          bestSeverity = f.severity;
+        }
+      }
+      return {
+        id: sub.id,
+        repoFullName: sub.repoFullName,
+        publishedAt: sub.publishedAt,
+        findingCount: findings.length,
+        highestSeverity: bestSeverity,
+      };
+    }),
+  );
+  return { rows, hasMore };
 }
 
 export async function insertRoastFindings(rows: NewAgentFinding[]): Promise<void> {

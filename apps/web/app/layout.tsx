@@ -60,6 +60,9 @@ function SiteHeader() {
           <a href="/agents" className="hover:text-[var(--color-ink)] transition-colors">
             Agents
           </a>
+          <a href="/roasts" className="hover:text-[var(--color-ink)] transition-colors">
+            Roasts
+          </a>
           <a href="/roadmap" className="hover:text-[var(--color-ink)] transition-colors">
             Roadmap
           </a>
@@ -86,6 +89,9 @@ function SiteFooter() {
           </a>
           <a href="/agents" className="hover:text-[var(--color-ink)] transition-colors">
             agents
+          </a>
+          <a href="/roasts" className="hover:text-[var(--color-ink)] transition-colors">
+            roasts
           </a>
           <a href="/changelog" className="hover:text-[var(--color-ink)] transition-colors">
             changelog

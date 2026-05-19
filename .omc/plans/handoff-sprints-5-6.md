@@ -175,8 +175,18 @@ require('dotenv').config({ path: '.env.local.bak.prod-main' });
 const { neon } = require('@neondatabase/serverless');
 const sql = neon(process.env.DATABASE_URL);
 (async () => {
-  const receipts = await sql\`SELECT COUNT(*)::int AS n FROM reviews WHERE public_receipt = true\`;
-  console.log('public receipts:', receipts[0].n);  // should be ≥30
+  // Count CLOSED FINDINGS on public-receipt reviews — this is the
+  // 'receipts closed' number the public /receipts page shows, NOT the
+  // count of public-receipt review rows. Conflating the two leaks a
+  // bigger headline number than the gated list can substantiate, so
+  // join into finding_status and filter status='closed' explicitly.
+  const closed = await sql\`
+    SELECT COUNT(*)::int AS n
+    FROM finding_status fs
+    JOIN reviews r ON r.review_id = fs.review_id
+    WHERE fs.status = 'closed' AND r.public_receipt = true
+  \`;
+  console.log('public receipts closed:', closed[0].n);  // should be ≥30
 })();
 "
 

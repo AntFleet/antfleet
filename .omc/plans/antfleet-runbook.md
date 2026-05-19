@@ -65,8 +65,10 @@ Routes:
 
 - `/agents`, `/agents/[address]`, `/agents/[address]/constitution`, `/agents/[address]/drift`
 - `/agents/[address]/claim`, `/api/claim` (Sprint 4 — operator portal for repo attribution via EIP-191 signature)
+- `/agents/[address]/opengraph-image`, `/receipts/[id]/opengraph-image`, `/roasts/[id]/opengraph-image` (X-attention sprint — 1200×630 next/og cards so every public artifact previews on X as a brand card instead of the small summary Twitter card)
 - `/badge/[owner]/[repo].svg`
-- `/roast`, `/api/roast`, `/roasts/[id]`
+- `/roast`, `/api/roast`, `/roasts`, `/roasts/[id]` (X-attention sprint added `/roasts` — public index of published roasts, mirrors `/receipts` pattern)
+- `/digest/[yyyy-mm-dd]`, `/digest/[yyyy-mm-dd]/opengraph-image` (X-attention sprint — weekly reproducible permalink; the URL renders byte-identical numbers no matter when it's re-opened)
 - `/api/cron/curate-weekly` (Sprint 5 follow-up — Monday 00:00 UTC)
 - `/api/cron/poll-factory` (Sprint 3 — route present; **dormant**, no schedule. Activates when `AGENTS_FACTORY_ADDRESS` env is set on prod, i.e. once an agents-specific Liquid factory contract deploys)
 - `/api/cron/run-prelaunch` (Sprint 3 — route present; **dormant**, no schedule. Reactivates alongside poll-factory)
@@ -193,6 +195,18 @@ Each sprint has a re-check gate. If the gate fails, do not execute — re-sequen
 **Codex orchestration:** CODEX-2/3/4/5 all dispatched via `omc team 1:codex` with `OMC_SHELL_READY_TIMEOUT_MS=90000`. Chunk 04 first dispatch printed help text instead of starting the team (transient `omc` CLI hiccup); retried once with a shorter prompt and succeeded on the second attempt (within the runbook's 1-retry budget). CLAUDE wrote the contract design doc, voice-sensitive page copy embedded in chunk-05's TASK.md, and the runbook update. Chunk 06 (tweet draft) was skipped at operator request.
 
 **Detail:** [`sprints/sprint-5-public-api.md`](sprints/sprint-5-public-api.md) · contract: [`sprints/sprint-5-api-contract.md`](sprints/sprint-5-api-contract.md)
+
+### X-attention sprint — OG cards + tweet intents + weekly digest ✅ DONE (post-Sprint-5 interleave)
+
+**Shipped:** Five chunks (CODEX-1..5) converting every public AntFleet artifact into one-click tweetable content with brand-consistent 1200×630 previews. Plan: [`ralplan-x-attention.md`](ralplan-x-attention.md).
+
+- CODEX-1: `activityWindow(since, until = null)` now public-receipt-gated and bound above by an explicit `until` so weekly digest permalinks stay reproducible. Pre-flight flip moved AntFleet/antfleet from 11→26 public receipts; the `/activity` headline drops from 41→32 receipts-closed-all-time by design (the gated number matches what `/receipts` substantiates).
+- CODEX-2: opengraph-image.tsx routes for `/receipts/[id]`, `/agents/[address]`, `/roasts/[id]` — runtime nodejs, system fonts only, never-throws (404-shaped image on bad input).
+- CODEX-3: `apps/web/components/TweetIntent.tsx` — server-rendered `<a>` to x.com/intent/tweet, no client JS. Wired into receipts rows, roast ShareSection (published-only), and the agent header.
+- CODEX-4: `/digest/[yyyy-mm-dd]` weekly permalink. `parseDigestSlug` is the only validation surface (regex + ISO round-trip + future-date guard); audited by an in-chunk security-reviewer subagent (clean, 0 findings).
+- CODEX-5: `/roasts` public index. New `loadRoastStats()` + `loadPublishedRoasts()` query helpers; counter strip above the `/roast` submission form; `/roasts` link added to header + footer nav.
+
+**Codex orchestration:** Hybrid mode (operator decision mid-sprint) — Claude handled surgical existing-file edits (CODEX-1 queries.ts, CODEX-3 page edits, CODEX-5 queries/layout/roast helpers), Codex via `omc team 1:codex` produced the net-new file chunks (CODEX-2 OG cards, CODEX-4 digest page+lib+OG, CODEX-5 roasts index page). Each codex team launch required `omc team api orphan-cleanup` after shutdown before the next launch could acquire the leader-session lock.
 
 ### Sprint 6 — Breadth features (leaderboard, forks tracker, cross-agent catalog) ▶ NEXT
 

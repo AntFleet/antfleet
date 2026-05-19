@@ -247,7 +247,7 @@ function WindowsSection({ windows }: { windows: FleetActivityJson["windows"] }) 
     <section>
       <ContentWrap>
         <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-8">
-          Live counts across all installs
+          Live counts · public-receipt installs only
         </h2>
         <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse">
@@ -442,7 +442,7 @@ function EventStream({ events, now }: { events: FleetActivityEventJson[]; now: D
             <p className="text-sm text-[var(--color-ink)] mb-2">No public events yet.</p>
             <p className="text-sm text-[var(--color-ink-muted)] max-w-md mx-auto leading-relaxed">
               Either the fleet is just-started, or no opted-in repos have activity. Aggregates above
-              cover all installs.
+              match what the public /receipts list can substantiate (public-receipt installs only).
             </p>
           </div>
         ) : (

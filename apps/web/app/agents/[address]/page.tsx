@@ -12,6 +12,9 @@ import { findAgentByAddress } from "@/lib/agent-registry";
 import { formatRelativeTime } from "@/lib/receipts";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
 import { CopyBadgeSnippet } from "./CopyBadgeSnippet";
+import { TweetIntent } from "@/components/TweetIntent";
+
+const SITE_URL = "https://www.antfleet.dev";
 
 // Per-agent finding page. Reads agent_findings WHERE lower(address) = lower
 // (slug) and renders every finding inline (info → high), most recent first.
@@ -269,6 +272,14 @@ function Header({
           >
             basescan ↗
           </a>
+          <TweetIntent
+            text={`Public investigation on ${detail.agentName} (${shortAddress(detail.agentTokenAddress)}): ${findingCount} finding${findingCount === 1 ? "" : "s"} on file.`}
+            url={`${SITE_URL}/agents/${detail.agentTokenAddress}`}
+            ariaLabel={`Tweet this agent's findings: ${detail.agentName}`}
+            className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
+          >
+            tweet ↗
+          </TweetIntent>
         </div>
       </ContentWrap>
     </section>
