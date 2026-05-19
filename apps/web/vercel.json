@@ -16,6 +16,14 @@
     {
       "path": "/api/cron/roast",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/poll-factory",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/run-prelaunch",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

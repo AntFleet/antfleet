@@ -85,6 +85,13 @@
       "when": 1779171900000,
       "tag": "0011_roast_submissions",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1779200000000,
+      "tag": "0012_factory_launches",
+      "breakpoints": true
     }
   ]
 }

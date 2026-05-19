@@ -293,6 +293,44 @@ export const roastSubmissions = pgTable("roast_submissions", {
   publishedAt: timestamp("published_at", { withTimezone: true }),
   receiptId: text("receipt_id"),
   rejectionReason: text("rejection_reason"),
+  // Sprint 3 — distinguishes public-form submissions from rows queued by the
+  // factory watcher's pre-launch dispatcher. The runner doesn't branch on it
+  // today, but the column lets /roasts/[id] and post-drafts attribute origin.
+  source: text("source").notNull().default("public"),
+});
+
+// Liquid Protocol factory deploys an ERC-20 per agent launch. Each row is one
+// detected TokenCreated event; the poller is idempotent on token_address.
+// prelaunchStatus drives the dispatcher state machine:
+//   pending → repo discovery in flight
+//   benchmarking → roast_submissions row inserted, runner picking it up
+//   published → roast finished, prelaunchFindingId set
+//   repo_not_found → discovery exhausted, no repo within 24h window
+//   benchmark_failed → runner reported terminal failure
+export const factoryLaunches = pgTable("factory_launches", {
+  tokenAddress: text("token_address").primaryKey(),
+  deployerAddress: text("deployer_address").notNull(),
+  tokenName: text("token_name"),
+  tokenSymbol: text("token_symbol"),
+  blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+  txHash: text("tx_hash").notNull(),
+  deployedAt: timestamp("deployed_at", { withTimezone: true }).notNull(),
+  repoFullName: text("repo_full_name"),
+  repoDiscoveredAt: timestamp("repo_discovered_at", { withTimezone: true }),
+  repoDiscoveryMethod: text("repo_discovery_method"),
+  prelaunchStatus: text("prelaunch_status").notNull().default("pending"),
+  // App-level reference (no FK) to roast_submissions.id once the dispatcher
+  // hands off to the runner. Stays null until the roast publishes.
+  prelaunchFindingId: text("prelaunch_finding_id"),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Generic cursor store for cron-style scripts. Pattern avoids per-job tables
+// for tiny state. Key = job name (e.g. "poll-factory.last_block"), value =
+// opaque string the job owns.
+export const cronCursors = pgTable("cron_cursors", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
 });
 
 export type Review = typeof reviews.$inferSelect;
@@ -311,3 +349,7 @@ export type DriftSnapshot = typeof driftSnapshots.$inferSelect;
 export type NewDriftSnapshot = typeof driftSnapshots.$inferInsert;
 export type RoastSubmission = typeof roastSubmissions.$inferSelect;
 export type NewRoastSubmission = typeof roastSubmissions.$inferInsert;
+export type FactoryLaunch = typeof factoryLaunches.$inferSelect;
+export type NewFactoryLaunch = typeof factoryLaunches.$inferInsert;
+export type CronCursor = typeof cronCursors.$inferSelect;
+export type NewCronCursor = typeof cronCursors.$inferInsert;
