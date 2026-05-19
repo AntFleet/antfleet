@@ -1382,6 +1382,10 @@ export type AgentCrossRepoMerge = {
 };
 
 export async function loadAgentDetail(address: string): Promise<AgentDetail | null> {
+  // The roast pipeline (Sprint 2) stores its findings in agent_findings under
+  // the pseudo-key `roast:<submissionId>`. Those live at /roasts/[id]; they
+  // must never resolve to an /agents/[address] page.
+  if (address.toLowerCase().startsWith("roast:")) return null;
   const normalized = address.toLowerCase();
   const findings = await db
     .select()
@@ -1620,6 +1624,10 @@ export async function loadAgentIndex(): Promise<AgentIndexRow[]> {
   // GROUP BY (agent_token_address, agent_name) so a typo in agent_name
   // would surface as two rows rather than silently collapse. Severity is
   // ranked client-side rather than via a pg enum.
+  //
+  // The `roast:%` filter matches the canonical convention from runbook §3:
+  // roast findings share this table for storage convenience but are
+  // surfaced at /roasts/[id], not /agents.
   const rows = await db
     .select({
       agentTokenAddress: agentFindings.agentTokenAddress,
@@ -1629,6 +1637,7 @@ export async function loadAgentIndex(): Promise<AgentIndexRow[]> {
       severities: sql<string[]>`array_agg(${agentFindings.severity})`.as("severities"),
     })
     .from(agentFindings)
+    .where(sql`lower(${agentFindings.agentTokenAddress}) NOT LIKE 'roast:%'`)
     .groupBy(agentFindings.agentTokenAddress, agentFindings.agentName)
     .orderBy(sql`max(${agentFindings.publishedAt}) desc`);
 
