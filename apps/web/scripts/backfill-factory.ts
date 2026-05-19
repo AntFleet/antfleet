@@ -27,7 +27,14 @@ loadDotenv({ path: ".env.local", quiet: true });
 type BaseClient = ReturnType<typeof createPublicClient<ReturnType<typeof http>, typeof base>>;
 type Db = ReturnType<typeof drizzle>;
 
-const FACTORY_ADDRESS = "0x04F1a284168743759BE6554f607a10CEBdB77760" as const;
+// Address of the agents-specific Liquid factory, set by operator once that
+// contract deploys. See scripts/poll-factory.ts for the rationale.
+function resolveFactoryAddress(): Address | null {
+  const raw = process.env["AGENTS_FACTORY_ADDRESS"];
+  if (raw === undefined || raw.length === 0) return null;
+  return getAddress(raw) as Address;
+}
+
 const FACTORY_DEPLOY_BLOCK_CURSOR_KEY = "poll-factory.factory_deploy_block";
 const CONFIRMATION_DEPTH = 12n;
 const LOG_RANGE_LIMIT = 2000n;
@@ -85,13 +92,17 @@ async function writeCursor(db: Db, key: string, value: bigint): Promise<void> {
     });
 }
 
-async function getFactoryDeployBlock(db: Db, client: BaseClient): Promise<bigint> {
+async function getFactoryDeployBlock(
+  db: Db,
+  client: BaseClient,
+  factory: Address,
+): Promise<bigint> {
   const stored = await readCursor(db, FACTORY_DEPLOY_BLOCK_CURSOR_KEY);
   if (stored !== null) {
     return stored;
   }
 
-  const discovered = await discoverFactoryDeployBlock(client, FACTORY_ADDRESS);
+  const discovered = await discoverFactoryDeployBlock(client, factory);
   await writeCursor(db, FACTORY_DEPLOY_BLOCK_CURSOR_KEY, discovered);
   return discovered;
 }
@@ -160,6 +171,12 @@ function minBigInt(a: bigint, b: bigint): bigint {
 
 async function main(): Promise<void> {
   const t0 = Date.now();
+  const factory = resolveFactoryAddress();
+  if (factory === null) {
+    // eslint-disable-next-line no-console
+    console.log("AGENTS_FACTORY_ADDRESS not set — nothing to backfill.");
+    return;
+  }
   const pool = new Pool({ connectionString: requireDatabaseUrl() });
   const db = drizzle(pool, { schema: { factoryLaunches, cronCursors } });
   const client = createPublicClient({
@@ -168,7 +185,7 @@ async function main(): Promise<void> {
   });
 
   try {
-    const factoryDeployBlock = await getFactoryDeployBlock(db, client);
+    const factoryDeployBlock = await getFactoryDeployBlock(db, client, factory);
     const currentBlock = await client.getBlockNumber();
     const toBlock = currentBlock > CONFIRMATION_DEPTH ? currentBlock - CONFIRMATION_DEPTH : 0n;
 
@@ -180,7 +197,7 @@ async function main(): Promise<void> {
       for (let chunkFrom = factoryDeployBlock; chunkFrom <= toBlock; chunkFrom += LOG_RANGE_LIMIT) {
         const chunkTo = minBigInt(chunkFrom + LOG_RANGE_LIMIT - 1n, toBlock);
         const logs = (await client.getLogs({
-          address: FACTORY_ADDRESS,
+          address: factory,
           event: TOKEN_CREATED_ABI[0],
           fromBlock: chunkFrom,
           toBlock: chunkTo,

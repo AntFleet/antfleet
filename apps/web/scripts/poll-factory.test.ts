@@ -129,6 +129,16 @@ describe("pollFactoryOnce", () => {
       );
     });
     process.env["DATABASE_URL"] = "postgres://example";
+    process.env["AGENTS_FACTORY_ADDRESS"] = "0x04F1a284168743759BE6554f607a10CEBdB77760";
+  });
+
+  it("no-ops when AGENTS_FACTORY_ADDRESS is unset", async () => {
+    delete process.env["AGENTS_FACTORY_ADDRESS"];
+    const { pollFactoryOnce } = await import("./poll-factory");
+    const result = await pollFactoryOnce();
+    expect(result).toEqual({ scanned: 0, inserted: 0, toBlock: 0n });
+    expect(state.getLogs).not.toHaveBeenCalled();
+    expect(state.getBlockNumber).not.toHaveBeenCalled();
   });
 
   it("inserts two TokenCreated events across a single 1500-block chunk", async () => {

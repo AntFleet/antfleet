@@ -20,9 +20,17 @@ type BaseClient = ReturnType<typeof createPublicClient<ReturnType<typeof http>, 
 import { cronCursors, factoryLaunches } from "../db/schema";
 import { logError, logInfo, messageOf } from "../lib/log";
 
-// Liquid Protocol token factory on Base mainnet. Source:
-// https://github.com/Liquid-Protocol-Ops/liquid-protocol-v0 (deployed factory).
-const FACTORY_ADDRESS = "0x04F1a284168743759BE6554f607a10CEBdB77760" as const;
+// Address of the agents-specific Liquid factory, set by operator once that
+// contract deploys. The general Liquid factory at 0x04F1a284…77760 powers
+// app.liquidprotocol.org/tokens (memecoins + autonomopoly bootstrap); watching
+// it surfaces 2k+ irrelevant deploys per autonomopoly. We do NOT default to
+// any factory — if `AGENTS_FACTORY_ADDRESS` is unset, both the manual CLI and
+// the cron route exit no-op with a clear log line.
+function resolveFactoryAddress(): Address | null {
+  const raw = process.env["AGENTS_FACTORY_ADDRESS"];
+  if (raw === undefined || raw.length === 0) return null;
+  return getAddress(raw) as Address;
+}
 
 // Deploy block of FACTORY_ADDRESS on Base. If unknown at script-build time,
 // resolve once via discoverFactoryDeployBlock() (see helper below) and persist
@@ -96,18 +104,27 @@ async function writeCursor(db: Db, key: string, value: bigint): Promise<void> {
     });
 }
 
-async function getFactoryDeployBlock(db: Db, client: BaseClient): Promise<bigint> {
+async function getFactoryDeployBlock(
+  db: Db,
+  client: BaseClient,
+  factory: Address,
+): Promise<bigint> {
   const stored = await readCursor(db, FACTORY_DEPLOY_BLOCK_CURSOR_KEY);
   if (stored !== null) {
     return stored;
   }
-  const discovered = await discoverFactoryDeployBlock(client, FACTORY_ADDRESS);
+  const discovered = await discoverFactoryDeployBlock(client, factory);
   await writeCursor(db, FACTORY_DEPLOY_BLOCK_CURSOR_KEY, discovered);
   return discovered;
 }
 
 export async function pollFactoryOnce(): Promise<PollFactoryResult> {
   const t0 = Date.now();
+  const factory = resolveFactoryAddress();
+  if (factory === null) {
+    logInfo("factory_poll.skip", { reason: "AGENTS_FACTORY_ADDRESS not set" });
+    return { scanned: 0, inserted: 0, toBlock: 0n };
+  }
   const pool = new Pool({ connectionString: requireDatabaseUrl() });
   const db = drizzle(pool, { schema: { factoryLaunches, cronCursors } });
   const client = createPublicClient({
@@ -118,7 +135,7 @@ export async function pollFactoryOnce(): Promise<PollFactoryResult> {
   try {
     const currentBlock = await client.getBlockNumber();
     const toBlock = currentBlock > CONFIRMATION_DEPTH ? currentBlock - CONFIRMATION_DEPTH : 0n;
-    const factoryDeployBlock = await getFactoryDeployBlock(db, client);
+    const factoryDeployBlock = await getFactoryDeployBlock(db, client, factory);
     const lastProcessed = await readCursor(db, LAST_PROCESSED_CURSOR_KEY);
     const fromBlock =
       lastProcessed === null
@@ -141,7 +158,7 @@ export async function pollFactoryOnce(): Promise<PollFactoryResult> {
     for (let chunkFrom = fromBlock; chunkFrom <= toBlock; chunkFrom += LOG_RANGE_LIMIT) {
       const chunkTo = minBigInt(chunkFrom + LOG_RANGE_LIMIT - 1n, toBlock);
       const logs = (await client.getLogs({
-        address: FACTORY_ADDRESS,
+        address: factory,
         event: TOKEN_CREATED_ABI[0],
         fromBlock: chunkFrom,
         toBlock: chunkTo,
