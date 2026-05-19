@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { checkRateLimit } from "./lib/api-v1/rate-limit";
 
 // Apply baseline security response headers to every request reaching the
 // Next.js app. Vercel terminates TLS at the edge, but the headers below
@@ -41,8 +42,62 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   ].join("; "),
 };
 
-export function middleware(_req: NextRequest): NextResponse {
-  const response = NextResponse.next();
+let warnedMissingForwardedFor = false;
+
+export function middleware(req: NextRequest): NextResponse {
+  const rateLimitResponse = maybeRateLimitApiV1(req);
+  if (rateLimitResponse !== null) {
+    return withSecurityHeaders(rateLimitResponse);
+  }
+
+  return withSecurityHeaders(NextResponse.next());
+}
+
+function maybeRateLimitApiV1(req: NextRequest): NextResponse | null {
+  if (!req.nextUrl.pathname.startsWith("/api/v1/") || req.method !== "GET") {
+    return null;
+  }
+
+  const ip = firstForwardedIp(req);
+  if (ip === null) {
+    if (!warnedMissingForwardedFor) {
+      warnedMissingForwardedFor = true;
+      console.warn("api_v1.rate_limit.missing_x_forwarded_for");
+    }
+    return null;
+  }
+
+  const result = checkRateLimit(ip);
+  if (result.allowed) {
+    return null;
+  }
+
+  return NextResponse.json(
+    {
+      error: {
+        code: "rate_limited",
+        message: "max 60 requests per minute per ip",
+      },
+    },
+    {
+      status: 429,
+      headers: {
+        "Retry-After": String(result.retryAfterSec),
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+      },
+    },
+  );
+}
+
+function firstForwardedIp(req: NextRequest): string | null {
+  const header = req.headers.get("x-forwarded-for");
+  const ip = header?.split(",")[0]?.trim();
+  return ip === undefined || ip.length === 0 ? null : ip;
+}
+
+function withSecurityHeaders(response: NextResponse): NextResponse {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     response.headers.set(name, value);
   }
@@ -52,5 +107,6 @@ export function middleware(_req: NextRequest): NextResponse {
 // Apply to every path except Next.js internals and static asset files.
 // API routes are included — they benefit from the security headers too.
 export const config = {
+  runtime: "nodejs",
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.png$|.*\\.svg$|.*\\.ico$).*)"],
 };
