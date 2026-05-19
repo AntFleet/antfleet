@@ -1,0 +1,279 @@
+// Tiny safe-markdown renderer for /agents/[address]. We only need a handful
+// of patterns: paragraphs, headings, lists, fenced code blocks, inline
+// code, links, bold/italic. The renderer escapes raw HTML by default;
+// anything that looks like `<...>` outside of fences is rendered as text.
+//
+// This is deliberately not a general markdown engine. Adding new syntax
+// (tables, blockquote nesting, etc.) is fine, but stay defensive about
+// the escape rules. The input is operator-authored, but agent_findings
+// is published to a public surface, so any future ingest path (e.g. via
+// the dashboard) is a potential injection vector.
+
+import type { ReactNode } from "react";
+
+const URL_RE = /^https?:\/\//;
+const LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g;
+
+export function renderFindingMarkdown(md: string): ReactNode[] {
+  const blocks = splitBlocks(md);
+  return blocks.map((block, i) => renderBlock(block, i));
+}
+
+type Block =
+  | { kind: "heading"; level: 2 | 3 | 4; text: string }
+  | { kind: "paragraph"; text: string }
+  | { kind: "ul"; items: string[] }
+  | { kind: "ol"; items: string[] }
+  | { kind: "code"; lang: string | null; body: string };
+
+function splitBlocks(md: string): Block[] {
+  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: Block[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+
+    // Fenced code block.
+    if (line.startsWith("```")) {
+      const lang = line.slice(3).trim() || null;
+      const bodyLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i]!.startsWith("```")) {
+        bodyLines.push(lines[i]!);
+        i++;
+      }
+      if (i < lines.length) i++;
+      blocks.push({ kind: "code", lang, body: bodyLines.join("\n") });
+      continue;
+    }
+
+    // Heading.
+    const hMatch = /^(#{2,4})\s+(.*)$/.exec(line);
+    if (hMatch !== null) {
+      const level = hMatch[1]!.length as 2 | 3 | 4;
+      blocks.push({ kind: "heading", level, text: hMatch[2]!.trim() });
+      i++;
+      continue;
+    }
+
+    // Unordered list.
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^[-*]\s+/, ""));
+        i++;
+      }
+      blocks.push({ kind: "ul", items });
+      continue;
+    }
+
+    // Ordered list.
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\d+\.\s+/, ""));
+        i++;
+      }
+      blocks.push({ kind: "ol", items });
+      continue;
+    }
+
+    // Blank line: skip.
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    // Paragraph: collect contiguous non-blank, non-special lines.
+    const paragraphLines: string[] = [line];
+    i++;
+    while (
+      i < lines.length &&
+      lines[i]!.trim() !== "" &&
+      !lines[i]!.startsWith("```") &&
+      !/^#{2,4}\s|^[-*]\s|^\d+\.\s/.test(lines[i]!)
+    ) {
+      paragraphLines.push(lines[i]!);
+      i++;
+    }
+    blocks.push({ kind: "paragraph", text: paragraphLines.join(" ") });
+  }
+  return blocks;
+}
+
+function renderBlock(block: Block, key: number): ReactNode {
+  switch (block.kind) {
+    case "heading":
+      if (block.level === 2) {
+        return (
+          <h2
+            key={key}
+            className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mt-10 mb-3"
+          >
+            {renderInline(block.text)}
+          </h2>
+        );
+      }
+      if (block.level === 3) {
+        return (
+          <h3 key={key} className="text-sm font-semibold text-[var(--color-ink)] mt-6 mb-2">
+            {renderInline(block.text)}
+          </h3>
+        );
+      }
+      return (
+        <h4
+          key={key}
+          className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-muted)] mt-4 mb-2"
+        >
+          {renderInline(block.text)}
+        </h4>
+      );
+    case "paragraph":
+      return (
+        <p key={key} className="text-sm text-[var(--color-ink-muted)] leading-relaxed mb-4">
+          {renderInline(block.text)}
+        </p>
+      );
+    case "ul":
+      return (
+        <ul
+          key={key}
+          className="list-disc pl-5 mb-4 flex flex-col gap-1 text-sm text-[var(--color-ink-muted)] leading-relaxed"
+        >
+          {block.items.map((item, j) => (
+            <li key={j}>{renderInline(item)}</li>
+          ))}
+        </ul>
+      );
+    case "ol":
+      return (
+        <ol
+          key={key}
+          className="list-decimal pl-5 mb-4 flex flex-col gap-1 text-sm text-[var(--color-ink-muted)] leading-relaxed"
+        >
+          {block.items.map((item, j) => (
+            <li key={j}>{renderInline(item)}</li>
+          ))}
+        </ol>
+      );
+    case "code":
+      return (
+        <pre
+          key={key}
+          className="mt-2 mb-5 overflow-x-auto rounded-md border border-[var(--color-line)] bg-[var(--color-bg-elevated)] px-4 py-3 font-mono text-[12px] leading-snug text-[var(--color-ink)]"
+        >
+          <code>{block.body}</code>
+        </pre>
+      );
+  }
+}
+
+// Inline pass: handles backtick code, [text](url) links, **bold**, *italic*,
+// and bare http(s) URLs. Everything else is rendered as plain text. We avoid
+// dangerouslySetInnerHTML entirely: the function returns ReactNode[].
+export function renderInline(text: string): ReactNode[] {
+  // First split on backticks so we don't tokenise markup inside inline code.
+  const segments = text.split(/(`[^`]+`)/g);
+  const nodes: ReactNode[] = [];
+  let k = 0;
+  for (const seg of segments) {
+    if (seg.startsWith("`") && seg.endsWith("`") && seg.length >= 2) {
+      nodes.push(
+        <code
+          key={k++}
+          className="font-mono text-[12.5px] rounded bg-[var(--color-bg-elevated)] px-1 py-0.5 text-[var(--color-ink)]"
+        >
+          {seg.slice(1, -1)}
+        </code>,
+      );
+      continue;
+    }
+    nodes.push(...renderInlineNonCode(seg, () => k++));
+  }
+  return nodes;
+}
+
+function renderInlineNonCode(text: string, nextKey: () => number): ReactNode[] {
+  const nodes: ReactNode[] = [];
+
+  // First pass: replace [text](url) with placeholders we splice in later.
+  const linkMatches: { label: string; href: string }[] = [];
+  const withPlaceholders = text.replace(LINK_RE, (_, label, href) => {
+    linkMatches.push({ label, href });
+    return `__LINK${linkMatches.length - 1}__`;
+  });
+
+  // Second pass: tokenise on **bold**, *italic*, bare URLs, and placeholders.
+  const tokenRe = /(\*\*[^*]+\*\*|\*[^*]+\*|https?:\/\/[^\s)]+|__LINK\d+__)/g;
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = tokenRe.exec(withPlaceholders)) !== null) {
+    if (m.index > cursor) {
+      nodes.push(withPlaceholders.slice(cursor, m.index));
+    }
+    const tok = m[0]!;
+    if (tok.startsWith("**") && tok.endsWith("**")) {
+      nodes.push(
+        <strong key={nextKey()} className="font-semibold text-[var(--color-ink)]">
+          {tok.slice(2, -2)}
+        </strong>,
+      );
+    } else if (tok.startsWith("*") && tok.endsWith("*") && tok.length >= 2) {
+      nodes.push(
+        <em key={nextKey()} className="italic">
+          {tok.slice(1, -1)}
+        </em>,
+      );
+    } else if (tok.startsWith("__LINK")) {
+      const idx = Number(tok.slice(6, -2));
+      const link = linkMatches[idx]!;
+      nodes.push(
+        <a
+          key={nextKey()}
+          href={link.href}
+          target={URL_RE.test(link.href) ? "_blank" : undefined}
+          rel={URL_RE.test(link.href) ? "noopener noreferrer" : undefined}
+          className="underline underline-offset-2 hover:opacity-70 transition-opacity"
+        >
+          {link.label}
+        </a>,
+      );
+    } else if (URL_RE.test(tok)) {
+      nodes.push(
+        <a
+          key={nextKey()}
+          href={tok}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline underline-offset-2 hover:opacity-70 transition-opacity break-all"
+        >
+          {tok}
+        </a>,
+      );
+    }
+    cursor = m.index + tok.length;
+  }
+  if (cursor < withPlaceholders.length) {
+    nodes.push(withPlaceholders.slice(cursor));
+  }
+  return nodes;
+}
+
+// Helpers for the page components: present so tests can pin exact output
+// without needing to render a full React tree.
+export const SEVERITY_BADGE_LABEL: Record<string, string> = {
+  info: "info",
+  low: "low",
+  med: "medium",
+  high: "high",
+};
+
+export function severityLabel(s: string): string {
+  return SEVERITY_BADGE_LABEL[s] ?? s;
+}
+
+export function shortAddress(address: string): string {
+  if (address.length < 12) return address;
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
