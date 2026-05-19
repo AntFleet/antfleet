@@ -66,8 +66,8 @@ Routes:
 - `/agents`, `/agents/[address]`, `/agents/[address]/constitution`, `/agents/[address]/drift`
 - `/badge/[owner]/[repo].svg`
 - `/roast`, `/api/roast`, `/roasts/[id]`
-- `/api/cron/poll-factory` (Sprint 3 — every 5 min)
-- `/api/cron/run-prelaunch` (Sprint 3 — every 10 min)
+- `/api/cron/poll-factory` (Sprint 3 — route present; **dormant**, no schedule. Activates when `AGENTS_FACTORY_ADDRESS` env is set on prod, i.e. once an agents-specific Liquid factory contract deploys)
+- `/api/cron/run-prelaunch` (Sprint 3 — route present; **dormant**, no schedule. Reactivates alongside poll-factory)
 - `/receipts`, `/benchmarks` (pre-existing — do not modify)
 - `/api/cron/*`, `/api/github/*`, `/api/opt-in/*` (pre-existing)
 
@@ -143,11 +143,20 @@ Each sprint has a re-check gate. If the gate fails, do not execute — re-sequen
 
 **Shipped:** `/roast`, `/api/roast`, `/roasts/[id]`, `roast_submissions` table, runner (`run-roast.ts`), rate limiting, OG tags.
 
-### Sprint 3 — Factory watcher + pre-launch health check ✅ DONE
+### Sprint 3 — Factory watcher + pre-launch health check ✅ DONE (dormant)
 
-**Shipped:** `factory_launches` + `cron_cursors` tables (migration `0012_factory_launches.sql`), `roast_submissions.source` column, `poll-factory.ts` + `/api/cron/poll-factory` (5min cron), `backfill-factory.ts` one-shot, `repo-discovery.ts` (tokenURI + github_search), `prelaunch-dispatcher.ts` + `/api/cron/run-prelaunch` (10min cron), `run-prelaunch.ts` CLI, auto-stub `/agents/[address]` page + `/agents` index merging factory_launches with findings-bound rows, three factory tweet-draft helpers in `post-drafts.ts`.
+**Shipped:** `factory_launches` + `cron_cursors` tables (migration `0012_factory_launches.sql`), `roast_submissions.source` column, `poll-factory.ts` + `/api/cron/poll-factory`, `backfill-factory.ts` one-shot, `repo-discovery.ts` (tokenURI + github_search), `prelaunch-dispatcher.ts` + `/api/cron/run-prelaunch`, `run-prelaunch.ts` CLI, auto-stub `/agents/[address]` page (direct-URL only), three factory tweet-draft helpers in `post-drafts.ts`.
 
 **Codex orchestration note:** CODEX-1 (schema) executed Claude-inline after omc-teams dispatch failed twice (operator-authorized retroactively after omc-teams root cause was fixed). CODEX-2/3/5 executed via real `omc team 1:codex` with `OMC_SHELL_READY_TIMEOUT_MS=90000` (the fix from PR upstream).
+
+**Post-merge correction (2026-05-19):** the initial implementation hardcoded `0x04F1a284…77760` as the factory address, which turned out to be the general Liquid Protocol token factory (powering `app.liquidprotocol.org/tokens` — memecoins + the autonomopoly bootstrap deploy). There is **no separate agents-specific factory contract yet**; the agents launchpad will launch later. The backfill caught 2,220 unrelated memecoin deploys before this was caught. Follow-up corrections:
+
+- `FACTORY_ADDRESS` is now read from `process.env.AGENTS_FACTORY_ADDRESS`. If unset, the poller and backfill no-op with a clear log line.
+- Both cron schedules removed from `vercel.json` — routes are still live for manual invocation but no automated polling.
+- `factory_launches` table truncated on prod + dev; `poll-factory.*` cron cursors deleted.
+- `/agents` index reverted to findings-only (the auto-stub `/agents/[address]` page remains live for direct URL hits — useful when the dispatcher reactivates).
+
+**To reactivate** when the agents factory deploys: set `AGENTS_FACTORY_ADDRESS=0x…` in Vercel prod env, re-add the two cron schedules to `vercel.json`, optionally run `backfill-factory.ts` once.
 
 ### Sprint 4 — Operator portal + receipt-of-the-week ▶ NEXT
 

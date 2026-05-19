@@ -11,6 +11,7 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 .env*.local
+.env.local.bak*
 
 # Copied from repo root by the prebuild step so /changelog can read it from
 # inside the Vercel function bundle (Turbopack chokes on the workspace
