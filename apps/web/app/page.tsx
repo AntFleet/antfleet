@@ -3,6 +3,11 @@ import { severityLabel, shortAddress } from "@/lib/agent-findings";
 import { getGitHubAppInstallUrl } from "@/lib/install-url";
 import { formatRelativeTime } from "@/lib/receipts";
 
+// Sprint 4 — homepage now queries weekly_features for the receipt-of-the-week
+// card. Skip static pre-render so the build doesn't query the prod DB before
+// migrations 0014 have landed.
+export const dynamic = "force-dynamic";
+
 // ─── constants ──────────────────────────────────────────────────────────────
 
 const RECEIPTS_URL = "/receipts";
