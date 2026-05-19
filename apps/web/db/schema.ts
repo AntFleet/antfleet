@@ -235,6 +235,41 @@ export const outgoingPrs = pgTable(
   ],
 );
 
+// AntFleet investigative findings, surfaced under /agents/[address]. Distinct
+// from the reviews/findingStatus pipeline: those rows are emitted by the
+// two-model consensus reviewer running against a PR. agent_findings rows are
+// hand-authored investigations published as a one-off URL (the first row
+// being the FeeLocker selector mismatch on agent-autonomopoly). The table is
+// intentionally schema-light — every column is markdown-or-string so future
+// findings on other agents need no migration.
+export const agentFindings = pgTable("agent_findings", {
+  // Stable slug, e.g. "feelocker-selector-2026-05-18". Used in the URL when
+  // we add per-finding detail pages later; for now the address page renders
+  // the full body inline.
+  findingId: text("finding_id").primaryKey(),
+  // The agent's primary on-chain identity — usually the ERC-20 token address
+  // that names the agent. Indexed via the route path /agents/[address].
+  agentTokenAddress: text("agent_token_address").notNull(),
+  // Human-readable repo name (e.g. "agent-autonomopoly"). Lets us cross-link
+  // to AntFleet reviews on agent-<name>-bench without exposing internal ids.
+  agentName: text("agent_name").notNull(),
+  title: text("title").notNull(),
+  // info | low | med | high. Free text rather than a pg enum so new levels
+  // are application-only.
+  severity: text("severity").notNull(),
+  // Markdown body. Rendered with a small allowlist (paragraphs, lists, code,
+  // links) — no raw HTML.
+  summary: text("summary").notNull(),
+  // Markdown — usually a short list of links and reproducible commands.
+  evidence: text("evidence"),
+  // Filled in after the upstream PR opens; null while the finding is still
+  // unmaintained-only documentation.
+  upstreamPrUrl: text("upstream_pr_url"),
+  // Filled in if/when the upstream merges the fix. Null while open.
+  upstreamMergedSha: text("upstream_merged_sha"),
+  publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -245,3 +280,5 @@ export type OnboardingEvent = typeof onboardingEvents.$inferSelect;
 export type NewOnboardingEvent = typeof onboardingEvents.$inferInsert;
 export type OutgoingPr = typeof outgoingPrs.$inferSelect;
 export type NewOutgoingPr = typeof outgoingPrs.$inferInsert;
+export type AgentFinding = typeof agentFindings.$inferSelect;
+export type NewAgentFinding = typeof agentFindings.$inferInsert;
