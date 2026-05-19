@@ -9,9 +9,7 @@ describe("ApiPage", () => {
 
     expect(metadata.title).toBe("API · AntFleet");
     expect(markup).toContain("AntFleet API");
-    expect(markup).toContain(
-      "Public, read-only JSON for AntFleet&#x27;s code-quality data layer.",
-    );
+    expect(markup).toContain("Public, read-only JSON for AntFleet&#x27;s code-quality data layer.");
     expect(markup).toContain("GET /api/v1/findings");
     expect(markup).toContain("GET /api/v1/findings/{finding_id}");
     expect(markup).toContain("GET /api/v1/agents");
@@ -21,9 +19,7 @@ describe("ApiPage", () => {
     expect(markup).toContain("GET /api/v1/stats");
     expect(markup).toContain("60 requests per 60 seconds per IP");
     expect(markup).toContain('href="/api/v1/openapi.json"');
-    expect(markup).toContain(
-      "curl https://antfleet.dev/api/v1/findings?severity=high&amp;limit=5",
-    );
+    expect(markup).toContain("curl https://antfleet.dev/api/v1/findings?severity=high&amp;limit=5");
     expect(markup).toContain("feelocker-selector-2026-05-18");
   });
 });

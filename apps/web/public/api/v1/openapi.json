@@ -18,15 +18,46 @@
         "summary": "List findings",
         "description": "Returns published agent findings ordered by published_at descending, then finding_id ascending. Response shape: { data: Finding[], next_cursor: Cursor }.",
         "parameters": [
-          { "name": "agent_token_address", "in": "query", "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }, "description": "EVM address compared case-insensitively." },
-          { "name": "repo_full_name", "in": "query", "schema": { "type": "string", "minLength": 1, "example": "Liquid-Protocol-Ops/agent-autonomopoly" }, "description": "Repository owner/name compared case-insensitively." },
+          {
+            "name": "agent_token_address",
+            "in": "query",
+            "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+            "description": "EVM address compared case-insensitively."
+          },
+          {
+            "name": "repo_full_name",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "Liquid-Protocol-Ops/agent-autonomopoly"
+            },
+            "description": "Repository owner/name compared case-insensitively."
+          },
           { "$ref": "#/components/parameters/Severity" },
           { "$ref": "#/components/parameters/Since" },
           { "$ref": "#/components/parameters/Limit" },
           { "$ref": "#/components/parameters/Cursor" }
         ],
         "responses": {
-          "200": { "description": "Page of findings.", "content": { "application/json": { "schema": { "type": "object", "required": ["data", "next_cursor"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Finding" } }, "next_cursor": { "$ref": "#/components/schemas/Cursor" } } } } } },
+          "200": {
+            "description": "Page of findings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data", "next_cursor"],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Finding" }
+                    },
+                    "next_cursor": { "$ref": "#/components/schemas/Cursor" }
+                  }
+                }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/InvalidInput" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -40,10 +71,27 @@
         "summary": "Get finding",
         "description": "Returns one published agent finding by exact finding_id. Response shape: { data: Finding }.",
         "parameters": [
-          { "name": "finding_id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1 }, "description": "Exact agent_findings.finding_id value." }
+          {
+            "name": "finding_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 },
+            "description": "Exact agent_findings.finding_id value."
+          }
         ],
         "responses": {
-          "200": { "description": "Finding detail.", "content": { "application/json": { "schema": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/Finding" } } } } } },
+          "200": {
+            "description": "Finding detail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data"],
+                  "properties": { "data": { "$ref": "#/components/schemas/Finding" } }
+                }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/InvalidInput" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -61,7 +109,21 @@
           { "$ref": "#/components/parameters/Cursor" }
         ],
         "responses": {
-          "200": { "description": "Page of agents.", "content": { "application/json": { "schema": { "type": "object", "required": ["data", "next_cursor"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Agent" } }, "next_cursor": { "$ref": "#/components/schemas/Cursor" } } } } } },
+          "200": {
+            "description": "Page of agents.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data", "next_cursor"],
+                  "properties": {
+                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/Agent" } },
+                    "next_cursor": { "$ref": "#/components/schemas/Cursor" }
+                  }
+                }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/InvalidInput" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -75,10 +137,27 @@
         "summary": "Get agent",
         "description": "Returns one public agent by EVM address. Response shape: { data: AgentDetail }.",
         "parameters": [
-          { "name": "address", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }, "description": "EVM address compared case-insensitively." }
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+            "description": "EVM address compared case-insensitively."
+          }
         ],
         "responses": {
-          "200": { "description": "Agent detail.", "content": { "application/json": { "schema": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/AgentDetail" } } } } } },
+          "200": {
+            "description": "Agent detail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data"],
+                  "properties": { "data": { "$ref": "#/components/schemas/AgentDetail" } }
+                }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/InvalidInput" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -92,14 +171,37 @@
         "summary": "List agent findings",
         "description": "Returns findings for one public agent ordered by published_at descending, then finding_id ascending. Response shape: { data: Finding[], next_cursor: Cursor }.",
         "parameters": [
-          { "name": "address", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }, "description": "EVM address compared case-insensitively." },
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+            "description": "EVM address compared case-insensitively."
+          },
           { "$ref": "#/components/parameters/Severity" },
           { "$ref": "#/components/parameters/Since" },
           { "$ref": "#/components/parameters/Limit" },
           { "$ref": "#/components/parameters/Cursor" }
         ],
         "responses": {
-          "200": { "description": "Page of findings for the agent.", "content": { "application/json": { "schema": { "type": "object", "required": ["data", "next_cursor"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Finding" } }, "next_cursor": { "$ref": "#/components/schemas/Cursor" } } } } } },
+          "200": {
+            "description": "Page of findings for the agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data", "next_cursor"],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Finding" }
+                    },
+                    "next_cursor": { "$ref": "#/components/schemas/Cursor" }
+                  }
+                }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/InvalidInput" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -113,13 +215,36 @@
         "summary": "List agent drift snapshots",
         "description": "Returns drift snapshots for one public agent ordered by commit_timestamp descending, then id ascending. Response shape: { data: DriftSnapshot[], next_cursor: Cursor }.",
         "parameters": [
-          { "name": "address", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }, "description": "EVM address compared case-insensitively." },
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+            "description": "EVM address compared case-insensitively."
+          },
           { "$ref": "#/components/parameters/Since" },
           { "$ref": "#/components/parameters/Limit" },
           { "$ref": "#/components/parameters/Cursor" }
         ],
         "responses": {
-          "200": { "description": "Page of drift snapshots for the agent.", "content": { "application/json": { "schema": { "type": "object", "required": ["data", "next_cursor"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSnapshot" } }, "next_cursor": { "$ref": "#/components/schemas/Cursor" } } } } } },
+          "200": {
+            "description": "Page of drift snapshots for the agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data", "next_cursor"],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/DriftSnapshot" }
+                    },
+                    "next_cursor": { "$ref": "#/components/schemas/Cursor" }
+                  }
+                }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/InvalidInput" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -133,7 +258,12 @@
         "summary": "Get aggregate stats",
         "description": "Returns aggregate public API counts as a flat object without the list/detail envelope.",
         "responses": {
-          "200": { "description": "Aggregate stats.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Stats" } } } },
+          "200": {
+            "description": "Aggregate stats.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Stats" } }
+            }
+          },
           "400": { "$ref": "#/components/responses/InvalidInput" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -146,16 +276,37 @@
     "schemas": {
       "Finding": {
         "type": "object",
-        "required": ["finding_id", "agent_token_address", "agent_name", "repo_full_name", "title", "severity", "summary", "evidence", "upstream_pr_url", "upstream_merged_sha", "published_at"],
+        "required": [
+          "finding_id",
+          "agent_token_address",
+          "agent_name",
+          "repo_full_name",
+          "title",
+          "severity",
+          "summary",
+          "evidence",
+          "upstream_pr_url",
+          "upstream_merged_sha",
+          "published_at"
+        ],
         "properties": {
           "finding_id": { "type": "string", "example": "feelocker-selector-2026-05-18" },
-          "agent_token_address": { "type": "string", "example": "0xB3D7e0c3C39A1D3F1B304663065A2F83Ddf56d8e" },
+          "agent_token_address": {
+            "type": "string",
+            "example": "0xB3D7e0c3C39A1D3F1B304663065A2F83Ddf56d8e"
+          },
           "agent_name": { "type": "string", "example": "autonomopoly" },
-          "repo_full_name": { "type": ["string", "null"], "example": "Liquid-Protocol-Ops/agent-autonomopoly" },
+          "repo_full_name": {
+            "type": ["string", "null"],
+            "example": "Liquid-Protocol-Ops/agent-autonomopoly"
+          },
           "title": { "type": "string" },
           "severity": { "type": "string", "enum": ["info", "low", "med", "high"] },
           "summary": { "type": "string", "description": "Markdown summary." },
-          "evidence": { "type": ["string", "null"], "description": "Markdown evidence, when available." },
+          "evidence": {
+            "type": ["string", "null"],
+            "description": "Markdown evidence, when available."
+          },
           "upstream_pr_url": { "type": ["string", "null"], "format": "uri" },
           "upstream_merged_sha": { "type": ["string", "null"] },
           "published_at": { "type": "string", "format": "date-time" }
@@ -163,11 +314,22 @@
       },
       "Agent": {
         "type": "object",
-        "required": ["address", "name", "repo_full_name", "source", "first_seen_at", "findings_count", "latest_finding_at"],
+        "required": [
+          "address",
+          "name",
+          "repo_full_name",
+          "source",
+          "first_seen_at",
+          "findings_count",
+          "latest_finding_at"
+        ],
         "properties": {
           "address": { "type": "string", "example": "0xB3D7e0c3C39A1D3F1B304663065A2F83Ddf56d8e" },
           "name": { "type": "string", "example": "autonomopoly" },
-          "repo_full_name": { "type": ["string", "null"], "example": "Liquid-Protocol-Ops/agent-autonomopoly" },
+          "repo_full_name": {
+            "type": ["string", "null"],
+            "example": "Liquid-Protocol-Ops/agent-autonomopoly"
+          },
           "source": { "type": "string", "enum": ["registry", "factory"] },
           "first_seen_at": { "type": "string", "format": "date-time" },
           "findings_count": { "type": "integer", "minimum": 0 },
@@ -196,23 +358,54 @@
       },
       "DriftSnapshot": {
         "type": "object",
-        "required": ["id", "agent_token_address", "commit_sha", "commit_timestamp", "drift_score", "threshold", "observed_at"],
+        "required": [
+          "id",
+          "agent_token_address",
+          "commit_sha",
+          "commit_timestamp",
+          "drift_score",
+          "threshold",
+          "observed_at"
+        ],
         "properties": {
           "id": { "type": "string", "example": "0xabc-0xdef" },
           "agent_token_address": { "type": "string" },
           "commit_sha": { "type": "string" },
           "commit_timestamp": { "type": "string", "format": "date-time" },
-          "drift_score": { "type": "string", "description": "Stringified numeric value preserving database precision." },
-          "threshold": { "type": "string", "description": "Stringified numeric value preserving database precision." },
+          "drift_score": {
+            "type": "string",
+            "description": "Stringified numeric value preserving database precision."
+          },
+          "threshold": {
+            "type": "string",
+            "description": "Stringified numeric value preserving database precision."
+          },
           "observed_at": { "type": "string", "format": "date-time" }
         }
       },
       "Stats": {
         "type": "object",
-        "required": ["total_findings", "findings_by_severity", "total_agents", "agents_with_findings", "total_drift_snapshots", "latest_finding_at", "generated_at"],
+        "required": [
+          "total_findings",
+          "findings_by_severity",
+          "total_agents",
+          "agents_with_findings",
+          "total_drift_snapshots",
+          "latest_finding_at",
+          "generated_at"
+        ],
         "properties": {
           "total_findings": { "type": "integer", "minimum": 0 },
-          "findings_by_severity": { "type": "object", "required": ["info", "low", "med", "high"], "properties": { "info": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "med": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 } } },
+          "findings_by_severity": {
+            "type": "object",
+            "required": ["info", "low", "med", "high"],
+            "properties": {
+              "info": { "type": "integer", "minimum": 0 },
+              "low": { "type": "integer", "minimum": 0 },
+              "med": { "type": "integer", "minimum": 0 },
+              "high": { "type": "integer", "minimum": 0 }
+            }
+          },
           "total_agents": { "type": "integer", "minimum": 0 },
           "agents_with_findings": { "type": "integer", "minimum": 0 },
           "total_drift_snapshots": { "type": "integer", "minimum": 0 },
@@ -228,7 +421,10 @@
             "type": "object",
             "required": ["code", "message"],
             "properties": {
-              "code": { "type": "string", "enum": ["invalid_input", "invalid_cursor", "not_found", "rate_limited", "internal"] },
+              "code": {
+                "type": "string",
+                "enum": ["invalid_input", "invalid_cursor", "not_found", "rate_limited", "internal"]
+              },
               "message": { "type": "string" }
             }
           }
@@ -250,22 +446,54 @@
       }
     },
     "responses": {
-      "InvalidInput": { "description": "Invalid path or query parameter.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-      "NotFound": { "description": "Resource was not found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "InvalidInput": {
+        "description": "Invalid path or query parameter.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "NotFound": {
+        "description": "Resource was not found.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
       "RateLimited": {
         "description": "Per-IP rate limit exceeded.",
         "headers": {
-          "Retry-After": { "description": "Seconds until the rate-limit window clears.", "schema": { "type": "integer", "minimum": 1 } }
+          "Retry-After": {
+            "description": "Seconds until the rate-limit window clears.",
+            "schema": { "type": "integer", "minimum": 1 }
+          }
         },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
       },
-      "Internal": { "description": "Unexpected server error.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+      "Internal": {
+        "description": "Unexpected server error.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
     },
     "parameters": {
-      "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }, "description": "Maximum number of rows to return." },
-      "Cursor": { "name": "cursor", "in": "query", "schema": { "$ref": "#/components/schemas/Cursor" }, "description": "Opaque cursor returned by a previous list response." },
-      "Since": { "name": "since", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "Only return rows at or after this ISO-8601 timestamp." },
-      "Severity": { "name": "severity", "in": "query", "schema": { "type": "string", "enum": ["info", "low", "med", "high"] }, "description": "Finding severity filter." }
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+        "description": "Maximum number of rows to return."
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "schema": { "$ref": "#/components/schemas/Cursor" },
+        "description": "Opaque cursor returned by a previous list response."
+      },
+      "Since": {
+        "name": "since",
+        "in": "query",
+        "schema": { "type": "string", "format": "date-time" },
+        "description": "Only return rows at or after this ISO-8601 timestamp."
+      },
+      "Severity": {
+        "name": "severity",
+        "in": "query",
+        "schema": { "type": "string", "enum": ["info", "low", "med", "high"] },
+        "description": "Finding severity filter."
+      }
     }
   }
 }

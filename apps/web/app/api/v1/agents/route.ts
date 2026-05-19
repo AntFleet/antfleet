@@ -97,9 +97,9 @@ export async function handleAgents(req: NextRequest, deps: AgentsDeps) {
   );
 }
 
-function parseQuery(req: NextRequest):
-  | { success: true; query: AgentQuery }
-  | { success: false; message: string } {
+function parseQuery(
+  req: NextRequest,
+): { success: true; query: AgentQuery } | { success: false; message: string } {
   const parsed = querySchema.safeParse(Object.fromEntries(req.nextUrl.searchParams));
   if (parsed.success) return { success: true, query: parsed.data };
   return { success: false, message: parsed.error.issues[0]?.path.join(".") || "query" };
@@ -125,7 +125,9 @@ export function pageAgents(rows: AgentListRow[], limit: number): AgentPage {
   return {
     rows: data,
     nextCursor:
-      rows.length > limit && last !== undefined ? encodeCursor([iso(last.firstSeenAt), last.address]) : null,
+      rows.length > limit && last !== undefined
+        ? encodeCursor([iso(last.firstSeenAt), last.address])
+        : null,
   };
 }
 
@@ -137,7 +139,9 @@ function agentRowFromSql(row: SqlAgentRow): AgentListRow {
     source: row.source,
     firstSeenAt: row.first_seen_at,
     findingsCount:
-      typeof row.findings_count === "number" ? row.findings_count : Number.parseInt(row.findings_count, 10),
+      typeof row.findings_count === "number"
+        ? row.findings_count
+        : Number.parseInt(row.findings_count, 10),
     latestFindingAt: row.latest_finding_at,
   };
 }

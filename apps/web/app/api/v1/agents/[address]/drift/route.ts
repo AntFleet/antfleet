@@ -107,7 +107,9 @@ function pageDrift(rows: DriftRow[], limit: number): Page {
   return {
     rows: data,
     nextCursor:
-      rows.length > limit && last !== undefined ? encodeCursor([iso(last.commitTimestamp), last.id]) : null,
+      rows.length > limit && last !== undefined
+        ? encodeCursor([iso(last.commitTimestamp), last.id])
+        : null,
   };
 }
 

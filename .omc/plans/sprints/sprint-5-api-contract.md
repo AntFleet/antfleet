@@ -127,13 +127,13 @@ HTTP status drives the broad class; `code` is the stable identifier consumers sh
 
 ### Error code vocabulary (stable)
 
-| HTTP | `code` | When |
-|---|---|---|
-| 400 | `invalid_input` | Path or query param fails validation. `message` includes the offending field. |
-| 400 | `invalid_cursor` | Cursor failed to decode. Consumer should drop the cursor and restart from page 1. |
-| 404 | `not_found` | Resource id doesn't exist. |
-| 429 | `rate_limited` | Per-IP window exceeded. |
-| 500 | `internal` | Unhandled exception. `message` is generic; consumer should retry with backoff. |
+| HTTP | `code`           | When                                                                              |
+| ---- | ---------------- | --------------------------------------------------------------------------------- |
+| 400  | `invalid_input`  | Path or query param fails validation. `message` includes the offending field.     |
+| 400  | `invalid_cursor` | Cursor failed to decode. Consumer should drop the cursor and restart from page 1. |
+| 404  | `not_found`      | Resource id doesn't exist.                                                        |
+| 429  | `rate_limited`   | Per-IP window exceeded.                                                           |
+| 500  | `internal`       | Unhandled exception. `message` is generic; consumer should retry with backoff.    |
 
 Adding a new `code` for the same status is non-breaking. Removing or repurposing a code is breaking (v2).
 
@@ -147,14 +147,14 @@ List of all `agent_findings` rows.
 
 **Query params:**
 
-| Name | Type | Notes |
-|---|---|---|
-| `agent_token_address` | string | EVM address. Compared case-insensitively. |
-| `repo_full_name` | string | `owner/repo`. Compared case-insensitively. |
-| `severity` | string | One of `info`, `low`, `med`, `high`. Invalid → 400. |
-| `since` | ISO date | `published_at >= since`. Invalid → 400. |
-| `limit` | int 1-100 | Default 20. |
-| `cursor` | string | Opaque. |
+| Name                  | Type      | Notes                                               |
+| --------------------- | --------- | --------------------------------------------------- |
+| `agent_token_address` | string    | EVM address. Compared case-insensitively.           |
+| `repo_full_name`      | string    | `owner/repo`. Compared case-insensitively.          |
+| `severity`            | string    | One of `info`, `low`, `med`, `high`. Invalid → 400. |
+| `since`               | ISO date  | `published_at >= since`. Invalid → 400.             |
+| `limit`               | int 1-100 | Default 20.                                         |
+| `cursor`              | string    | Opaque.                                             |
 
 **Sort:** `published_at DESC, finding_id ASC` (deterministic — `finding_id` is the PK and is unique).
 

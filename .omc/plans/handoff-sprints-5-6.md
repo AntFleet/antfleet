@@ -19,20 +19,21 @@ This document is the entry point for the next Claude session to execute Sprint 5
 
 ### Last 6 PRs merged today
 
-| PR | Commit | Subject |
-|---|---|---|
-| #20 | `e9ba7ce` | Sprint 3 — factory watcher + pre-launch dispatcher |
-| #21 | `7741e23` | dormant factory watcher until agents launchpad ships |
-| #22 | `3887ec2` | exclude roast: pseudo-keys from /agents queries |
+| PR  | Commit    | Subject                                                                  |
+| --- | --------- | ------------------------------------------------------------------------ |
+| #20 | `e9ba7ce` | Sprint 3 — factory watcher + pre-launch dispatcher                       |
+| #21 | `7741e23` | dormant factory watcher until agents launchpad ships                     |
+| #22 | `3887ec2` | exclude roast: pseudo-keys from /agents queries                          |
 | #23 | `2b93e48` | gate prelaunch dispatcher on AGENTS_FACTORY_ADDRESS + delete stale roast |
-| #24 | `c8557cd` | roast moderation pipeline (all submissions gate behind operator) |
-| #25 | `09ec131` | Sprint 4 — operator portal + receipt of the week |
+| #24 | `c8557cd` | roast moderation pipeline (all submissions gate behind operator)         |
+| #25 | `09ec131` | Sprint 4 — operator portal + receipt of the week                         |
 
 Main is at `09ec131`. Vercel prod deploy from this commit should be Ready (verify: `vercel ls --prod`).
 
 ### Active surface on prod
 
 Routes live (and routable via direct URL even when not advertised):
+
 - `/agents`, `/agents/[address]`, `/agents/[address]/constitution`, `/agents/[address]/drift`
 - `/agents/[address]/claim`, `/api/claim` — Sprint 4
 - `/agents?filter=unclaimed` — filtered view
@@ -43,6 +44,7 @@ Routes live (and routable via direct URL even when not advertised):
 - All pre-existing routes from earlier sprints
 
 Tables on prod through migration `0015_agent_claims_unique_indexes.sql`:
+
 - `agent_findings`, `drift_snapshots`, `roast_submissions` (now with `source` + `awaiting_approval` lifecycle), `factory_launches` (empty), `cron_cursors` (empty), `agent_claims` (empty), `weekly_features` (empty), `outgoing_prs`, plus pre-existing review/findingStatus/maintainerReactions/onboardingEvents tables.
 
 ### Current prod data state (verified at handoff time)
@@ -75,10 +77,10 @@ Spec: `.omc/plans/sprints/sprint-5-public-api.md` (read it; this is just orienta
 
 ### Re-check gates (verify before execute)
 
-| Gate | Required | Current |
-|---|---|---|
+| Gate                                               | Required    | Current                                                                                                                                                                                                                  |
+| -------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | No schema changes to `agent_findings` for ≥2 weeks | rolling 14d | Last touched in Sprint 1 (PR #16, 2026-05-?). Check: `git log -- apps/web/db/schema.ts` and confirm no edits to the `agentFindings` block in the last 14 days. **Likely passes** unless Sprint 5 work itself touches it. |
-| Receipts in corpus | ≥30 | **69** public receipts on prod — passes. |
+| Receipts in corpus                                 | ≥30         | **69** public receipts on prod — passes.                                                                                                                                                                                 |
 
 If both gate, execute. If the schema-stability gate is ambiguous (recent unrelated edit to schema.ts that didn't touch agentFindings), apply the runbook's "fix the gate before the sprint executes" rule — relax to "no breaking changes to the agentFindings column set in ≥2 weeks."
 
@@ -118,14 +120,15 @@ Spec: `.omc/plans/sprints/sprint-6-breadth-features.md`.
 
 ### Re-check gates
 
-| Gate | Required | Current |
-|---|---|---|
-| Distinct agents with ≥1 published finding (excluding `roast:%`) | ≥5 | **1** (autonomopoly). **Fails hard.** |
-| Forks of `agent-autonomopoly` or any base template on chain | ≥2 | 0 known. Fails. |
+| Gate                                                            | Required | Current                               |
+| --------------------------------------------------------------- | -------- | ------------------------------------- |
+| Distinct agents with ≥1 published finding (excluding `roast:%`) | ≥5       | **1** (autonomopoly). **Fails hard.** |
+| Forks of `agent-autonomopoly` or any base template on chain     | ≥2       | 0 known. Fails.                       |
 
 Sprint 6 is gated on data layer growth that hasn't happened yet. The runbook explicitly says: "If a sprint's re-check gate fails, do not execute — re-sequence or update the runbook first." Don't try to override unless the operator has shifted strategy.
 
 Likely actions when Sprint 6 eventually becomes executable:
+
 - Leaderboard (sort agents by various criteria).
 - Forks tracker (poll GitHub for repos forking known agent templates).
 - Cross-agent finding catalog (browse findings across all agents).
@@ -211,11 +214,13 @@ git checkout -b sprint-5-public-api
 ## Sprint 4 retrospective (for context only)
 
 What worked:
+
 - Codex via omc-teams for 6 schema/API/page chunks. All clean dispatch with 90s timeout.
 - security-reviewer agent caught a HIGH race condition before it shipped.
 - Per-deliverable TASK.md drafts gave Codex enough context to produce near-final code first try.
 
 What didn't work / lessons:
+
 - Some Codex `@@`-style patches don't apply with `git apply`. Apply manually.
 - Building the homepage at static-render time crashed because `weekly_features` didn't exist on prod. Always `export const dynamic = 'force-dynamic'` on any page that reads new DB tables until the migration lands; cleaner anyway.
 - Gate-failure operator overrides should be loudly documented in the PR body, not buried. Sprint 4 PR did this.

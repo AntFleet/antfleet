@@ -7,10 +7,16 @@ const address = "0x0000000000000000000000000000000000000001";
 
 describe("GET /api/v1/agents/:address", () => {
   it("returns the documented shape", async () => {
-    const res = await handleAgentDetail(new NextRequest("http://test.local"), { address }, deps(row));
+    const res = await handleAgentDetail(
+      new NextRequest("http://test.local"),
+      { address },
+      deps(row),
+    );
     const body = (await res.json()) as { data: Record<string, unknown> };
     expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=300, stale-while-revalidate=3600");
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, s-maxage=300, stale-while-revalidate=3600",
+    );
     expect(Object.keys(body.data).toSorted()).toEqual([
       "address",
       "drift",
@@ -24,7 +30,11 @@ describe("GET /api/v1/agents/:address", () => {
   });
 
   it("returns 404 when missing", async () => {
-    const res = await handleAgentDetail(new NextRequest("http://test.local"), { address }, deps(null));
+    const res = await handleAgentDetail(
+      new NextRequest("http://test.local"),
+      { address },
+      deps(null),
+    );
     expect(res.status).toBe(404);
   });
 });

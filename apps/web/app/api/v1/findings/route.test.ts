@@ -12,9 +12,14 @@ const rows: FindingRow[] = [
 describe("GET /api/v1/findings", () => {
   it("returns the documented shape", async () => {
     const res = await handleFindings(req("http://test.local/api/v1/findings?limit=2"), deps(rows));
-    const body = (await res.json()) as { data: Record<string, unknown>[]; next_cursor: string | null };
+    const body = (await res.json()) as {
+      data: Record<string, unknown>[];
+      next_cursor: string | null;
+    };
     expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=60, stale-while-revalidate=300");
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, s-maxage=60, stale-while-revalidate=300",
+    );
     expect(Object.keys(body.data[0] ?? {}).toSorted()).toEqual([
       "agent_name",
       "agent_token_address",
@@ -31,7 +36,10 @@ describe("GET /api/v1/findings", () => {
   });
 
   it("rejects invalid cursors", async () => {
-    const res = await handleFindings(req("http://test.local/api/v1/findings?cursor=bad"), deps(rows));
+    const res = await handleFindings(
+      req("http://test.local/api/v1/findings?cursor=bad"),
+      deps(rows),
+    );
     expect(res.status).toBe(400);
   });
 
@@ -40,9 +48,13 @@ describe("GET /api/v1/findings", () => {
     let url = "http://test.local/api/v1/findings?limit=1";
     for (let i = 0; i < 3; i += 1) {
       const res = await handleFindings(req(url), deps(rows));
-      const body = (await res.json()) as { data: { finding_id: string }[]; next_cursor: string | null };
+      const body = (await res.json()) as {
+        data: { finding_id: string }[];
+        next_cursor: string | null;
+      };
       ids.push(body.data[0]!.finding_id);
-      if (body.next_cursor !== null) url = `http://test.local/api/v1/findings?limit=1&cursor=${body.next_cursor}`;
+      if (body.next_cursor !== null)
+        url = `http://test.local/api/v1/findings?limit=1&cursor=${body.next_cursor}`;
     }
     expect(ids).toEqual(["f1", "f2", "f3"]);
     expect(new Set(ids).size).toBe(3);
@@ -52,13 +64,17 @@ describe("GET /api/v1/findings", () => {
 function deps(source: FindingRow[]): FindingsDeps {
   return {
     async listFindings(query, cursor) {
-      const start = cursor === null ? 0 : source.findIndex((row) => row.findingId === cursor[1]) + 1;
+      const start =
+        cursor === null ? 0 : source.findIndex((row) => row.findingId === cursor[1]) + 1;
       const page = source.slice(start, start + query.limit + 1);
       const data = page.slice(0, query.limit);
       const last = data[data.length - 1];
       return {
         rows: data,
-        nextCursor: page.length > query.limit && last ? Buffer.from(JSON.stringify([last.publishedAt, last.findingId])).toString("base64url") : null,
+        nextCursor:
+          page.length > query.limit && last
+            ? Buffer.from(JSON.stringify([last.publishedAt, last.findingId])).toString("base64url")
+            : null,
       };
     },
   };

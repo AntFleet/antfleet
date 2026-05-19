@@ -11,10 +11,18 @@ const rows: AgentListRow[] = [
 
 describe("GET /api/v1/agents", () => {
   it("returns the documented shape", async () => {
-    const res = await handleAgents(new NextRequest("http://test.local/api/v1/agents?limit=2"), deps(rows));
-    const body = (await res.json()) as { data: Record<string, unknown>[]; next_cursor: string | null };
+    const res = await handleAgents(
+      new NextRequest("http://test.local/api/v1/agents?limit=2"),
+      deps(rows),
+    );
+    const body = (await res.json()) as {
+      data: Record<string, unknown>[];
+      next_cursor: string | null;
+    };
     expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=60, stale-while-revalidate=300");
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, s-maxage=60, stale-while-revalidate=300",
+    );
     expect(Object.keys(body.data[0] ?? {}).toSorted()).toEqual([
       "address",
       "findings_count",
@@ -27,7 +35,10 @@ describe("GET /api/v1/agents", () => {
   });
 
   it("rejects invalid limit", async () => {
-    const res = await handleAgents(new NextRequest("http://test.local/api/v1/agents?limit=101"), deps(rows));
+    const res = await handleAgents(
+      new NextRequest("http://test.local/api/v1/agents?limit=101"),
+      deps(rows),
+    );
     expect(res.status).toBe(400);
   });
 
@@ -36,9 +47,13 @@ describe("GET /api/v1/agents", () => {
     let url = "http://test.local/api/v1/agents?limit=1";
     for (let i = 0; i < 3; i += 1) {
       const res = await handleAgents(new NextRequest(url), deps(rows));
-      const body = (await res.json()) as { data: { address: string }[]; next_cursor: string | null };
+      const body = (await res.json()) as {
+        data: { address: string }[];
+        next_cursor: string | null;
+      };
       ids.push(body.data[0]!.address);
-      if (body.next_cursor !== null) url = `http://test.local/api/v1/agents?limit=1&cursor=${body.next_cursor}`;
+      if (body.next_cursor !== null)
+        url = `http://test.local/api/v1/agents?limit=1&cursor=${body.next_cursor}`;
     }
     expect(ids).toEqual(rows.map((row) => row.address));
     expect(new Set(ids).size).toBe(3);

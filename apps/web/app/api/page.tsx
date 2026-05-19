@@ -3,8 +3,7 @@ import React from "react";
 
 export const metadata: Metadata = {
   title: "API · AntFleet",
-  description:
-    "Public, read-only JSON for AntFleet's code-quality data layer under /api/v1.",
+  description: "Public, read-only JSON for AntFleet's code-quality data layer under /api/v1.",
 };
 
 const endpoints = [
@@ -100,9 +99,7 @@ function EndpointsSection() {
             <dt className="font-mono text-[12px] leading-relaxed text-[var(--color-ink)]">
               {path}
             </dt>
-            <dd className="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-              {description}
-            </dd>
+            <dd className="text-sm leading-relaxed text-[var(--color-ink-muted)]">{description}</dd>
           </div>
         ))}
       </dl>
@@ -114,9 +111,9 @@ function PaginationSection() {
   return (
     <DocSection title="Pagination + filters">
       <p>
-        Lists return {"{ \"data\": [...], \"next_cursor\": \"string|null\" }"}. Pass
-        ?cursor=&lt;value&gt; to fetch the next page. limit defaults to 20, max 100. Cursors are
-        opaque — pass them back exactly as received.
+        Lists return {'{ "data": [...], "next_cursor": "string|null" }'}. Pass ?cursor=&lt;value&gt;
+        to fetch the next page. limit defaults to 20, max 100. Cursors are opaque — pass them back
+        exactly as received.
       </p>
       <p>
         Filter parameters on /findings: agent_token_address, repo_full_name, severity (info, low,

@@ -98,10 +98,13 @@ export function serializeDriftSnapshot(row: DriftRow) {
   };
 }
 
-export function registryAgentRow(agent: AgentRegistryEntry, stats?: {
-  findingsCount: number;
-  latestFindingAt: Date | string | null;
-}): AgentListRow {
+export function registryAgentRow(
+  agent: AgentRegistryEntry,
+  stats?: {
+    findingsCount: number;
+    latestFindingAt: Date | string | null;
+  },
+): AgentListRow {
   return {
     address: agent.address,
     name: agent.name,

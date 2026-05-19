@@ -27,7 +27,10 @@ export function parseOpenApiJson(source: string): unknown {
   }
 }
 
-export function validateRequiredGetPaths(document: unknown, requiredPaths = REQUIRED_GET_PATHS): string[] {
+export function validateRequiredGetPaths(
+  document: unknown,
+  requiredPaths = REQUIRED_GET_PATHS,
+): string[] {
   const errors: string[] = [];
   if (!isObject(document)) {
     return ["openapi document must be a JSON object"];

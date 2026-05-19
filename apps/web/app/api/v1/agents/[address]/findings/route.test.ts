@@ -15,7 +15,9 @@ describe("GET /api/v1/agents/:address/findings", () => {
     const res = await handleAgentFindings(req("?limit=2"), { address }, deps(true, rows));
     const body = (await res.json()) as { data: Record<string, unknown>[] };
     expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=60, stale-while-revalidate=300");
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, s-maxage=60, stale-while-revalidate=300",
+    );
     expect(Object.keys(body.data[0] ?? {}).toSorted()).toContain("finding_id");
   });
 
@@ -29,7 +31,10 @@ describe("GET /api/v1/agents/:address/findings", () => {
     let suffix = "?limit=1";
     for (let i = 0; i < 3; i += 1) {
       const res = await handleAgentFindings(req(suffix), { address }, deps(true, rows));
-      const body = (await res.json()) as { data: { finding_id: string }[]; next_cursor: string | null };
+      const body = (await res.json()) as {
+        data: { finding_id: string }[];
+        next_cursor: string | null;
+      };
       ids.push(body.data[0]!.finding_id);
       suffix = `?limit=1&cursor=${body.next_cursor ?? ""}`;
     }
@@ -42,7 +47,8 @@ function deps(exists: boolean, source: FindingRow[]): AgentFindingsDeps {
   return {
     agentExists: async () => exists,
     async listFindings(_address, query, cursor) {
-      const start = cursor === null ? 0 : source.findIndex((row) => row.findingId === cursor[1]) + 1;
+      const start =
+        cursor === null ? 0 : source.findIndex((row) => row.findingId === cursor[1]) + 1;
       const page = source.slice(start, start + query.limit + 1);
       const data = page.slice(0, query.limit);
       const last = data[data.length - 1];

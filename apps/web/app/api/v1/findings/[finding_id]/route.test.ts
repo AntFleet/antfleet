@@ -5,10 +5,16 @@ import type { FindingRow } from "@/lib/api-v1/serialize";
 
 describe("GET /api/v1/findings/:finding_id", () => {
   it("returns the documented shape", async () => {
-    const res = await handleFindingDetail(new NextRequest("http://test.local"), { finding_id: "f1" }, deps(row));
+    const res = await handleFindingDetail(
+      new NextRequest("http://test.local"),
+      { finding_id: "f1" },
+      deps(row),
+    );
     const body = (await res.json()) as { data: Record<string, unknown> };
     expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=300, stale-while-revalidate=3600");
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, s-maxage=300, stale-while-revalidate=3600",
+    );
     expect(Object.keys(body.data).toSorted()).toEqual([
       "agent_name",
       "agent_token_address",
@@ -25,7 +31,11 @@ describe("GET /api/v1/findings/:finding_id", () => {
   });
 
   it("returns 404 when missing", async () => {
-    const res = await handleFindingDetail(new NextRequest("http://test.local"), { finding_id: "missing" }, deps(null));
+    const res = await handleFindingDetail(
+      new NextRequest("http://test.local"),
+      { finding_id: "missing" },
+      deps(null),
+    );
     expect(res.status).toBe(404);
   });
 });

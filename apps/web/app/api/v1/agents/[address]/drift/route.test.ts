@@ -15,7 +15,9 @@ describe("GET /api/v1/agents/:address/drift", () => {
     const res = await handleAgentDrift(req("?limit=2"), { address }, deps(true, rows));
     const body = (await res.json()) as { data: Record<string, unknown>[] };
     expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=60, stale-while-revalidate=300");
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, s-maxage=60, stale-while-revalidate=300",
+    );
     expect(Object.keys(body.data[0] ?? {}).toSorted()).toEqual([
       "agent_token_address",
       "commit_sha",

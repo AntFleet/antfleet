@@ -31,10 +31,14 @@ const DEFAULT_DEPS: FindingsDeps = {
   async listFindings(query, cursor) {
     const filters = [sql`${agentFindings.agentTokenAddress} NOT LIKE 'roast:%'`];
     if (query.agent_token_address) {
-      filters.push(sql`lower(${agentFindings.agentTokenAddress}) = ${query.agent_token_address.toLowerCase()}`);
+      filters.push(
+        sql`lower(${agentFindings.agentTokenAddress}) = ${query.agent_token_address.toLowerCase()}`,
+      );
     }
     if (query.repo_full_name) {
-      filters.push(sql`lower(${agentFindings.repoFullName}) = ${query.repo_full_name.toLowerCase()}`);
+      filters.push(
+        sql`lower(${agentFindings.repoFullName}) = ${query.repo_full_name.toLowerCase()}`,
+      );
     }
     if (query.severity) filters.push(eq(agentFindings.severity, query.severity));
     if (query.since) filters.push(gte(agentFindings.publishedAt, new Date(query.since)));
@@ -82,9 +86,9 @@ export async function handleFindings(req: NextRequest, deps: FindingsDeps) {
   );
 }
 
-function parseQuery(req: NextRequest):
-  | { success: true; query: FindingQuery }
-  | { success: false; message: string } {
+function parseQuery(
+  req: NextRequest,
+): { success: true; query: FindingQuery } | { success: false; message: string } {
   const parsed = querySchema.safeParse(Object.fromEntries(req.nextUrl.searchParams));
   if (parsed.success) return { success: true, query: parsed.data };
   return { success: false, message: parsed.error.issues[0]?.path.join(".") || "query" };
