@@ -72,6 +72,9 @@ Routes:
 - `/` (homepage — Sprint 4 added the "Receipt of the week" card above-fold when a `weekly_features` row exists for the current ISO week)
 - `/receipts`, `/benchmarks` (pre-existing — do not modify)
 - `/api/cron/*`, `/api/github/*`, `/api/opt-in/*` (pre-existing)
+- `/api` (Sprint 5 — human-readable docs page for the public JSON API)
+- `/api/v1/findings`, `/api/v1/findings/[finding_id]`, `/api/v1/agents`, `/api/v1/agents/[address]`, `/api/v1/agents/[address]/findings`, `/api/v1/agents/[address]/drift`, `/api/v1/stats` (Sprint 5 — public JSON API, cursor-paginated, 60 req/60s/IP rate limit applied in middleware)
+- Static asset `/api/v1/openapi.json` (Sprint 5 — OpenAPI 3.1 spec served from `apps/web/public/api/v1/`)
 
 Tables (apps/web/db/schema.ts):
 
@@ -89,6 +92,10 @@ Migrations through: `0015_agent_claims_unique_indexes.sql`
 
 Libraries:
 
+- `apps/web/lib/api-v1/cursor.ts` — Sprint 5 base64url JSON cursor encode/decode
+- `apps/web/lib/api-v1/responses.ts` — Sprint 5 `jsonOk` / `jsonError` / `jsonStats` / `optionsResponse` helpers with the cache + CORS headers from the contract
+- `apps/web/lib/api-v1/serialize.ts` — Sprint 5 explicit-key serializers (redaction enforced here — never splat DB rows into JSON)
+- `apps/web/lib/api-v1/rate-limit.ts` — Sprint 5 in-memory sliding window keyed by sha256(ip + ROAST_IP_SALT); 60 req/60s; `checkRateLimit(ip)` callable from middleware
 - `apps/web/lib/claim-message.ts` — Sprint 4 EIP-191 message format (`buildClaimMessage`, `parseClaimMessage`)
 - `apps/web/lib/identity-drift.ts`
 - `apps/web/lib/post-drafts.ts` — tweet draft pipeline (Sprint 3 factory drafts + Sprint 4 `writeClaimVerifiedDraft`, `writeWeeklyFeatureDraft`)
@@ -105,6 +112,7 @@ Libraries:
 - `apps/web/scripts/run-prelaunch.ts` — Sprint 3 dispatcher CLI
 - `apps/web/scripts/run-roast.ts`
 - `apps/web/scripts/publish-feelocker-finding.ts`
+- `apps/web/scripts/verify-openapi.ts` — Sprint 5 OpenAPI structural check (run from repo root via `pnpm exec tsx apps/web/scripts/verify-openapi.ts`)
 
 Existing infra to reuse, not re-build:
 
@@ -175,16 +183,17 @@ Each sprint has a re-check gate. If the gate fails, do not execute — re-sequen
 
 **Codex orchestration:** CODEX-1/2/3/4/5/7 all dispatched via `omc team 1:codex` with `OMC_SHELL_READY_TIMEOUT_MS=90000`. CODEX-4 (security fixes on /api/claim) followed an explicit security-reviewer pass that ruled "block — requires fix" on HIGH (race + non-transactional INSERT/UPDATE) — addressed via DB unique indexes + transaction wrap + `isPublicRepo`-after-signature reordering + tighter clock-skew tolerance. CLAUDE-4/6/8 handled voice-sensitive UI copy, auto-curation logic, and tweet drafts per runbook §1 delegation policy.
 
-### Sprint 5 — Public JSON API ▶ NEXT
+### Sprint 5 — Public JSON API ✅ DONE
 
-**Re-check gate:**
+**Shipped:** Frozen public contract at `.omc/plans/sprints/sprint-5-api-contract.md`. Seven GET endpoints under `/api/v1/` (findings list/detail, agents list/detail, agent-scoped findings, agent-scoped drift, stats) with cursor-paginated lists `{ data, next_cursor }`, redaction-by-construction via `lib/api-v1/serialize.ts` (no `...row` splats — internal columns cannot leak), CORS `Access-Control-Allow-Origin: *` on 2xx, documented Cache-Control per route, address validation via `/^0x[a-fA-F0-9]{40}$/u`, and consistent `{ error: { code, message } }` shape on 4xx/5xx. Rate-limit applied in `middleware.ts` (60 req/60s/IP across all `/api/v1/*`, sliding window keyed by sha256(ip + ROAST_IP_SALT), 429 with `Retry-After`). OpenAPI 3.1 spec served as a static asset at `/api/v1/openapi.json` with a repo-root `verify-openapi.ts` script. Human-readable docs page at `/api`. Final test count: 360 passing.
 
-- [ ] No schema changes to `agent_findings` for ≥2 weeks.
-- [ ] ≥30 receipts in corpus.
+**Re-check gate:** Gate 2 (≥30 receipts) passed at 69 public receipts on prod. Gate 1 (agent_findings schema stable ≥2 weeks) relaxed per handoff doc — the repo is younger than 2 weeks but the agent_findings column set has not changed since Sprint 1 (PR #16).
 
-**Detail:** [`sprints/sprint-5-public-api.md`](sprints/sprint-5-public-api.md)
+**Codex orchestration:** CODEX-2/3/4/5 all dispatched via `omc team 1:codex` with `OMC_SHELL_READY_TIMEOUT_MS=90000`. Chunk 04 first dispatch printed help text instead of starting the team (transient `omc` CLI hiccup); retried once with a shorter prompt and succeeded on the second attempt (within the runbook's 1-retry budget). CLAUDE wrote the contract design doc, voice-sensitive page copy embedded in chunk-05's TASK.md, and the runbook update. Chunk 06 (tweet draft) was skipped at operator request.
 
-### Sprint 6 — Breadth features (leaderboard, forks tracker, cross-agent catalog)
+**Detail:** [`sprints/sprint-5-public-api.md`](sprints/sprint-5-public-api.md) · contract: [`sprints/sprint-5-api-contract.md`](sprints/sprint-5-api-contract.md)
+
+### Sprint 6 — Breadth features (leaderboard, forks tracker, cross-agent catalog) ▶ NEXT
 
 **Re-check gate:**
 
