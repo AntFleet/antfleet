@@ -30,11 +30,11 @@ function ReceiptOfTheWeekCard({ feature }: { feature: WeeklyFeatureRow }) {
   const summary = toPlaintextPreview(feature.summary, 200);
 
   return (
-    <section className="py-20 pb-8">
+    <section>
       <ContentWrap>
-        <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
+        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-6">
           Receipt of the week
-        </p>
+        </h2>
 
         <article className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] px-5 py-6 sm:px-7 sm:py-7">
           <div className="flex flex-wrap items-center gap-2">
@@ -122,101 +122,6 @@ function Hero({ installUrl }: { installUrl: string }) {
             View Receipts
           </a>
         </div>
-      </ContentWrap>
-    </section>
-  );
-}
-
-// ─── proof: example receipt ──────────────────────────────────────────────────
-
-function ProofSection() {
-  return (
-    <section>
-      <ContentWrap>
-        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-4">
-          What a receipt looks like
-        </h2>
-        <p className="text-sm text-[var(--color-ink-muted)] mb-5 max-w-xl leading-relaxed">
-          Every closed finding becomes a public comment on the original PR. The comment lives on
-          GitHub&apos;s event log — not ours — so the timestamp, the closing commit SHA, and the
-          accumulation over time are all third-party-witnessed. The receipts are the artifact.
-        </p>
-
-        {/* receipt render — styled as a GitHub-comment facsimile */}
-        <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] overflow-hidden">
-          {/* comment header bar */}
-          <div className="flex items-center gap-2 border-b border-[var(--color-line)] px-4 py-2.5 bg-[var(--color-bg)]">
-            <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-              antfleet-bot
-            </span>
-            <span className="text-[var(--color-line-strong)]">·</span>
-            <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-              commented on PR #14
-            </span>
-            <span className="ml-auto rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[10px] text-[var(--color-ink-subtle)]">
-              automated
-            </span>
-          </div>
-
-          {/* receipt body */}
-          <div className="px-4 py-5">
-            {/* heading */}
-            <p className="font-mono text-sm font-semibold text-[var(--color-ink)] mb-3">
-              AntFleet · finding{" "}
-              <code className="rounded bg-[var(--color-line)] px-1.5 py-0.5 text-xs">
-                83e79770-1
-              </code>{" "}
-              closed in{" "}
-              <code className="rounded bg-[var(--color-line)] px-1.5 py-0.5 text-xs">1ee2fd9</code>
-            </p>
-
-            {/* badge row */}
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              <span className="rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-ink-muted)]">
-                Security
-              </span>
-              <span className="rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-ink-muted)]">
-                High
-              </span>
-            </div>
-
-            {/* body text */}
-            <p className="text-sm text-[var(--color-ink-muted)] mb-1">
-              SQL injection in{" "}
-              <code className="rounded bg-[var(--color-line)] px-1 py-0.5 font-mono text-xs text-[var(--color-ink)]">
-                getOrder
-              </code>{" "}
-              handler
-            </p>
-            <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-4">
-              apps/api/src/orders.ts:42–56
-            </p>
-
-            <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed mb-4">
-              Originally flagged in the AntFleet review on PR #14. Both frontier models agreed
-              independently. Receipt automated by the daily sweep.
-            </p>
-
-            {/* footer strip */}
-            <div className="flex items-center gap-2 pt-3 border-t border-[var(--color-line)]">
-              <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-                Closed 2026-05-17
-              </span>
-              <span className="text-[var(--color-line-strong)]">·</span>
-              <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-                commit <span className="text-[var(--color-ink-muted)]">1ee2fd9</span>
-              </span>
-              <span className="text-[var(--color-line-strong)]">·</span>
-              <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-                sweeper v0.3
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <p className="mt-4 text-xs text-[var(--color-ink-subtle)] font-mono">
-          ↳ example receipt — format is identical to what appears on your actual PRs
-        </p>
       </ContentWrap>
     </section>
   );
@@ -433,16 +338,14 @@ export default async function Home() {
 
   return (
     <>
+      <Hero installUrl={installUrl} />
+      <SectionDivider />
       {feature !== null && (
         <>
           <ReceiptOfTheWeekCard feature={feature} />
           <SectionDivider />
         </>
       )}
-      <Hero installUrl={installUrl} />
-      <SectionDivider />
-      <ProofSection />
-      <SectionDivider />
       <FeatureGrid />
       <SectionDivider />
       <HowItWorks />
