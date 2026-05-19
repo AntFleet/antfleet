@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-export function CopyBadgeSnippet({ snippet }: { snippet: string }) {
+export function CopyBadgeSnippet({ snippet, badgeUrl }: { snippet: string; badgeUrl: string }) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -13,6 +13,8 @@ export function CopyBadgeSnippet({ snippet }: { snippet: string }) {
 
   return (
     <div className="mt-6 flex flex-col gap-3 rounded-md border border-[var(--color-line)] bg-[var(--color-bg-elevated)] p-4">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={badgeUrl} alt="AntFleet badge preview" className="self-start h-7" />
       <code className="break-all font-mono text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
         {snippet}
       </code>

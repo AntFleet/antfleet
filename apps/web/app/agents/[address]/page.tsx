@@ -55,7 +55,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
       {registryEntry !== null && (
         <>
           <SectionDivider />
-          <BadgeEmbedSection repo={registryEntry.repo} />
+          <BadgeEmbedSection repo={registryEntry.repo} address={address} />
         </>
       )}
       {detail.crossRepoMerges.length > 0 && (
@@ -76,16 +76,16 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
   );
 }
 
-function BadgeEmbedSection({ repo }: { repo: string }) {
+function BadgeEmbedSection({ repo, address }: { repo: string; address: string }) {
   const badgeUrl = `https://www.antfleet.dev/badge/${repo}.svg`;
-  const snippet = `[![AntFleet findings](${badgeUrl})](https://www.antfleet.dev/agents/0xB3D7e0c3C39A1D3F1B304663065A2F83Ddf56d8e)`;
+  const snippet = `[![AntFleet findings](${badgeUrl})](https://www.antfleet.dev/agents/${address})`;
   return (
     <section>
       <ContentWrap>
         <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
           Badge
         </h2>
-        <CopyBadgeSnippet snippet={snippet} />
+        <CopyBadgeSnippet snippet={snippet} badgeUrl={badgeUrl} />
       </ContentWrap>
     </section>
   );
