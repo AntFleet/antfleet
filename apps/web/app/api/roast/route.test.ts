@@ -92,7 +92,7 @@ describe("handleRoast - submission flow", () => {
     expect(res.status).toBe(200);
     expect(body.submissionId).toBe("test-submission-id");
     expect(body.submissionId).not.toBe("");
-    expect(body.statusUrl).toBe(`/roast/${body.submissionId}`);
+    expect(body.statusUrl).toBe(`/roasts/${body.submissionId}`);
     expect(deps.isPublicRepo).toHaveBeenCalledWith(expect.any(Object), "antfleet", "antfleet");
     expect(deps.insertSubmission).toHaveBeenCalledWith(
       expect.objectContaining({

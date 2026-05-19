@@ -155,7 +155,7 @@ export async function handleRoast(req: NextRequest, deps: RoastDeps): Promise<Ne
 
     return jsonResponse(200, {
       submissionId,
-      statusUrl: `/roast/${submissionId}`,
+      statusUrl: `/roasts/${submissionId}`,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
