@@ -54,7 +54,7 @@ export default async function DriftPage({ params }: { params: Promise<RouteParam
           {snapshots.length === 0 ? (
             <p className="py-5 text-sm text-[var(--color-ink-muted)]">No drift snapshots recorded yet.</p>
           ) : (
-            snapshots.slice(-12).reverse().map((snapshot) => (
+            snapshots.slice(-12).toReversed().map((snapshot) => (
               <div key={snapshot.commitSha} className="grid gap-2 py-4 text-sm sm:grid-cols-[1fr_120px_120px]">
                 <span className="font-mono text-[var(--color-ink)]">{snapshot.commitSha.slice(0, 12)}</span>
                 <span className="text-[var(--color-ink-muted)]">{snapshot.driftScore.toFixed(3)}</span>

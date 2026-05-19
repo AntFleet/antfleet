@@ -156,7 +156,7 @@ export async function backfillIdentityDrift(agent: AgentRegistryEntry): Promise<
   const [genesis, commits] = await Promise.all([fetchSoulGenesis(agent), listIdentityCommits(agent)]);
   let inserted = 0;
   let spikes = 0;
-  for (const commit of commits.reverse()) {
+  for (const commit of commits.toReversed()) {
     const timestamp = commit.commit.author?.date;
     if (timestamp === undefined) continue;
     const identityContent = await fetchGitHubText(agent.repo, agent.identityFile, commit.sha);
