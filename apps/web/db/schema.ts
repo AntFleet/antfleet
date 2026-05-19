@@ -281,6 +281,20 @@ export const driftSnapshots = pgTable("drift_snapshots", {
   observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const roastSubmissions = pgTable("roast_submissions", {
+  id: text("id").primaryKey(),
+  repoUrl: text("repo_url").notNull(),
+  repoFullName: text("repo_full_name").notNull(),
+  submitterEmail: text("submitter_email"),
+  submitterHandle: text("submitter_handle"),
+  ipHash: text("ip_hash").notNull(),
+  status: text("status").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  receiptId: text("receipt_id"),
+  rejectionReason: text("rejection_reason"),
+});
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -295,3 +309,5 @@ export type AgentFinding = typeof agentFindings.$inferSelect;
 export type NewAgentFinding = typeof agentFindings.$inferInsert;
 export type DriftSnapshot = typeof driftSnapshots.$inferSelect;
 export type NewDriftSnapshot = typeof driftSnapshots.$inferInsert;
+export type RoastSubmission = typeof roastSubmissions.$inferSelect;
+export type NewRoastSubmission = typeof roastSubmissions.$inferInsert;
