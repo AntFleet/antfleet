@@ -49,7 +49,7 @@ describe("api v1 serializers", () => {
       publishedAt: new Date("2026-05-18T00:00:00.000Z"),
     };
     const output = serializeFinding(row);
-    expect(Object.keys(output).sort()).toMatchInlineSnapshot(`
+    expect(Object.keys(output).toSorted()).toMatchInlineSnapshot(`
       [
         "agent_name",
         "agent_token_address",
@@ -79,7 +79,7 @@ describe("api v1 serializers", () => {
       drift: { snapshotsCount: 0, latestObservedAt: null, latestDriftScore: null },
     };
     const output = serializeAgentDetail(row);
-    expect(Object.keys(output).sort()).toMatchInlineSnapshot(`
+    expect(Object.keys(output).toSorted()).toMatchInlineSnapshot(`
       [
         "address",
         "drift",

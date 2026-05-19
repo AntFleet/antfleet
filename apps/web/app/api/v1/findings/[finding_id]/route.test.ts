@@ -9,7 +9,7 @@ describe("GET /api/v1/findings/:finding_id", () => {
     const body = (await res.json()) as { data: Record<string, unknown> };
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=300, stale-while-revalidate=3600");
-    expect(Object.keys(body.data).sort()).toEqual([
+    expect(Object.keys(body.data).toSorted()).toEqual([
       "agent_name",
       "agent_token_address",
       "evidence",

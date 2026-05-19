@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, gte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { driftSnapshots } from "@/db/schema";

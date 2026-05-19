@@ -23,7 +23,7 @@ export function parseOpenApiJson(source: string): unknown {
     return JSON.parse(source) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`openapi.json is not well-formed JSON: ${message}`);
+    throw new Error(`openapi.json is not well-formed JSON: ${message}`, { cause: error });
   }
 }
 

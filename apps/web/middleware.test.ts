@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
-import { __resetRateLimitForTest } from "./lib/api-v1/rate-limit";
+import { resetRateLimitForTest } from "./lib/api-v1/rate-limit";
 import { middleware } from "./middleware";
 
 function makeReq(
@@ -18,7 +18,7 @@ describe("security headers middleware", () => {
 
   beforeEach(() => {
     process.env["ROAST_IP_SALT"] = "0123456789abcdef";
-    __resetRateLimitForTest();
+    resetRateLimitForTest();
     res = middleware(makeReq());
   });
 
@@ -70,7 +70,7 @@ describe("security headers middleware", () => {
 describe("api v1 rate-limit middleware", () => {
   beforeEach(() => {
     process.env["ROAST_IP_SALT"] = "0123456789abcdef";
-    __resetRateLimitForTest();
+    resetRateLimitForTest();
   });
 
   it("returns 429 with Retry-After on the 61st GET /api/v1 request from the same IP", () => {

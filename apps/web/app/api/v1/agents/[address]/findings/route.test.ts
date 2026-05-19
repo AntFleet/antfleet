@@ -16,7 +16,7 @@ describe("GET /api/v1/agents/:address/findings", () => {
     const body = (await res.json()) as { data: Record<string, unknown>[] };
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=60, stale-while-revalidate=300");
-    expect(Object.keys(body.data[0] ?? {}).sort()).toContain("finding_id");
+    expect(Object.keys(body.data[0] ?? {}).toSorted()).toContain("finding_id");
   });
 
   it("returns 404 for an unknown agent", async () => {

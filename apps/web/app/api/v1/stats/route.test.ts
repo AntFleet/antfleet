@@ -8,7 +8,7 @@ describe("GET /api/v1/stats", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
-    expect(Object.keys(body).sort()).toEqual([
+    expect(Object.keys(body).toSorted()).toEqual([
       "agents_with_findings",
       "findings_by_severity",
       "generated_at",

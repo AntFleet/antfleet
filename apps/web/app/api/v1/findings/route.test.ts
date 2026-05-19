@@ -15,7 +15,7 @@ describe("GET /api/v1/findings", () => {
     const body = (await res.json()) as { data: Record<string, unknown>[]; next_cursor: string | null };
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("public, s-maxage=60, stale-while-revalidate=300");
-    expect(Object.keys(body.data[0] ?? {}).sort()).toEqual([
+    expect(Object.keys(body.data[0] ?? {}).toSorted()).toEqual([
       "agent_name",
       "agent_token_address",
       "evidence",

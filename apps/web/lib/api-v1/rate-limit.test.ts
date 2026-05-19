@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { __resetRateLimitForTest, checkRateLimit } from "./rate-limit";
+import { resetRateLimitForTest, checkRateLimit } from "./rate-limit";
 
 const VALID_SALT = "0123456789abcdef";
 
@@ -8,7 +8,7 @@ describe("api v1 rate limit", () => {
 
   beforeEach(() => {
     process.env["ROAST_IP_SALT"] = VALID_SALT;
-    __resetRateLimitForTest();
+    resetRateLimitForTest();
   });
 
   afterEach(() => {
@@ -17,7 +17,7 @@ describe("api v1 rate limit", () => {
     } else {
       process.env["ROAST_IP_SALT"] = originalSalt;
     }
-    __resetRateLimitForTest();
+    resetRateLimitForTest();
   });
 
   it("allows 60 requests in a minute and limits the 61st", () => {

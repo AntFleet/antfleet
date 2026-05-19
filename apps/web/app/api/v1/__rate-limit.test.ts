@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
-import { __resetRateLimitForTest } from "../../../lib/api-v1/rate-limit";
+import { resetRateLimitForTest } from "../../../lib/api-v1/rate-limit";
 import { middleware } from "../../../middleware";
 
 function req(): NextRequest {
@@ -13,7 +13,7 @@ function req(): NextRequest {
 describe("api v1 rate limit integration", () => {
   beforeEach(() => {
     process.env["ROAST_IP_SALT"] = "0123456789abcdef";
-    __resetRateLimitForTest();
+    resetRateLimitForTest();
   });
 
   it("allows requests 1-60 and returns the documented 429 response on request 61", async () => {

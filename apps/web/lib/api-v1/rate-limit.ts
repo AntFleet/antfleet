@@ -28,7 +28,7 @@ export function checkRateLimit(
   return { allowed: true, retryAfterSec: 0 };
 }
 
-export function __resetRateLimitForTest(): void {
+export function resetRateLimitForTest(): void {
   requestTimestampsByIpHash.clear();
 }
 
