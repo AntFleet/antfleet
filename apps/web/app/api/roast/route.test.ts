@@ -99,7 +99,7 @@ describe("handleRoast - submission flow", () => {
         id: "test-submission-id",
         repoUrl: "https://github.com/antfleet/antfleet",
         repoFullName: "antfleet/antfleet",
-        status: "queued",
+        status: "awaiting_approval",
       }),
     );
   });

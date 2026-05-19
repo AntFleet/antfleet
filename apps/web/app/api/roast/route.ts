@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import { isPublicRepo } from "@/lib/repo-visibility";
+import type { RoastSubmissionStatus } from "@/lib/roast-status";
 import {
   countRecentRoastSubmissionsByIp,
   countRecentRoastSubmissionsByRepo,
@@ -148,7 +149,7 @@ export async function handleRoast(req: NextRequest, deps: RoastDeps): Promise<Ne
       submitterEmail: parsed.data.submitterEmail ?? null,
       submitterHandle: parsed.data.submitterHandle ?? null,
       ipHash,
-      status: "queued",
+      status: "awaiting_approval" satisfies RoastSubmissionStatus,
     });
 
     logInfo("roast.submitted", { submissionId, repoFullName: target.repoFullName });

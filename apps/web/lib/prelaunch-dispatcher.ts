@@ -5,6 +5,7 @@ import { factoryLaunches, roastSubmissions, type FactoryLaunch } from "@/db/sche
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { writeFactoryRepoFoundDraft, writeFactoryVerdictDraft } from "@/lib/post-drafts";
 import { discoverRepoForAgent } from "@/lib/repo-discovery";
+import type { RoastSubmissionStatus } from "@/lib/roast-status";
 
 const DISCOVERY_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const PUBLIC_BASE_URL = (
@@ -156,7 +157,7 @@ async function processOnePending(
     // tokenAddress (already lowercase) to deduplicate replays for the same
     // launch across dispatcher ticks.
     ipHash: `factory:${launch.tokenAddress}`,
-    status: "queued",
+    status: "awaiting_approval" satisfies RoastSubmissionStatus,
     source: "factory_watcher",
   });
   result.dispatched += 1;

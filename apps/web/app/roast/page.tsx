@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "AntFleet · Roast my agent",
   description:
-    "Submit a public GitHub repo. AntFleet ships a benchmark verdict and a permanent receipt within 24h.",
+    "Submit a public GitHub repo. AntFleet reviews each submission before running the consensus pipeline; promoted roasts get findings within 24h.",
 };
 
 export default function RoastPage() {
@@ -29,13 +29,11 @@ export default function RoastPage() {
             What is this?
           </h1>
           <div className="max-w-xl space-y-4 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+            <p>Submit a public GitHub repo URL. AntFleet reviews every submission first.</p>
             <p>
-              Submit a public GitHub repo URL. Two frontier models read the code as a consensus
-              reviewer.
-            </p>
-            <p>
-              AntFleet publishes a finding list, severity labels, and a permanent receipt link
-              within 24h.
+              Promoted submissions go through the consensus pipeline — two frontier models read the
+              code, and AntFleet publishes a finding list, severity labels, and a permanent receipt
+              link within 24h.
             </p>
             <p>
               Free. Public. No accounts. Limited to 5 submissions per IP per day and 1 per repo per
