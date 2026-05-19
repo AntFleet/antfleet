@@ -110,8 +110,7 @@ export function buildFeeLockerFinding(args: {
     findingId: FEELOCKER_FINDING_ID,
     agentTokenAddress: AUTONOMOPOLY_AGENT_TOKEN,
     agentName: "agent-autonomopoly",
-    title:
-      "FeeLocker availableFees selector mismatch — agent cannot read claimable DIEM",
+    title: "FeeLocker availableFees selector mismatch — agent cannot read claimable DIEM",
     severity: "high",
     summary: SUMMARY_MD,
     evidence: EVIDENCE_MD,

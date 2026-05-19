@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  renderFindingMarkdown,
-  renderInline,
-  severityLabel,
-  shortAddress,
-} from "./agent-findings";
+import { renderFindingMarkdown, renderInline, severityLabel, shortAddress } from "./agent-findings";
 
 describe("severityLabel", () => {
   it("maps known severity codes to human-friendly labels", () => {

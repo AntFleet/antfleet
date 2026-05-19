@@ -59,11 +59,10 @@ function AgentsHero({ count }: { count: number }) {
         </div>
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-          Each row is an autonomous agent we have an open or closed
-          investigation on. Click through for the full finding write-up —
-          reproducible commands, evidence links, and the upstream PR if one
-          has been opened. Findings are reproducible against Base mainnet at
-          the time of publish; new state is verified live.
+          Each row is an autonomous agent we have an open or closed investigation on. Click through
+          for the full finding write-up — reproducible commands, evidence links, and the upstream PR
+          if one has been opened. Findings are reproducible against Base mainnet at the time of
+          publish; new state is verified live.
         </p>
         <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
           Looking for PR-bound receipts instead?{" "}
@@ -95,8 +94,8 @@ function AgentsList({ rows, now }: { rows: AgentIndexRow[]; now: Date }) {
           <div className="rounded-md border border-dashed border-[var(--color-line-strong)] p-8 text-center">
             <p className="text-sm text-[var(--color-ink)] mb-2">No agent findings yet.</p>
             <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-md mx-auto">
-              The first row will appear once AntFleet publishes an investigation
-              against a running autonomous agent.
+              The first row will appear once AntFleet publishes an investigation against a running
+              autonomous agent.
             </p>
           </div>
         </ContentWrap>

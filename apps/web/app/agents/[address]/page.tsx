@@ -3,11 +3,7 @@ import { notFound } from "next/navigation";
 import { loadAgentDetail, type AgentBenchmarkReference } from "@/db/queries";
 import type { AgentFinding } from "@/db/schema";
 import { formatRelativeTime } from "@/lib/receipts";
-import {
-  renderFindingMarkdown,
-  severityLabel,
-  shortAddress,
-} from "@/lib/agent-findings";
+import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
 
 // Per-agent finding page. Reads agent_findings WHERE lower(address) = lower
 // (slug) and renders every finding inline (info → high), most recent first.
@@ -38,11 +34,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function AgentDetailPage({
-  params,
-}: {
-  params: Promise<RouteParams>;
-}) {
+export default async function AgentDetailPage({ params }: { params: Promise<RouteParams> }) {
   const { address } = await params;
   const detail = await loadAgentDetail(address);
   if (detail === null) {
@@ -139,11 +131,12 @@ function FindingsSection({ findings, now }: { findings: AgentFinding[]; now: Dat
 
 function FindingBlock({ finding, now }: { finding: AgentFinding; now: Date }) {
   const relative = formatRelativeTime(now, finding.publishedAt);
-  const upstreamLabel = finding.upstreamMergedSha !== null
-    ? `merged ${finding.upstreamMergedSha.slice(0, 7)}`
-    : finding.upstreamPrUrl !== null
-      ? "upstream PR"
-      : null;
+  const upstreamLabel =
+    finding.upstreamMergedSha !== null
+      ? `merged ${finding.upstreamMergedSha.slice(0, 7)}`
+      : finding.upstreamPrUrl !== null
+        ? "upstream PR"
+        : null;
 
   return (
     <article className="border-l-2 border-[var(--color-line-strong)] pl-5">
@@ -182,13 +175,7 @@ function FindingBlock({ finding, now }: { finding: AgentFinding; now: Date }) {
   );
 }
 
-function BenchmarksSection({
-  reviews,
-  now,
-}: {
-  reviews: AgentBenchmarkReference[];
-  now: Date;
-}) {
+function BenchmarksSection({ reviews, now }: { reviews: AgentBenchmarkReference[]; now: Date }) {
   return (
     <section className="pb-20">
       <ContentWrap>
@@ -196,8 +183,8 @@ function BenchmarksSection({
           AntFleet reviews on this agent
         </h2>
         <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
-          Two-model consensus reviews AntFleet has run against this agent&apos;s
-          benchmark repo. Each links to the bot review comment on GitHub.
+          Two-model consensus reviews AntFleet has run against this agent&apos;s benchmark repo.
+          Each links to the bot review comment on GitHub.
         </p>
         <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
           {reviews.map((r) => (
@@ -213,8 +200,7 @@ function BenchmarksSection({
 
 function BenchmarkRow({ row, now }: { row: AgentBenchmarkReference; now: Date }) {
   const ownerRepo = row.owner !== null && row.repo !== null ? `${row.owner}/${row.repo}` : null;
-  const prUrl =
-    ownerRepo === null ? null : `https://github.com/${ownerRepo}/pull/${row.prNumber}`;
+  const prUrl = ownerRepo === null ? null : `https://github.com/${ownerRepo}/pull/${row.prNumber}`;
   const href = row.prCommentUrl ?? prUrl;
   const relative = formatRelativeTime(now, row.createdAt);
 

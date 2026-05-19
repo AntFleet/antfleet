@@ -42,11 +42,7 @@ describe("parseArgs", () => {
   });
 
   it("accepts --update --pr-url <url>", () => {
-    const args = parseArgs([
-      "--update",
-      "--pr-url",
-      "https://example.com/pulls/5",
-    ]);
+    const args = parseArgs(["--update", "--pr-url", "https://example.com/pulls/5"]);
     expect(args).toEqual({
       update: true,
       prUrl: "https://example.com/pulls/5",
