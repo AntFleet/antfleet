@@ -12,6 +12,7 @@ import type { AgentFinding, RoastSubmission } from "@/db/schema";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
 import { formatRelativeTime } from "@/lib/receipts";
 import { CopyBadgeSnippet } from "@/app/agents/[address]/CopyBadgeSnippet";
+import { TweetIntent } from "@/components/TweetIntent";
 
 export const dynamic = "force-dynamic";
 
@@ -93,7 +94,12 @@ export default async function RoastResultPage({ params }: { params: Promise<Rout
           <SectionDivider />
           <FindingsSection findings={detail.findings} now={now} />
           <SectionDivider />
-          <ShareSection submission={detail.submission} pageUrl={pageUrl} badgeUrl={badgeUrl} />
+          <ShareSection
+            submission={detail.submission}
+            pageUrl={pageUrl}
+            badgeUrl={badgeUrl}
+            findingCount={detail.findings.length}
+          />
         </>
       )}
       {detail.submission.status === "rejected" && (
@@ -304,18 +310,36 @@ function ShareSection({
   submission,
   pageUrl,
   badgeUrl,
+  findingCount,
 }: {
   submission: RoastSubmission;
   pageUrl: string;
   badgeUrl: string;
+  findingCount: number;
 }) {
   const snippet = `[![AntFleet roast: ${submission.repoFullName}](${badgeUrl})](${pageUrl})`;
+  // Voice template per the ralplan: "AntFleet just roasted <repo>: <N> agreed findings."
+  // N reads from the same FindingsSection list the visitor is looking at.
+  const tweetText =
+    findingCount === 0
+      ? `AntFleet just roasted ${submission.repoFullName}: clean run, no findings.`
+      : `AntFleet just roasted ${submission.repoFullName}: ${findingCount} agreed finding${findingCount === 1 ? "" : "s"}.`;
   return (
     <section>
       <ContentWrap>
         <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
           Share
         </h2>
+        <div className="mt-6">
+          <TweetIntent
+            text={tweetText}
+            url={pageUrl}
+            ariaLabel={`Tweet this roast of ${submission.repoFullName}`}
+            className="inline-flex items-center rounded-full border border-[var(--color-line-strong)] px-4 py-2 font-mono text-xs text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
+          >
+            Tweet this roast ↗
+          </TweetIntent>
+        </div>
         <CopyBadgeSnippet snippet={snippet} badgeUrl={badgeUrl} />
         <p className="mt-4 break-all font-mono text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
           {badgeUrl}
