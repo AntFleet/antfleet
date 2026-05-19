@@ -18,7 +18,6 @@
 import { config as loadDotenv } from "dotenv";
 loadDotenv({ path: ".env.local", quiet: true });
 
-import { upsertAgentFinding } from "../db/queries";
 import type { NewAgentFinding } from "../db/schema";
 
 export const FEELOCKER_FINDING_ID = "feelocker-selector-2026-05-18";
@@ -159,6 +158,9 @@ async function main() {
     upstreamPrUrl: cli.prUrl,
     upstreamMergedSha: cli.mergedSha,
   });
+  // Dynamic import so db/index.ts's DATABASE_URL check fires *after*
+  // loadDotenv() has populated process.env at module-top above.
+  const { upsertAgentFinding } = await import("../db/queries");
   await upsertAgentFinding(row);
   console.log(
     `published agent_findings row ${row.findingId}` +
