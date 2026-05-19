@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { loadRoastStats } from "@/db/queries";
 import { RoastForm } from "./RoastForm";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +10,8 @@ export const metadata: Metadata = {
     "Submit a public GitHub repo. AntFleet reviews each submission before running the consensus pipeline; promoted roasts get findings within 24h.",
 };
 
-export default function RoastPage() {
+export default async function RoastPage() {
+  const stats = await loadRoastStats();
   return (
     <>
       <section className="py-20 pb-12">
@@ -17,6 +19,7 @@ export default function RoastPage() {
           <p className="mb-6 font-mono text-xs uppercase tracking-widest text-[var(--color-ink-subtle)]">
             Roast
           </p>
+          <RoastStrip stats={stats} />
           <RoastForm />
         </ContentWrap>
       </section>
@@ -58,6 +61,28 @@ export default function RoastPage() {
 
 function ContentWrap({ children }: { children: React.ReactNode }) {
   return <div className="mx-auto max-w-3xl px-6">{children}</div>;
+}
+
+function RoastStrip({
+  stats,
+}: {
+  stats: { totalPublished: number; totalFindingsFromRoasts: number };
+}) {
+  if (stats.totalPublished === 0) return null;
+  const roasts = stats.totalPublished;
+  const findings = stats.totalFindingsFromRoasts;
+  return (
+    <p className="mb-6 font-mono text-xs text-[var(--color-ink-subtle)]">
+      {roasts.toLocaleString()} {roasts === 1 ? "repo" : "repos"} roasted to date ·{" "}
+      {findings.toLocaleString()} {findings === 1 ? "finding" : "findings"} filed ·{" "}
+      <a
+        href="/roasts"
+        className="underline underline-offset-2 transition-colors hover:text-[var(--color-ink)]"
+      >
+        see them all ↗
+      </a>
+    </p>
+  );
 }
 
 function SectionDivider() {

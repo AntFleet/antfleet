@@ -1775,6 +1775,102 @@ export async function countRoastsPublishedSince(since: Date): Promise<number> {
   return row?.value ?? 0;
 }
 
+// Public counter strip on /roast and footer of /roasts index. Findings
+// from roast submissions live in agent_findings under
+// agent_token_address LIKE 'roast:%' (Sprint 2 pseudo-key); this query
+// counts them in a single roundtrip alongside the published-submission
+// count so the form page renders one bragging line above the input.
+export interface RoastStats {
+  totalPublished: number;
+  totalFindingsFromRoasts: number;
+}
+
+export async function loadRoastStats(): Promise<RoastStats> {
+  const [pubRows, findingRows] = await Promise.all([
+    db
+      .select({ value: count() })
+      .from(roastSubmissions)
+      .where(eq(roastSubmissions.status, "published")),
+    db
+      .select({ value: count() })
+      .from(agentFindings)
+      .where(sql`lower(${agentFindings.agentTokenAddress}) like 'roast:%'`),
+  ]);
+  return {
+    totalPublished: pubRows[0]?.value ?? 0,
+    totalFindingsFromRoasts: findingRows[0]?.value ?? 0,
+  };
+}
+
+export interface PublishedRoastRow {
+  id: string;
+  repoFullName: string;
+  publishedAt: Date | null;
+  findingCount: number;
+  highestSeverity: string | null;
+}
+
+export interface PublishedRoastsPage {
+  rows: PublishedRoastRow[];
+  hasMore: boolean;
+}
+
+// Index listing for /roasts. Newest-first by publishedAt, cursor via
+// publishedAt < before (mirrors /receipts pattern so the visual language
+// stays consistent). Each row carries an aggregated finding count + the
+// highest-severity label so the index row matches what the OG card
+// shows.
+export async function loadPublishedRoasts(
+  limit: number,
+  before?: Date,
+): Promise<PublishedRoastsPage> {
+  if (limit <= 0) return { rows: [], hasMore: false };
+  const fetchLimit = limit + 1;
+  const conditions =
+    before === undefined
+      ? eq(roastSubmissions.status, "published")
+      : and(eq(roastSubmissions.status, "published"), lt(roastSubmissions.publishedAt, before));
+  const submissions = await db
+    .select({
+      id: roastSubmissions.id,
+      repoFullName: roastSubmissions.repoFullName,
+      publishedAt: roastSubmissions.publishedAt,
+    })
+    .from(roastSubmissions)
+    .where(conditions)
+    .orderBy(desc(roastSubmissions.publishedAt))
+    .limit(fetchLimit);
+  const hasMore = submissions.length > limit;
+  const visible = hasMore ? submissions.slice(0, limit) : submissions;
+  // Batch-fetch per-roast findings so we can attach count + highest
+  // severity without N+1.
+  const rows: PublishedRoastRow[] = await Promise.all(
+    visible.map(async (sub) => {
+      const findings = await db
+        .select({ severity: agentFindings.severity })
+        .from(agentFindings)
+        .where(sql`lower(${agentFindings.agentTokenAddress}) = lower(${"roast:" + sub.id})`);
+      let bestRank = -1;
+      let bestSeverity: string | null = null;
+      for (const f of findings) {
+        const rank = DIGEST_SEVERITY_RANK[f.severity.toLowerCase()] ?? -1;
+        if (rank > bestRank) {
+          bestRank = rank;
+          bestSeverity = f.severity;
+        }
+      }
+      return {
+        id: sub.id,
+        repoFullName: sub.repoFullName,
+        publishedAt: sub.publishedAt,
+        findingCount: findings.length,
+        highestSeverity: bestSeverity,
+      };
+    }),
+  );
+  return { rows, hasMore };
+}
+
 export async function insertRoastFindings(rows: NewAgentFinding[]): Promise<void> {
   if (rows.length === 0) return;
   // Bypass upsertAgentFinding's per-row post-draft side effect — roasts get
