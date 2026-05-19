@@ -1486,6 +1486,57 @@ export async function loadRoastDetail(id: string): Promise<RoastDetail | null> {
   return { submission, findings };
 }
 
+// Roast runner helpers (D6). All state transitions are optimistic-concurrency
+// guarded by the `status` column so a parallel cron tick can't double-claim.
+
+export async function selectOldestQueuedRoast(): Promise<RoastSubmission | null> {
+  const rows = await db
+    .select()
+    .from(roastSubmissions)
+    .where(eq(roastSubmissions.status, "queued"))
+    .orderBy(roastSubmissions.createdAt)
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function claimRoastForRunning(id: string): Promise<boolean> {
+  const updated = await db
+    .update(roastSubmissions)
+    .set({ status: "running" })
+    .where(and(eq(roastSubmissions.id, id), eq(roastSubmissions.status, "queued")))
+    .returning({ id: roastSubmissions.id });
+  return updated.length > 0;
+}
+
+export async function markRoastPublished(id: string, receiptId: string): Promise<void> {
+  await db
+    .update(roastSubmissions)
+    .set({ status: "published", publishedAt: new Date(), receiptId })
+    .where(and(eq(roastSubmissions.id, id), eq(roastSubmissions.status, "running")));
+}
+
+export async function markRoastRejected(id: string, reason: string): Promise<void> {
+  await db
+    .update(roastSubmissions)
+    .set({ status: "rejected", rejectionReason: reason })
+    .where(and(eq(roastSubmissions.id, id), ne(roastSubmissions.status, "published")));
+}
+
+export async function countRoastsPublishedSince(since: Date): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(roastSubmissions)
+    .where(and(eq(roastSubmissions.status, "published"), gte(roastSubmissions.publishedAt, since)));
+  return row?.value ?? 0;
+}
+
+export async function insertRoastFindings(rows: NewAgentFinding[]): Promise<void> {
+  if (rows.length === 0) return;
+  // Bypass upsertAgentFinding's per-row post-draft side effect — roasts get
+  // a single aggregated draft from the runner, not one per finding.
+  await db.insert(agentFindings).values(rows).onConflictDoNothing();
+}
+
 // /agents — index of all agents that have at least one finding. We don't
 // have a separate agents table; agents are implicit in the
 // (agent_token_address, agent_name) pairs in agent_findings.

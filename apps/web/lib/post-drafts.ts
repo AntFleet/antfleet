@@ -36,3 +36,42 @@ function workspaceRoot(): string {
     current = parent;
   }
 }
+
+export type RoastPostDraftInput = {
+  submissionId: string;
+  repoFullName: string;
+  pageUrl: string;
+  findingsCount: number;
+  topSeverity: string | null;
+  topFindingTitle: string | null;
+  submitterHandle: string | null;
+};
+
+export async function writeRoastPostDraft(
+  input: RoastPostDraftInput,
+  now = new Date(),
+): Promise<string> {
+  const sevLine =
+    input.topSeverity !== null
+      ? `${input.findingsCount} findings · top severity: ${input.topSeverity}`
+      : `${input.findingsCount} findings`;
+  const lines = [
+    sevLine,
+    input.topFindingTitle ?? "",
+    input.pageUrl,
+  ];
+  if (input.submitterHandle !== null && input.submitterHandle.trim().length > 0) {
+    const handle = input.submitterHandle.replace(/^@+/, "");
+    lines.push(`submitted by @${handle}`);
+  }
+  const body = lines.filter((l) => l.trim().length > 0).join("\n");
+  const repoSlug = input.repoFullName.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return writePostDraft(
+    {
+      slug: `roast-${repoSlug}-${input.submissionId.slice(0, 8)}`,
+      title: `AntFleet roasted ${input.repoFullName}`,
+      body,
+    },
+    now,
+  );
+}
