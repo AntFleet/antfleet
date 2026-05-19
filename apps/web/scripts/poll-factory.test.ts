@@ -26,8 +26,8 @@ vi.mock("../lib/log", () => ({
 }));
 
 vi.mock("../db/schema", () => ({
-  cronCursors: { key: "key", value: "value", __table: "cron_cursors" },
-  factoryLaunches: { tokenAddress: "tokenAddress", __table: "factory_launches" },
+  cronCursors: { key: "key", value: "value", tableName: "cron_cursors" },
+  factoryLaunches: { tokenAddress: "tokenAddress", tableName: "factory_launches" },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -48,10 +48,10 @@ function makeDb() {
         },
       };
     },
-    insert(table: { __table: string }) {
+    insert(table: { tableName: string }) {
       return {
         values(input: unknown) {
-          return makeInsert(table.__table, input);
+          return makeInsert(table.tableName, input);
         },
       };
     },
