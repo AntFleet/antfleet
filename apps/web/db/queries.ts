@@ -6,6 +6,7 @@ import {
   findingStatus,
   maintainerReactions,
   onboardingEvents,
+  outgoingPrs,
   reviews,
   type AgentFinding,
   type NewAgentFinding,
@@ -1343,13 +1344,16 @@ export async function loadPublicBenchmarksPage(args: {
 
 // /agents/[address] — return findings for one agent, plus any benchmark
 // reviews tied to the agent's repo (cross-reference by repo name pattern
-// `agent-<name>-bench`). The address is matched case-insensitively because
-// users will paste mixed-case checksummed addresses from explorers.
+// `agent-<name>-bench`) and any merged upstream PRs AntFleet opened
+// against the agent's own repo (cross-reference by upstream_repo = agent_name).
+// The address is matched case-insensitively because users will paste mixed-
+// case checksummed addresses from explorers.
 export type AgentDetail = {
   agentTokenAddress: string;
   agentName: string;
   findings: AgentFinding[];
   benchmarkReviews: AgentBenchmarkReference[];
+  crossRepoMerges: AgentCrossRepoMerge[];
 };
 
 export type AgentBenchmarkReference = {
@@ -1360,6 +1364,16 @@ export type AgentBenchmarkReference = {
   commitSha: string;
   createdAt: Date;
   prCommentUrl: string | null;
+};
+
+export type AgentCrossRepoMerge = {
+  id: string;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  upstreamPrNumber: number;
+  mergedAt: Date;
+  mergeSha: string;
+  prUrl: string;
 };
 
 export async function loadAgentDetail(address: string): Promise<AgentDetail | null> {
@@ -1378,31 +1392,67 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
   // Public benchmark reviews tied to this agent's bench repo. Gated on
   // publicReceipt + isBenchmark like /benchmarks. Repo names are
   // case-insensitive on GitHub, so match lower() on both sides.
-  const benchmarkRows = await db
-    .select({
-      reviewId: reviews.reviewId,
-      owner: reviews.owner,
-      repo: reviews.repo,
-      prNumber: reviews.prNumber,
-      commitSha: reviews.commitSha,
-      createdAt: reviews.createdAt,
-      prCommentUrl: reviews.prCommentUrl,
-    })
-    .from(reviews)
-    .where(
-      and(
-        eq(reviews.isBenchmark, true),
-        eq(reviews.publicReceipt, true),
-        sql`lower(${reviews.repo}) = ${benchRepoPattern.toLowerCase()}`,
-      ),
-    )
-    .orderBy(desc(reviews.createdAt));
+  const [benchmarkRows, mergedOutgoingRows] = await Promise.all([
+    db
+      .select({
+        reviewId: reviews.reviewId,
+        owner: reviews.owner,
+        repo: reviews.repo,
+        prNumber: reviews.prNumber,
+        commitSha: reviews.commitSha,
+        createdAt: reviews.createdAt,
+        prCommentUrl: reviews.prCommentUrl,
+      })
+      .from(reviews)
+      .where(
+        and(
+          eq(reviews.isBenchmark, true),
+          eq(reviews.publicReceipt, true),
+          sql`lower(${reviews.repo}) = ${benchRepoPattern.toLowerCase()}`,
+        ),
+      )
+      .orderBy(desc(reviews.createdAt)),
+    // Merged upstream PRs AntFleet opened against this agent's own repo
+    // (not the -bench fork). The /receipts page already surfaces these
+    // globally; here we just slice them by the upstream_repo matching the
+    // agent name, so the agent page becomes the per-agent attribution view.
+    db
+      .select({
+        id: outgoingPrs.id,
+        upstreamOwner: outgoingPrs.upstreamOwner,
+        upstreamRepo: outgoingPrs.upstreamRepo,
+        upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+        mergedAt: outgoingPrs.mergedAt,
+        mergeSha: outgoingPrs.mergeSha,
+      })
+      .from(outgoingPrs)
+      .where(
+        and(
+          eq(outgoingPrs.status, "merged"),
+          sql`lower(${outgoingPrs.upstreamRepo}) = ${first.agentName.toLowerCase()}`,
+        ),
+      )
+      .orderBy(sql`${outgoingPrs.mergedAt} DESC NULLS LAST`),
+  ]);
+
+  const crossRepoMerges: AgentCrossRepoMerge[] = mergedOutgoingRows
+    .filter((r) => r.mergedAt !== null && r.mergeSha !== null)
+    .map((r) => ({
+      id: r.id,
+      upstreamOwner: r.upstreamOwner,
+      upstreamRepo: r.upstreamRepo,
+      upstreamPrNumber: r.upstreamPrNumber,
+      mergedAt: r.mergedAt as Date,
+      mergeSha: r.mergeSha as string,
+      prUrl: `https://github.com/${r.upstreamOwner}/${r.upstreamRepo}/pull/${r.upstreamPrNumber}`,
+    }));
 
   return {
     agentTokenAddress: first.agentTokenAddress,
     agentName: first.agentName,
     findings,
     benchmarkReviews: benchmarkRows,
+    crossRepoMerges,
   };
 }
 

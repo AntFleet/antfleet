@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { loadAgentDetail, type AgentBenchmarkReference } from "@/db/queries";
+import {
+  loadAgentDetail,
+  type AgentBenchmarkReference,
+  type AgentCrossRepoMerge,
+} from "@/db/queries";
 import type { AgentFinding } from "@/db/schema";
 import { formatRelativeTime } from "@/lib/receipts";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
@@ -45,6 +49,12 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
   return (
     <>
       <Header detail={detail} now={now} />
+      {detail.crossRepoMerges.length > 0 && (
+        <>
+          <SectionDivider />
+          <CrossRepoMergesSection merges={detail.crossRepoMerges} now={now} />
+        </>
+      )}
       <SectionDivider />
       <FindingsSection findings={detail.findings} now={now} />
       {detail.benchmarkReviews.length > 0 && (
@@ -69,7 +79,12 @@ function Header({
   detail,
   now,
 }: {
-  detail: { agentName: string; agentTokenAddress: string; findings: AgentFinding[] };
+  detail: {
+    agentName: string;
+    agentTokenAddress: string;
+    findings: AgentFinding[];
+    crossRepoMerges: AgentCrossRepoMerge[];
+  };
   now: Date;
 }) {
   const findingCount = detail.findings.length;
@@ -79,6 +94,7 @@ function Header({
     (f) => f.upstreamPrUrl !== null && f.upstreamMergedSha === null,
   );
   const hasMergedPr = detail.findings.some((f) => f.upstreamMergedSha !== null);
+  const upstreamMergeCount = detail.crossRepoMerges.length;
 
   return (
     <section className="py-20 pb-12">
@@ -91,6 +107,9 @@ function Header({
         </h1>
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <Badge>{`${findingCount} finding${findingCount === 1 ? "" : "s"}`}</Badge>
+          {upstreamMergeCount > 0 && (
+            <Badge>{`${upstreamMergeCount} merge${upstreamMergeCount === 1 ? "" : "s"} upstream`}</Badge>
+          )}
           {hasMergedPr && <Badge>upstream merged</Badge>}
           {hasOpenPr && !hasMergedPr && <Badge>upstream PR open</Badge>}
           <Badge>updated {relative}</Badge>
@@ -172,6 +191,70 @@ function FindingBlock({ finding, now }: { finding: AgentFinding; now: Date }) {
         </div>
       )}
     </article>
+  );
+}
+
+function CrossRepoMergesSection({ merges, now }: { merges: AgentCrossRepoMerge[]; now: Date }) {
+  return (
+    <section>
+      <ContentWrap>
+        <div className="mb-5 flex items-baseline justify-between">
+          <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+            Upstream merges
+          </h2>
+          <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            {merges.length} {merges.length === 1 ? "merge" : "merges"} on this agent
+          </span>
+        </div>
+        <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
+          PRs AntFleet opened against this agent&apos;s own repo and the upstream owner merged. The
+          highest-trust attribution class — the maintainer of a project AntFleet doesn&apos;t
+          control accepted the change.
+        </p>
+        <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
+          {merges.map((m) => (
+            <li key={m.id}>
+              <CrossRepoMergeRow merge={m} now={now} />
+            </li>
+          ))}
+        </ul>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function CrossRepoMergeRow({ merge, now }: { merge: AgentCrossRepoMerge; now: Date }) {
+  const arrowLabel = `AntFleet → ${merge.upstreamOwner.toLowerCase()}/${merge.upstreamRepo.toLowerCase()}`;
+  const shortSha = merge.mergeSha.slice(0, 7);
+  return (
+    <a
+      href={merge.prUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group transition-colors hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md"
+    >
+      <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
+        <Badge>cross-repo</Badge>
+        <Badge>merged</Badge>
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-[var(--color-ink)] leading-snug group-hover:underline underline-offset-2 font-mono">
+          {arrowLabel}
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+          <span>PR #{merge.upstreamPrNumber}</span>
+          <span className="text-[var(--color-line-strong)]">·</span>
+          <span>
+            merged at <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
+          </span>
+          <span className="text-[var(--color-line-strong)]">·</span>
+          <span>{formatRelativeTime(now, merge.mergedAt)}</span>
+        </div>
+      </div>
+      <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
+        view PR →
+      </span>
+    </a>
   );
 }
 
