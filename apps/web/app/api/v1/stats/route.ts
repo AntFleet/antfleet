@@ -41,6 +41,8 @@ const DEFAULT_DEPS: StatsDeps = {
         SELECT ${AUTONOMOPOLY_AGENT.address}::text AS address
         UNION
         SELECT token_address FROM factory_launches WHERE prelaunch_status = 'published'
+        UNION
+        SELECT agent_token_address FROM agent_findings WHERE agent_token_address NOT LIKE 'roast:%'
       ),
       public_findings AS (
         SELECT * FROM agent_findings WHERE agent_token_address NOT LIKE 'roast:%'

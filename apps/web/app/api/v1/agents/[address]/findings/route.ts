@@ -31,9 +31,17 @@ const DEFAULT_DEPS: AgentFindingsDeps = {
   async agentExists(address) {
     if (findAgentByAddress(address) !== null) return true;
     const result = await db.execute(sql`
-      SELECT token_address FROM factory_launches
-      WHERE lower(token_address) = ${address.toLowerCase()}
-        AND prelaunch_status = 'published'
+      SELECT address FROM (
+        SELECT token_address AS address
+        FROM factory_launches
+        WHERE lower(token_address) = ${address.toLowerCase()}
+          AND prelaunch_status = 'published'
+        UNION ALL
+        SELECT agent_token_address AS address
+        FROM agent_findings
+        WHERE lower(agent_token_address) = ${address.toLowerCase()}
+          AND agent_token_address NOT LIKE 'roast:%'
+      ) agents
       LIMIT 1
     `);
     return sqlRows<unknown>(result).length > 0;

@@ -35,14 +35,15 @@ export type AgentsDeps = {
 const DEFAULT_DEPS: AgentsDeps = {
   async listAgents(query, cursor) {
     const result = await db.execute(sql`
-      WITH directory AS (
+      WITH registry_directory AS (
         SELECT
           ${AUTONOMOPOLY_AGENT.address}::text AS address,
           ${AUTONOMOPOLY_AGENT.name}::text AS name,
           ${AUTONOMOPOLY_AGENT.repo}::text AS repo_full_name,
           'registry'::text AS source,
           '2026-05-19T00:00:00.000Z'::timestamptz AS first_seen_at
-        UNION ALL
+      ),
+      factory_directory AS (
         SELECT
           token_address AS address,
           coalesce(token_name, token_symbol, token_address) AS name,
@@ -51,6 +52,51 @@ const DEFAULT_DEPS: AgentsDeps = {
           deployed_at AS first_seen_at
         FROM factory_launches
         WHERE prelaunch_status = 'published'
+      ),
+      public_findings AS (
+        SELECT *
+        FROM agent_findings
+        WHERE lower(agent_token_address) NOT LIKE 'roast:%'
+      ),
+      finding_stats AS (
+        SELECT
+          lower(agent_token_address) AS address_key,
+          count(*)::int AS findings_count,
+          min(published_at) AS first_seen_at,
+          max(published_at) AS latest_finding_at
+        FROM public_findings
+        GROUP BY lower(agent_token_address)
+      ),
+      latest_finding_agents AS (
+        SELECT DISTINCT ON (lower(agent_token_address))
+          agent_token_address AS address,
+          agent_name AS name,
+          repo_full_name,
+          lower(agent_token_address) AS address_key
+        FROM public_findings
+        ORDER BY lower(agent_token_address), published_at DESC, finding_id ASC
+      ),
+      findings_directory AS (
+        SELECT
+          latest.address,
+          latest.name,
+          latest.repo_full_name,
+          'registry'::text AS source,
+          stats.first_seen_at
+        FROM latest_finding_agents latest
+        JOIN finding_stats stats ON stats.address_key = latest.address_key
+        WHERE latest.address_key NOT IN (
+          SELECT lower(address) FROM registry_directory
+          UNION
+          SELECT lower(address) FROM factory_directory
+        )
+      ),
+      directory AS (
+        SELECT * FROM registry_directory
+        UNION ALL
+        SELECT * FROM factory_directory
+        UNION ALL
+        SELECT * FROM findings_directory
       )
       SELECT
         directory.address,
@@ -58,18 +104,16 @@ const DEFAULT_DEPS: AgentsDeps = {
         directory.repo_full_name,
         directory.source,
         directory.first_seen_at,
-        count(agent_findings.finding_id)::int AS findings_count,
-        max(agent_findings.published_at) AS latest_finding_at
+        coalesce(finding_stats.findings_count, 0)::int AS findings_count,
+        finding_stats.latest_finding_at
       FROM directory
-      LEFT JOIN agent_findings
-        ON lower(agent_findings.agent_token_address) = lower(directory.address)
-        AND agent_findings.agent_token_address NOT LIKE 'roast:%'
+      LEFT JOIN finding_stats
+        ON finding_stats.address_key = lower(directory.address)
       WHERE ${
         cursor === null
           ? sql`true`
           : sql`(directory.first_seen_at < ${new Date(cursor[0])} OR (directory.first_seen_at = ${new Date(cursor[0])} AND directory.address > ${cursor[1]}))`
       }
-      GROUP BY directory.address, directory.name, directory.repo_full_name, directory.source, directory.first_seen_at
       ORDER BY directory.first_seen_at DESC, directory.address ASC
       LIMIT ${query.limit + 1}
     `);

@@ -31,6 +31,13 @@ type FactoryRow = {
   first_seen_at: Date | string;
 };
 
+type FindingAgentRow = {
+  address: string;
+  name: string;
+  repo_full_name: string | null;
+  first_seen_at: Date | string;
+};
+
 export type AgentDetailDeps = {
   getAgent: (address: string) => Promise<AgentDetailRow | null>;
 };
@@ -55,16 +62,54 @@ const DEFAULT_DEPS: AgentDetailDeps = {
         LIMIT 1
       `);
       const factory = sqlRows<FactoryRow>(factoryResult)[0];
-      if (factory === undefined) return null;
-      base = {
-        address: factory.address,
-        name: factory.name,
-        repoFullName: factory.repo_full_name,
-        source: "factory",
-        firstSeenAt: factory.first_seen_at,
-        findingsCount: 0,
-        latestFindingAt: null,
-      };
+      if (factory !== undefined) {
+        base = {
+          address: factory.address,
+          name: factory.name,
+          repoFullName: factory.repo_full_name,
+          source: "factory",
+          firstSeenAt: factory.first_seen_at,
+          findingsCount: 0,
+          latestFindingAt: null,
+        };
+      } else {
+        const findingResult = await db.execute(sql`
+          WITH public_findings AS (
+            SELECT *
+            FROM agent_findings
+            WHERE lower(agent_token_address) = ${normalized}
+              AND agent_token_address NOT LIKE 'roast:%'
+          )
+          SELECT
+            latest.agent_token_address AS address,
+            latest.agent_name AS name,
+            latest.repo_full_name,
+            stats.first_seen_at
+          FROM (
+            SELECT DISTINCT ON (lower(agent_token_address))
+              agent_token_address,
+              agent_name,
+              repo_full_name
+            FROM public_findings
+            ORDER BY lower(agent_token_address), published_at DESC, finding_id ASC
+          ) latest
+          CROSS JOIN (
+            SELECT min(published_at) AS first_seen_at FROM public_findings
+          ) stats
+          LIMIT 1
+        `);
+        const findingAgent = sqlRows<FindingAgentRow>(findingResult)[0];
+        if (findingAgent === undefined) return null;
+        base = {
+          address: findingAgent.address,
+          name: findingAgent.name,
+          repoFullName: findingAgent.repo_full_name,
+          source: "registry",
+          firstSeenAt: findingAgent.first_seen_at,
+          findingsCount: 0,
+          latestFindingAt: null,
+        };
+      }
     }
 
     const statsResult = await db.execute(sql`
