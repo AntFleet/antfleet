@@ -20,9 +20,14 @@ const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
 const MONO = '"SFMono-Regular", Menlo, Monaco, "Courier New", monospace';
 const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, med: 2, medium: 2, low: 1 };
 
-export default async function Image({ params }: { params: RouteParams }): Promise<ImageResponse> {
+export default async function Image({
+  params,
+}: {
+  params: Promise<RouteParams>;
+}): Promise<ImageResponse> {
   try {
-    const agent = await loadAgentDetail(params.address);
+    const { address } = await params;
+    const agent = await loadAgentDetail(address);
     if (agent === null) return image(notFoundCard("agent"));
 
     const count = agent.findings.length;

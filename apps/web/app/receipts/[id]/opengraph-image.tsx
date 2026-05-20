@@ -18,9 +18,14 @@ const INK_MUTED = "#a1a1aa";
 const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 const MONO = '"SFMono-Regular", Menlo, Monaco, "Courier New", monospace';
 
-export default async function Image({ params }: { params: RouteParams }): Promise<ImageResponse> {
+export default async function Image({
+  params,
+}: {
+  params: Promise<RouteParams>;
+}): Promise<ImageResponse> {
   try {
-    const row = await loadPublicReceiptDetail(params.id);
+    const { id } = await params;
+    const row = await loadPublicReceiptDetail(id);
     if (row === null) return image(notFoundCard("receipt"));
 
     const display = toDisplayReceipt(row, new Date());

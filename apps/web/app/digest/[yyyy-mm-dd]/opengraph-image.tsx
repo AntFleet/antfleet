@@ -17,9 +17,13 @@ const INK_MUTED = "#a1a1aa";
 const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 const MONO = '"SFMono-Regular", Menlo, Monaco, "Courier New", monospace';
 
-export default async function Image({ params }: { params: RouteParams }): Promise<ImageResponse> {
+export default async function Image({
+  params,
+}: {
+  params: Promise<RouteParams>;
+}): Promise<ImageResponse> {
   try {
-    const weekEndingIso = params["yyyy-mm-dd"];
+    const { "yyyy-mm-dd": weekEndingIso } = await params;
     const digest = await loadDigestForWeek(weekEndingIso);
     if (digest === null) return image(notFoundCard());
 
