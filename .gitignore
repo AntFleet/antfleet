@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 .omc/codex-out/
+.omc/artifacts/
 .omc/state/
 .omc/research/
 .omc/notepad.md

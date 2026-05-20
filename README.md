@@ -172,7 +172,7 @@ Postgres (Neon, EU region). Tables:
 - `onboarding_events` — Onboarder audit trail (welcome, summary,
   check-in, partner_reply)
 
-Migration schema head: `0005_dark_doctor_octopus`. Schema definitions
+Migration schema head: `0017_agent_findings_bench_repo`. Schema definitions
 in `apps/web/db/schema.ts`; query layer in `apps/web/db/queries.ts`.
 
 ## Safety

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
 import { resetRateLimitForTest } from "./lib/api-v1/rate-limit";
-import { middleware } from "./middleware";
+import { proxy } from "./proxy";
 
 function makeReq(
   pathname = "/",
@@ -13,13 +13,13 @@ function makeReq(
   });
 }
 
-describe("security headers middleware", () => {
-  let res: ReturnType<typeof middleware>;
+describe("security headers proxy", () => {
+  let res: ReturnType<typeof proxy>;
 
   beforeEach(() => {
     process.env["ROAST_IP_SALT"] = "0123456789abcdef";
     resetRateLimitForTest();
-    res = middleware(makeReq());
+    res = proxy(makeReq());
   });
 
   it("sets HSTS for at least 1 year and includes subdomains", () => {
@@ -67,17 +67,17 @@ describe("security headers middleware", () => {
   });
 });
 
-describe("api v1 rate-limit middleware", () => {
+describe("api v1 rate-limit proxy", () => {
   beforeEach(() => {
     process.env["ROAST_IP_SALT"] = "0123456789abcdef";
     resetRateLimitForTest();
   });
 
   it("returns 429 with Retry-After on the 61st GET /api/v1 request from the same IP", () => {
-    let res: ReturnType<typeof middleware> | null = null;
+    let res: ReturnType<typeof proxy> | null = null;
 
     for (let i = 0; i < 61; i += 1) {
-      res = middleware(
+      res = proxy(
         makeReq("/api/v1/findings", {
           headers: { "x-forwarded-for": "203.0.113.10" },
         }),
@@ -90,10 +90,10 @@ describe("api v1 rate-limit middleware", () => {
   });
 
   it("does not rate-limit non-api-v1 paths", () => {
-    let res: ReturnType<typeof middleware> | null = null;
+    let res: ReturnType<typeof proxy> | null = null;
 
     for (let i = 0; i < 61; i += 1) {
-      res = middleware(
+      res = proxy(
         makeReq("/receipts", {
           headers: { "x-forwarded-for": "203.0.113.10" },
         }),
@@ -104,10 +104,10 @@ describe("api v1 rate-limit middleware", () => {
   });
 
   it("does not rate-limit OPTIONS preflights", () => {
-    let res: ReturnType<typeof middleware> | null = null;
+    let res: ReturnType<typeof proxy> | null = null;
 
     for (let i = 0; i < 61; i += 1) {
-      res = middleware(
+      res = proxy(
         makeReq("/api/v1/findings", {
           method: "OPTIONS",
           headers: { "x-forwarded-for": "203.0.113.10" },

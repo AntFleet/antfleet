@@ -12,6 +12,10 @@ next-env.d.ts
 *.tsbuildinfo
 .env*.local
 .env.local.bak*
+.env.vercel*
+
+# Local operator diagnostics and throwaway DB inspection scripts.
+scripts/_*.ts
 
 # Copied from repo root by the prebuild step so /changelog can read it from
 # inside the Vercel function bundle (Turbopack chokes on the workspace

@@ -8,7 +8,7 @@ import { checkRateLimit } from "./lib/api-v1/rate-limit";
 // any b2b buyer's security review expects to see.
 //
 // API routes that need their own headers (Content-Type for /receipts.rss,
-// no-cache for /api/cron/sweep) are not blocked here — middleware merges
+// no-cache for /api/cron/sweep) are not blocked here — proxy merges
 // these headers with whatever the route handler returns.
 
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
@@ -44,7 +44,7 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
 
 let warnedMissingForwardedFor = false;
 
-export function middleware(req: NextRequest): NextResponse {
+export function proxy(req: NextRequest): NextResponse {
   const rateLimitResponse = maybeRateLimitApiV1(req);
   if (rateLimitResponse !== null) {
     return withSecurityHeaders(rateLimitResponse);
@@ -107,6 +107,5 @@ function withSecurityHeaders(response: NextResponse): NextResponse {
 // Apply to every path except Next.js internals and static asset files.
 // API routes are included — they benefit from the security headers too.
 export const config = {
-  runtime: "nodejs",
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.png$|.*\\.svg$|.*\\.ico$).*)"],
 };

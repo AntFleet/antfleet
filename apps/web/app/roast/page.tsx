@@ -17,11 +17,7 @@ export const metadata: Metadata = {
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
-export default async function RoastPage({
-  searchParams,
-}: {
-  searchParams: Promise<SearchParams>;
-}) {
+export default async function RoastPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
   const before = parseBeforeCursor(params["before"]);
   const [page, stats] = await Promise.all([
@@ -101,8 +97,7 @@ function RoastStrip({
     const n = stats.totalSubmissions;
     return (
       <p className="mb-6 font-mono text-xs text-[var(--color-ink-subtle)]">
-        {n.toLocaleString()} {n === 1 ? "submission" : "submissions"} in queue · findings
-        processing
+        {n.toLocaleString()} {n === 1 ? "submission" : "submissions"} in queue · findings processing
       </p>
     );
   }

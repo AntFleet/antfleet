@@ -67,7 +67,7 @@ Routes:
 - `/agents/[address]/claim`, `/api/claim` (Sprint 4 — operator portal for repo attribution via EIP-191 signature)
 - `/agents/[address]/opengraph-image`, `/receipts/[id]/opengraph-image`, `/roasts/[id]/opengraph-image` (X-attention sprint — 1200×630 next/og cards so every public artifact previews on X as a brand card instead of the small summary Twitter card)
 - `/badge/[owner]/[repo].svg`
-- `/roast`, `/api/roast`, `/roasts`, `/roasts/[id]` (X-attention sprint added `/roasts` — public index of published roasts, mirrors `/receipts` pattern)
+- `/roast`, `/api/roast`, `/roasts`, `/roasts/[id]` (`/roast` is the unified submission + published-roasts page; `/roasts` redirects there; `/roasts/[id]` remains the per-roast result page)
 - `/digest/[yyyy-mm-dd]`, `/digest/[yyyy-mm-dd]/opengraph-image` (X-attention sprint — weekly reproducible permalink; the URL renders byte-identical numbers no matter when it's re-opened)
 - `/api/cron/curate-weekly` (Sprint 5 follow-up — Monday 00:00 UTC)
 - `/api/cron/poll-factory` (Sprint 3 — route present; **dormant**, no schedule. Activates when `AGENTS_FACTORY_ADDRESS` env is set on prod, i.e. once an agents-specific Liquid factory contract deploys)
@@ -76,7 +76,7 @@ Routes:
 - `/receipts`, `/benchmarks` (pre-existing — do not modify)
 - `/api/cron/*`, `/api/github/*`, `/api/opt-in/*` (pre-existing)
 - `/api` (Sprint 5 — human-readable docs page for the public JSON API)
-- `/api/v1/findings`, `/api/v1/findings/[finding_id]`, `/api/v1/agents`, `/api/v1/agents/[address]`, `/api/v1/agents/[address]/findings`, `/api/v1/agents/[address]/drift`, `/api/v1/stats` (Sprint 5 — public JSON API, cursor-paginated, 60 req/60s/IP rate limit applied in middleware)
+- `/api/v1/findings`, `/api/v1/findings/[finding_id]`, `/api/v1/agents`, `/api/v1/agents/[address]`, `/api/v1/agents/[address]/findings`, `/api/v1/agents/[address]/drift`, `/api/v1/stats` (Sprint 5 — public JSON API, cursor-paginated, 60 req/60s/IP rate limit applied in the Next proxy)
 - Static asset `/api/v1/openapi.json` (Sprint 5 — OpenAPI 3.1 spec served from `apps/web/public/api/v1/`)
 
 Tables (apps/web/db/schema.ts):
@@ -98,7 +98,7 @@ Libraries:
 - `apps/web/lib/api-v1/cursor.ts` — Sprint 5 base64url JSON cursor encode/decode
 - `apps/web/lib/api-v1/responses.ts` — Sprint 5 `jsonOk` / `jsonError` / `jsonStats` / `optionsResponse` helpers with the cache + CORS headers from the contract
 - `apps/web/lib/api-v1/serialize.ts` — Sprint 5 explicit-key serializers (redaction enforced here — never splat DB rows into JSON)
-- `apps/web/lib/api-v1/rate-limit.ts` — Sprint 5 in-memory sliding window keyed by sha256(ip + ROAST_IP_SALT); 60 req/60s; `checkRateLimit(ip)` callable from middleware
+- `apps/web/lib/api-v1/rate-limit.ts` — Sprint 5 in-memory sliding window keyed by sha256(ip + ROAST_IP_SALT); 60 req/60s; `checkRateLimit(ip)` callable from the Next proxy
 - `apps/web/lib/claim-message.ts` — Sprint 4 EIP-191 message format (`buildClaimMessage`, `parseClaimMessage`)
 - `apps/web/lib/identity-drift.ts`
 - `apps/web/lib/post-drafts.ts` — tweet draft pipeline (Sprint 3 factory drafts + Sprint 4 `writeClaimVerifiedDraft`, `writeWeeklyFeatureDraft`)
@@ -188,7 +188,7 @@ Each sprint has a re-check gate. If the gate fails, do not execute — re-sequen
 
 ### Sprint 5 — Public JSON API ✅ DONE
 
-**Shipped:** Frozen public contract at `.omc/plans/sprints/sprint-5-api-contract.md`. Seven GET endpoints under `/api/v1/` (findings list/detail, agents list/detail, agent-scoped findings, agent-scoped drift, stats) with cursor-paginated lists `{ data, next_cursor }`, redaction-by-construction via `lib/api-v1/serialize.ts` (no `...row` splats — internal columns cannot leak), CORS `Access-Control-Allow-Origin: *` on 2xx, documented Cache-Control per route, address validation via `/^0x[a-fA-F0-9]{40}$/u`, and consistent `{ error: { code, message } }` shape on 4xx/5xx. Rate-limit applied in `middleware.ts` (60 req/60s/IP across all `/api/v1/*`, sliding window keyed by sha256(ip + ROAST_IP_SALT), 429 with `Retry-After`). OpenAPI 3.1 spec served as a static asset at `/api/v1/openapi.json` with a repo-root `verify-openapi.ts` script. Human-readable docs page at `/api`. Final test count: 360 passing.
+**Shipped:** Frozen public contract at `.omc/plans/sprints/sprint-5-api-contract.md`. Seven GET endpoints under `/api/v1/` (findings list/detail, agents list/detail, agent-scoped findings, agent-scoped drift, stats) with cursor-paginated lists `{ data, next_cursor }`, redaction-by-construction via `lib/api-v1/serialize.ts` (no `...row` splats — internal columns cannot leak), CORS `Access-Control-Allow-Origin: *` on 2xx, documented Cache-Control per route, address validation via `/^0x[a-fA-F0-9]{40}$/u`, and consistent `{ error: { code, message } }` shape on 4xx/5xx. Rate-limit applied in `proxy.ts` (60 req/60s/IP across all `/api/v1/*`, sliding window keyed by sha256(ip + ROAST_IP_SALT), 429 with `Retry-After`). OpenAPI 3.1 spec served as a static asset at `/api/v1/openapi.json` with a repo-root `verify-openapi.ts` script. Human-readable docs page at `/api`. Final test count: 360 passing.
 
 **Re-check gate:** Gate 2 (≥30 receipts) passed at 69 public receipts on prod. Gate 1 (agent_findings schema stable ≥2 weeks) relaxed per handoff doc — the repo is younger than 2 weeks but the agent_findings column set has not changed since Sprint 1 (PR #16).
 
@@ -204,7 +204,7 @@ Each sprint has a re-check gate. If the gate fails, do not execute — re-sequen
 - CODEX-2: opengraph-image.tsx routes for `/receipts/[id]`, `/agents/[address]`, `/roasts/[id]` — runtime nodejs, system fonts only, never-throws (404-shaped image on bad input).
 - CODEX-3: `apps/web/components/TweetIntent.tsx` — server-rendered `<a>` to x.com/intent/tweet, no client JS. Wired into receipts rows, roast ShareSection (published-only), and the agent header.
 - CODEX-4: `/digest/[yyyy-mm-dd]` weekly permalink. `parseDigestSlug` is the only validation surface (regex + ISO round-trip + future-date guard); audited by an in-chunk security-reviewer subagent (clean, 0 findings).
-- CODEX-5: `/roasts` public index. New `loadRoastStats()` + `loadPublishedRoasts()` query helpers; counter strip above the `/roast` submission form; `/roasts` link added to header + footer nav.
+- CODEX-5: `/roasts` public index initially shipped, then unified into `/roast` on 2026-05-20. `loadRoastStats()` + `loadPublishedRoasts()` now back the counter strip and published-roasts list on `/roast`; `/roasts` redirects there.
 
 **Codex orchestration:** Hybrid mode (operator decision mid-sprint) — Claude handled surgical existing-file edits (CODEX-1 queries.ts, CODEX-3 page edits, CODEX-5 queries/layout/roast helpers), Codex via `omc team 1:codex` produced the net-new file chunks (CODEX-2 OG cards, CODEX-4 digest page+lib+OG, CODEX-5 roasts index page). Each codex team launch required `omc team api orphan-cleanup` after shutdown before the next launch could acquire the leader-session lock.
 

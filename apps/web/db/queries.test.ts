@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeActivityWindow } from "./queries";
+import { normalizeActivityWindow, summarizeRoastFindings } from "./queries";
 
 const NOW = new Date("2026-05-19T12:00:00.000Z");
 
@@ -54,5 +54,24 @@ describe("normalizeActivityWindow", () => {
   it("does NOT clamp an until that is exactly equal to now", () => {
     const out = normalizeActivityWindow(null, NOW, NOW);
     expect(out).toEqual({ since: null, until: NOW, zero: false });
+  });
+});
+
+describe("summarizeRoastFindings", () => {
+  it("counts findings and picks the highest severity by rank", () => {
+    expect(
+      summarizeRoastFindings([{ severity: "low" }, { severity: "high" }, { severity: "med" }]),
+    ).toEqual({ findingCount: 3, highestSeverity: "high" });
+  });
+
+  it("returns null severity when no findings exist", () => {
+    expect(summarizeRoastFindings([])).toEqual({ findingCount: 0, highestSeverity: null });
+  });
+
+  it("ignores unknown severities when choosing the highest ranked label", () => {
+    expect(summarizeRoastFindings([{ severity: "experimental" }])).toEqual({
+      findingCount: 1,
+      highestSeverity: null,
+    });
   });
 });

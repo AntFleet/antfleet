@@ -27,7 +27,7 @@ function parseArgs() {
   const [installationIdArg, owner, repo] = process.argv.slice(2);
   if (installationIdArg === undefined || owner === undefined || repo === undefined) {
     console.error(
-      "usage: pnpm exec tsx scripts/seed-install.ts <installationId> <owner> <repo> [--token <0x...>] [--notes \"...\"]",
+      'usage: pnpm exec tsx scripts/seed-install.ts <installationId> <owner> <repo> [--token <0x...>] [--notes "..."]',
     );
     process.exit(2);
   }
@@ -41,9 +41,7 @@ function parseArgs() {
   const tokenIdx = process.argv.indexOf("--token");
   const tokenCandidate = tokenIdx !== -1 ? process.argv[tokenIdx + 1] : undefined;
   const tokenAddress =
-    tokenCandidate !== undefined && tokenCandidate.startsWith("0x")
-      ? tokenCandidate
-      : undefined;
+    tokenCandidate !== undefined && tokenCandidate.startsWith("0x") ? tokenCandidate : undefined;
   if (tokenIdx !== -1 && tokenAddress === undefined) {
     console.error("--token value must be a 0x address");
     process.exit(2);
@@ -52,9 +50,7 @@ function parseArgs() {
   const notesIdx = process.argv.indexOf("--notes");
   const notesCandidate = notesIdx !== -1 ? process.argv[notesIdx + 1] : undefined;
   const notes =
-    notesCandidate !== undefined && !notesCandidate.startsWith("--")
-      ? notesCandidate
-      : undefined;
+    notesCandidate !== undefined && !notesCandidate.startsWith("--") ? notesCandidate : undefined;
 
   return { installationId, owner, repo, tokenAddress, notes };
 }

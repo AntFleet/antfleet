@@ -1,5 +1,19 @@
 import { createHash } from "node:crypto";
-import { and, count, desc, eq, gte, inArray, isNotNull, lt, lte, max, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lt,
+  lte,
+  max,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { db } from "./index";
 import {
   agentFindings,
@@ -1819,6 +1833,22 @@ export interface PublishedRoastsPage {
   hasMore: boolean;
 }
 
+export function summarizeRoastFindings(findings: ReadonlyArray<{ severity: string }>): {
+  findingCount: number;
+  highestSeverity: string | null;
+} {
+  let bestRank = -1;
+  let bestSeverity: string | null = null;
+  for (const f of findings) {
+    const rank = DIGEST_SEVERITY_RANK[f.severity.toLowerCase()] ?? -1;
+    if (rank > bestRank) {
+      bestRank = rank;
+      bestSeverity = f.severity;
+    }
+  }
+  return { findingCount: findings.length, highestSeverity: bestSeverity };
+}
+
 // Index listing for /roasts. Newest-first by publishedAt, cursor via
 // publishedAt < before (mirrors /receipts pattern so the visual language
 // stays consistent). Each row carries an aggregated finding count + the
@@ -1846,32 +1876,35 @@ export async function loadPublishedRoasts(
     .limit(fetchLimit);
   const hasMore = submissions.length > limit;
   const visible = hasMore ? submissions.slice(0, limit) : submissions;
-  // Batch-fetch per-roast findings so we can attach count + highest
-  // severity without N+1.
-  const rows: PublishedRoastRow[] = await Promise.all(
-    visible.map(async (sub) => {
-      const findings = await db
-        .select({ severity: agentFindings.severity })
-        .from(agentFindings)
-        .where(sql`lower(${agentFindings.agentTokenAddress}) = lower(${"roast:" + sub.id})`);
-      let bestRank = -1;
-      let bestSeverity: string | null = null;
-      for (const f of findings) {
-        const rank = DIGEST_SEVERITY_RANK[f.severity.toLowerCase()] ?? -1;
-        if (rank > bestRank) {
-          bestRank = rank;
-          bestSeverity = f.severity;
-        }
-      }
-      return {
-        id: sub.id,
-        repoFullName: sub.repoFullName,
-        publishedAt: sub.publishedAt,
-        findingCount: findings.length,
-        highestSeverity: bestSeverity,
-      };
-    }),
-  );
+  const roastKeys = visible.map((sub) => `roast:${sub.id}`.toLowerCase());
+  const findingsByRoast = new Map<string, Array<{ severity: string }>>();
+  if (roastKeys.length > 0) {
+    const findingRows = await db
+      .select({
+        roastKey: sql<string>`lower(${agentFindings.agentTokenAddress})`,
+        severity: agentFindings.severity,
+      })
+      .from(agentFindings)
+      .where(inArray(sql<string>`lower(${agentFindings.agentTokenAddress})`, roastKeys));
+    for (const row of findingRows) {
+      const bucket = findingsByRoast.get(row.roastKey) ?? [];
+      bucket.push({ severity: row.severity });
+      findingsByRoast.set(row.roastKey, bucket);
+    }
+  }
+
+  const rows: PublishedRoastRow[] = visible.map((sub) => {
+    const summary = summarizeRoastFindings(
+      findingsByRoast.get(`roast:${sub.id}`.toLowerCase()) ?? [],
+    );
+    return {
+      id: sub.id,
+      repoFullName: sub.repoFullName,
+      publishedAt: sub.publishedAt,
+      findingCount: summary.findingCount,
+      highestSeverity: summary.highestSeverity,
+    };
+  });
   return { rows, hasMore };
 }
 

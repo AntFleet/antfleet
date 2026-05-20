@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
 import { resetRateLimitForTest } from "../../../lib/api-v1/rate-limit";
-import { middleware } from "../../../middleware";
+import { proxy } from "../../../proxy";
 
 function req(): NextRequest {
   return new NextRequest("https://www.antfleet.dev/api/v1/findings", {
@@ -18,10 +18,10 @@ describe("api v1 rate limit integration", () => {
 
   it("allows requests 1-60 and returns the documented 429 response on request 61", async () => {
     for (let i = 0; i < 60; i += 1) {
-      expect(middleware(req()).status).not.toBe(429);
+      expect(proxy(req()).status).not.toBe(429);
     }
 
-    const limited = middleware(req());
+    const limited = proxy(req());
 
     expect(limited.status).toBe(429);
     expect(limited.headers.get("Retry-After")).toMatch(/^[1-9]\d*$/);

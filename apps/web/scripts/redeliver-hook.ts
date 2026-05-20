@@ -33,7 +33,9 @@ async function main() {
 
   console.log(`\n[redelivering ${failed.length} failed delivery(s)]`);
   for (const d of failed) {
-    console.log(`  id=${d.id}  guid=${d.guid}  event=${d.event}.${d.action ?? "?"}  code=${d.status_code}`);
+    console.log(
+      `  id=${d.id}  guid=${d.guid}  event=${d.event}.${d.action ?? "?"}  code=${d.status_code}`,
+    );
     try {
       await octokit.request("POST /app/hook/deliveries/{delivery_id}/attempts", {
         delivery_id: d.id,

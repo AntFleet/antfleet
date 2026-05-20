@@ -3,10 +3,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseChangelog } from "@/lib/changelog";
 
-// Changelog page — the agent log. Reads the canonical CHANGELOG.md at the
-// repo root (bundled into the deployment via Next's includeOutsideRoot
-// hook in next.config). Force-dynamic so a fresh deploy always picks up
-// the latest. Honors the §15 brand discipline: terse, dated, sourced.
+// Changelog page — the agent log. Reads the CHANGELOG.md copied into
+// apps/web by the prebuild step, keeping the route bundle scoped to the app.
+// Force-dynamic so a fresh deploy always picks up the latest committed copy.
+// Honors the §15 brand discipline: terse, dated, sourced.
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
@@ -15,22 +15,11 @@ export const metadata: Metadata = {
 };
 
 async function loadChangelogMarkdown(): Promise<string> {
-  // process.cwd() points at apps/web in both Vercel and local dev. The
-  // prebuild step copies ../../CHANGELOG.md → ./CHANGELOG.md so the file
-  // lives inside the function bundle. Repo-root fallback covers `pnpm dev`
-  // runs that haven't gone through prebuild.
-  const candidates = [
-    path.join(process.cwd(), "CHANGELOG.md"),
-    path.join(process.cwd(), "..", "..", "CHANGELOG.md"),
-  ];
-  for (const p of candidates) {
-    try {
-      return await readFile(p, "utf8");
-    } catch {
-      // try next candidate
-    }
+  try {
+    return await readFile(path.join(process.cwd(), "CHANGELOG.md"), "utf8");
+  } catch {
+    return "# Changelog\n\nNo entries yet.";
   }
-  return "# Changelog\n\nNo entries yet.";
 }
 
 export default async function ChangelogPage() {
