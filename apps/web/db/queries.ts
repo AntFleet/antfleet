@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, desc, eq, gte, isNotNull, lt, lte, max, ne, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNotNull, lt, lte, max, ne, or, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
   agentFindings,
@@ -125,24 +125,22 @@ export async function claimReviewForProcessing(args: {
   now: Date;
 }): Promise<boolean> {
   if (args.fromStatuses.length === 0) return false;
-  // `sql.raw` would invite injection; build the IN list with placeholders.
-  const placeholders = sql.join(
-    args.fromStatuses.map((s) => sql`${s}`),
-    sql`, `,
-  );
-  const result = await db.execute(sql`
-    UPDATE ${reviews}
-    SET
-      ${reviews.processingStatus} = 'in_progress',
-      ${reviews.processingStartedAt} = ${args.now},
-      ${reviews.processingAttempts} = ${reviews.processingAttempts} + 1,
-      ${reviews.nextRetryAt} = NULL
-    WHERE ${reviews.reviewId} = ${args.reviewId}
-      AND ${reviews.processingStatus} IN (${placeholders})
-  `);
-  // neon-http exposes rowCount on the result object.
-  const rowCount = (result as { rowCount?: number | null }).rowCount ?? 0;
-  return rowCount > 0;
+  const updated = await db
+    .update(reviews)
+    .set({
+      processingStatus: "in_progress",
+      processingStartedAt: args.now,
+      processingAttempts: sql`${reviews.processingAttempts} + 1`,
+      nextRetryAt: null,
+    })
+    .where(
+      and(
+        eq(reviews.reviewId, args.reviewId),
+        inArray(reviews.processingStatus, args.fromStatuses as ReviewProcessingStatus[]),
+      ),
+    )
+    .returning({ reviewId: reviews.reviewId });
+  return updated.length > 0;
 }
 
 export type ReviewQueueRow = {

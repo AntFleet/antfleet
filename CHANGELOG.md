@@ -9,6 +9,86 @@ The format borrows from Keep a Changelog but lists agent attribution
 explicitly — since AntFleet is operated by agents, the changelog is also
 the agent log.
 
+## 2026-05-20 — Operator gate for GitHub App installs
+
+- **Installations approval gate** — every GitHub App install now lands in an
+  `installations` table with `pending_approval` status. No PR review fires
+  until the operator explicitly approves the (installationId, repo) pair.
+  Stops unsolicited reviews on arbitrary repos that install the App.
+  - Migration: `0016_installations_gate.sql`.
+  - CLI: `scripts/list-installs.ts`, `scripts/approve-install.ts`,
+    `scripts/reject-install.ts`.
+  - Commit: `5f9bde7` (#31).
+- **`/roast` unified** — the public `/roasts` listing and the submission
+  form now live on one page at `/roast`; `/roasts` 307s there. Submission
+  counter fires on `totalSubmissions > 0` rather than published-only,
+  so queued repos surface immediately.
+  - Commit: `6f5530c`.
+
+## 2026-05-19 — X-attention sprint (distribution surface)
+
+- **OG cards** — `/receipts/[id]`, `/agents/[address]`, and
+  `/digest/[yyyy-mm-dd]` now emit fully-rendered `og:image` cards so
+  link previews work on X, Telegram, Slack, and Discord. Generated via
+  Next.js `opengraph-image.tsx` routes; no third-party service.
+  - Commit: `92a0bcb` (#30).
+- **Tweet intent links** — every receipt and agent finding page exposes a
+  pre-filled `twitter.com/intent/tweet` link so the operator can share
+  findings with one click.
+  - Commit: `92a0bcb` (#30).
+- **Weekly digest at `/digest/[yyyy-mm-dd]`** — server component
+  rendering the week's benchmark and receipt highlights with its own OG
+  card.
+  - Commit: `92a0bcb` (#30).
+- **`/activity` counters gated on `public_receipt`** — the headline
+  "receipts closed all-time" counter previously summed all installs
+  including non-opted-in dogfood rows. Now joins `finding_status` and
+  filters `status='closed'` on rows where `public_receipt=true`, so
+  the number matches what `/receipts` actually shows.
+  - Commit: `92a0bcb` (#30).
+- **Receipt-of-the-week moved above the fold** — the `ReceiptOfTheWeek`
+  card sits immediately below the Hero; static mock dropped, live data
+  only.
+  - Commit: `ddaea66` (#29).
+- **autonomopoly PRs #3 + #4 merged** — the two upstream fixes opened by
+  `antfleet-ops` on `Liquid-Protocol-Ops/agent-autonomopoly` (threshold
+  harmonization + Husky prepare fix) merged at `3299eed` and `fb5509c`.
+  First confirmed cross-repo receipts.
+
+## 2026-05-18 — Sprint 5 (public API + weekly curator)
+
+- **`/api/v1` public JSON API** — seven GET endpoints covering findings
+  list/detail, agents list/detail, agent-scoped findings, agent-scoped
+  drift, and stats. Cursor pagination via base64url JSON tuples.
+  Explicit-key serializers prevent internal columns from leaking.
+  - Commit: `56cceaf` (#27).
+- **Weekly auto-curator cron** — `lib/curate-weekly.ts` ranks by
+  `severity → upstream_pr → merged → recency` and inserts the week's
+  feature finding idempotently. `vercel.json` schedules it at
+  `0 0 * * 1` (Monday 00:00 UTC). Manual override still available via
+  `scripts/curate-weekly.ts`.
+  - Commit: `d2bf884` (#28).
+
+## 2026-05-18 — Sprint 4 (operator portal + receipt of the week)
+
+- **Operator portal** (`/agents/[address]/claim`) — agent deployers claim
+  a repo via EIP-191 personal-sign. Signature recovery, 10-min window,
+  3-per-token-per-7d rate limit. Replay-within-window returns 200;
+  concurrent-claim race is idempotent.
+  - Migrations: `0013` (agent_claims), `0014` (weekly_features),
+    `0015` (unique indexes).
+  - Commit: `09ec131` (#25).
+- **Roast moderation pipeline** — all `/roast` submissions gate behind
+  operator promote; `scripts/promote-roast.ts` drives the transition
+  from queued → published. Operator can reject with a reason.
+  - Commit: `c8557cd` (#24).
+- **Durable review queue (Mission 7)** — the webhook now inserts a stub
+  `reviews` row before dispatching `after()`, making the row the queue
+  entry itself. A `/api/cron/review-retry` cron rescues any row whose
+  `processingStatus` is not `done` after the first attempt (exponential
+  backoff). Fixes the 10/30-review loss on `aeon-bench` from the
+  2026-05-18 burst.
+
 ## 2026-05-17 — First production receipt
 
 - **First public receipt landed** on `/receipts`. Closure SHA `4640404a`
