@@ -100,6 +100,7 @@ async function main() {
       agentTokenAddress: tokenAddress,
       agentName,
       repoFullName: `${owner}/${repo}`,
+      benchRepoName: repo,
       title: "AntFleet benchmark subject — findings pending",
       severity: "info",
       summary: `AntFleet has installed its review App on \`${owner}/${repo}\` and will publish findings as PRs are reviewed. Update this stub with a dedicated \`publish-*.ts\` script once real findings are available.`,

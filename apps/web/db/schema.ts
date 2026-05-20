@@ -251,10 +251,15 @@ export const agentFindings = pgTable("agent_findings", {
   // The agent's primary on-chain identity — usually the ERC-20 token address
   // that names the agent. Indexed via the route path /agents/[address].
   agentTokenAddress: text("agent_token_address").notNull(),
-  // Human-readable repo name (e.g. "agent-autonomopoly"). Lets us cross-link
-  // to AntFleet reviews on agent-<name>-bench without exposing internal ids.
+  // Human-readable repo name (e.g. "agent-autonomopoly").
   agentName: text("agent_name").notNull(),
+  // Upstream/full repository identity for API filters and receipts, when
+  // known. Do not use this for benchmark review joins; some rows point at the
+  // upstream repo while others were seeded from the bench mirror.
   repoFullName: text("repo_full_name"),
+  // Short repo name stored in reviews.repo for this agent's benchmark mirror,
+  // e.g. "aeon-bench" or "agent-autonomopoly-bench".
+  benchRepoName: text("bench_repo_name"),
   title: text("title").notNull(),
   // info | low | med | high. Free text rather than a pg enum so new levels
   // are application-only.

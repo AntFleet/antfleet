@@ -110,6 +110,7 @@ export function buildFeeLockerFinding(args: {
     agentTokenAddress: AUTONOMOPOLY_AGENT_TOKEN,
     agentName: "agent-autonomopoly",
     repoFullName: "Liquid-Protocol-Ops/agent-autonomopoly",
+    benchRepoName: "agent-autonomopoly-bench",
     title: "FeeLocker availableFees selector mismatch — agent cannot read claimable DIEM",
     severity: "high",
     summary: SUMMARY_MD,

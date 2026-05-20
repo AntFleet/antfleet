@@ -1463,8 +1463,7 @@ export async function loadPublicBenchmarksPage(args: {
 }
 
 // /agents/[address] — return findings for one agent, plus any benchmark
-// reviews tied to the agent's repo (cross-reference by repo name pattern
-// `agent-<name>-bench`) and any merged upstream PRs AntFleet opened
+// reviews tied to the agent's stored bench repo name and any merged upstream PRs AntFleet opened
 // against the agent's own repo (cross-reference by upstream_repo = agent_name).
 // The address is matched case-insensitively because users will paste mixed-
 // case checksummed addresses from explorers.
@@ -1511,7 +1510,7 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
   if (findings.length === 0) return null;
 
   const first = findings[0]!;
-  const benchRepoPattern = `agent-${first.agentName.replace(/^agent-/, "")}-bench`;
+  const benchRepoName = first.benchRepoName;
 
   // Public benchmark reviews tied to this agent's bench repo. Gated on
   // publicReceipt + isBenchmark like /benchmarks. Repo names are
@@ -1532,7 +1531,9 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
         and(
           eq(reviews.isBenchmark, true),
           eq(reviews.publicReceipt, true),
-          sql`lower(${reviews.repo}) = ${benchRepoPattern.toLowerCase()}`,
+          benchRepoName === null
+            ? sql`false`
+            : sql`lower(${reviews.repo}) = ${benchRepoName.toLowerCase()}`,
         ),
       )
       .orderBy(desc(reviews.createdAt)),
@@ -1954,6 +1955,7 @@ export async function upsertAgentFinding(input: NewAgentFinding): Promise<void> 
         agentTokenAddress: input.agentTokenAddress,
         agentName: input.agentName,
         repoFullName: input.repoFullName ?? null,
+        benchRepoName: input.benchRepoName ?? null,
         title: input.title,
         severity: input.severity,
         summary: input.summary,

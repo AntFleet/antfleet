@@ -12,6 +12,7 @@ describe("buildFeeLockerFinding", () => {
     expect(row.findingId).toBe(FEELOCKER_FINDING_ID);
     expect(row.agentTokenAddress).toBe(AUTONOMOPOLY_AGENT_TOKEN);
     expect(row.agentName).toBe("agent-autonomopoly");
+    expect(row.benchRepoName).toBe("agent-autonomopoly-bench");
     expect(row.severity).toBe("high");
     expect(row.upstreamPrUrl).toBeNull();
     expect(row.upstreamMergedSha).toBeNull();

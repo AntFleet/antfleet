@@ -120,6 +120,13 @@
       "when": 1779260000000,
       "tag": "0016_installations_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1779270000000,
+      "tag": "0017_agent_findings_bench_repo",
+      "breakpoints": true
     }
   ]
 }

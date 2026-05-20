@@ -76,6 +76,7 @@ const finding: NewAgentFinding = {
   agentTokenAddress: AEON_AGENT_TOKEN,
   agentName: "aeon",
   repoFullName: null,
+  benchRepoName: "aeon-bench",
   title: "Missing auth on secret-management endpoints + token reassembly injection risk",
   severity: "high",
   summary: SUMMARY_MD,
