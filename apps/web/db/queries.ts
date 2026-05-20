@@ -1785,10 +1785,11 @@ export async function countRoastsPublishedSince(since: Date): Promise<number> {
 export interface RoastStats {
   totalPublished: number;
   totalFindingsFromRoasts: number;
+  totalSubmissions: number;
 }
 
 export async function loadRoastStats(): Promise<RoastStats> {
-  const [pubRows, findingRows] = await Promise.all([
+  const [pubRows, findingRows, totalRows] = await Promise.all([
     db
       .select({ value: count() })
       .from(roastSubmissions)
@@ -1797,10 +1798,12 @@ export async function loadRoastStats(): Promise<RoastStats> {
       .select({ value: count() })
       .from(agentFindings)
       .where(sql`lower(${agentFindings.agentTokenAddress}) like 'roast:%'`),
+    db.select({ value: count() }).from(roastSubmissions),
   ]);
   return {
     totalPublished: pubRows[0]?.value ?? 0,
     totalFindingsFromRoasts: findingRows[0]?.value ?? 0,
+    totalSubmissions: totalRows[0]?.value ?? 0,
   };
 }
 
