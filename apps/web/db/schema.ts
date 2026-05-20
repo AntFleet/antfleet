@@ -326,6 +326,25 @@ export const factoryLaunches = pgTable("factory_launches", {
   observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const installations = pgTable(
+  "installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+    owner: text("owner").notNull(),
+    repo: text("repo").notNull(),
+    status: text("status").notNull().default("pending_approval"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("installations_install_repo_uniq").on(t.installationId, t.repo),
+    index("installations_status_idx").on(t.status),
+  ],
+);
+
 // Generic cursor store for cron-style scripts. Pattern avoids per-job tables
 // for tiny state. Key = job name (e.g. "poll-factory.last_block"), value =
 // opaque string the job owns.
@@ -386,6 +405,8 @@ export type RoastSubmission = typeof roastSubmissions.$inferSelect;
 export type NewRoastSubmission = typeof roastSubmissions.$inferInsert;
 export type FactoryLaunch = typeof factoryLaunches.$inferSelect;
 export type NewFactoryLaunch = typeof factoryLaunches.$inferInsert;
+export type Installation = typeof installations.$inferSelect;
+export type NewInstallation = typeof installations.$inferInsert;
 export type CronCursor = typeof cronCursors.$inferSelect;
 export type NewCronCursor = typeof cronCursors.$inferInsert;
 export type AgentClaim = typeof agentClaims.$inferSelect;

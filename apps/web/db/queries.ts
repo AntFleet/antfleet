@@ -5,10 +5,11 @@ import {
   agentFindings,
   factoryLaunches,
   findingStatus,
+  installations,
   maintainerReactions,
   onboardingEvents,
-  roastSubmissions,
   outgoingPrs,
+  roastSubmissions,
   reviews,
   type AgentFinding,
   type FactoryLaunch,
@@ -1967,4 +1968,73 @@ export async function upsertAgentFinding(input: NewAgentFinding): Promise<void> 
       body: `New ${input.severity} agent finding for ${input.agentName}: ${input.summary}`,
     });
   }
+}
+
+export type InstallStatus = "pending_approval" | "approved" | "rejected";
+
+export async function upsertInstallEntry(
+  installationId: number,
+  owner: string,
+  repo: string,
+): Promise<InstallStatus> {
+  const rows = await db
+    .insert(installations)
+    .values({ installationId, owner, repo, status: "pending_approval" })
+    .onConflictDoUpdate({
+      target: [installations.installationId, installations.repo],
+      set: { owner: sql`EXCLUDED.owner` },
+    })
+    .returning({ status: installations.status });
+  return (rows[0]?.status ?? "pending_approval") as InstallStatus;
+}
+
+export async function isInstallApproved(installationId: number, repo: string): Promise<boolean> {
+  const rows = await db
+    .select({ status: installations.status })
+    .from(installations)
+    .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
+    .limit(1);
+  return rows[0]?.status === "approved";
+}
+
+export type InstallRow = {
+  id: string;
+  installationId: number;
+  owner: string;
+  repo: string;
+  status: string;
+  notes: string | null;
+  createdAt: Date;
+  approvedAt: Date | null;
+  rejectedAt: Date | null;
+};
+
+export async function listInstallRows(filter?: InstallStatus): Promise<InstallRow[]> {
+  if (filter !== undefined) {
+    return db
+      .select()
+      .from(installations)
+      .where(eq(installations.status, filter))
+      .orderBy(desc(installations.createdAt));
+  }
+  return db.select().from(installations).orderBy(desc(installations.createdAt));
+}
+
+export async function setInstallStatus(
+  installationId: number,
+  repo: string,
+  status: "approved" | "rejected",
+  notes?: string,
+): Promise<boolean> {
+  const now = new Date();
+  const updated = await db
+    .update(installations)
+    .set({
+      status,
+      ...(notes !== undefined ? { notes } : {}),
+      ...(status === "approved" ? { approvedAt: now } : { rejectedAt: now }),
+    })
+    .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
+    .returning({ id: installations.id });
+  return updated.length > 0;
 }

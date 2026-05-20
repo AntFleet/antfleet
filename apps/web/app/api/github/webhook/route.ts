@@ -8,7 +8,7 @@ import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { isWelcomeIssue, recordPartnerReply, runWelcomeOnInstall } from "@/lib/onboarder";
 import { runReviewWorker } from "@/lib/review-worker";
-import { enqueueReview, hashRepo } from "@/db/queries";
+import { enqueueReview, hashRepo, isInstallApproved, upsertInstallEntry } from "@/db/queries";
 
 // node:crypto is Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
@@ -206,7 +206,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (welcomes.length > 0) {
       after(async () => {
         for (const w of welcomes) {
-          await runWelcomeOnInstall(w);
+          try {
+            const status = await upsertInstallEntry(w.installationId, w.owner, w.repo);
+            if (status === "approved") {
+              await runWelcomeOnInstall(w);
+            } else {
+              logInfo("webhook.install_pending_approval", {
+                delivery,
+                installationId: w.installationId,
+                owner: w.owner,
+                repo: w.repo,
+              });
+            }
+          } catch (err) {
+            logError("webhook.install_upsert_failed", {
+              delivery,
+              installationId: w.installationId,
+              owner: w.owner,
+              repo: w.repo,
+              message: messageOf(err),
+            });
+          }
         }
       });
     }
@@ -223,7 +243,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (welcomes.length > 0) {
       after(async () => {
         for (const w of welcomes) {
-          await runWelcomeOnInstall(w);
+          try {
+            const status = await upsertInstallEntry(w.installationId, w.owner, w.repo);
+            if (status === "approved") {
+              await runWelcomeOnInstall(w);
+            } else {
+              logInfo("webhook.install_pending_approval", {
+                delivery,
+                installationId: w.installationId,
+                owner: w.owner,
+                repo: w.repo,
+              });
+            }
+          } catch (err) {
+            logError("webhook.install_upsert_failed", {
+              delivery,
+              installationId: w.installationId,
+              owner: w.owner,
+              repo: w.repo,
+              message: messageOf(err),
+            });
+          }
         }
       });
     }
@@ -277,6 +317,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const pr = asPullRequestPayload(payload);
   if (pr === null) {
     logWarn("webhook.dispatch_skipped", { delivery, reason: "payload shape mismatch" });
+    return NextResponse.json({ ok: true });
+  }
+
+  const approved = await isInstallApproved(pr.installation.id, pr.repository.name);
+  if (!approved) {
+    logInfo("webhook.install_not_approved", {
+      delivery,
+      installationId: pr.installation.id,
+      owner: pr.repository.owner.login,
+      repo: pr.repository.name,
+    });
     return NextResponse.json({ ok: true });
   }
 
