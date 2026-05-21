@@ -2035,14 +2035,20 @@ export async function isInstallApproved(installationId: number, repo: string): P
 
 export type InstallRow = {
   id: string;
-  installationId: number;
-  owner: string;
-  repo: string;
+  // Nullable on agent-onboarded rows that haven't yet completed the GitHub
+  // App install step. Legacy rows always have all three populated.
+  installationId: number | null;
+  owner: string | null;
+  repo: string | null;
   status: string;
   notes: string | null;
   createdAt: Date;
   approvedAt: Date | null;
   rejectedAt: Date | null;
+  walletAddress: string | null;
+  walletProofSignature: string | null;
+  walletBoundAt: Date | null;
+  legacyPartner: boolean;
 };
 
 export async function listInstallRows(filter?: InstallStatus): Promise<InstallRow[]> {

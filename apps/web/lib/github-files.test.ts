@@ -166,8 +166,7 @@ describe("fetchChangedFilesWith", () => {
           if (entry === undefined) {
             throw new Error(`unexpected getContent for ${path}`);
           }
-          const raw =
-            entry.sizeBytes !== undefined ? "x".repeat(entry.sizeBytes) : entry.content;
+          const raw = entry.sizeBytes !== undefined ? "x".repeat(entry.sizeBytes) : entry.content;
           return { data: { type: "file", content: mkBase64(raw) } };
         }),
       },
@@ -198,8 +197,7 @@ describe("fetchChangedFilesWith", () => {
   });
 
   it("falls back to the unified diff when a file exceeds MAX_FILE_BYTES", async () => {
-    const patch =
-      "@@ -1,3 +1,4 @@\n a\n b\n+c\n d";
+    const patch = "@@ -1,3 +1,4 @@\n a\n b\n+c\n d";
     const octokit = mkOctokit({
       files: [
         { filename: "tiny.ts", status: "modified", sha: "1" },
