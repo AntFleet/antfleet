@@ -362,8 +362,8 @@ open 'https://github.com/apps/antfleet/installations/new?state={installation_id}
         </h2>
         <p className="text-sm leading-relaxed text-[var(--color-ink-muted)] max-w-xl mb-6">
           Paste this into an autonomous agent. It walks the paywall state machine end-to-end —
-          create installation, bind wallet, fund channel, install the App — without any other
-          docs. Machine-readable manifest at{" "}
+          create installation, bind wallet, fund channel, install the App — without any other docs.
+          Machine-readable manifest at{" "}
           <a
             href="/.well-known/antfleet.json"
             className="text-[var(--color-ink)] underline underline-offset-2 hover:opacity-80"

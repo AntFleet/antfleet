@@ -28,9 +28,7 @@ describe("GET /.well-known/antfleet.json", () => {
     expect(body["min_deposit_usdc"]).toBe("5.00");
     expect(body["deposit_address"]).toBe("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     const endpoints = body["endpoints"] as Record<string, string>;
-    expect(endpoints["create_installation"]).toBe(
-      "https://www.antfleet.dev/api/v1/installations",
-    );
+    expect(endpoints["create_installation"]).toBe("https://www.antfleet.dev/api/v1/installations");
     expect(endpoints["bind_wallet"]).toContain("/bind");
     expect(endpoints["submit_deposit"]).toContain("/deposit");
     const token = body["payment_token"] as Record<string, unknown>;
