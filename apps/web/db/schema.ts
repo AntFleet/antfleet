@@ -331,22 +331,103 @@ export const factoryLaunches = pgTable("factory_launches", {
   observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Status vocabulary (text, application-validated):
+//   Legacy gate flow (pre-paywall, webhook-created rows):
+//     pending_approval | approved | rejected
+//   Agent paywall flow (wallet-bound, agent-created rows):
+//     pending_binding   — row exists, awaiting EIP-191 binding signature
+//     awaiting_deposit  — wallet bound, awaiting USDC deposit on Base
+//     active            — channel funded, ready to receive reviews
+// Legacy rows and paywall rows share the same table because they share the
+// same downstream consumer (the webhook drawdown gate), which checks
+// legacy_partner first and only falls through to channel balance for
+// agent-onboarded installs.
+//
+// installation_id / owner / repo are nullable because an agent creates the
+// row before installing the GitHub App; the webhook links them up on the
+// first delivery for the bound wallet's install. Legacy rows always have
+// all three populated.
 export const installations = pgTable(
   "installations",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    installationId: bigint("installation_id", { mode: "number" }).notNull(),
-    owner: text("owner").notNull(),
-    repo: text("repo").notNull(),
+    installationId: bigint("installation_id", { mode: "number" }),
+    owner: text("owner"),
+    repo: text("repo"),
     status: text("status").notNull().default("pending_approval"),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    // Lowercased 0x... Base address that signed the binding challenge.
+    // Same address must own the channel and authorize the GitHub install.
+    walletAddress: text("wallet_address"),
+    // EIP-191 personal_sign of "AntFleet binding: {id} {wallet} {iso}".
+    // Stored so a third party can reproduce the recover without re-signing.
+    walletProofSignature: text("wallet_proof_signature"),
+    walletBoundAt: timestamp("wallet_bound_at", { withTimezone: true }),
+    // Grandfathered partners onboarded under the old human-gated flow keep
+    // getting reviews without paying. Backfilled true for every row whose
+    // status was 'approved' at the migration boundary.
+    legacyPartner: boolean("legacy_partner").notNull().default(false),
   },
   (t) => [
     unique("installations_install_repo_uniq").on(t.installationId, t.repo),
     index("installations_status_idx").on(t.status),
+    index("installations_wallet_address_idx").on(t.walletAddress),
+  ],
+);
+
+// One channel per installation. Agent-onboarded installs always have one;
+// legacy_partner rows have no channel and bypass the balance check at the
+// drawdown gate. balanceUsdc is mutated only by atomic UPDATE ... WHERE
+// balance >= price (drawdown) or UPDATE ... SET balance = balance + amount
+// (deposit), so concurrent webhooks for the same channel cannot overdraw.
+export const channels = pgTable(
+  "channels",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: uuid("installation_id")
+      .notNull()
+      .references(() => installations.id, { onDelete: "cascade" }),
+    walletAddress: text("wallet_address").notNull(),
+    balanceUsdc: numeric("balance_usdc", { precision: 18, scale: 6 }).notNull().default("0"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Audit-only conveniences; the full ledger lives in `payments`.
+    lastDepositTxHash: text("last_deposit_tx_hash"),
+    lastDrawdownAt: timestamp("last_drawdown_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("channels_installation_id_uniq").on(t.installationId),
+    index("channels_wallet_address_idx").on(t.walletAddress),
+  ],
+);
+
+// Append-only ledger. type='deposit' rows reference an on-chain USDC
+// Transfer; type='drawdown' rows reference a single review and have no
+// tx_hash. The unique index on (chain_id, tx_hash) makes deposit detection
+// idempotent — the /deposit fast path and the scan-deposits cron may both
+// observe the same Transfer, and the second INSERT becomes a no-op.
+export const payments = pgTable(
+  "payments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    channelId: uuid("channel_id")
+      .notNull()
+      .references(() => channels.id, { onDelete: "cascade" }),
+    // 'deposit' | 'drawdown' — enforced by a CHECK constraint at the DDL
+    // level so future variants (e.g. 'refund') are application-only.
+    type: text("type").notNull(),
+    txHash: text("tx_hash"),
+    chainId: integer("chain_id").notNull().default(8453),
+    fromAddress: text("from_address").notNull(),
+    amountUsdc: numeric("amount_usdc", { precision: 18, scale: 6 }).notNull(),
+    blockNumber: bigint("block_number", { mode: "number" }),
+    reviewId: uuid("review_id").references(() => reviews.reviewId, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("payments_channel_id_idx").on(t.channelId),
   ],
 );
 
@@ -412,6 +493,10 @@ export type FactoryLaunch = typeof factoryLaunches.$inferSelect;
 export type NewFactoryLaunch = typeof factoryLaunches.$inferInsert;
 export type Installation = typeof installations.$inferSelect;
 export type NewInstallation = typeof installations.$inferInsert;
+export type Channel = typeof channels.$inferSelect;
+export type NewChannel = typeof channels.$inferInsert;
+export type Payment = typeof payments.$inferSelect;
+export type NewPayment = typeof payments.$inferInsert;
 export type CronCursor = typeof cronCursors.$inferSelect;
 export type NewCronCursor = typeof cronCursors.$inferInsert;
 export type AgentClaim = typeof agentClaims.$inferSelect;

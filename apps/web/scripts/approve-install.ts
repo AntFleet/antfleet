@@ -51,7 +51,11 @@ async function main() {
   console.log("\n[post-state]");
   console.table(post === undefined ? [] : [post]);
 
-  if (process.env["ONBOARDER_ENABLED"] === "true" && post?.status === "approved") {
+  if (
+    process.env["ONBOARDER_ENABLED"] === "true" &&
+    post?.status === "approved" &&
+    pre.owner !== null
+  ) {
     const { runWelcomeOnInstall } = await import("../lib/onboarder");
     await runWelcomeOnInstall({ installationId, owner: pre.owner, repo });
   }
