@@ -76,7 +76,16 @@ describe("scanDepositsWithDeps", () => {
     const deps = makeDeps({
       cursorAt: 999n,
       currentBlock: 1_005n,
-      logs: [[transferLog({ from: WALLET_A, txHash: "0xfeed", blockNumber: 1_001n, valueRaw: 5_000_000n })]],
+      logs: [
+        [
+          transferLog({
+            from: WALLET_A,
+            txHash: "0xfeed",
+            blockNumber: 1_001n,
+            valueRaw: 5_000_000n,
+          }),
+        ],
+      ],
       channels: { [WALLET_A]: { id: CHANNEL_A, walletAddress: WALLET_A } },
     });
 
@@ -118,7 +127,12 @@ describe("scanDepositsWithDeps", () => {
       currentBlock: 1_005n,
       logs: [
         [
-          transferLog({ from: WALLET_A, txHash: "0xreplay", blockNumber: 1_000n, valueRaw: 5_000_000n }),
+          transferLog({
+            from: WALLET_A,
+            txHash: "0xreplay",
+            blockNumber: 1_000n,
+            valueRaw: 5_000_000n,
+          }),
         ],
       ],
       channels: { [WALLET_A]: { id: CHANNEL_A, walletAddress: WALLET_A } },

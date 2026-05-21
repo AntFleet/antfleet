@@ -22,7 +22,14 @@ import { Pool } from "@neondatabase/serverless";
 import { config as loadDotenv } from "dotenv";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-serverless";
-import { createPublicClient, encodeEventTopics, getAddress, http, parseAbi, type Address } from "viem";
+import {
+  createPublicClient,
+  encodeEventTopics,
+  getAddress,
+  http,
+  parseAbi,
+  type Address,
+} from "viem";
 import { base } from "viem/chains";
 import { channels, cronCursors, payments } from "../db/schema";
 import { logError, logInfo, messageOf } from "../lib/log";
@@ -114,7 +121,11 @@ export async function scanDepositsOnce(): Promise<ScanDepositsResult | { skipped
   }
 }
 
-export function buildLiveDeps(db: Db, client: BaseClient, depositAddress: string): ScanDepositsDeps {
+export function buildLiveDeps(
+  db: Db,
+  client: BaseClient,
+  depositAddress: string,
+): ScanDepositsDeps {
   const depositLc = depositAddress.toLowerCase();
   return {
     getCurrentBlock: () => client.getBlockNumber(),
@@ -216,7 +227,10 @@ export async function scanDepositsWithDeps(deps: ScanDepositsDeps): Promise<Scan
 }
 
 async function readCursor(db: Db, key: string): Promise<bigint | null> {
-  const rows = await db.select({ value: cronCursors.value }).from(cronCursors).where(eq(cronCursors.key, key));
+  const rows = await db
+    .select({ value: cronCursors.value })
+    .from(cronCursors)
+    .where(eq(cronCursors.key, key));
   const value = rows[0]?.value;
   return value === undefined ? null : BigInt(value);
 }
