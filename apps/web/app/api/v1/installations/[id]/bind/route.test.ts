@@ -51,14 +51,14 @@ const ctx = { params: Promise.resolve({ id: ROW_ID }) };
 
 describe("POST /api/v1/installations/{id}/bind", () => {
   it("verifies signature and transitions to awaiting_deposit", async () => {
-    const markBound = vi.fn(async () => undefined);
+    const markBound: BindInstallationDeps["markBound"] = vi.fn(async () => undefined);
     const res = await handleBindInstallation(req({ signature: SIG }), ctx, deps({ markBound }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["status"]).toBe("awaiting_deposit");
     expect(body["wallet_address"]).toBe(WALLET);
     expect(markBound).toHaveBeenCalledOnce();
-    expect(markBound.mock.calls[0]?.[0]).toMatchObject({
+    expect((markBound as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({
       installationRowId: ROW_ID,
       walletAddress: WALLET,
       signature: SIG,

@@ -8,7 +8,22 @@ import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { isWelcomeIssue, recordPartnerReply, runWelcomeOnInstall } from "@/lib/onboarder";
 import { runReviewWorker } from "@/lib/review-worker";
-import { enqueueReview, hashRepo, isInstallApproved, upsertInstallEntry } from "@/db/queries";
+import {
+  enqueueReview,
+  hashRepo,
+  markReviewTerminallyFailed,
+  upsertInstallEntry,
+} from "@/db/queries";
+import { db } from "@/db";
+import {
+  debitChannel,
+  decideGate,
+  quantizeUsdc,
+  recordDrawdown,
+  type GateDecision,
+} from "@/lib/paywall/gate";
+import { buildInvoice, renderInvoiceComment } from "@/lib/paywall/invoice";
+import { getDepositAddress } from "@/lib/paywall/env";
 
 // node:crypto is Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
@@ -320,8 +335,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true });
   }
 
-  const approved = await isInstallApproved(pr.installation.id, pr.repository.name);
-  if (!approved) {
+  // Paywall gate. Looks up the install row + its channel; classifies the
+  // webhook as not_installed (no-op), bypass (legacy_partner), insufficient
+  // (post invoice, skip enqueue), or debit (atomic CAS before enqueue).
+  // The actual debit happens *after* enqueueReview returns so duplicate
+  // deliveries (idempotent on the (repo_hash, pr_number, commit_sha)
+  // triple) don't double-charge — only the isNew=true delivery pays.
+  const gateDecision = await decideGate({
+    installationId: pr.installation.id,
+    repo: pr.repository.name,
+  });
+  if (gateDecision.kind === "not_installed") {
     logInfo("webhook.install_not_approved", {
       delivery,
       installationId: pr.installation.id,
@@ -406,9 +430,36 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // Duplicate delivery: a prior call already enqueued this exact
   // (repo, pr, head_sha). Don't spawn a second worker — the original
-  // one (or the retry cron) will settle the row.
+  // one (or the retry cron) will settle the row. Critically, also do
+  // NOT re-apply the gate / debit: the original delivery already paid
+  // for this review (or correctly skipped it).
   if (!isNew) {
     return NextResponse.json({ ok: true, reviewId, duplicate: true });
+  }
+
+  // Apply the gate to the freshly-enqueued row. Three terminal outcomes
+  // short-circuit the worker spawn:
+  //
+  //   insufficient  → mark the review failed, post the x402 invoice
+  //                   comment on the PR, no after() spawn.
+  //   debit-raced   → balance dropped below price between the gate read
+  //                   above and the atomic CAS here (concurrent webhook
+  //                   for a different PR already drained it). Same as
+  //                   insufficient.
+  //   bypass        → legacy_partner row, no debit, proceed.
+  //   debit-ok     → atomic debit succeeded, record the drawdown
+  //                   ledger row linked to reviewId, proceed.
+  const gateOutcome = await applyGateToReview({
+    decision: gateDecision,
+    reviewId,
+    octokit: visibilityOctokit,
+    prOwner: pr.repository.owner.login,
+    prRepo: pr.repository.name,
+    prNumber: pr.number,
+    delivery,
+  });
+  if (gateOutcome === "skipped") {
+    return NextResponse.json({ ok: true, reviewId, skipped: "insufficient_balance" });
   }
 
   // Best-effort first attempt. The webhook still kicks off the review
@@ -438,4 +489,163 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   });
 
   return NextResponse.json({ ok: true, reviewId });
+}
+
+// Applies a precomputed GateDecision to a freshly-enqueued review row.
+// Returns "skipped" if the caller should NOT spawn the worker (insufficient
+// balance, or racy debit failure); "ok" otherwise (bypass or successful
+// debit + drawdown).
+async function applyGateToReview(args: {
+  decision: Exclude<GateDecision, { kind: "not_installed" }>;
+  reviewId: string;
+  octokit: Octokit;
+  prOwner: string;
+  prRepo: string;
+  prNumber: number;
+  delivery: string | null;
+}): Promise<"skipped" | "ok"> {
+  const { decision, reviewId, octokit, prOwner, prRepo, prNumber, delivery } = args;
+
+  if (decision.kind === "bypass") {
+    logInfo("webhook.gate.bypass", {
+      delivery,
+      reviewId,
+      installationRowId: decision.installationRowId,
+    });
+    return "ok";
+  }
+
+  if (decision.kind === "insufficient") {
+    await failInsufficient({
+      reviewId,
+      decision,
+      octokit,
+      prOwner,
+      prRepo,
+      prNumber,
+      delivery,
+      reason: "insufficient_at_gate",
+    });
+    return "skipped";
+  }
+
+  // decision.kind === "debit"
+  const priceUsdc = quantizeUsdc(decision.priceUsdc);
+  const debited = await debitChannel(db, {
+    channelId: decision.channelId,
+    priceUsdc,
+  });
+  if (debited === null) {
+    await failInsufficient({
+      reviewId,
+      decision,
+      octokit,
+      prOwner,
+      prRepo,
+      prNumber,
+      delivery,
+      reason: "insufficient_at_debit",
+    });
+    return "skipped";
+  }
+
+  try {
+    await recordDrawdown(db, {
+      channelId: decision.channelId,
+      reviewId,
+      amountUsdc: priceUsdc,
+      fromAddress: decision.walletAddress,
+    });
+  } catch (err) {
+    // Debit already happened; the per-review ledger link is lost. Log
+    // loudly so the operator can manually reconcile from channels +
+    // reviews if needed. Do NOT roll back the debit — the review is
+    // legitimately about to run.
+    logError("webhook.gate.drawdown_record_failed", {
+      delivery,
+      reviewId,
+      channelId: decision.channelId,
+      message: messageOf(err),
+    });
+  }
+
+  logInfo("webhook.gate.debited", {
+    delivery,
+    reviewId,
+    channelId: decision.channelId,
+    priceUsdc,
+    newBalanceUsdc: debited.newBalanceUsdc,
+  });
+  return "ok";
+}
+
+type PaywallActiveDecision = {
+  kind: "insufficient" | "debit";
+  installationRowId: string;
+  channelId: string;
+  balanceUsdc: string;
+  priceUsdc: string;
+  walletAddress: string;
+};
+
+async function failInsufficient(args: {
+  reviewId: string;
+  decision: PaywallActiveDecision;
+  octokit: Octokit;
+  prOwner: string;
+  prRepo: string;
+  prNumber: number;
+  delivery: string | null;
+  reason: string;
+}): Promise<void> {
+  await markReviewTerminallyFailed({
+    reviewId: args.reviewId,
+    now: new Date(),
+    error: args.reason,
+  });
+  const depositAddress = getDepositAddress();
+  if (depositAddress === null) {
+    // No deposit address configured — the agent literally cannot top up.
+    // Skip the comment so we don't post a misleading invoice with an
+    // empty address; the review-failed row is enough audit trail.
+    logWarn("webhook.gate.invoice_skipped", {
+      delivery: args.delivery,
+      reviewId: args.reviewId,
+      reason: "deposit_address_unconfigured",
+    });
+    return;
+  }
+  const topUp = args.decision.priceUsdc;
+  const invoice = buildInvoice({
+    topUpUsdc: topUp,
+    depositAddress,
+    walletAddress: args.decision.walletAddress,
+  });
+  const body = renderInvoiceComment({
+    invoice,
+    depositAddress,
+    walletAddress: args.decision.walletAddress,
+    topUpUsdc: topUp,
+    currentBalanceUsdc: args.decision.balanceUsdc,
+    priceUsdc: args.decision.priceUsdc,
+  });
+  try {
+    await args.octokit.rest.issues.createComment({
+      owner: args.prOwner,
+      repo: args.prRepo,
+      issue_number: args.prNumber,
+      body,
+    });
+    logInfo("webhook.gate.invoice_posted", {
+      delivery: args.delivery,
+      reviewId: args.reviewId,
+      reason: args.reason,
+    });
+  } catch (err) {
+    logError("webhook.gate.invoice_post_failed", {
+      delivery: args.delivery,
+      reviewId: args.reviewId,
+      message: messageOf(err),
+    });
+  }
 }

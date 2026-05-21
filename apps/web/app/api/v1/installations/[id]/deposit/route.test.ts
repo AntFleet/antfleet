@@ -73,7 +73,7 @@ function deps(
     markActive: vi.fn(async () => undefined),
     verifier: {
       getTransactionReceipt: vi.fn(async () => ({
-        status: "success",
+        status: "success" as const,
         from: WALLET as `0x${string}`,
         to: USDC_BASE_ADDRESS as `0x${string}`,
         blockNumber: 1_000_000n,
@@ -118,7 +118,7 @@ describe("POST /api/v1/installations/{id}/deposit", () => {
     const wrongDeps = deps({
       verifier: {
         getTransactionReceipt: vi.fn(async () => ({
-          status: "success",
+          status: "success" as const,
           from: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as `0x${string}`,
           to: USDC_BASE_ADDRESS as `0x${string}`,
           blockNumber: 1_000_000n,
@@ -143,7 +143,7 @@ describe("POST /api/v1/installations/{id}/deposit", () => {
     const lowDeps = deps({
       verifier: {
         getTransactionReceipt: vi.fn(async () => ({
-          status: "success",
+          status: "success" as const,
           from: WALLET as `0x${string}`,
           to: USDC_BASE_ADDRESS as `0x${string}`,
           blockNumber: 1_000_000n,
@@ -162,7 +162,7 @@ describe("POST /api/v1/installations/{id}/deposit", () => {
     const recentDeps = deps({
       verifier: {
         getTransactionReceipt: vi.fn(async () => ({
-          status: "success",
+          status: "success" as const,
           from: WALLET as `0x${string}`,
           to: USDC_BASE_ADDRESS as `0x${string}`,
           blockNumber: 1_000_000n,
