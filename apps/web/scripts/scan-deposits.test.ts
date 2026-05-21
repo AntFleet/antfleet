@@ -9,7 +9,6 @@ import {
 const WALLET_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const WALLET_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const CHANNEL_A = "channel-a";
-const CHANNEL_B = "channel-b";
 
 function transferLog(args: {
   from: string;
