@@ -56,9 +56,7 @@ describe("debit atomicity under concurrent webhooks", () => {
 
   it("five concurrent debits with balance for two succeed exactly twice", async () => {
     const debit = makeAtomicDebit({ "ch-1": 1.0 });
-    const results = await Promise.all(
-      Array.from({ length: 5 }, () => debit("ch-1", 0.5)),
-    );
+    const results = await Promise.all(Array.from({ length: 5 }, () => debit("ch-1", 0.5)));
     expect(results.filter((r) => r !== null)).toHaveLength(2);
     expect(results.filter((r) => r === null)).toHaveLength(3);
   });
@@ -74,9 +72,7 @@ describe("debit atomicity under concurrent webhooks", () => {
     const debit = makeAtomicDebit({ "ch-1": 1.0 });
     const attempts = Array.from({ length: 50 }, () => debit("ch-1", 0.1));
     const results = await Promise.all(attempts);
-    const totalDebited = results
-      .filter((r): r is { newBalance: number } => r !== null)
-      .length;
+    const totalDebited = results.filter((r): r is { newBalance: number } => r !== null).length;
     expect(totalDebited).toBe(10); // 1.0 / 0.1
     expect(results.filter((r) => r !== null).every((r) => r!.newBalance >= 0)).toBe(true);
   });

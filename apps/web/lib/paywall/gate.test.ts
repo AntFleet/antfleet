@@ -19,10 +19,7 @@ function deps(
 
 describe("decideGate", () => {
   it("returns not_installed when no row matches (installation_id, repo)", async () => {
-    const result = await decideGate(
-      { installationId: 1, repo: "foo" },
-      deps(null),
-    );
+    const result = await decideGate({ installationId: 1, repo: "foo" }, deps(null));
     expect(result.kind).toBe("not_installed");
   });
 

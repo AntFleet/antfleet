@@ -507,7 +507,11 @@ async function applyGateToReview(args: {
   const { decision, reviewId, octokit, prOwner, prRepo, prNumber, delivery } = args;
 
   if (decision.kind === "bypass") {
-    logInfo("webhook.gate.bypass", { delivery, reviewId, installationRowId: decision.installationRowId });
+    logInfo("webhook.gate.bypass", {
+      delivery,
+      reviewId,
+      installationRowId: decision.installationRowId,
+    });
     return "ok";
   }
 

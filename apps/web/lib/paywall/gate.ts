@@ -15,10 +15,7 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
-import {
-  compareUsdcStrings,
-  parseUsdcUnits,
-} from "@/lib/paywall/deposit-verifier";
+import { compareUsdcStrings, parseUsdcUnits } from "@/lib/paywall/deposit-verifier";
 import { getReviewPriceUsdc } from "@/lib/paywall/env";
 
 type Queryable = Pick<typeof db, "execute">;
