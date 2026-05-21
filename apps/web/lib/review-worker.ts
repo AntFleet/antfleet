@@ -15,6 +15,11 @@ import { formatPRComment, postPRComment as realPostPRComment } from "./pr-commen
 import { reviewPR as realReviewPR } from "./review-pipeline";
 import { runFirstReviewSummary as realRunFirstReviewSummary } from "./onboarder";
 import { logError, logInfo, messageOf } from "./log";
+import { db } from "@/db";
+import {
+  loadReviewSettlement as realLoadReviewSettlement,
+  type ReviewSettlement,
+} from "@/lib/paywall/queries";
 import {
   claimReviewForProcessing as realClaimReviewForProcessing,
   loadReviewQueueRow as realLoadReviewQueueRow,
@@ -65,6 +70,7 @@ export type WorkerDeps = {
   markReviewSucceeded: typeof realMarkReviewSucceeded;
   markReviewFailedForRetry: typeof realMarkReviewFailedForRetry;
   markReviewTerminallyFailed: typeof realMarkReviewTerminallyFailed;
+  loadReviewSettlement: (reviewId: string) => Promise<ReviewSettlement | null>;
   now: () => Date;
 };
 
@@ -83,6 +89,7 @@ export function realWorkerDeps(): WorkerDeps {
     markReviewSucceeded: realMarkReviewSucceeded,
     markReviewFailedForRetry: realMarkReviewFailedForRetry,
     markReviewTerminallyFailed: realMarkReviewTerminallyFailed,
+    loadReviewSettlement: (reviewId) => realLoadReviewSettlement(db, reviewId),
     now: () => new Date(),
   };
 }
@@ -303,11 +310,24 @@ async function processClaimedRow(
   // postPRComment is not idempotent (GitHub creates a new comment per
   // call), so we accept that a 500 between post and setReviewComment
   // could leak one orphan comment. Tradeoff documented in §11.3.
+  // Pull the paywall settlement footer when this review was paid for via
+  // an agent channel. Returns null for legacy_partner / pre-paywall rows;
+  // formatPRComment omits the footer entirely in that case.
+  let settlement: ReviewSettlement | null = null;
+  try {
+    settlement = await deps.loadReviewSettlement(reviewId);
+  } catch (err) {
+    logError("review_worker.settlement_lookup_failed", {
+      reviewId,
+      message: messageOf(err),
+    });
+  }
   const commentBody = formatPRComment(bundle.agreed, {
     reviewId,
     totalMs: bundle.totalMs,
     estimatedCostUsd: bundle.estimatedCostUsd,
     modelIds: bundle.modelIds,
+    ...(settlement !== null ? { settlement } : {}),
   });
   const posted = await deps.postPRComment({
     installationId: row.installationId,
