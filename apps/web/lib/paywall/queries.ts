@@ -197,11 +197,128 @@ export async function markInstallationActive(
   `);
 }
 
+// Aggregates everything a wallet has done through the paywall: every
+// installation it owns, the channel balances, the total USDC settled via
+// drawdown, the review + finding-close counts. One query per metric to keep
+// the SQL legible; the wallets/[address] page renders a single wallet so
+// the four extra round-trips are not a hot-path concern.
+export type WalletReputation = {
+  walletAddress: string;
+  totalReviews: number;
+  findingsTotal: number;
+  findingsClosed: number;
+  totalSettledUsdc: string;
+  currentBalanceUsdc: string;
+  installations: Array<{
+    installationRowId: string;
+    githubInstallationId: number | null;
+    owner: string | null;
+    repo: string | null;
+    status: string;
+    channelBalanceUsdc: string | null;
+    boundAt: Date | null;
+  }>;
+};
+
+type Q = Pick<typeof db, "execute">;
+
+export async function loadWalletReputation(
+  q: Q,
+  walletAddress: string,
+): Promise<WalletReputation | null> {
+  const wallet = walletAddress.toLowerCase();
+  const installRows = await q.execute(sql`
+    SELECT
+      i.id AS "installationRowId",
+      i.installation_id AS "githubInstallationId",
+      i.owner,
+      i.repo,
+      i.status,
+      i.wallet_bound_at AS "boundAt",
+      c.balance_usdc::text AS "channelBalanceUsdc"
+    FROM installations i
+    LEFT JOIN channels c ON c.installation_id = i.id
+    WHERE i.wallet_address = ${wallet}
+    ORDER BY i.created_at DESC
+  `);
+  const installations = rowsOf<{
+    installationRowId: string;
+    githubInstallationId: number | null;
+    owner: string | null;
+    repo: string | null;
+    status: string;
+    boundAt: Date | null;
+    channelBalanceUsdc: string | null;
+  }>(installRows);
+  if (installations.length === 0) return null;
+
+  const ghIds = installations
+    .map((i) => i.githubInstallationId)
+    .filter((id): id is number => id !== null);
+
+  let totalReviews = 0;
+  let findingsTotal = 0;
+  let findingsClosed = 0;
+
+  if (ghIds.length > 0) {
+    // reviews table uses installation_id (the GitHub install bigint), not
+    // the installations table PK. Aggregate across every github id the
+    // wallet owns.
+    const reviewStats = await q.execute(sql`
+      SELECT count(*)::int AS "value"
+      FROM reviews
+      WHERE installation_id = ANY (${ghIds}::bigint[])
+    `);
+    totalReviews = Number(firstRow<{ value: number | string }>(reviewStats)?.value ?? 0);
+
+    const findingStats = await q.execute(sql`
+      SELECT
+        count(*)::int AS "total",
+        count(*) FILTER (WHERE fs.status = 'closed')::int AS "closed"
+      FROM finding_status fs
+      JOIN reviews r ON r.review_id = fs.review_id
+      WHERE r.installation_id = ANY (${ghIds}::bigint[])
+    `);
+    const f = firstRow<{ total: number | string; closed: number | string }>(findingStats);
+    findingsTotal = Number(f?.total ?? 0);
+    findingsClosed = Number(f?.closed ?? 0);
+  }
+
+  const settledResult = await q.execute(sql`
+    SELECT coalesce(sum(amount_usdc), 0)::text AS "value"
+    FROM payments p
+    JOIN channels c ON c.id = p.channel_id
+    WHERE c.wallet_address = ${wallet} AND p.type = 'drawdown'
+  `);
+  const totalSettledUsdc = String(firstRow<{ value: string }>(settledResult)?.value ?? "0");
+
+  const balanceResult = await q.execute(sql`
+    SELECT coalesce(sum(balance_usdc), 0)::text AS "value"
+    FROM channels
+    WHERE wallet_address = ${wallet}
+  `);
+  const currentBalanceUsdc = String(firstRow<{ value: string }>(balanceResult)?.value ?? "0");
+
+  return {
+    walletAddress: wallet,
+    totalReviews,
+    findingsTotal,
+    findingsClosed,
+    totalSettledUsdc,
+    currentBalanceUsdc,
+    installations,
+  };
+}
+
 function firstRow<T>(result: unknown): T | null {
-  const rows = Array.isArray(result)
-    ? result
-    : Array.isArray((result as { rows?: unknown[] }).rows)
-      ? (result as { rows: unknown[] }).rows
-      : [];
-  return (rows[0] as T | undefined) ?? null;
+  const rows = rowsOf<T>(result);
+  return rows[0] ?? null;
+}
+
+function rowsOf<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (typeof result === "object" && result !== null && "rows" in result) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
 }
