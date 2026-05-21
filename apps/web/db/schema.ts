@@ -426,9 +426,7 @@ export const payments = pgTable(
     reviewId: uuid("review_id").references(() => reviews.reviewId, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [
-    index("payments_channel_id_idx").on(t.channelId),
-  ],
+  (t) => [index("payments_channel_id_idx").on(t.channelId)],
 );
 
 // Generic cursor store for cron-style scripts. Pattern avoids per-job tables
