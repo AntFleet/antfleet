@@ -77,7 +77,13 @@ export const REVIEW_BLOCKLIST_PATH_SUFFIXES = [
 // any one PR's prompt size within the V2/V3-validated zone (~142k-char
 // corpus). Slice 4b's first smoke at 20 files × 50KB triggered anthropic
 // tool_use truncation on the larger prompt; slice 4b.1 tightens the budget.
-const MAX_FILE_BYTES = 20 * 1024;
+//
+// MAX_FILE_BYTES raised from 20KB → 80KB on 2026-05-21 after observing
+// monolithic GHA workflows in agent-framework repos (aeon.yml at 45KB,
+// README at 29KB) silently slipping through the gate with
+// "no reviewable files". Files above the cap now fall back to the PR's
+// unified diff (see fetchChangedFilesWith) instead of being dropped.
+const MAX_FILE_BYTES = 80 * 1024;
 const MAX_FILES = 15;
 // Hard ceiling on the combined size of file contents going into the prompt.
 // Roughly tracks spike's empirically-tested corpus size with headroom for
@@ -97,6 +103,9 @@ type PRFileListItem = {
   // Octokit types sha as nullable for some statuses (e.g. removed); we filter
   // those before reading, but keep the type honest.
   sha: string | null;
+  // Unified diff for the file. GitHub omits `patch` for binary files and
+  // sometimes for very large files; we treat both cases the same.
+  patch?: string | null;
 };
 
 type FileContentBody = {
@@ -182,12 +191,32 @@ export async function fetchChangedFilesWith(
       continue;
     }
     const buf = Buffer.from(data.content, "base64");
-    if (!isWithinSizeLimit(buf.byteLength)) continue;
-    if (totalBytes + buf.byteLength > MAX_TOTAL_PROMPT_BYTES) break;
-    totalBytes += buf.byteLength;
+    let contents: string;
+    let chargeBytes: number;
+    if (isWithinSizeLimit(buf.byteLength)) {
+      contents = buf.toString("utf8");
+      chargeBytes = buf.byteLength;
+    } else {
+      // File exceeds MAX_FILE_BYTES — fall back to the PR's unified diff for
+      // this file so the reviewer still sees the actual changes. The header
+      // tells the reviewer the context is partial.
+      const patch = f.patch;
+      if (typeof patch !== "string" || patch.length === 0) continue;
+      const header =
+        `[OVERSIZE FILE — original ${buf.byteLength} bytes ` +
+        `exceeds ${MAX_FILE_BYTES / 1024}KB per-file review cap; ` +
+        `showing unified diff only]\n`;
+      const body = header + patch;
+      const bodyBytes = Buffer.byteLength(body, "utf8");
+      if (bodyBytes > MAX_FILE_BYTES) continue;
+      contents = body;
+      chargeBytes = bodyBytes;
+    }
+    if (totalBytes + chargeBytes > MAX_TOTAL_PROMPT_BYTES) break;
+    totalBytes += chargeBytes;
     out.push({
       filename: f.filename,
-      contents: buf.toString("utf8"),
+      contents,
       status: f.status as ChangedFile["status"],
       sha: f.sha ?? "",
     });

@@ -139,12 +139,12 @@ describe("isReviewablePath — edge cases", () => {
 });
 
 describe("isWithinSizeLimit", () => {
-  it("accepts files <= 20KB", () => {
+  it("accepts files <= 80KB", () => {
     expect(isWithinSizeLimit(0)).toBe(true);
-    expect(isWithinSizeLimit(20 * 1024)).toBe(true);
+    expect(isWithinSizeLimit(80 * 1024)).toBe(true);
   });
-  it("rejects files > 20KB", () => {
-    expect(isWithinSizeLimit(20 * 1024 + 1)).toBe(false);
+  it("rejects files > 80KB", () => {
+    expect(isWithinSizeLimit(80 * 1024 + 1)).toBe(false);
     expect(isWithinSizeLimit(1_000_000)).toBe(false);
   });
 });
@@ -153,8 +153,8 @@ const mkBase64 = (s: string): string => Buffer.from(s, "utf8").toString("base64"
 
 describe("fetchChangedFilesWith", () => {
   const mkOctokit = (overrides: {
-    files: Array<{ filename: string; status: string; sha: string }>;
-    contentByPath: Record<string, { content: string; oversize?: boolean }>;
+    files: Array<{ filename: string; status: string; sha: string; patch?: string | null }>;
+    contentByPath: Record<string, { content: string; sizeBytes?: number }>;
   }) => ({
     rest: {
       pulls: {
@@ -166,7 +166,8 @@ describe("fetchChangedFilesWith", () => {
           if (entry === undefined) {
             throw new Error(`unexpected getContent for ${path}`);
           }
-          const raw = entry.oversize ? "x".repeat(60 * 1024) : entry.content;
+          const raw =
+            entry.sizeBytes !== undefined ? "x".repeat(entry.sizeBytes) : entry.content;
           return { data: { type: "file", content: mkBase64(raw) } };
         }),
       },
@@ -196,7 +197,34 @@ describe("fetchChangedFilesWith", () => {
     expect(result[0]?.sha).toBe("shaA");
   });
 
-  it("skips oversize files entirely", async () => {
+  it("falls back to the unified diff when a file exceeds MAX_FILE_BYTES", async () => {
+    const patch =
+      "@@ -1,3 +1,4 @@\n a\n b\n+c\n d";
+    const octokit = mkOctokit({
+      files: [
+        { filename: "tiny.ts", status: "modified", sha: "1" },
+        { filename: "huge.ts", status: "modified", sha: "2", patch },
+      ],
+      contentByPath: {
+        "tiny.ts": { content: "ok" },
+        "huge.ts": { content: "", sizeBytes: 100 * 1024 },
+      },
+    });
+    const result = await fetchChangedFilesWith(octokit, {
+      owner: "o",
+      repo: "r",
+      prNumber: 1,
+      headSha: "head",
+    });
+    expect(result.map((f) => f.filename)).toEqual(["tiny.ts", "huge.ts"]);
+    const huge = result[1];
+    expect(huge?.contents.startsWith("[OVERSIZE FILE")).toBe(true);
+    expect(huge?.contents).toContain(`${100 * 1024} bytes`);
+    expect(huge?.contents).toContain("showing unified diff only");
+    expect(huge?.contents).toContain("+c");
+  });
+
+  it("skips oversize files when the PR file has no patch (binary or omitted)", async () => {
     const octokit = mkOctokit({
       files: [
         { filename: "tiny.ts", status: "modified", sha: "1" },
@@ -204,7 +232,28 @@ describe("fetchChangedFilesWith", () => {
       ],
       contentByPath: {
         "tiny.ts": { content: "ok" },
-        "huge.ts": { content: "", oversize: true },
+        "huge.ts": { content: "", sizeBytes: 100 * 1024 },
+      },
+    });
+    const result = await fetchChangedFilesWith(octokit, {
+      owner: "o",
+      repo: "r",
+      prNumber: 1,
+      headSha: "head",
+    });
+    expect(result.map((f) => f.filename)).toEqual(["tiny.ts"]);
+  });
+
+  it("skips oversize files when the patch itself exceeds MAX_FILE_BYTES", async () => {
+    const hugePatch = "@@ -1,1 +1,1 @@\n" + "+x".repeat(90 * 1024);
+    const octokit = mkOctokit({
+      files: [
+        { filename: "tiny.ts", status: "modified", sha: "1" },
+        { filename: "huge.ts", status: "modified", sha: "2", patch: hugePatch },
+      ],
+      contentByPath: {
+        "tiny.ts": { content: "ok" },
+        "huge.ts": { content: "", sizeBytes: 100 * 1024 },
       },
     });
     const result = await fetchChangedFilesWith(octokit, {
@@ -217,8 +266,9 @@ describe("fetchChangedFilesWith", () => {
   });
 
   it("stops adding files once total content size hits MAX_TOTAL_PROMPT_BYTES", async () => {
-    // 10 files at exactly the per-file cap (20KB each) = 200KB. Budget is
-    // 150KB, so the 8th file would push us to 160KB > 150KB → break.
+    // 10 files at 20KB each = 200KB. Budget is 150KB, so the 8th file would
+    // push us to 160KB > 150KB → break. Per-file cap (80KB) is well above
+    // the file size, so the total-budget guard is what fires here.
     const files = Array.from({ length: 10 }, (_, i) => ({
       filename: `src/f${i}.ts`,
       status: "modified",
