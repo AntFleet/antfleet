@@ -107,9 +107,16 @@ export async function verifyDeposit(
   const depositLc = args.depositAddress.toLowerCase();
   const usdcLc = USDC_BASE_ADDRESS.toLowerCase();
 
+  // viem's parseEventLogs expects its full Log/RpcLog union; the receipt
+  // shape we accept here is the structural subset we actually read, so cast
+  // through unknown to satisfy the parser without dragging the full type
+  // into the dep signature (which would force every test mock to fabricate
+  // blockHash, logIndex, etc.).
   const transferLogs = parseEventLogs({
     abi: USDC_TRANSFER_ABI,
-    logs: receipt.logs.filter((log) => log.address.toLowerCase() === usdcLc),
+    logs: receipt.logs.filter(
+      (log) => log.address.toLowerCase() === usdcLc,
+    ) as unknown as Parameters<typeof parseEventLogs>[0]["logs"],
     eventName: "Transfer",
   });
 
