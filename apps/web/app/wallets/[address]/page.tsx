@@ -31,11 +31,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function WalletReputationPage({
-  params,
-}: {
-  params: Promise<RouteParams>;
-}) {
+export default async function WalletReputationPage({ params }: { params: Promise<RouteParams> }) {
   const { address } = await params;
   if (!ADDRESS_RE.test(address)) notFound();
   const reputation = await loadWalletReputation(db, address);
@@ -71,14 +67,8 @@ function WalletPage({ reputation }: { reputation: WalletReputation }) {
               : `${reputation.findingsClosed}/${reputation.findingsTotal} (${closeRate}%)`
           }
         />
-        <Stat
-          label="USDC settled"
-          value={`${formatUsdc(reputation.totalSettledUsdc)} USDC`}
-        />
-        <Stat
-          label="Current balance"
-          value={`${formatUsdc(reputation.currentBalanceUsdc)} USDC`}
-        />
+        <Stat label="USDC settled" value={`${formatUsdc(reputation.totalSettledUsdc)} USDC`} />
+        <Stat label="Current balance" value={`${formatUsdc(reputation.currentBalanceUsdc)} USDC`} />
       </section>
 
       <h2 className="mt-16 text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-4">
