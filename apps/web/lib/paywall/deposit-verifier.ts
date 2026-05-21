@@ -114,9 +114,9 @@ export async function verifyDeposit(
   // blockHash, logIndex, etc.).
   const transferLogs = parseEventLogs({
     abi: USDC_TRANSFER_ABI,
-    logs: receipt.logs.filter(
-      (log) => log.address.toLowerCase() === usdcLc,
-    ) as unknown as Parameters<typeof parseEventLogs>[0]["logs"],
+    logs: receipt.logs.filter((log) => log.address.toLowerCase() === usdcLc) as unknown as Parameters<
+      typeof parseEventLogs
+    >[0]["logs"],
     eventName: "Transfer",
   });
 
