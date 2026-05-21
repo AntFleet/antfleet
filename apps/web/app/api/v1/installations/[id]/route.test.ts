@@ -45,10 +45,7 @@ describe("GET /api/v1/installations/{id}", () => {
   });
 
   it("returns next_step pointing at /deposit for awaiting_deposit rows", async () => {
-    const res = await handleGetInstallation(
-      ctx,
-      deps(row({ status: "awaiting_deposit" })),
-    );
+    const res = await handleGetInstallation(ctx, deps(row({ status: "awaiting_deposit" })));
     const body = (await res.json()) as Record<string, unknown>;
     expect((body["next_step"] as Record<string, unknown>)["url"]).toContain(
       `/api/v1/installations/${ROW_ID}/deposit`,
@@ -56,15 +53,12 @@ describe("GET /api/v1/installations/{id}", () => {
   });
 
   it("returns GitHub App install URL for active-not-yet-linked rows", async () => {
-    const res = await handleGetInstallation(
-      ctx,
-      deps(row({ status: "active" })),
-    );
+    const res = await handleGetInstallation(ctx, deps(row({ status: "active" })));
     const body = (await res.json()) as Record<string, unknown>;
     const nextStep = body["next_step"] as Record<string, unknown>;
     expect(nextStep["method"]).toBe("INSTALL");
-    expect((nextStep["url"] as string)).toContain("github.com/apps/antfleet");
-    expect((nextStep["url"] as string)).toContain(`state=${ROW_ID}`);
+    expect(nextStep["url"] as string).toContain("github.com/apps/antfleet");
+    expect(nextStep["url"] as string).toContain(`state=${ROW_ID}`);
   });
 
   it("returns 404 for missing row", async () => {

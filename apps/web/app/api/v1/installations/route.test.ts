@@ -49,9 +49,7 @@ describe("POST /api/v1/installations", () => {
     const nextStep = body["next_step"] as Record<string, unknown>;
     expect(nextStep["method"]).toBe("POST");
     expect(nextStep["url"]).toContain(`/api/v1/installations/${FIXED_ROW_ID}/bind`);
-    expect((nextStep["body_schema"] as Record<string, string>)["signature"]).toContain(
-      "EIP-191",
-    );
+    expect((nextStep["body_schema"] as Record<string, string>)["signature"]).toContain("EIP-191");
   });
 
   it("rejects a non-hex wallet_address", async () => {

@@ -46,5 +46,7 @@ export function getPublicBaseUrl(): string {
 }
 
 export function getGitHubAppInstallUrl(): string {
-  return process.env["GITHUB_APP_INSTALL_URL"] ?? "https://github.com/apps/antfleet/installations/new";
+  return (
+    process.env["GITHUB_APP_INSTALL_URL"] ?? "https://github.com/apps/antfleet/installations/new"
+  );
 }

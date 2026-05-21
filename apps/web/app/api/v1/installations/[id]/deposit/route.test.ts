@@ -1,9 +1,6 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
-import {
-  handleDepositInstallation,
-  type DepositInstallationDeps,
-} from "./route";
+import { handleDepositInstallation, type DepositInstallationDeps } from "./route";
 import type { PaywallChannelRow, PaywallInstallationRow } from "@/lib/paywall/queries";
 import { USDC_BASE_ADDRESS } from "@/lib/paywall/env";
 

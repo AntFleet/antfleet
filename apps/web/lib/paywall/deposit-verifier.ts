@@ -115,8 +115,7 @@ export async function verifyDeposit(
 
   const matching = transferLogs.find(
     (log) =>
-      log.args.from.toLowerCase() === expectedFromLc &&
-      log.args.to.toLowerCase() === depositLc,
+      log.args.from.toLowerCase() === expectedFromLc && log.args.to.toLowerCase() === depositLc,
   );
   if (matching === undefined) {
     // Distinguish "wrong sender" from "no USDC Transfer to deposit address

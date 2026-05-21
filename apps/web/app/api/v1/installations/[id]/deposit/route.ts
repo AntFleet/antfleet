@@ -20,11 +20,7 @@ import {
 } from "@/lib/paywall/queries";
 import { buildNextStep } from "@/lib/paywall/next-step";
 import { PAYWALL_STATUS } from "@/lib/paywall/state";
-import {
-  BASE_CHAIN_ID,
-  getDepositAddress,
-  getMinDepositUsdc,
-} from "@/lib/paywall/env";
+import { BASE_CHAIN_ID, getDepositAddress, getMinDepositUsdc } from "@/lib/paywall/env";
 import {
   defaultDepositVerifierDeps,
   verifyDeposit,
@@ -107,10 +103,7 @@ export async function handleDepositInstallation(
     // Deposits are accepted in awaiting_deposit (first deposit) and in
     // active (top-up after a channel was depleted by drawdowns). They are
     // rejected in pending_binding because we do not yet trust the wallet.
-    if (
-      row.status !== PAYWALL_STATUS.awaitingDeposit &&
-      row.status !== PAYWALL_STATUS.active
-    ) {
+    if (row.status !== PAYWALL_STATUS.awaitingDeposit && row.status !== PAYWALL_STATUS.active) {
       return jsonError(
         409,
         "wrong_status",

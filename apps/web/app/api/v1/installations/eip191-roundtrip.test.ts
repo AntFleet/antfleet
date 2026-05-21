@@ -30,7 +30,9 @@ describe("EIP-191 binding round-trip", () => {
 
     // Sanity: viem recoverMessageAddress (the same one the bind route uses)
     // must round-trip the signature back to the signer.
-    const recovered = (await recoverMessageAddress({ message: challenge, signature })).toLowerCase();
+    const recovered = (
+      await recoverMessageAddress({ message: challenge, signature })
+    ).toLowerCase();
     expect(recovered).toBe(wallet);
 
     const markBound = vi.fn(async () => undefined);

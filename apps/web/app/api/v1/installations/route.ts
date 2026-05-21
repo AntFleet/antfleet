@@ -7,10 +7,7 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { buildBindingChallenge } from "@/lib/paywall/challenge";
 import { buildNextStep } from "@/lib/paywall/next-step";
-import {
-  insertPaywallInstallation,
-  type PaywallInstallationRow,
-} from "@/lib/paywall/queries";
+import { insertPaywallInstallation, type PaywallInstallationRow } from "@/lib/paywall/queries";
 import { PAYWALL_STATUS } from "@/lib/paywall/state";
 import { db } from "@/db";
 import { jsonError, jsonOk, NO_STORE, optionsResponse } from "@/lib/api-v1/responses";
@@ -41,10 +38,7 @@ export function OPTIONS() {
   return optionsResponse();
 }
 
-export async function handleCreateInstallation(
-  req: NextRequest,
-  deps: CreateInstallationDeps,
-) {
+export async function handleCreateInstallation(req: NextRequest, deps: CreateInstallationDeps) {
   try {
     const parsed = bodySchema.safeParse(await readJson(req));
     if (!parsed.success) {
