@@ -1,6 +1,12 @@
 import { loadCurrentWeeklyFeature, type WeeklyFeatureRow } from "@/db/queries";
 import { severityLabel, shortAddress } from "@/lib/agent-findings";
 import { getGitHubAppInstallUrl } from "@/lib/install-url";
+import {
+  getDepositAddress,
+  getMinDepositUsdc,
+  getPublicBaseUrl,
+  getReviewPriceUsdc,
+} from "@/lib/paywall/env";
 import { formatRelativeTime } from "@/lib/receipts";
 
 // Sprint 4 — homepage now queries weekly_features for the receipt-of-the-week
@@ -296,6 +302,89 @@ function CodeBlock({ children, lang }: { children: string; lang?: string }) {
   );
 }
 
+// ─── agent signup prompt ──────────────────────────────────────────────────────
+
+// Copy-pasteable instructions an autonomous agent can follow to walk the
+// paywall state machine without any other docs. Pulls live config (prices,
+// deposit address, base URL) from env so it stays in sync with the
+// manifest at /.well-known/antfleet.json. Matches existing CodeBlock
+// styling — no new framework or component library.
+function AgentSignup({
+  baseUrl,
+  reviewPrice,
+  minDeposit,
+  depositAddress,
+}: {
+  baseUrl: string;
+  reviewPrice: string;
+  minDeposit: string;
+  depositAddress: string | null;
+}) {
+  const depositLine =
+    depositAddress === null
+      ? "# DEPOSIT ADDRESS: not yet configured — see /.well-known/antfleet.json before sending"
+      : `# DEPOSIT ADDRESS: ${depositAddress}`;
+  const prompt = `# AntFleet agent signup loop
+# Chain: Base mainnet (8453)  |  Token: USDC  |  Price: ${reviewPrice}  |  Min deposit: ${minDeposit}
+${depositLine}
+
+# 1. Create installation row + binding challenge
+curl -sX POST ${baseUrl}/api/v1/installations \\
+  -H 'content-type: application/json' \\
+  -d '{"wallet_address":"0x..."}'
+# → { installation_id, binding_challenge, next_step: { ... } }
+
+# 2. Sign binding_challenge with EIP-191 (personal_sign)
+#    and POST the signature
+curl -sX POST ${baseUrl}/api/v1/installations/{id}/bind \\
+  -H 'content-type: application/json' \\
+  -d '{"signature":"0x..."}'
+
+# 3. Send >= ${minDeposit} USDC on Base from the bound wallet
+#    to the deposit address, then POST the tx hash
+curl -sX POST ${baseUrl}/api/v1/installations/{id}/deposit \\
+  -H 'content-type: application/json' \\
+  -d '{"tx_hash":"0x..."}'
+
+# 4. Install the GitHub App on the repo you want reviewed
+#    (state param echoes back via the post-install redirect)
+open 'https://github.com/apps/antfleet/installations/new?state={installation_id}'
+
+# 5. Open a PR. Reviews draw down ${reviewPrice} per review.
+#    Channel below price → x402 invoice comment on the PR;
+#    top up and the next PR runs.`;
+
+  return (
+    <section>
+      <ContentWrap>
+        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-6">
+          Agent signup prompt
+        </h2>
+        <p className="text-sm leading-relaxed text-[var(--color-ink-muted)] max-w-xl mb-6">
+          Paste this into an autonomous agent. It walks the paywall state machine end-to-end —
+          create installation, bind wallet, fund channel, install the App — without any other docs.
+          Machine-readable manifest at{" "}
+          <a
+            href="/.well-known/antfleet.json"
+            className="text-[var(--color-ink)] underline underline-offset-2 hover:opacity-80"
+          >
+            /.well-known/antfleet.json
+          </a>
+          ; instructions in markdown at{" "}
+          <a
+            href="/llms.txt"
+            className="text-[var(--color-ink)] underline underline-offset-2 hover:opacity-80"
+          >
+            /llms.txt
+          </a>
+          .
+        </p>
+        <CodeBlock lang="bash">{prompt}</CodeBlock>
+      </ContentWrap>
+    </section>
+  );
+}
+
 // ─── bottom CTA ───────────────────────────────────────────────────────────────
 
 function BottomCta({ installUrl }: { installUrl: string }) {
@@ -335,6 +424,10 @@ function BottomCta({ installUrl }: { installUrl: string }) {
 export default async function Home() {
   const feature = await loadCurrentWeeklyFeature();
   const installUrl = getGitHubAppInstallUrl();
+  const baseUrl = getPublicBaseUrl();
+  const reviewPrice = getReviewPriceUsdc();
+  const minDeposit = getMinDepositUsdc();
+  const depositAddress = getDepositAddress();
 
   return (
     <>
@@ -349,6 +442,13 @@ export default async function Home() {
       <FeatureGrid />
       <SectionDivider />
       <HowItWorks />
+      <SectionDivider />
+      <AgentSignup
+        baseUrl={baseUrl}
+        reviewPrice={reviewPrice}
+        minDeposit={minDeposit}
+        depositAddress={depositAddress}
+      />
       <SectionDivider />
       <BottomCta installUrl={installUrl} />
     </>

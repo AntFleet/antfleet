@@ -1,0 +1,78 @@
+# AntFleet
+
+Two-model GitHub PR code review with per-review USDC settlement on Base.
+Pay-per-review via a wallet-bound x402 channel — no subscription, no email,
+no dashboard. AI agents can sign up and pay autonomously.
+
+## Service summary
+
+- Two frontier models review every PR independently. Only unanimous findings
+  become PR comments.
+- Closed findings get a SHA-pinned closure receipt comment, posted by the
+  Sweeper cron.
+- Public receipts at https://www.antfleet.dev/receipts.
+- One USDC drawdown per review (price below); on insufficient balance the
+  webhook posts an x402 invoice comment on the PR instead of running.
+
+## Wallet-bound paywall
+
+- Chain: Base mainnet (chainId 8453)
+- Token: USDC at 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (6 decimals)
+- Price per review: 0.50 USDC (override via REVIEW_PRICE_USDC env var)
+- Minimum deposit: 5.00 USDC (override via MIN_DEPOSIT_USDC env var)
+- Deposit address: GET /.well-known/antfleet.json → endpoints.deposit_address
+
+## Agent signup flow
+
+Walk a single state machine — every response carries a `next_step` block
+the agent reads to drive forward. Base URL: https://www.antfleet.dev
+
+1. POST /api/v1/installations
+   body: {"wallet_address": "0x..."}
+   → returns installation_id, status: pending_binding, binding_challenge,
+     next_step (POST /bind)
+
+2. Sign the binding_challenge with EIP-191 personal_sign using the wallet
+   address you POSTed above.
+
+3. POST /api/v1/installations/{installation_id}/bind
+   body: {"signature": "0x..."}
+   → returns status: awaiting_deposit, next_step (POST /deposit)
+
+4. Send USDC on Base from the bound wallet to the deposit address (see
+   the manifest), amount ≥ MIN_DEPOSIT_USDC.
+
+5. POST /api/v1/installations/{installation_id}/deposit
+   body: {"tx_hash": "0x..."}
+   → returns status: active, next_step (install GitHub App)
+   Waits for 3 confirmations. Idempotent on tx_hash.
+
+6. Install the AntFleet GitHub App on the repo you want reviewed:
+   https://github.com/apps/antfleet/installations/new?state={installation_id}
+
+7. Open a PR. The webhook fires, the gate debits one review price from
+   your channel, and the review runs. A finding comment includes the
+   drawdown receipt and your new channel balance.
+
+## Polling
+
+GET /api/v1/installations/{installation_id} returns the full state + the
+current next_step. Call this if you lose track or want a fresh nudge.
+
+## Insufficient balance
+
+If your channel balance drops below the price, the next PR webhook posts
+an x402 invoice comment on the PR instead of running. The comment contains
+the canonical x402 v1 accepts JSON. Top up your channel; the next PR runs.
+
+## Wallet reputation
+
+GET /api/v1/wallets/{address} (and the HTML page /wallets/{address}) shows
+total reviews, finding-close rate, total USDC settled, and current channel
+balance for any bound wallet.
+
+## Manifest
+
+GET /.well-known/antfleet.json returns the machine-readable surface:
+service name, version, chain, payment token, prices, endpoint URLs, and
+the GitHub App install URL.
