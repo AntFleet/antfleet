@@ -12,7 +12,7 @@ import {
   getPublicBaseUrl,
   USDC_BASE_ADDRESS,
 } from "./env";
-import { PAYWALL_STATUS, type PaywallStatus } from "./state";
+import { PAYWALL_STATUS } from "./state";
 
 export type NextStep = {
   human: string;
