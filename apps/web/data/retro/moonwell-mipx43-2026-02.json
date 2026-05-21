@@ -1,0 +1,484 @@
+{
+  "caseId": "moonwell-mipx43-2026-02",
+  "label": "Moonwell MIP-X43 oracle bug",
+  "incidentDate": "2026-02-15",
+  "lossesUsd": 1780000,
+  "repo": "moonwell-fi/moonwell-contracts-v2",
+  "parentSha": "a9f736700cdc759e82a4c8e471fbb74ff367f1cd",
+  "introducingPrSha": "9a6738e189fa903bffa0abf10b9dd7ed2fe73a18",
+  "introducingFiles": [
+    "chains/10.json",
+    "chains/8453.json",
+    "proposals/ChainlinkOracleConfigs.sol",
+    "proposals/mips/mip-x43/mip-x43.sol",
+    "proposals/mips/mip-x43/x43.md",
+    "proposals/mips/mips.json"
+  ],
+  "introducingHunks": [
+    {
+      "path": "chains/10.json",
+      "lineStart": 648,
+      "lineEnd": 648
+    },
+    {
+      "path": "chains/10.json",
+      "lineStart": 653,
+      "lineEnd": 653
+    },
+    {
+      "path": "chains/10.json",
+      "lineStart": 658,
+      "lineEnd": 658
+    },
+    {
+      "path": "chains/10.json",
+      "lineStart": 663,
+      "lineEnd": 663
+    },
+    {
+      "path": "chains/10.json",
+      "lineStart": 668,
+      "lineEnd": 668
+    },
+    {
+      "path": "chains/10.json",
+      "lineStart": 673,
+      "lineEnd": 673
+    },
+    {
+      "path": "chains/10.json",
+      "lineStart": 751,
+      "lineEnd": 780
+    },
+    {
+      "path": "chains/8453.json",
+      "lineStart": 1053,
+      "lineEnd": 1053
+    },
+    {
+      "path": "chains/8453.json",
+      "lineStart": 1058,
+      "lineEnd": 1058
+    },
+    {
+      "path": "chains/8453.json",
+      "lineStart": 1063,
+      "lineEnd": 1063
+    },
+    {
+      "path": "chains/8453.json",
+      "lineStart": 1068,
+      "lineEnd": 1068
+    },
+    {
+      "path": "chains/8453.json",
+      "lineStart": 1073,
+      "lineEnd": 1073
+    },
+    {
+      "path": "chains/8453.json",
+      "lineStart": 1093,
+      "lineEnd": 1093
+    },
+    {
+      "path": "chains/8453.json",
+      "lineStart": 1341,
+      "lineEnd": 1405
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 29,
+      "lineEnd": 29
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 31,
+      "lineEnd": 37
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 39,
+      "lineEnd": 39
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 41,
+      "lineEnd": 44
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 49,
+      "lineEnd": 49
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 54,
+      "lineEnd": 62
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 66,
+      "lineEnd": 74
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 78,
+      "lineEnd": 89
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 93,
+      "lineEnd": 93
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 95,
+      "lineEnd": 101
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 103,
+      "lineEnd": 103
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 105,
+      "lineEnd": 108
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 116,
+      "lineEnd": 116
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 121,
+      "lineEnd": 126
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 130,
+      "lineEnd": 132
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 135,
+      "lineEnd": 135
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 137,
+      "lineEnd": 137
+    },
+    {
+      "path": "proposals/ChainlinkOracleConfigs.sol",
+      "lineStart": 139,
+      "lineEnd": 144
+    },
+    {
+      "path": "proposals/mips/mip-x43/mip-x43.sol",
+      "lineStart": 1,
+      "lineEnd": 701
+    },
+    {
+      "path": "proposals/mips/mip-x43/x43.md",
+      "lineStart": 1,
+      "lineEnd": 103
+    },
+    {
+      "path": "proposals/mips/mips.json",
+      "lineStart": 2,
+      "lineEnd": 8
+    }
+  ],
+  "promptSha": "01607a222a8feddff59746a9f27655e4e69d88c3d02a1fbc8bf9d89150247352",
+  "promptFiles": [
+    "src/spike/build-prompt.ts",
+    "src/providers/anthropic.ts",
+    "src/providers/openai.ts",
+    "apps/web/lib/review-pipeline.ts"
+  ],
+  "pipelineVersion": "0.1.0",
+  "pipelineCommitSha": "c73d30023b2efcf4bb17be300f575a02303059e1",
+  "modelIds": {
+    "anthropic": "claude-opus-4-7",
+    "openai": "gpt-5"
+  },
+  "scannedAt": "2026-05-21T05:53:21.607Z",
+  "anthropicRawFindings": [
+    {
+      "title": "USDC/USDBC share a single oracle but only the second mToken whitelisting takes effect for OEV redemption mapping",
+      "category": "maintainability",
+      "severity": "low",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "proposals/ChainlinkOracleConfigs.sol",
+          "startLine": 32,
+          "endLine": 37,
+          "symbol": "constructor",
+          "quote": "OracleConfig(\"CHAINLINK_USDC_USD\", \"USDC\", \"MOONWELL_USDC\") ... OracleConfig(\"CHAINLINK_USDC_USD\", \"USDBC\", \"MOONWELL_USDBC\")"
+        },
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 117,
+          "endLine": 170,
+          "symbol": "_deployCoreWrappers",
+          "quote": "If a wrapper already exists for this oracle, check if it needs deprecation or if it was already handled by a previous config (e.g. USDC/USDBC both reference CHAINLINK_USDC_USD)"
+        }
+      ],
+      "reasoning": "Both USDC and USDBC entries reference CHAINLINK_USDC_USD. _deployCoreWrappers deduplicates the wrapper deployment via isAddressSet checks (good). However in _wireCoreFeeds, setFeed(symbol, wrapper) is called twice for the same oracle (once with USDC, once with USDBC). Both calls set distinct symbol keys to the same wrapper address—this is correct behavior. The concern is that _validateFeedsPointToWrappers compares ERC20(symbol).symbol() of USDC and USDBC tokens: USDBC's on-chain symbol() returns 'USDbC' (case sensitive). If ChainlinkOracle.getFeed stores by symbol string, the lookup must match exact case used in setFeed; both go through the same ERC20.symbol() call so they should match, but anyone reading the chain config (chains/8453.json defines name 'USDBC') may incorrectly assume the addresses key 'USDBC' matches the on-chain symbol string. No functional bug, but the dual-config pattern is fragile and undocumented except by an inline comment.",
+      "reproduction": null,
+      "recommendation": "Add an assertion in _wireCoreFeeds that the (oracleName -> wrapper) mapping is consistent across configs sharing the same oracleName, and consider modeling shared-oracle multi-symbol cases explicitly rather than relying on dedup-by-isAddressSet.",
+      "whyTestsDoNotAlreadyCoverThis": "Existing tests rely on the same dedup logic and do not specifically guard against accidental divergence if a future config maps the same oracleName to inconsistent wrapper parameters.",
+      "suggestedRegressionTest": "After deploy(), assert that for every pair of OracleConfig entries with identical oracleName, getAddress(oracleName + '_OEV_WRAPPER') returns one address and only one ChainlinkOEVWrapper was instantiated.",
+      "minimumFixScope": "Add a documentation comment in ChainlinkOracleConfigs.sol explaining the USDC/USDBC shared-oracle pattern and an invariant check in the proposal."
+    },
+    {
+      "title": "Deprecation logic uses try/catch on chainlinkOracle() to distinguish old vs new wrappers — fragile heuristic",
+      "category": "maintainability",
+      "severity": "medium",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 132,
+          "endLine": 145,
+          "symbol": "_deployCoreWrappers",
+          "quote": "try ChainlinkOEVWrapper(payable(addresses.getAddress(wrapperName))).chainlinkOracle() returns (IChainlinkOracle) { continue; } catch {}"
+        }
+      ],
+      "reasoning": "The decision to deprecate-and-replace vs. skip is made by probing whether the existing contract exposes chainlinkOracle(). Any old contract that happens to expose a chainlinkOracle() getter (perhaps with a different semantic, or accidentally introduced) would be treated as already-new and skipped, leaving a stale wrapper wired up. Conversely, a transient RPC/revert during the try call would cause an unintended redeploy. A robust signature would check codehash, version() string, or a sentinel storage variable. This is a build-time risk in proposal deploys rather than runtime, but because the deploy script is the source of truth for which wrappers are 'live', a mis-classification could silently leave an old wrapper as the active feed.",
+      "reproduction": null,
+      "recommendation": "Introduce an explicit version() or VERSION constant on ChainlinkOEVWrapper and check that instead of relying on a function-existence probe. Alternatively, maintain an explicit list of oracleNames whose wrappers already exist in new-style form (e.g., from MIP-X38) and gate redeployment by that allow-list.",
+      "whyTestsDoNotAlreadyCoverThis": "Unit/integration tests run against a clean fork state where the existence/non-existence of the function reliably signals version; they do not simulate a hypothetical old-style wrapper that exposes chainlinkOracle().",
+      "suggestedRegressionTest": "Add a test that deploys a mock with a chainlinkOracle() function but different semantics, registers it under the wrapper name, and asserts _deployCoreWrappers refuses to silently skip without version match.",
+      "minimumFixScope": "Replace the try/catch heuristic with an explicit version probe within _deployCoreWrappers."
+    },
+    {
+      "title": "Validation of deprecated wrappers does not assert the deprecated address still has code or is no longer referenced",
+      "category": "test-gap",
+      "severity": "low",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 360,
+          "endLine": 397,
+          "symbol": "_validateDeprecatedWrappers",
+          "quote": "assertTrue(deprecated != current, ...); assertTrue(deprecated != address(0), ...);"
+        }
+      ],
+      "reasoning": "_validateDeprecatedWrappers only checks that the deprecated address differs from the current and is nonzero. It does not assert that no chains/*.json or ChainlinkOracle feed still points at the deprecated address. Given the proposal's purpose is to ensure feeds are rewired to new wrappers, a stronger check would be that for each oracleName, ChainlinkOracle.getFeed(symbol) != deprecatedAddress. This is partially covered by _validateFeedsPointToWrappers (which asserts feed==current) but only over the current oracleConfigs list — any external consumers (e.g. Morpho IRMs) using the deprecated address would not be caught.",
+      "reproduction": null,
+      "recommendation": "Augment _validateDeprecatedWrappers to enumerate all known consumers (mTokens, Morpho oracles, vaults) and assert none of them still reference the deprecated wrapper address.",
+      "whyTestsDoNotAlreadyCoverThis": "Current validation is structural (address inequality) rather than referential (no live references). No test asserts there are no dangling consumers of the deprecated wrapper.",
+      "suggestedRegressionTest": "Iterate over all mTokens/Morpho markets in chains/<id>.json and assert none expose oracle()/priceFeed() equal to any *_DEPRECATED address.",
+      "minimumFixScope": "Extend _validateDeprecatedWrappers in mip-x43.sol."
+    },
+    {
+      "title": "x43.md lists MAMO and stkWELL Morpho upgrades but configs only push 'CHAINLINK_MAMO_USD' and 'CHAINLINK_stkWELL_USD' — wrapperName construction may not match deployed proxy address keys",
+      "category": "bug",
+      "severity": "high",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "proposals/ChainlinkOracleConfigs.sol",
+          "startLine": 90,
+          "endLine": 99,
+          "symbol": "constructor",
+          "quote": "_MorphoOracleConfigs[BASE_CHAIN_ID].push(MorphoOracleConfig(\"CHAINLINK_MAMO_USD\", \"CHAINLINK_MAMO_USD\")); _MorphoOracleConfigs[BASE_CHAIN_ID].push(MorphoOracleConfig(\"CHAINLINK_stkWELL_USD\", \"CHAINLINK_WELL_USD\"));"
+        },
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 224,
+          "endLine": 244,
+          "symbol": "_upgradeMorphoWrappers",
+          "quote": "string memory wrapperName = string(abi.encodePacked(morphoConfigs[i].proxyName, \"_ORACLE_PROXY\"));"
+        },
+        {
+          "path": "chains/8453.json",
+          "startLine": 1,
+          "endLine": 1,
+          "symbol": null,
+          "quote": "CHAINLINK_MAMO_USD_ORACLE_PROXY = 0xF4DCcaE864EDF2b218B40A950c4407C3383Dadb9; CHAINLINK_stkWELL_USD_ORACLE_PROXY = 0x593355Faef3075AF1b20Ca22FeDAbF6F3D2FD66C"
+        }
+      ],
+      "reasoning": "The proxyName 'CHAINLINK_MAMO_USD' is concatenated with '_ORACLE_PROXY' yielding 'CHAINLINK_MAMO_USD_ORACLE_PROXY', which IS present in chains/8453.json. Similarly 'CHAINLINK_stkWELL_USD_ORACLE_PROXY' is present. However, the priceFeedName for MAMO is also 'CHAINLINK_MAMO_USD' (not the impl-deprecated key), which resolves via addresses.getAddress to the *impl* address — checking chains/8453.json, there is no plain key 'CHAINLINK_MAMO_USD' at all (only 'CHAINLINK_MAMO_USD' exists in chains/8453.json — actually it does at 0xeF7541b388a77C1709a3d44BfBfC5c1ED3F0Ac94). It does exist. But this same key on Optimism does not exist. Since BASE_CHAIN_ID is the only chain with Morpho configs, that's fine. The concern: initializeV2 is called with priceFeed=CHAINLINK_MAMO_USD (the raw Chainlink aggregator), while the proxy previously wrapped MORPHO_CHAINLINK_MAMO_USD_ORACLE (0x18d1325e8528E3ceafBf9a77F3bE3f76Fec42D5C). If callers (Morpho markets) expect the proxy to behave as an oracle in MORPHO_CHAINLINK format (price scaled to Morpho's expected 1e36 conventions) but the new implementation now exposes the raw Chainlink feed semantics, this is a silent contract change. Without seeing ChainlinkOEVMorphoWrapper.initializeV2 source, this cannot be confirmed, but is a high-impact risk worth flagging.",
+      "reproduction": "After execution on a Base fork, call ChainlinkOEVMorphoWrapper(0xF4DCcaE864EDF2b218B40A950c4407C3383Dadb9).latestRoundData() and compare to the prior Morpho-format oracle's price() reading; verify Morpho markets quoting MAMO still compute collateral/debt correctly.",
+      "recommendation": "Verify that the underlying price feed passed to initializeV2 (raw Chainlink USD aggregator) yields the same scaled price that Morpho markets and downstream consumers expect from the proxy. If the previous proxy was a MORPHO_CHAINLINK_* (1e36-scaled) oracle, the new ChainlinkOEVMorphoWrapper must replicate the scaling internally. Add explicit price-parity validation in _validateMorphoWrappersState comparing pre/post-upgrade quoted prices.",
+      "whyTestsDoNotAlreadyCoverThis": "_validateMorphoWrappersState only asserts decimals and that answer>0/roundId>0/updatedAt>0; it does not compare the magnitude of the post-upgrade price against the pre-upgrade Morpho-format price.",
+      "suggestedRegressionTest": "On a Base fork, snapshot the pre-upgrade IOracle(proxy).price() value, run build()+run(), and assert the post-upgrade price is within a small tolerance of the pre-upgrade value (accounting for the latest oracle update).",
+      "minimumFixScope": "Add pre/post-upgrade price-parity assertion to validate(); confirm ChainlinkOEVMorphoWrapper.initializeV2 internally rescales to the Morpho 1e36 convention."
+    },
+    {
+      "title": "_updateExistingWrapperFees uses CHAINLINK_WELL_USD_ORACLE_PROXY existence as a Base-only sentinel, but key exists in chains/8453.json regardless of fork — could cause spurious calls when run on wrong fork",
+      "category": "bug",
+      "severity": "medium",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 290,
+          "endLine": 309,
+          "symbol": "_updateExistingWrapperFees",
+          "quote": "if (addresses.isAddressSet(\"CHAINLINK_WELL_USD_ORACLE_PROXY\")) { ... _pushAction(wellMorphoWrapper, ...) }"
+        }
+      ],
+      "reasoning": "build() first runs on BASE_FORK_ID (calling _updateExistingWrapperFees once), then switches to OPTIMISM_FORK_ID and calls it again. The function gates the WELL Morpho fee update by isAddressSet of CHAINLINK_WELL_USD_ORACLE_PROXY. Addresses object is constructed from chains/<id>.json indexed by block.chainid, so isAddressSet should return false on Optimism (the key is only in chains/8453.json) — correct behavior assuming Addresses isolates per-chain. However the comment claims 'only on Base, not Optimism' without enforcing it via chain id. If Addresses leaks keys across forks (e.g., a global registry shared across chain ids), the second invocation would also push the action to the Optimism fork's action queue with a Base-only address, producing an invalid governance action. Verify by inspecting Addresses.isAddressSet semantics or by adding an explicit `block.chainid == BASE_CHAIN_ID` guard.",
+      "reproduction": "Run build() with logging; check whether the WELL Morpho fee setLiquidatorFeeBps action is queued twice or once.",
+      "recommendation": "Replace the isAddressSet sentinel with an explicit `if (block.chainid == BASE_CHAIN_ID)` check, or refactor _updateExistingWrapperFees to take chainId.",
+      "whyTestsDoNotAlreadyCoverThis": "Action-queue inspection per fork is rarely covered; tests typically assert end-state, not duplicate enqueues.",
+      "suggestedRegressionTest": "After build(), enumerate queued actions per fork and assert the WELL Morpho fee update appears exactly once on the Base action set and zero times on the Optimism action set.",
+      "minimumFixScope": "Add explicit chain-id guards in _updateExistingWrapperFees."
+    },
+    {
+      "title": "mips.json: MIP-X43 entry is missing 'envpath' value while others use empty string consistently — minor schema-consistency issue",
+      "category": "maintainability",
+      "severity": "low",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "proposals/mips/mips.json",
+          "startLine": 1,
+          "endLine": 8,
+          "symbol": null,
+          "quote": "{\"envpath\": \"\", \"governor\": \"MultichainGovernor\", \"id\": 141, \"path\": \"mip-x43.sol/mipx43.json\", \"proposalType\": \"HybridProposal\"}"
+        }
+      ],
+      "reasoning": "The entry is structurally fine. However mips.json mixes 'envpath' (lowercase) and 'envPath' (camelCase) across entries; tooling may be case-sensitive. MIP-X43's entry uses lowercase 'envpath' which matches the most-recent entries but not all. This is a pre-existing schema inconsistency, but anyone editing tooling should be aware.",
+      "reproduction": null,
+      "recommendation": "Normalize all entries to a single key case (e.g., 'envPath') in a separate cleanup PR.",
+      "whyTestsDoNotAlreadyCoverThis": "No JSON schema validator is currently enforced on mips.json.",
+      "suggestedRegressionTest": "Add a CI step that validates mips.json against a JSON schema with strict key names.",
+      "minimumFixScope": "Optional cleanup; no functional change required for this proposal."
+    }
+  ],
+  "openaiRawFindings": [
+    {
+      "title": "WELL feed wired using xWELL symbol due to misconfigured symbol source",
+      "category": "bug",
+      "severity": "high",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "proposals/ChainlinkOracleConfigs.sol",
+          "startLine": 66,
+          "endLine": 68,
+          "symbol": null,
+          "quote": "_oracleConfigs[BASE_CHAIN_ID].push(\n            OracleConfig(\"CHAINLINK_WELL_USD\", \"xWELL_PROXY\", \"MOONWELL_WELL\")\n        );"
+        },
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 211,
+          "endLine": 215,
+          "symbol": null,
+          "quote": "address chainlinkOracle = addresses.getAddress(\"CHAINLINK_ORACLE\");\n            string memory symbol = ERC20(addresses.getAddress(config.symbol))\n                .symbol();\n\n            address wrapperAddress = addresses.getAddress(wrapperName);"
+        },
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 218,
+          "endLine": 225,
+          "symbol": null,
+          "quote": "_pushAction(\n                chainlinkOracle,\n                abi.encodeWithSignature(\n                    \"setFeed(string,address)\",\n                    symbol,\n                    wrapperAddress\n                ),\n                string.concat(\"Set feed to OEV wrapper for \", symbol)\n            );"
+        }
+      ],
+      "reasoning": "For the Base chain, the WELL market configuration uses xWELL_PROXY as the symbol source. _wireCoreFeeds derives the symbol via ERC20(addresses.getAddress(config.symbol)).symbol(), which returns \"xWELL\" for the xWELL staking token proxy, not \"WELL\". This will set the ChainlinkOracle feed under the key \"xWELL\", while the MOONWELL_WELL market expects the \"WELL\" symbol. As a result, WELL’s core market will not use the intended OEV wrapper feed. The validation routine also derives the symbol the same (incorrect) way, so it won’t catch this mismatch.",
+      "reproduction": "- Run the proposal build to stage actions.\n- Observe the generated action to call ChainlinkOracle.setFeed(symbol, wrapper) for the WELL config where symbol resolves to \"xWELL\" (read from xWELL_PROXY), not \"WELL\".\n- ChainlinkOracle.getFeed(\"WELL\") remains unchanged while ChainlinkOracle.getFeed(\"xWELL\") points to the new wrapper.",
+      "recommendation": "In proposals/ChainlinkOracleConfigs.sol, change the WELL config symbol source from \"xWELL_PROXY\" to a token address key that returns the \"WELL\" symbol, e.g. \"GOVTOKEN\":\n_OracleConfig(\"CHAINLINK_WELL_USD\", \"GOVTOKEN\", \"MOONWELL_WELL\")_\nAlternatively, add a \"WELL\" token address entry and use that as the symbol source. Also consider hard-coding the feed key for WELL to \"WELL\" to avoid symbol derivation pitfalls.",
+      "whyTestsDoNotAlreadyCoverThis": "validate() uses the same ERC20(symbol) derivation logic, so it validates the feed for \"xWELL\" instead of \"WELL\" and will pass despite the miswiring.",
+      "suggestedRegressionTest": "- Add an assertion that ChainlinkOracle.getFeed(\"WELL\") equals the newly deployed OEV wrapper on Base.\n- Ensure the symbol for WELL is derived from GOVTOKEN (or a WELL token address), not from xWELL_PROXY.\n- Optionally, assert that ChainlinkOracle.getFeed(\"xWELL\") is either unset or not used by any mToken.",
+      "minimumFixScope": "Change one config entry in ChainlinkOracleConfigs for Base (WELL) to use the correct symbol source (e.g., GOVTOKEN)."
+    },
+    {
+      "title": "Misleading comment: mTokenKey \"defaults to MOONWELL_[symbol]\" but no defaulting logic implemented",
+      "category": "docs-gap",
+      "severity": "low",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "proposals/ChainlinkOracleConfigs.sol",
+          "startLine": 7,
+          "endLine": 11,
+          "symbol": null,
+          "quote": "struct OracleConfig {\n        string oracleName; /// e.g., CHAINLINK_ETH_USD\n        string symbol; /// e.g., as found in addresses\n        string mTokenKey; /// e.g., MOONWELL_WETH (defaults to MOONWELL_[symbol] if not specified)\n    }"
+        }
+      ],
+      "reasoning": "The comment documents a default behavior for mTokenKey that is not implemented anywhere in the contract. All usages read mTokenKey directly from the stored configuration. This could mislead future contributors to omit mTokenKey expecting fallback behavior.",
+      "reproduction": null,
+      "recommendation": "Update the comment to remove the defaulting claim or implement explicit defaulting (e.g., when mTokenKey is empty, derive MOONWELL_[symbol]). Given current usage, updating the comment is simpler and less error-prone.",
+      "whyTestsDoNotAlreadyCoverThis": "The current configuration always specifies mTokenKey explicitly, so tests won’t surface the mismatch between docs and actual behavior.",
+      "suggestedRegressionTest": null,
+      "minimumFixScope": "Comment change"
+    },
+    {
+      "title": "Variable name FEE_MULTIPLIER is misleading; used as fee basis points (liquidatorFeeBps)",
+      "category": "maintainability",
+      "severity": "low",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 30,
+          "endLine": 33,
+          "symbol": null,
+          "quote": "uint16 public constant FEE_MULTIPLIER = 3000;\n    uint256 public constant MAX_ROUND_DELAY = 10;\n    uint256 public constant MAX_DECREMENTS = 10;"
+        },
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 310,
+          "endLine": 317,
+          "symbol": null,
+          "quote": "_pushAction(\n            ethWrapper,\n            abi.encodeWithSignature(\n                \"setLiquidatorFeeBps(uint16)\",\n                FEE_MULTIPLIER\n            ),\n            \"Update ETH/USD OEV wrapper fee split to 70/30\"\n        );"
+        }
+      ],
+      "reasoning": "The constant name suggests it is a multiplier but it is passed as a basis points value to setLiquidatorFeeBps, representing 3000 bps (30%). This can confuse maintainers and reviewers.",
+      "reproduction": null,
+      "recommendation": "Rename FEE_MULTIPLIER to LIQUIDATOR_FEE_BPS (or similar) to reflect its actual semantics. No functional change required.",
+      "whyTestsDoNotAlreadyCoverThis": "This is a naming/clarity issue and does not affect behavior, so tests won’t detect it.",
+      "suggestedRegressionTest": null,
+      "minimumFixScope": "Rename constant and its references"
+    }
+  ],
+  "anthropicError": null,
+  "openaiError": null,
+  "unanimousFindings": [
+    {
+      "title": "WELL feed wired using xWELL symbol due to misconfigured symbol source",
+      "category": "bug",
+      "severity": "high",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "proposals/ChainlinkOracleConfigs.sol",
+          "startLine": 66,
+          "endLine": 68,
+          "symbol": null,
+          "quote": "_oracleConfigs[BASE_CHAIN_ID].push(\n            OracleConfig(\"CHAINLINK_WELL_USD\", \"xWELL_PROXY\", \"MOONWELL_WELL\")\n        );"
+        },
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 211,
+          "endLine": 215,
+          "symbol": null,
+          "quote": "address chainlinkOracle = addresses.getAddress(\"CHAINLINK_ORACLE\");\n            string memory symbol = ERC20(addresses.getAddress(config.symbol))\n                .symbol();\n\n            address wrapperAddress = addresses.getAddress(wrapperName);"
+        },
+        {
+          "path": "proposals/mips/mip-x43/mip-x43.sol",
+          "startLine": 218,
+          "endLine": 225,
+          "symbol": null,
+          "quote": "_pushAction(\n                chainlinkOracle,\n                abi.encodeWithSignature(\n                    \"setFeed(string,address)\",\n                    symbol,\n                    wrapperAddress\n                ),\n                string.concat(\"Set feed to OEV wrapper for \", symbol)\n            );"
+        }
+      ],
+      "reasoning": "For the Base chain, the WELL market configuration uses xWELL_PROXY as the symbol source. _wireCoreFeeds derives the symbol via ERC20(addresses.getAddress(config.symbol)).symbol(), which returns \"xWELL\" for the xWELL staking token proxy, not \"WELL\". This will set the ChainlinkOracle feed under the key \"xWELL\", while the MOONWELL_WELL market expects the \"WELL\" symbol. As a result, WELL’s core market will not use the intended OEV wrapper feed. The validation routine also derives the symbol the same (incorrect) way, so it won’t catch this mismatch.",
+      "reproduction": "- Run the proposal build to stage actions.\n- Observe the generated action to call ChainlinkOracle.setFeed(symbol, wrapper) for the WELL config where symbol resolves to \"xWELL\" (read from xWELL_PROXY), not \"WELL\".\n- ChainlinkOracle.getFeed(\"WELL\") remains unchanged while ChainlinkOracle.getFeed(\"xWELL\") points to the new wrapper.",
+      "recommendation": "In proposals/ChainlinkOracleConfigs.sol, change the WELL config symbol source from \"xWELL_PROXY\" to a token address key that returns the \"WELL\" symbol, e.g. \"GOVTOKEN\":\n_OracleConfig(\"CHAINLINK_WELL_USD\", \"GOVTOKEN\", \"MOONWELL_WELL\")_\nAlternatively, add a \"WELL\" token address entry and use that as the symbol source. Also consider hard-coding the feed key for WELL to \"WELL\" to avoid symbol derivation pitfalls.",
+      "whyTestsDoNotAlreadyCoverThis": "validate() uses the same ERC20(symbol) derivation logic, so it validates the feed for \"xWELL\" instead of \"WELL\" and will pass despite the miswiring.",
+      "suggestedRegressionTest": "- Add an assertion that ChainlinkOracle.getFeed(\"WELL\") equals the newly deployed OEV wrapper on Base.\n- Ensure the symbol for WELL is derived from GOVTOKEN (or a WELL token address), not from xWELL_PROXY.\n- Optionally, assert that ChainlinkOracle.getFeed(\"xWELL\") is either unset or not used by any mToken.",
+      "minimumFixScope": "Change one config entry in ChainlinkOracleConfigs for Base (WELL) to use the correct symbol source (e.g., GOVTOKEN)."
+    }
+  ],
+  "outcome": "A",
+  "outcomeRationale": "Both providers flagged a finding overlapping proposals/ChainlinkOracleConfigs.sol:31-37 (anthropic) and proposals/ChainlinkOracleConfigs.sol:66-74 (openai) — each within the introducing hunk."
+}
