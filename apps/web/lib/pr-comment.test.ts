@@ -106,6 +106,34 @@ describe("formatPRComment", () => {
     expect(out).toContain("87s");
     expect(out).toContain("~$0.40");
   });
+
+  it("omits the settled-receipt footer when no settlement is supplied", () => {
+    const out = formatPRComment([mkFinding()], META);
+    expect(out).not.toContain("Settled ·");
+    expect(out).not.toContain("basescan.org");
+  });
+
+  it("appends a settled-receipt footer with basescan link when settlement is supplied", () => {
+    const txHash = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      settlement: { channelBalanceUsdc: "4.500000", lastDepositTxHash: txHash },
+    });
+    expect(out).toContain("Settled ·");
+    expect(out).toContain("channel balance 4.500000 USDC");
+    expect(out).toContain(`https://basescan.org/tx/${txHash}`);
+    // short hash form
+    expect(out).toContain("`0xabcd…7890`");
+  });
+
+  it("omits the tx link when settlement has no lastDepositTxHash", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      settlement: { channelBalanceUsdc: "3.000000", lastDepositTxHash: null },
+    });
+    expect(out).toContain("Settled · channel balance 3.000000 USDC");
+    expect(out).not.toContain("basescan.org");
+  });
 });
 
 describe("formatClosureReceipt", () => {

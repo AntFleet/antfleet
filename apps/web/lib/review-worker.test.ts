@@ -98,6 +98,7 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     markReviewSucceeded: vi.fn().mockResolvedValue(undefined),
     markReviewFailedForRetry: vi.fn().mockResolvedValue(undefined),
     markReviewTerminallyFailed: vi.fn().mockResolvedValue(undefined),
+    loadReviewSettlement: vi.fn().mockResolvedValue(null),
     now: () => NOW,
     ...overrides,
   };

@@ -30,7 +30,15 @@ type OnboarderEventTypeJson =
   // partner_reply is captured in the DB but filtered out by the server
   // before serialization — per-customer raw content never surfaces on
   // /activity. Kept in the union for type symmetry with the DB layer.
-  | "partner_reply";
+  | "partner_reply"
+  // Paywall event types. Captured in the DB; ACTIVITY_SURFACED_ONBOARDER_KINDS
+  // in queries.ts decides whether they reach this serializer. Listed here
+  // for type symmetry with OnboarderEventType so a future surface decision
+  // is a queries.ts change only, not a cascading type update.
+  | "wallet_bound"
+  | "channel_funded"
+  | "channel_low_balance"
+  | "drawdown_recorded";
 
 type FleetActivityEventJson =
   | {
@@ -616,5 +624,13 @@ function onboarderBodyFor(eventType: OnboarderEventTypeJson): string {
     case "partner_reply":
       // Filtered out server-side; this branch is unreachable in practice.
       return "Onboarder logged a partner reply";
+    case "wallet_bound":
+      return "Agent bound a wallet to a paywall channel";
+    case "channel_funded":
+      return "Agent funded a paywall channel";
+    case "channel_low_balance":
+      return "Paywall channel below review price; agent invoiced";
+    case "drawdown_recorded":
+      return "Per-review drawdown debited from a paywall channel";
   }
 }

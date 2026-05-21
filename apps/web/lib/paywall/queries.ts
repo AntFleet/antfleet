@@ -197,6 +197,41 @@ export async function markInstallationActive(
   `);
 }
 
+// Settlement context for a paid review — the post-debit channel balance
+// and the last on-chain deposit tx hash. Used by the review-worker to
+// append a "Settled · tx … · channel balance …" footer to the PR comment.
+// Returns null when the review row has no linked drawdown (legacy_partner
+// installs, or pre-paywall reviews).
+export type ReviewSettlement = {
+  channelBalanceUsdc: string;
+  lastDepositTxHash: string | null;
+};
+
+export async function loadReviewSettlement(
+  q: Queryable,
+  reviewId: string,
+): Promise<ReviewSettlement | null> {
+  const result = await q.execute(sql`
+    SELECT
+      c.balance_usdc::text AS "channelBalanceUsdc",
+      c.last_deposit_tx_hash AS "lastDepositTxHash"
+    FROM payments p
+    JOIN channels c ON c.id = p.channel_id
+    WHERE p.review_id = ${reviewId} AND p.type = 'drawdown'
+    LIMIT 1
+  `);
+  return firstRowPaywall<ReviewSettlement>(result);
+}
+
+function firstRowPaywall<T>(result: unknown): T | null {
+  const rows = Array.isArray(result)
+    ? result
+    : Array.isArray((result as { rows?: unknown[] }).rows)
+      ? (result as { rows: unknown[] }).rows
+      : [];
+  return (rows[0] as T | undefined) ?? null;
+}
+
 // Aggregates everything a wallet has done through the paywall: every
 // installation it owns, the channel balances, the total USDC settled via
 // drawdown, the review + finding-close counts. One query per metric to keep

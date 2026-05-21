@@ -13,6 +13,14 @@ export type ReviewMeta = {
   totalMs: number;
   estimatedCostUsd: number;
   modelIds: Record<string, string>;
+  // Paywall settlement footer. Present when the review was paid for via
+  // an agent paywall channel; absent for legacy_partner reviews and for
+  // pre-paywall reviews. lastDepositTxHash links to basescan as proof of
+  // funding; channelBalanceUsdc is the post-debit balance.
+  settlement?: {
+    channelBalanceUsdc: string;
+    lastDepositTxHash: string | null;
+  };
 };
 
 export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
@@ -25,10 +33,24 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
   const stack = Object.values(meta.modelIds)
     .map((m) => `\`${m}\``)
     .join(" + ");
-  const footer =
+  const footerLines: string[] = [
     `<sub>Review \`${meta.reviewId.slice(0, 8)}\` · ${stack} (unanimous) ` +
-    `· ${Math.round(meta.totalMs / 1000)}s · ~$${meta.estimatedCostUsd.toFixed(2)}</sub>`;
-  return `${intro}\n\n---\n\n${body}\n\n—\n\n${footer}`;
+      `· ${Math.round(meta.totalMs / 1000)}s · ~$${meta.estimatedCostUsd.toFixed(2)}</sub>`,
+  ];
+  if (meta.settlement !== undefined) {
+    footerLines.push(formatSettlementFooter(meta.settlement));
+  }
+  return `${intro}\n\n---\n\n${body}\n\n—\n\n${footerLines.join("\n")}`;
+}
+
+function formatSettlementFooter(s: NonNullable<ReviewMeta["settlement"]>): string {
+  const balance = `${s.channelBalanceUsdc} USDC`;
+  if (s.lastDepositTxHash === null) {
+    return `<sub>Settled · channel balance ${balance}</sub>`;
+  }
+  const shortHash = `${s.lastDepositTxHash.slice(0, 6)}…${s.lastDepositTxHash.slice(-4)}`;
+  const basescan = `https://basescan.org/tx/${s.lastDepositTxHash}`;
+  return `<sub>Settled · tx [\`${shortHash}\`](${basescan}) · channel balance ${balance}</sub>`;
 }
 
 function formatFinding(f: Finding): string {

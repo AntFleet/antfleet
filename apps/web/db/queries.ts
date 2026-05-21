@@ -742,7 +742,18 @@ export type OnboarderEventType =
   // issue. Captured for NPS-style signal — read by weekly-digest and
   // by analysis scripts. Rows are private (public=false always); the
   // /activity event stream filters them out by kind, not by gate.
-  | "partner_reply";
+  | "partner_reply"
+  // Paywall lifecycle. Distinct from the legacy install_welcome series
+  // because these are emitted by the agent paywall flow (POST /v1/...)
+  // and the webhook drawdown gate, not by the GitHub-install onboarder.
+  //   wallet_bound        — EIP-191 signature verified on bind
+  //   channel_funded      — first USDC deposit credited; status → active
+  //   channel_low_balance — drawdown attempt rejected for insufficient funds
+  //   drawdown_recorded   — per-review debit succeeded
+  | "wallet_bound"
+  | "channel_funded"
+  | "channel_low_balance"
+  | "drawdown_recorded";
 
 export type ActivityWindow = {
   reviewsRun: number;
@@ -985,6 +996,10 @@ const ONBOARDER_EVENT_TYPES: ReadonlySet<OnboarderEventType> = new Set([
   "public_receipts_disabled",
   "check_in_7d",
   "partner_reply",
+  "wallet_bound",
+  "channel_funded",
+  "channel_low_balance",
+  "drawdown_recorded",
 ]);
 
 // /activity hides partner replies even when public=true. They're per-

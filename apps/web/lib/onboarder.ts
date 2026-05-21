@@ -183,6 +183,7 @@ Compose a welcome GitHub issue to open in this repo. Voice: direct, technical, n
 
 - Acknowledge the install in one sentence
 - Tell the maintainer what happens next: on the next PR opened, two independent frontier models (Claude Opus 4.7 and GPT-5) will review changed files in parallel; only findings both models flag get posted as a comment; typical latency is 30-90s for small PRs
+- For AI agents specifically: point them at the agent signup loop at https://www.antfleet.dev/llms.txt and the machine-readable manifest at https://www.antfleet.dev/.well-known/antfleet.json. If the installer is a human partner, this paragraph can be one line; if it's an agent, surface those two URLs prominently.
 - Link to https://www.antfleet.dev/architecture for the full agent diagram
 - Mention that public receipts are off by default; the summary comment on the first PR review will include a one-click opt-in link, no email needed
 - Close with a short "feel free to close this issue when you're set up" line
