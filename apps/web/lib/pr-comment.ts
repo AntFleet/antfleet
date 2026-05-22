@@ -8,6 +8,15 @@ const SEVERITY_ORDER: readonly Finding["severity"][] = ["critical", "high", "med
 const REASONING_MAX_CHARS = 500;
 const RECOMMENDATION_MAX_CHARS = 300;
 
+// Patch Agent v1.5 — per-finding patch decision the renderer can embed.
+// Patch is the unified-diff text the gate selected; modelId names the
+// provider whose patch shipped (always claude-opus-4-7 in v1). When null
+// (or absent from the patches map), formatFinding emits no suggestion block.
+export type PatchForRender = {
+  patch: string;
+  modelId: string;
+};
+
 export type ReviewMeta = {
   reviewId: string;
   totalMs: number;
@@ -21,15 +30,31 @@ export type ReviewMeta = {
     channelBalanceUsdc: string;
     lastDepositTxHash: string | null;
   };
+  // Patch Agent v1.5 — optional per-finding patches. Keyed by the finding's
+  // position in the agreed[] array as passed to formatPRComment (NOT the
+  // post-sort severity order, since this layer never sees DB findingIds).
+  // Missing key = no patch for that finding; emit findings-only for it.
+  // Absent entirely = no patches in this review (flag off, or all findings
+  // failed the gate). The comment body shape is byte-identical to v1.4
+  // in that case.
+  patchesByIndex?: ReadonlyMap<number, PatchForRender>;
 };
 
 export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
   if (findings.length === 0) return "";
-  const sorted = findings.toSorted((a, b) => severityRank(a) - severityRank(b));
+  // Stash the input index alongside each finding so the post-sort body
+  // can look up the right patch (patchesByIndex is keyed by the pre-sort
+  // index — that's the DB findingIndex the worker writes).
+  const indexed = findings.map((f, originalIndex) => ({ f, originalIndex }));
+  const sorted = indexed.toSorted((a, b) => severityRank(a.f) - severityRank(b.f));
   const intro =
     `## AntFleet · ${findings.length} finding${findings.length === 1 ? "" : "s"}\n\n` +
     "Both reviewers flagged the items below on the changed files. AntFleet posts only what two independent frontier models agree on.";
-  const body = sorted.map(formatFinding).join("\n\n---\n\n");
+  const body = sorted
+    .map(({ f, originalIndex }) =>
+      formatFinding(f, meta.patchesByIndex?.get(originalIndex) ?? null),
+    )
+    .join("\n\n---\n\n");
   const stack = Object.values(meta.modelIds)
     .map((m) => `\`${m}\``)
     .join(" + ");
@@ -38,22 +63,38 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
       `· ${Math.round(meta.totalMs / 1000)}s · ~$${meta.estimatedCostUsd.toFixed(2)}</sub>`,
   ];
   if (meta.settlement !== undefined) {
-    footerLines.push(formatSettlementFooter(meta.settlement));
+    footerLines.push(
+      formatSettlementFooter(meta.settlement, patchesPresent(meta.patchesByIndex)),
+    );
   }
   return `${intro}\n\n---\n\n${body}\n\n—\n\n${footerLines.join("\n")}`;
 }
 
-function formatSettlementFooter(s: NonNullable<ReviewMeta["settlement"]>): string {
+function patchesPresent(
+  patches: ReadonlyMap<number, PatchForRender> | undefined,
+): boolean {
+  return patches !== undefined && patches.size > 0;
+}
+
+function formatSettlementFooter(
+  s: NonNullable<ReviewMeta["settlement"]>,
+  patchIncluded: boolean,
+): string {
   const balance = `${s.channelBalanceUsdc} USDC`;
+  // Patch Agent v1.5: spec §4 — append "Patch settled" verb only when at
+  // least one suggestion block was shipped in this comment. Pre-v1.5
+  // comments (and findings-only v1.5 comments) keep the existing
+  // "Settled · ..." text byte-identical.
+  const verb = patchIncluded ? "Patch settled" : "Settled";
   if (s.lastDepositTxHash === null) {
-    return `<sub>Settled · channel balance ${balance}</sub>`;
+    return `<sub>${verb} · channel balance ${balance}</sub>`;
   }
   const shortHash = `${s.lastDepositTxHash.slice(0, 6)}…${s.lastDepositTxHash.slice(-4)}`;
   const basescan = `https://basescan.org/tx/${s.lastDepositTxHash}`;
-  return `<sub>Settled · tx [\`${shortHash}\`](${basescan}) · channel balance ${balance}</sub>`;
+  return `<sub>${verb} · tx [\`${shortHash}\`](${basescan}) · channel balance ${balance}</sub>`;
 }
 
-function formatFinding(f: Finding): string {
+function formatFinding(f: Finding, patch: PatchForRender | null): string {
   const ev = f.evidence[0];
   const lines: string[] = [];
   lines.push(`**${titleCase(f.category)} · ${titleCase(f.severity)}** — ${f.title}`);
@@ -64,6 +105,20 @@ function formatFinding(f: Finding): string {
   lines.push(`> ${truncate(f.reasoning, REASONING_MAX_CHARS)}`);
   lines.push("");
   lines.push(`**Fix:** ${truncate(f.recommendation, RECOMMENDATION_MAX_CHARS)}`);
+  // Patch Agent v1.5: optional suggestion subsection AFTER the fix line,
+  // delimited as <details> so the finding metadata stays scannable and the
+  // sweeper's regex on the header line is unaffected. Spec §4 names the
+  // exact shape.
+  if (patch !== null) {
+    lines.push("");
+    lines.push(`<details>`);
+    lines.push(`<summary>Proposed patch (model: ${patch.modelId})</summary>`);
+    lines.push("");
+    lines.push("```suggestion");
+    lines.push(patch.patch);
+    lines.push("```");
+    lines.push(`</details>`);
+  }
   return lines.join("\n");
 }
 
