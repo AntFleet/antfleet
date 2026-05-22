@@ -1,12 +1,19 @@
 import OpenAI from "openai";
 import { FleetError, assertDefined, messageOf } from "../errors.js";
 import type { Provider } from "../provider.js";
-import { fixPlanJsonSchema, reviewJsonSchema, revalidateJsonSchema } from "../provider.js";
+import {
+  fixPlanJsonSchema,
+  patchSuggestionJsonSchema,
+  reviewJsonSchema,
+  revalidateJsonSchema,
+} from "../provider.js";
 import {
   FixPlanOutput,
+  PatchSuggestionOutput,
   ReviewOutput,
   RevalidateOutput,
   fixPlanOutputSchema,
+  patchSuggestionOutputSchema,
   reviewOutputSchema,
   revalidateOutputSchema,
 } from "../types.js";
@@ -28,6 +35,24 @@ export const openaiProvider: Provider = {
       schema: reviewJsonSchema,
     });
     return reviewOutputSchema.parse(json);
+  },
+  /**
+   * Patch Agent v1.5 — symmetric to anthropicProvider.proposePatch.
+   * Returns a unified-diff patch or null. Caller enforces diff-hunk filter
+   * and 20-line cap.
+   */
+  async proposePatch(
+    _root: string,
+    prompt: string,
+    model: string | null,
+  ): Promise<PatchSuggestionOutput> {
+    const json = await callOpenAI({
+      prompt,
+      model: model ?? DEFAULT_MODEL,
+      schemaName: "fleet_patch_suggestion",
+      schema: patchSuggestionJsonSchema,
+    });
+    return patchSuggestionOutputSchema.parse(json);
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; no file mutation here.

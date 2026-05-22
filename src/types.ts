@@ -362,3 +362,16 @@ export const fixPlanOutputSchema = z.object({
 });
 
 export type FixPlanOutput = z.infer<typeof fixPlanOutputSchema>;
+
+// Patch Agent v1.5 — per-finding suggestion payload. Returned by each
+// provider's `proposePatch` call, one call per agreed finding. `patch` is
+// null when the model declines to propose a fix (e.g. the finding is a
+// design issue rather than a localized bug, or the fix would exceed the
+// 20-line cap). `rationale` is debug-only and never user-visible; the
+// rendered suggestion block in pr-comment.ts shows only the patch body.
+export const patchSuggestionOutputSchema = z.object({
+  patch: z.string().nullable(),
+  rationale: z.string().nullable(),
+});
+
+export type PatchSuggestionOutput = z.infer<typeof patchSuggestionOutputSchema>;
