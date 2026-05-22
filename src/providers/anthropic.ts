@@ -1,12 +1,19 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { FleetError, assertDefined } from "../errors.js";
 import type { Provider } from "../provider.js";
-import { fixPlanJsonSchema, reviewJsonSchema, revalidateJsonSchema } from "../provider.js";
+import {
+  fixPlanJsonSchema,
+  patchSuggestionJsonSchema,
+  reviewJsonSchema,
+  revalidateJsonSchema,
+} from "../provider.js";
 import {
   FixPlanOutput,
+  PatchSuggestionOutput,
   ReviewOutput,
   RevalidateOutput,
   fixPlanOutputSchema,
+  patchSuggestionOutputSchema,
   reviewOutputSchema,
   revalidateOutputSchema,
 } from "../types.js";
@@ -39,6 +46,29 @@ export const anthropicProvider: Provider = {
       toolDescription: "Submit the structured review of the feature slice.",
     });
     return reviewOutputSchema.parse(tolerateReviewShape(json));
+  },
+  /**
+   * Patch Agent v1.5 — per-finding suggested-patch call. Returns either a
+   * unified-diff patch the suggestion-block renderer can ship, or null if
+   * the model declines (no clean fix, would exceed cap, etc.). The caller
+   * is responsible for the diff-hunk filter and the 20-line size cap;
+   * this method is the raw provider call only.
+   */
+  async proposePatch(
+    _root: string,
+    prompt: string,
+    model: string | null,
+  ): Promise<PatchSuggestionOutput> {
+    const json = await callAnthropic({
+      prompt,
+      model: model ?? DEFAULT_MODEL,
+      toolName: "submit_patch_suggestion",
+      schema: patchSuggestionJsonSchema,
+      toolDescription:
+        "Submit a single-file unified-diff patch that fixes the given finding, " +
+        "or return patch=null if no clean fix fits within 20 changed lines.",
+    });
+    return patchSuggestionOutputSchema.parse(json);
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; applying patches is a separate

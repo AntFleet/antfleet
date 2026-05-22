@@ -5,6 +5,7 @@ import { runCommand } from "./exec.js";
 import { FleetError } from "./errors.js";
 import {
   FixPlanOutput,
+  PatchSuggestionOutput,
   ReviewOutput,
   RevalidateOutput,
   fixPlanOutputSchema,
@@ -27,6 +28,15 @@ export type Provider = {
   review(root: string, prompt: string, model: string | null): Promise<ReviewOutput>;
   fix(root: string, prompt: string, model: string | null): Promise<FixPlanOutput>;
   revalidate(root: string, prompt: string, model: string | null): Promise<RevalidateOutput>;
+  // Patch Agent v1.5 — optional per-finding patch call. Providers that
+  // implement this can participate in the suggested-patch lane; providers
+  // without it (mock, mock-fail, codex) silently opt out. The orchestrator
+  // checks `typeof provider.proposePatch === "function"` before invoking.
+  proposePatch?: (
+    root: string,
+    prompt: string,
+    model: string | null,
+  ) => Promise<PatchSuggestionOutput>;
 };
 
 export function providerByName(name: string): Provider {
@@ -339,5 +349,22 @@ export const fixPlanJsonSchema = {
     risk: { enum: ["low", "medium", "high"] },
     steps: { type: "array", items: { type: "string" } },
     validationCommands: { type: "array", items: { type: "string" } },
+  },
+};
+
+// Patch Agent v1.5 — strict structured-output schema for per-finding patch
+// suggestions. Used by both providers (anthropic via tool_use, openai via
+// response_format json_schema). `patch` is a unified-diff string targeting
+// a single file; the orchestrator validates that targets land inside the PR's
+// diff hunks and that the patch is within the 20-line cap before persisting.
+// `patch` is nullable so a model can decline cleanly when no clean fix exists
+// or the fix would be too large.
+export const patchSuggestionJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["patch", "rationale"],
+  properties: {
+    patch: { anyOf: [{ type: "string" }, { type: "null" }] },
+    rationale: { anyOf: [{ type: "string" }, { type: "null" }] },
   },
 };

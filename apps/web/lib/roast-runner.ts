@@ -220,10 +220,18 @@ async function reviewRepo(submission: RoastSubmission, deps: RoastRunnerDeps): P
     throw new Error("no source files found at the repo root");
   }
 
-  // ChangedFile is shaped for PR diffs (status+sha); we're sampling the
-  // default branch so status is synthetic. The reviewer prompt uses only
-  // filename + contents.
-  const fetched: Array<{ filename: string; contents: string; status: "added"; sha: string }> = [];
+  // ChangedFile is shaped for PR diffs (status+sha+patch); we're sampling the
+  // default branch so status is synthetic and there's no PR diff. The reviewer
+  // prompt uses only filename + contents. Patch is null because roasts are
+  // file-snapshot reviews, not diff reviews — the Patch Agent lane skips
+  // roast findings since they have no hunks to anchor a suggestion against.
+  const fetched: Array<{
+    filename: string;
+    contents: string;
+    status: "added";
+    sha: string;
+    patch: null;
+  }> = [];
   let totalBytes = 0;
   for (const filePath of files) {
     if (totalBytes >= MAX_TOTAL_BYTES) break;
@@ -231,7 +239,13 @@ async function reviewRepo(submission: RoastSubmission, deps: RoastRunnerDeps): P
     if (contents === null) continue;
     const trimmed =
       contents.length > MAX_BYTES_PER_FILE ? contents.slice(0, MAX_BYTES_PER_FILE) : contents;
-    fetched.push({ filename: filePath, contents: trimmed, status: "added", sha: "HEAD" });
+    fetched.push({
+      filename: filePath,
+      contents: trimmed,
+      status: "added",
+      sha: "HEAD",
+      patch: null,
+    });
     totalBytes += trimmed.length;
   }
 

@@ -95,6 +95,12 @@ export type ChangedFile = {
   contents: string;
   status: "added" | "modified" | "renamed" | "copied" | "changed";
   sha: string;
+  // Patch Agent v1.5 — unified diff for this file as GitHub returned it on
+  // listFiles. Retained on every entry (not just the oversize-fallback path)
+  // so the diff-hunk filter can decide whether a proposed patch lands
+  // inside a changed region. Null for binary files and very large files
+  // where GitHub omits `patch`.
+  patch: string | null;
 };
 
 type PRFileListItem = {
@@ -219,6 +225,7 @@ export async function fetchChangedFilesWith(
       contents,
       status: f.status as ChangedFile["status"],
       sha: f.sha ?? "",
+      patch: typeof f.patch === "string" ? f.patch : null,
     });
   }
   return out;
