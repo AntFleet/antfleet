@@ -190,6 +190,42 @@ export function formatClosureReceipt(args: ClosureReceiptInput): string {
   return lines.join("\n");
 }
 
+/**
+ * Patch Agent v1.5 — patch-acceptance receipt. Posted by the sweeper when
+ * a finding's suggested patch is detected in HEAD on the default branch.
+ * Distinct from formatClosureReceipt: that one says "the file was touched",
+ * this one says "the maintainer adopted what we proposed". Both can fire
+ * on the same finding (the suggestion was followed AND any other change
+ * also touched the file) — the receipts pin the difference.
+ */
+export type PatchAcceptanceReceiptInput = {
+  findingId: string;
+  acceptedSha: string;
+  patchModelId: string | null;
+  owner: string;
+  repo: string;
+  originalCommentUrl: string | null;
+};
+
+export function formatPatchAcceptanceReceipt(args: PatchAcceptanceReceiptInput): string {
+  const shortSha = args.acceptedSha.slice(0, 7);
+  const commitUrl = `https://github.com/${args.owner}/${args.repo}/commit/${args.acceptedSha}`;
+  const modelLabel = args.patchModelId === null ? "" : ` (model: \`${args.patchModelId}\`)`;
+  const lines: string[] = [];
+  lines.push(
+    `## AntFleet · suggested patch for \`${args.findingId}\` accepted in [\`${shortSha}\`](${commitUrl})${modelLabel}`,
+  );
+  lines.push("");
+  if (args.originalCommentUrl !== null && args.originalCommentUrl.length > 0) {
+    lines.push(
+      `<sub>Originally proposed in [the AntFleet review](${args.originalCommentUrl}). Receipt automated.</sub>`,
+    );
+  } else {
+    lines.push("<sub>Receipt automated by AntFleet.</sub>");
+  }
+  return lines.join("\n");
+}
+
 export async function postPRComment(args: {
   installationId: number;
   owner: string;

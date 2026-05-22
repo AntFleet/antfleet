@@ -5,16 +5,26 @@ import {
   pollReactions as pollReactionsImpl,
   type RawReaction,
 } from "./reactions";
-import { formatClosureReceipt, postPRComment as postPRCommentImpl } from "./pr-comment";
+import {
+  formatClosureReceipt,
+  formatPatchAcceptanceReceipt,
+  postPRComment as postPRCommentImpl,
+} from "./pr-comment";
 import { extractFindingsByIndex } from "./sweep-data";
 import {
+  loadPatchAcceptanceWork as loadPatchAcceptanceWorkImpl,
   loadSweepWork as loadSweepWorkImpl,
   markFindingClosed as markFindingClosedImpl,
+  markPatchAccepted as markPatchAcceptedImpl,
   recordMaintainerReactions as recordMaintainerReactionsImpl,
   stampFindingPolled as stampFindingPolledImpl,
+  type PatchAcceptanceCandidate,
   type SweepReviewBatch,
 } from "../db/queries";
 import type { NewMaintainerReaction } from "../db/schema";
+import { fetchFileAtRef as fetchFileAtRefImpl } from "./github-files";
+import { getInstallationOctokit as getInstallationOctokitImpl } from "./github-app";
+import { patchContentMatchesFile } from "./patch-acceptance";
 import { messageOf } from "./log";
 
 // Mission 3 slice 3-5 — the orchestrator. Composes every primitive shipped
@@ -35,7 +45,7 @@ import { messageOf } from "./log";
 const REACTION_POLL_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type SweepError = {
-  scope: "batch" | "closure" | "reaction";
+  scope: "batch" | "closure" | "reaction" | "patch_acceptance";
   reviewId: string;
   findingId: string | null;
   message: string;
@@ -46,6 +56,9 @@ export type SweepResult = {
   closed: number;
   reactionsRecorded: number;
   reviewsSkipped: number;
+  // Patch Agent v1.5 — count of suggestions detected as accepted in HEAD
+  // during this sweep tick. Additive; existing fields untouched.
+  patchesAccepted: number;
   errors: SweepError[];
 };
 
@@ -57,6 +70,16 @@ export type SweepDeps = {
   pollReactions: typeof pollReactionsImpl;
   recordMaintainerReactions: typeof recordMaintainerReactionsImpl;
   stampFindingPolled: typeof stampFindingPolledImpl;
+  // Patch Agent v1.5 — patch-acceptance pass dependencies. Separated from
+  // the closure pass deps so existing tests stay surgical.
+  loadPatchAcceptanceWork: typeof loadPatchAcceptanceWorkImpl;
+  markPatchAccepted: typeof markPatchAcceptedImpl;
+  fetchFileAtRef: typeof fetchFileAtRefImpl;
+  getDefaultBranchSha: (args: {
+    installationId: number;
+    owner: string;
+    repo: string;
+  }) => Promise<string | null>;
   now: () => Date;
 };
 
@@ -68,8 +91,35 @@ const REAL_DEPS: SweepDeps = {
   pollReactions: pollReactionsImpl,
   recordMaintainerReactions: recordMaintainerReactionsImpl,
   stampFindingPolled: stampFindingPolledImpl,
+  loadPatchAcceptanceWork: loadPatchAcceptanceWorkImpl,
+  markPatchAccepted: markPatchAcceptedImpl,
+  fetchFileAtRef: fetchFileAtRefImpl,
+  getDefaultBranchSha: realGetDefaultBranchSha,
   now: () => new Date(),
 };
+
+// Resolves the default branch SHA via the installation token. Pulled into
+// a real dep so the patch-acceptance pass can pin its file read to the
+// most recent merged commit (the SHA we'd record as patchAcceptedSha).
+async function realGetDefaultBranchSha(args: {
+  installationId: number;
+  owner: string;
+  repo: string;
+}): Promise<string | null> {
+  try {
+    const octokit = await getInstallationOctokitImpl(args.installationId);
+    const repoInfo = await octokit.rest.repos.get({ owner: args.owner, repo: args.repo });
+    const defaultBranch = repoInfo.data.default_branch;
+    const ref = await octokit.rest.git.getRef({
+      owner: args.owner,
+      repo: args.repo,
+      ref: `heads/${defaultBranch}`,
+    });
+    return ref.data.object.sha;
+  } catch {
+    return null;
+  }
+}
 
 export async function runSweep(deps: SweepDeps = REAL_DEPS): Promise<SweepResult> {
   const result: SweepResult = {
@@ -77,6 +127,7 @@ export async function runSweep(deps: SweepDeps = REAL_DEPS): Promise<SweepResult
     closed: 0,
     reactionsRecorded: 0,
     reviewsSkipped: 0,
+    patchesAccepted: 0,
     errors: [],
   };
   const batches = await deps.loadSweepWork();
@@ -121,6 +172,23 @@ export async function runSweep(deps: SweepDeps = REAL_DEPS): Promise<SweepResult
     }
 
     result.swept += batch.findings.length;
+  }
+
+  // Patch Agent v1.5 — patch-acceptance pass. Independent of the per-
+  // batch loop above because acceptance candidates are loaded by a
+  // different query (gated on patch_proposed_at, not status='open');
+  // a finding can be in BOTH the closure-pass batch (status='open')
+  // AND the patch-acceptance candidate set, and the two passes resolve
+  // it independently.
+  try {
+    await runPatchAcceptancePass(deps, result);
+  } catch (err) {
+    result.errors.push({
+      scope: "patch_acceptance",
+      reviewId: "<top-level>",
+      findingId: null,
+      message: `patch-acceptance pass: ${messageOf(err)}`,
+    });
   }
 
   return result;
@@ -252,6 +320,100 @@ async function runReactionPass(
       });
     }
   }
+}
+
+// Patch Agent v1.5 — patch-acceptance pass.
+//
+// For every finding_status row with patch_proposed_at set and
+// patch_accepted_at NULL, fetch the target file at HEAD on the default
+// branch and check whether the suggestion's new-side content is present
+// (whitespace-tolerant). Match → write patch_accepted_at + sha and post
+// a receipt comment.
+//
+// Errors are scoped to individual candidates; one broken read doesn't
+// halt the pass.
+async function runPatchAcceptancePass(deps: SweepDeps, result: SweepResult): Promise<void> {
+  const candidates = await deps.loadPatchAcceptanceWork();
+  // Cache default-branch SHA lookups by (owner, repo) — multiple findings
+  // on the same repo share the same SHA for a single tick.
+  const shaCache = new Map<string, string | null>();
+
+  for (const candidate of candidates) {
+    if (candidate.evidencePath === null) {
+      result.errors.push({
+        scope: "patch_acceptance",
+        reviewId: candidate.reviewId,
+        findingId: candidate.findingId,
+        message: "no evidence path on candidate",
+      });
+      continue;
+    }
+    try {
+      const repoKey = `${candidate.installationId}:${candidate.owner}/${candidate.repo}`;
+      let sha = shaCache.get(repoKey);
+      if (sha === undefined) {
+        sha = await deps.getDefaultBranchSha({
+          installationId: candidate.installationId,
+          owner: candidate.owner,
+          repo: candidate.repo,
+        });
+        shaCache.set(repoKey, sha);
+      }
+      if (sha === null) {
+        // Default branch lookup failed — silently skip this candidate.
+        // Next tick will retry. No row write, no error scoping.
+        continue;
+      }
+      const contents = await deps.fetchFileAtRef({
+        installationId: candidate.installationId,
+        owner: candidate.owner,
+        repo: candidate.repo,
+        path: candidate.evidencePath,
+        ref: sha,
+      });
+      if (contents === null) continue;
+      if (!patchContentMatchesFile(candidate.suggestedPatch, contents)) continue;
+      await persistPatchAcceptance(candidate, sha, deps);
+      result.patchesAccepted += 1;
+    } catch (err) {
+      result.errors.push({
+        scope: "patch_acceptance",
+        reviewId: candidate.reviewId,
+        findingId: candidate.findingId,
+        message: messageOf(err),
+      });
+    }
+  }
+}
+
+async function persistPatchAcceptance(
+  candidate: PatchAcceptanceCandidate,
+  sha: string,
+  deps: SweepDeps,
+): Promise<void> {
+  // Mark accepted first so we don't double-post a receipt if the comment
+  // POST throws and the next tick re-runs. Per spec invariant 6: idempotent
+  // re-runs of the patch path must not duplicate side effects.
+  await deps.markPatchAccepted({
+    findingId: candidate.findingId,
+    acceptedSha: sha,
+    now: deps.now(),
+  });
+  const body = formatPatchAcceptanceReceipt({
+    findingId: candidate.findingId,
+    acceptedSha: sha,
+    patchModelId: candidate.patchModelId,
+    owner: candidate.owner,
+    repo: candidate.repo,
+    originalCommentUrl: candidate.prCommentUrl,
+  });
+  await deps.postPRComment({
+    installationId: candidate.installationId,
+    owner: candidate.owner,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+    body,
+  });
 }
 
 // Re-export so route handlers can import without reaching across files.
