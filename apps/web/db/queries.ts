@@ -383,6 +383,63 @@ export async function recordFindingStatuses(
   return inserted.map((r) => r.findingId);
 }
 
+// Patch Agent v1.5 — persist the per-finding patch decision into
+// finding_status. Called once per agreed finding immediately after the
+// patch agreement gate runs (PR3) but BEFORE the PR comment is posted
+// (PR4). All fields are nullable so a flag-off run writes nothing.
+//
+// Idempotent by findingId — re-running the worker on a transient failure
+// re-applies the same write; UPDATE … WHERE finding_id = X is a no-op
+// when called twice with the same values.
+export type RecordPatchDecisionInput = {
+  findingId: string;
+  // The unified-diff text the gate selected, or null when no patch shipped.
+  suggestedPatch: string | null;
+  // Provider model id whose patch shipped (claude-opus-4-7 in v1). Null
+  // when no patch shipped.
+  patchModelId: string | null;
+  // models_disagreed / outside_diff_hunk / generation_error / disabled /
+  // size_cap. Non-null exactly when suggestedPatch is null.
+  patchSkipReason: string | null;
+  // Patch generation cost for this finding, in USD. Aggregated into
+  // reviews.costPatchUsd at the worker layer; not persisted per-finding
+  // (the column lives on reviews, not finding_status). Accepted here only
+  // so the caller can hand the gate's output back unmodified — we ignore
+  // it for the SQL write.
+  proposedAt: Date;
+};
+
+export async function recordPatchDecisions(
+  inputs: readonly RecordPatchDecisionInput[],
+): Promise<void> {
+  if (inputs.length === 0) return;
+  // Drizzle has no native batched UPDATE; run them in parallel. The
+  // cardinality is bounded by findings-per-review (low single digits
+  // in practice).
+  await Promise.all(
+    inputs.map((i) =>
+      db
+        .update(findingStatus)
+        .set({
+          suggestedPatch: i.suggestedPatch,
+          patchModelId: i.patchModelId,
+          patchSkipReason: i.patchSkipReason,
+          patchProposedAt: i.proposedAt,
+        })
+        .where(eq(findingStatus.findingId, i.findingId)),
+    ),
+  );
+}
+
+// Patch Agent v1.5 — observability-only patch cost write. costPatchUsd
+// lives on the reviews row (one number per review). Drawdown is unaffected.
+export async function setReviewPatchCost(reviewId: string, costPatchUsd: number): Promise<void> {
+  await db
+    .update(reviews)
+    .set({ costPatchUsd: costPatchUsd.toFixed(4) })
+    .where(eq(reviews.reviewId, reviewId));
+}
+
 // Mission 3 slices 2-3 — Sweeper marks a finding closed when the evidence
 // file has changed on the default branch since the review's commit_sha.
 // Slice 3 extends the helper to optionally record the closure-receipt

@@ -90,11 +90,16 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     reviewPR: vi.fn().mockResolvedValue(mkBundle()),
     postPRComment: vi.fn().mockResolvedValue({ id: 9001, htmlUrl: "https://gh/c/9001" }),
     runFirstReviewSummary: vi.fn().mockResolvedValue(undefined),
+    // Patch Agent v1.5 — default: lane disabled (returns null). Tests that
+    // exercise the patch path override this with a stub outcome.
+    runPatchAgent: vi.fn().mockResolvedValue(null),
     loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow()),
     claimReviewForProcessing: vi.fn().mockResolvedValue(true),
     updateReview: vi.fn().mockResolvedValue(undefined),
     setReviewComment: vi.fn().mockResolvedValue(undefined),
     recordFindingStatuses: vi.fn().mockResolvedValue(["rev-1-0"]),
+    recordPatchDecisions: vi.fn().mockResolvedValue(undefined),
+    setReviewPatchCost: vi.fn().mockResolvedValue(undefined),
     markReviewSucceeded: vi.fn().mockResolvedValue(undefined),
     markReviewFailedForRetry: vi.fn().mockResolvedValue(undefined),
     markReviewTerminallyFailed: vi.fn().mockResolvedValue(undefined),
@@ -240,6 +245,127 @@ describe("runReviewWorker", () => {
     expect(deps.postPRComment).not.toHaveBeenCalled();
     expect(deps.recordFindingStatuses).not.toHaveBeenCalled();
     expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  // Patch Agent v1.5 — wiring tests. The orchestrator runs between
+  // agreement gate and comment post. When it returns null (flag off),
+  // the comment shape is byte-identical to pre-sprint behavior.
+  describe("patch agent wiring", () => {
+    it("calls runPatchAgent with the agreed findings and changed files", async () => {
+      const deps = mkDeps();
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.runPatchAgent).toHaveBeenCalledTimes(1);
+      const args = (deps.runPatchAgent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(args?.reviewId).toBe("rev-1");
+      expect(args?.findings).toHaveLength(1);
+    });
+
+    it("includes the suggestion block in the comment when patches ship", async () => {
+      const deps = mkDeps({
+        runPatchAgent: vi.fn().mockResolvedValue({
+          decisions: [
+            {
+              findingId: "rev-1-0",
+              patch: "-old\n+new\n",
+              modelId: "claude-opus-4-7",
+              skipReason: null,
+            },
+          ],
+          byIndex: new Map([
+            [0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }],
+          ]),
+          elapsedMs: 1500,
+        }),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      expect(body).toContain("```suggestion");
+      expect(body).toContain("+new");
+      expect(body).toContain("Proposed patch (model: claude-opus-4-7)");
+    });
+
+    it("persists patch decisions AFTER finding_status rows exist", async () => {
+      const calls: string[] = [];
+      const deps = mkDeps({
+        recordFindingStatuses: vi.fn().mockImplementation(async () => {
+          calls.push("recordFindingStatuses");
+          return ["rev-1-0"];
+        }),
+        recordPatchDecisions: vi.fn().mockImplementation(async () => {
+          calls.push("recordPatchDecisions");
+        }),
+        runPatchAgent: vi.fn().mockResolvedValue({
+          decisions: [
+            {
+              findingId: "rev-1-0",
+              patch: "-old\n+new\n",
+              modelId: "claude-opus-4-7",
+              skipReason: null,
+            },
+          ],
+          byIndex: new Map([
+            [0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }],
+          ]),
+          elapsedMs: 1,
+        }),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(calls).toEqual(["recordFindingStatuses", "recordPatchDecisions"]);
+    });
+
+    it("does not call recordPatchDecisions when runPatchAgent returns null (flag off)", async () => {
+      const deps = mkDeps({
+        runPatchAgent: vi.fn().mockResolvedValue(null),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.recordPatchDecisions).not.toHaveBeenCalled();
+    });
+
+    it("posts findings-only when runPatchAgent throws (does not block comment)", async () => {
+      const deps = mkDeps({
+        runPatchAgent: vi.fn().mockRejectedValue(new Error("provider 500")),
+      });
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+      expect(outcome.kind).toBe("done");
+      // Comment still posted with the original findings.
+      expect(deps.postPRComment).toHaveBeenCalledTimes(1);
+      const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      expect(body).not.toContain("```suggestion");
+      expect(deps.recordPatchDecisions).not.toHaveBeenCalled();
+    });
+
+    it("logs but does not throw when recordPatchDecisions fails", async () => {
+      const deps = mkDeps({
+        recordPatchDecisions: vi.fn().mockRejectedValue(new Error("db down")),
+        runPatchAgent: vi.fn().mockResolvedValue({
+          decisions: [
+            {
+              findingId: "rev-1-0",
+              patch: "-old\n+new\n",
+              modelId: "claude-opus-4-7",
+              skipReason: null,
+            },
+          ],
+          byIndex: new Map([
+            [0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }],
+          ]),
+          elapsedMs: 1,
+        }),
+      });
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+      // The review still completes — the suggestion block was already posted
+      // on the PR; losing the DB row is a non-fatal observability gap.
+      expect(outcome.kind).toBe("done");
+      expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not invoke runPatchAgent when the review degrades (skipped before patch lane)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(mkBundle({ degraded: true, agreed: [] })),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.runPatchAgent).not.toHaveBeenCalled();
+    });
   });
 });
 

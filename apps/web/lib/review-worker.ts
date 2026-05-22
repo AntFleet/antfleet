@@ -14,6 +14,7 @@ import { getChangedFiles as realGetChangedFiles } from "./github-files";
 import { formatPRComment, postPRComment as realPostPRComment } from "./pr-comment";
 import { reviewPR as realReviewPR } from "./review-pipeline";
 import { runFirstReviewSummary as realRunFirstReviewSummary } from "./onboarder";
+import { runPatchAgent as realRunPatchAgent } from "./patch-agent";
 import { logError, logInfo, messageOf } from "./log";
 import { db } from "@/db";
 import {
@@ -27,7 +28,9 @@ import {
   markReviewSucceeded as realMarkReviewSucceeded,
   markReviewTerminallyFailed as realMarkReviewTerminallyFailed,
   recordFindingStatuses as realRecordFindingStatuses,
+  recordPatchDecisions as realRecordPatchDecisions,
   setReviewComment as realSetReviewComment,
+  setReviewPatchCost as realSetReviewPatchCost,
   updateReview as realUpdateReview,
   type ReviewProcessingStatus,
   type ReviewQueueRow,
@@ -62,11 +65,14 @@ export type WorkerDeps = {
   reviewPR: typeof realReviewPR;
   postPRComment: typeof realPostPRComment;
   runFirstReviewSummary: typeof realRunFirstReviewSummary;
+  runPatchAgent: typeof realRunPatchAgent;
   loadReviewQueueRow: typeof realLoadReviewQueueRow;
   claimReviewForProcessing: typeof realClaimReviewForProcessing;
   updateReview: typeof realUpdateReview;
   setReviewComment: typeof realSetReviewComment;
   recordFindingStatuses: typeof realRecordFindingStatuses;
+  recordPatchDecisions: typeof realRecordPatchDecisions;
+  setReviewPatchCost: typeof realSetReviewPatchCost;
   markReviewSucceeded: typeof realMarkReviewSucceeded;
   markReviewFailedForRetry: typeof realMarkReviewFailedForRetry;
   markReviewTerminallyFailed: typeof realMarkReviewTerminallyFailed;
@@ -81,11 +87,14 @@ export function realWorkerDeps(): WorkerDeps {
     reviewPR: realReviewPR,
     postPRComment: realPostPRComment,
     runFirstReviewSummary: realRunFirstReviewSummary,
+    runPatchAgent: realRunPatchAgent,
     loadReviewQueueRow: realLoadReviewQueueRow,
     claimReviewForProcessing: realClaimReviewForProcessing,
     updateReview: realUpdateReview,
     setReviewComment: realSetReviewComment,
     recordFindingStatuses: realRecordFindingStatuses,
+    recordPatchDecisions: realRecordPatchDecisions,
+    setReviewPatchCost: realSetReviewPatchCost,
     markReviewSucceeded: realMarkReviewSucceeded,
     markReviewFailedForRetry: realMarkReviewFailedForRetry,
     markReviewTerminallyFailed: realMarkReviewTerminallyFailed,
@@ -305,6 +314,33 @@ async function processClaimedRow(
 
   if (bundle.degraded || bundle.agreed.length === 0) return;
 
+  // Patch Agent v1.5 — between agreement gate and comment post. Returns
+  // null when the env flag is disabled OR when the per-install override
+  // is false (PR6); in those cases the worker proceeds findings-only.
+  // A throw here is logged but never blocks comment posting — the spec
+  // requires patch generation failure to be invisible to the caller.
+  let patchOutcome: Awaited<ReturnType<typeof realRunPatchAgent>> = null;
+  try {
+    patchOutcome = await deps.runPatchAgent({
+      reviewId,
+      findings: bundle.agreed,
+      changedFiles: files,
+    });
+  } catch (err) {
+    logError("patch_agent.threw", {
+      reviewId,
+      message: messageOf(err),
+    });
+  }
+  if (patchOutcome !== null) {
+    logInfo("patch_agent.completed", {
+      reviewId,
+      decisionCount: patchOutcome.decisions.length,
+      shippedCount: patchOutcome.byIndex.size,
+      elapsedMs: patchOutcome.elapsedMs,
+    });
+  }
+
   // Comment posting + lifecycle persistence. A failure here MUST bubble
   // so the cron retries — but we want to avoid double-posting on retry.
   // postPRComment is not idempotent (GitHub creates a new comment per
@@ -328,6 +364,9 @@ async function processClaimedRow(
     estimatedCostUsd: bundle.estimatedCostUsd,
     modelIds: bundle.modelIds,
     ...(settlement !== null ? { settlement } : {}),
+    ...(patchOutcome !== null && patchOutcome.byIndex.size > 0
+      ? { patchesByIndex: patchOutcome.byIndex }
+      : {}),
   });
   const posted = await deps.postPRComment({
     installationId: row.installationId,
@@ -341,6 +380,7 @@ async function processClaimedRow(
     commentId: posted.id,
     commentUrl: posted.htmlUrl,
     findingCount: bundle.agreed.length,
+    patchesIncluded: patchOutcome?.byIndex.size ?? 0,
   });
 
   try {
@@ -362,6 +402,28 @@ async function processClaimedRow(
       findingIds,
       commentId: posted.id,
     });
+    // Patch Agent v1.5 — persist per-finding patch decisions AFTER the
+    // finding_status rows exist (recordPatchDecisions is an UPDATE). A
+    // throw here is logged but never blocks comment success; the
+    // suggestion block is already on the PR even if the DB write fails.
+    if (patchOutcome !== null && patchOutcome.decisions.length > 0) {
+      try {
+        await deps.recordPatchDecisions(
+          patchOutcome.decisions.map((d) => ({
+            findingId: d.findingId,
+            suggestedPatch: d.patch,
+            patchModelId: d.modelId,
+            patchSkipReason: d.skipReason,
+            proposedAt: deps.now(),
+          })),
+        );
+      } catch (patchPersistErr) {
+        logError("patch_agent.persist_failed", {
+          reviewId,
+          message: messageOf(patchPersistErr),
+        });
+      }
+    }
   } catch (lifecycleErr) {
     // The comment is posted; the row is recoverable on next sweep tick.
     // Log loudly and let the worker continue — the review itself is
