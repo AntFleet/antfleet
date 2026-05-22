@@ -925,7 +925,16 @@ export type OnboarderEventType =
   | "wallet_bound"
   | "channel_funded"
   | "channel_low_balance"
-  | "drawdown_recorded";
+  | "drawdown_recorded"
+  // Patch Agent v1.5 lifecycle. Distinct from the finding event set;
+  // these track the suggested-patch lane specifically.
+  //   patch_proposed  — review-worker shipped a suggestion block on the PR
+  //   patch_accepted  — sweeper detected the suggestion in HEAD on the
+  //                     default branch
+  // Both rows are public when the underlying review has publicReceipt=true
+  // (per spec invariant 8 — no separate opt-in flag added in v1).
+  | "patch_proposed"
+  | "patch_accepted";
 
 export type ActivityWindow = {
   reviewsRun: number;

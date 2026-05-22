@@ -68,6 +68,7 @@ function mkDeps(overrides: Partial<SweepDeps> = {}): SweepDeps {
     loadPatchAcceptanceWork: vi.fn().mockResolvedValue([]),
     markPatchAccepted: vi.fn().mockResolvedValue(undefined),
     fetchFileAtRef: vi.fn().mockResolvedValue(null),
+    recordPatchAcceptedEvent: vi.fn().mockResolvedValue(undefined),
     getDefaultBranchSha: vi.fn().mockResolvedValue(null),
     now: () => NOW,
     ...overrides,
@@ -426,6 +427,23 @@ describe("runSweep", () => {
       expect(result.patchesAccepted).toBe(0);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]?.scope).toBe("patch_acceptance");
+    });
+
+    // PR7 wiring — onboarder event fires when sweeper marks accepted.
+    it("fires recordPatchAcceptedEvent after the comment posts", async () => {
+      const deps = mkDeps({
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([candidate]),
+        getDefaultBranchSha: vi.fn().mockResolvedValue("abc123"),
+        fetchFileAtRef: vi.fn().mockResolvedValue("const x = 0;\n"),
+      });
+      await runSweep(deps);
+      expect(deps.recordPatchAcceptedEvent).toHaveBeenCalledTimes(1);
+      const args = (deps.recordPatchAcceptedEvent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(args?.findingId).toBe("review-1-0");
+      expect(args?.acceptedSha).toBe("abc123");
+      expect(args?.modelId).toBe("claude-opus-4-7");
+      // The comment id from postPRComment is plumbed through.
+      expect(args?.acceptanceCommentId).toBe(7777);
     });
   });
 });

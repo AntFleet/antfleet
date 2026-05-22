@@ -242,6 +242,13 @@ export type WalletReputation = {
   totalReviews: number;
   findingsTotal: number;
   findingsClosed: number;
+  // Patch Agent v1.5 — patches proposed by the suggested-patch reviewer
+  // lane and patches accepted (detected by the sweeper at HEAD on the
+  // default branch). Aggregated across every installation bound to the
+  // wallet. Always populated (zero when the patch lane never ran on a
+  // wallet's installs).
+  patchesProposed: number;
+  patchesAccepted: number;
   totalSettledUsdc: string;
   currentBalanceUsdc: string;
   installations: Array<{
@@ -294,6 +301,8 @@ export async function loadWalletReputation(
   let totalReviews = 0;
   let findingsTotal = 0;
   let findingsClosed = 0;
+  let patchesProposed = 0;
+  let patchesAccepted = 0;
 
   if (ghIds.length > 0) {
     // reviews table uses installation_id (the GitHub install bigint), not
@@ -306,17 +315,31 @@ export async function loadWalletReputation(
     `);
     totalReviews = Number(firstRow<{ value: number | string }>(reviewStats)?.value ?? 0);
 
+    // Patch Agent v1.5 — fold the per-finding patch lifecycle into the
+    // same scan. patches_proposed gates on patch_proposed_at (set by the
+    // worker when a suggestion ships); patches_accepted gates on
+    // patch_accepted_at (set by the sweeper). Both are observability-only;
+    // the close-rate metric is unaffected.
     const findingStats = await q.execute(sql`
       SELECT
         count(*)::int AS "total",
-        count(*) FILTER (WHERE fs.status = 'closed')::int AS "closed"
+        count(*) FILTER (WHERE fs.status = 'closed')::int AS "closed",
+        count(*) FILTER (WHERE fs.patch_proposed_at IS NOT NULL)::int AS "patchesProposed",
+        count(*) FILTER (WHERE fs.patch_accepted_at IS NOT NULL)::int AS "patchesAccepted"
       FROM finding_status fs
       JOIN reviews r ON r.review_id = fs.review_id
       WHERE r.installation_id = ANY (${ghIds}::bigint[])
     `);
-    const f = firstRow<{ total: number | string; closed: number | string }>(findingStats);
+    const f = firstRow<{
+      total: number | string;
+      closed: number | string;
+      patchesProposed: number | string;
+      patchesAccepted: number | string;
+    }>(findingStats);
     findingsTotal = Number(f?.total ?? 0);
     findingsClosed = Number(f?.closed ?? 0);
+    patchesProposed = Number(f?.patchesProposed ?? 0);
+    patchesAccepted = Number(f?.patchesAccepted ?? 0);
   }
 
   const settledResult = await q.execute(sql`
@@ -339,6 +362,8 @@ export async function loadWalletReputation(
     totalReviews,
     findingsTotal,
     findingsClosed,
+    patchesProposed,
+    patchesAccepted,
     totalSettledUsdc,
     currentBalanceUsdc,
     installations,

@@ -24,6 +24,7 @@ import {
 import type { NewMaintainerReaction } from "../db/schema";
 import { fetchFileAtRef as fetchFileAtRefImpl } from "./github-files";
 import { getInstallationOctokit as getInstallationOctokitImpl } from "./github-app";
+import { recordPatchAcceptedEvent as recordPatchAcceptedEventImpl } from "./onboarder";
 import { patchContentMatchesFile } from "./patch-acceptance";
 import { messageOf } from "./log";
 
@@ -75,6 +76,7 @@ export type SweepDeps = {
   loadPatchAcceptanceWork: typeof loadPatchAcceptanceWorkImpl;
   markPatchAccepted: typeof markPatchAcceptedImpl;
   fetchFileAtRef: typeof fetchFileAtRefImpl;
+  recordPatchAcceptedEvent: typeof recordPatchAcceptedEventImpl;
   getDefaultBranchSha: (args: {
     installationId: number;
     owner: string;
@@ -94,6 +96,7 @@ const REAL_DEPS: SweepDeps = {
   loadPatchAcceptanceWork: loadPatchAcceptanceWorkImpl,
   markPatchAccepted: markPatchAcceptedImpl,
   fetchFileAtRef: fetchFileAtRefImpl,
+  recordPatchAcceptedEvent: recordPatchAcceptedEventImpl,
   getDefaultBranchSha: realGetDefaultBranchSha,
   now: () => new Date(),
 };
@@ -407,12 +410,26 @@ async function persistPatchAcceptance(
     repo: candidate.repo,
     originalCommentUrl: candidate.prCommentUrl,
   });
-  await deps.postPRComment({
+  const posted = await deps.postPRComment({
     installationId: candidate.installationId,
     owner: candidate.owner,
     repo: candidate.repo,
     prNumber: candidate.prNumber,
     body,
+  });
+  // Fire onboarder event for the acceptance. Self-gated on
+  // ONBOARDER_ENABLED inside; failure logged but never bubbles
+  // (the comment is already posted, the DB row already updated).
+  await deps.recordPatchAcceptedEvent({
+    installationId: candidate.installationId,
+    owner: candidate.owner,
+    repo: candidate.repo,
+    reviewId: candidate.reviewId,
+    findingId: candidate.findingId,
+    modelId: candidate.patchModelId,
+    acceptedSha: sha,
+    acceptanceCommentId: posted.id,
+    acceptanceCommentUrl: posted.htmlUrl,
   });
 }
 
