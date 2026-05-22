@@ -128,34 +128,62 @@ async function main() {
     console.log(`plan: createTable=${willCreateTable}  insertTracker=${willInsertTracker}`);
 
     if (apply) {
-      if (willCreateTable) {
-        // The migration SQL is structured as statement-breakpoint chunks
-        // (one CREATE TABLE + two CREATE INDEX). Split and apply each
-        // separately so a single statement failure surfaces clearly
-        // rather than nesting under one combined error.
-        const stmts = sqlContent
-          .split("--> statement-breakpoint")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
-        for (const stmt of stmts) {
-          await pool.query(stmt);
+      // All mutations run inside a single transaction so a failure
+      // midway (e.g. CREATE INDEX errors after CREATE TABLE succeeds)
+      // rolls back to a clean pre-migration state. Without this, a
+      // half-applied migration would leave the table without its
+      // indexes or the tracker out of sync with the schema — which
+      // breaks the next `pnpm db:migrate` invocation with a confusing
+      // "relation already exists" error.
+      //
+      // Postgres allows CREATE TABLE and CREATE INDEX inside an
+      // explicit BEGIN ... COMMIT; the only DDL that cannot run in a
+      // transaction is CREATE INDEX CONCURRENTLY, which we don't use
+      // here (the table starts empty so a brief lock is fine).
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        if (willCreateTable) {
+          // The migration SQL is structured as statement-breakpoint
+          // chunks (one CREATE TABLE + two CREATE INDEX). Split and
+          // apply each separately so a single statement failure
+          // surfaces clearly rather than nesting under one combined
+          // error.
+          const stmts = sqlContent
+            .split("--> statement-breakpoint")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+          for (const stmt of stmts) {
+            await client.query(stmt);
+          }
+          console.log(
+            `  CREATE TABLE review_challenges + indexes applied (${stmts.length} statement(s))`,
+          );
+        } else {
+          console.log("  skip: review_challenges already exists (idempotent)");
         }
-        console.log(
-          `  CREATE TABLE review_challenges + indexes applied (${stmts.length} statement(s))`,
-        );
-      } else {
-        console.log("  skip: review_challenges already exists (idempotent)");
+        if (willInsertTracker) {
+          await client.query(
+            "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+            [hash, entry.when],
+          );
+          console.log(`  drizzle tracker row inserted (hash=${hash.slice(0, 12)}…)`);
+        } else {
+          console.log("  skip: drizzle tracker already records this migration");
+        }
+        await client.query("COMMIT");
+        console.log("\ndone (transaction committed).");
+      } catch (err) {
+        try {
+          await client.query("ROLLBACK");
+          console.error("rolled back transaction; no schema changes were persisted.");
+        } catch (rollbackErr) {
+          console.error("ROLLBACK itself failed:", rollbackErr);
+        }
+        throw err;
+      } finally {
+        client.release();
       }
-      if (willInsertTracker) {
-        await pool.query(
-          "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
-          [hash, entry.when],
-        );
-        console.log(`  drizzle tracker row inserted (hash=${hash.slice(0, 12)}…)`);
-      } else {
-        console.log("  skip: drizzle tracker already records this migration");
-      }
-      console.log("\ndone.");
     } else {
       console.log("\ndry-run — pass --apply to mutate prod.");
     }
