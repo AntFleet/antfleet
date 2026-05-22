@@ -7,7 +7,7 @@ const FIXED_NOW = new Date("2026-05-21T12:00:00.000Z");
 const FIXED_ROW_ID = "00000000-0000-4000-8000-000000000001";
 const WALLET = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
-function deps(): CreateInstallationDeps {
+function deps(overrideCreatedAt?: Date): CreateInstallationDeps {
   return {
     async insertInstallation(args): Promise<PaywallInstallationRow> {
       return {
@@ -20,10 +20,9 @@ function deps(): CreateInstallationDeps {
         installationId: null,
         owner: null,
         repo: null,
-        createdAt: FIXED_NOW,
+        createdAt: overrideCreatedAt ?? FIXED_NOW,
       };
     },
-    now: () => FIXED_NOW,
   };
 }
 
@@ -74,5 +73,29 @@ describe("POST /api/v1/installations", () => {
     );
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["wallet_address"]).toBe(WALLET);
+  });
+
+  it("derives binding_challenge_issued_at from row.createdAt (Postgres clock), NOT from a separate JS clock", async () => {
+    // Regression: the original implementation used deps.now() for the
+    // challenge timestamp while the DB row's created_at was set by
+    // Postgres DEFAULT now(). Those two clocks diverge by milliseconds
+    // in prod, and the bind endpoint reconstructs the challenge from
+    // row.createdAt — producing a 401 signature_mismatch for every
+    // real agent. Found in prod 2026-05-22 during the first real bind.
+    //
+    // The fix: create handler uses row.createdAt for both the challenge
+    // string and the binding_challenge_issued_at field, so a later
+    // bind reconstructs the identical challenge.
+    const DB_CREATED_AT = new Date("2026-05-21T15:30:45.123Z");
+    const res = await handleCreateInstallation(
+      req({ wallet_address: WALLET }),
+      deps(DB_CREATED_AT),
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    // The challenge must contain the row's createdAt, not some other clock.
+    expect(body["binding_challenge"]).toBe(
+      `AntFleet binding: ${FIXED_ROW_ID} ${WALLET} ${DB_CREATED_AT.toISOString()}`,
+    );
+    expect(body["binding_challenge_issued_at"]).toBe(DB_CREATED_AT.toISOString());
   });
 });
