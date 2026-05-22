@@ -134,6 +134,13 @@
       "when": 1779280000000,
       "tag": "0018_paywall_channels",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1779290000000,
+      "tag": "0019_patch_agent",
+      "breakpoints": true
     }
   ]
 }
