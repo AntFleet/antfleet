@@ -9,7 +9,7 @@ import {
 } from "../provider.js";
 import {
   FixPlanOutput,
-  PatchSuggestionOutput,
+  PatchSuggestionResult,
   ReviewOutput,
   RevalidateOutput,
   fixPlanOutputSchema,
@@ -45,14 +45,15 @@ export const openaiProvider: Provider = {
     _root: string,
     prompt: string,
     model: string | null,
-  ): Promise<PatchSuggestionOutput> {
+  ): Promise<PatchSuggestionResult> {
+    const resolvedModel = model ?? DEFAULT_MODEL;
     const json = await callOpenAI({
       prompt,
-      model: model ?? DEFAULT_MODEL,
+      model: resolvedModel,
       schemaName: "fleet_patch_suggestion",
       schema: patchSuggestionJsonSchema,
     });
-    return patchSuggestionOutputSchema.parse(json);
+    return { ...patchSuggestionOutputSchema.parse(json), modelId: resolvedModel };
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; no file mutation here.

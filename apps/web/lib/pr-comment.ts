@@ -1,4 +1,5 @@
 import { getInstallationOctokit } from "./github-app";
+import { extractNewSideLines } from "./patch-acceptance";
 import type { Finding } from "./review-types";
 
 // Order matches AGENTS.md §15 framing — direct, technical. Highest-priority
@@ -63,17 +64,11 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
       `· ${Math.round(meta.totalMs / 1000)}s · ~$${meta.estimatedCostUsd.toFixed(2)}</sub>`,
   ];
   if (meta.settlement !== undefined) {
-    footerLines.push(
-      formatSettlementFooter(meta.settlement, patchesPresent(meta.patchesByIndex)),
-    );
+    const patchIncluded =
+      meta.patchesByIndex !== undefined && meta.patchesByIndex.size > 0;
+    footerLines.push(formatSettlementFooter(meta.settlement, patchIncluded));
   }
   return `${intro}\n\n---\n\n${body}\n\n—\n\n${footerLines.join("\n")}`;
-}
-
-function patchesPresent(
-  patches: ReadonlyMap<number, PatchForRender> | undefined,
-): boolean {
-  return patches !== undefined && patches.size > 0;
 }
 
 function formatSettlementFooter(
@@ -109,17 +104,40 @@ function formatFinding(f: Finding, patch: PatchForRender | null): string {
   // delimited as <details> so the finding metadata stays scannable and the
   // sweeper's regex on the header line is unaffected. Spec §4 names the
   // exact shape.
+  //
+  // GitHub's ```suggestion``` block expects the LITERAL replacement text
+  // (what the file should look like after the fix), not unified-diff
+  // syntax. We extract the new-side lines from the unified diff the model
+  // emitted before rendering. If the diff is pure-deletion (no new-side
+  // lines), we render no suggestion block — there's nothing to commit.
+  //
+  // Backtick safety: a diff body containing ``` would close the markdown
+  // fence early and corrupt the comment. We escape by switching to a
+  // ~~~ fence when the replacement text contains triple-backticks.
   if (patch !== null) {
-    lines.push("");
-    lines.push(`<details>`);
-    lines.push(`<summary>Proposed patch (model: ${patch.modelId})</summary>`);
-    lines.push("");
-    lines.push("```suggestion");
-    lines.push(patch.patch);
-    lines.push("```");
-    lines.push(`</details>`);
+    const block = renderSuggestionBlock(patch);
+    if (block !== null) {
+      lines.push("");
+      lines.push(`<details>`);
+      lines.push(`<summary>Proposed patch (model: ${patch.modelId})</summary>`);
+      lines.push("");
+      lines.push(...block);
+      lines.push(`</details>`);
+    }
   }
   return lines.join("\n");
+}
+
+function renderSuggestionBlock(patch: PatchForRender): string[] | null {
+  const newLines = extractNewSideLines(patch.patch);
+  if (newLines.length === 0) return null;
+  const replacement = newLines.join("\n");
+  // Switch to ~~~ when the replacement contains the default ``` fence
+  // so the markdown stays well-formed regardless of patch content.
+  if (replacement.includes("```")) {
+    return [`~~~suggestion`, replacement, `~~~`];
+  }
+  return ["```suggestion", replacement, "```"];
 }
 
 function formatEvidencePath(ev: Finding["evidence"][number]): string {

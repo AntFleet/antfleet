@@ -20,7 +20,7 @@ import {
   rangeFallsInsideHunk,
   type HunkRange,
 } from "./diff-hunks";
-import type { PatchSuggestionOutput } from "@antfleet/cli/types";
+import type { PatchSuggestionResult } from "@antfleet/cli/types";
 import type {
   PatchSkipReason,
   ProviderPatchProposal,
@@ -54,7 +54,7 @@ export type PatchProposingProvider = {
     root: string,
     prompt: string,
     model: string | null,
-  ) => Promise<PatchSuggestionOutput>;
+  ) => Promise<PatchSuggestionResult>;
 };
 
 export type GenerateReviewPatchesArgs = {
@@ -149,6 +149,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       providerName: args.provider.name,
       findingId: args.findingId,
       patch: null,
+      modelId: null,
       skipReason: "outside_diff_hunk",
       rationale: null,
     };
@@ -160,13 +161,14 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       providerName: args.provider.name,
       findingId: args.findingId,
       patch: null,
+      modelId: null,
       skipReason: "outside_diff_hunk",
       rationale: null,
     };
   }
 
   // Step 2: make the provider call with a hard timeout.
-  let raw: PatchSuggestionOutput;
+  let raw: PatchSuggestionResult;
   try {
     raw = await withTimeout(
       args.provider.proposePatch(".", buildPatchPrompt(args.finding), args.model),
@@ -177,6 +179,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       providerName: args.provider.name,
       findingId: args.findingId,
       patch: null,
+      modelId: null,
       skipReason: "generation_error",
       rationale: null,
     };
@@ -188,6 +191,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       providerName: args.provider.name,
       findingId: args.findingId,
       patch: null,
+      modelId: raw.modelId,
       skipReason: null,
       rationale: raw.rationale,
     };
@@ -197,6 +201,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       providerName: args.provider.name,
       findingId: args.findingId,
       patch: null,
+      modelId: raw.modelId,
       skipReason: "size_cap",
       rationale: raw.rationale,
     };
@@ -205,6 +210,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
     providerName: args.provider.name,
     findingId: args.findingId,
     patch: raw.patch,
+    modelId: raw.modelId,
     skipReason: null,
     rationale: raw.rationale,
   };

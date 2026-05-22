@@ -28,8 +28,13 @@ const mkFinding = (overrides: Partial<Finding> = {}): Finding => ({
   ...overrides,
 });
 
+// Realistic unified-diff fixture. extractNewSideLines() will pull
+// "const counter = 0;" as the suggestion's literal replacement text.
+// (The old fixture rendered `-const counter = 1;\n+const counter = 0;`
+// inside the fence — wrong, fixed by the v1.5 audit-response.)
 const PATCH: PatchForRender = {
-  patch: "-const counter = 1;\n+const counter = 0;\n",
+  patch:
+    "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,1 +1,1 @@\n-const counter = 1;\n+const counter = 0;\n",
   modelId: "claude-opus-4-7",
 };
 
@@ -85,7 +90,7 @@ describe("formatPRComment — flag-off (byte-identical regression)", () => {
 });
 
 describe("formatPRComment — flag-on rendering", () => {
-  it("emits a <details>/```suggestion``` block after the Fix line", () => {
+  it("emits a <details>/```suggestion``` block with literal replacement text (not unified-diff)", () => {
     const out = formatPRComment([mkFinding()], {
       ...META,
       patchesByIndex: new Map([[0, PATCH]]),
@@ -94,8 +99,11 @@ describe("formatPRComment — flag-on rendering", () => {
     expect(out).toContain("<details>");
     expect(out).toContain("<summary>Proposed patch (model: claude-opus-4-7)</summary>");
     expect(out).toContain("```suggestion");
-    expect(out).toContain("-const counter = 1;");
-    expect(out).toContain("+const counter = 0;");
+    // Suggestion body contains the new-side line, NOT the diff syntax.
+    // GitHub's suggestion fence expects literal replacement text.
+    expect(out).toContain("const counter = 0;");
+    expect(out).not.toContain("+const counter = 0;");
+    expect(out).not.toContain("-const counter = 1;");
     expect(out).toContain("```\n</details>");
   });
 
@@ -116,15 +124,18 @@ describe("formatPRComment — flag-on rendering", () => {
       mkFinding({ title: "F2", severity: "low" }),
     ];
     const patches = new Map<number, PatchForRender>([
-      [0, { patch: "-a\n+A\n", modelId: "claude-opus-4-7" }],
-      [1, { patch: "-b\n+B\n", modelId: "claude-opus-4-7" }],
+      [0, { patch: "@@ -1,1 +1,1 @@\n-a\n+A\n", modelId: "claude-opus-4-7" }],
+      [1, { patch: "@@ -1,1 +1,1 @@\n-b\n+B\n", modelId: "claude-opus-4-7" }],
     ]);
     const out = formatPRComment(findings, { ...META, patchesByIndex: patches });
     // Two suggestion blocks total.
     const matches = out.match(/```suggestion/gu);
     expect(matches).toHaveLength(2);
-    expect(out).toContain("+A");
-    expect(out).toContain("+B");
+    // Suggestion body contains the literal new line, not the +prefix.
+    expect(out).toContain("\nA\n");
+    expect(out).toContain("\nB\n");
+    expect(out).not.toContain("+A");
+    expect(out).not.toContain("+B");
   });
 
   it("renders a suggestion block only for the findings that HAVE a patch", () => {
@@ -134,12 +145,12 @@ describe("formatPRComment — flag-on rendering", () => {
     ];
     // Only F1 (index 0) has a patch.
     const patches = new Map<number, PatchForRender>([
-      [0, { patch: "-a\n+A\n", modelId: "claude-opus-4-7" }],
+      [0, { patch: "@@ -1,1 +1,1 @@\n-a\n+A\n", modelId: "claude-opus-4-7" }],
     ]);
     const out = formatPRComment(findings, { ...META, patchesByIndex: patches });
     const blocks = out.match(/```suggestion/gu);
     expect(blocks).toHaveLength(1);
-    expect(out).toContain("+A");
+    expect(out).toContain("\nA\n");
   });
 
   it("keys patches by ORIGINAL index, not severity-sorted index", () => {
@@ -153,17 +164,49 @@ describe("formatPRComment — flag-on rendering", () => {
       mkFinding({ title: "CRIT", severity: "critical" }),
     ];
     const patches = new Map<number, PatchForRender>([
-      [1, { patch: "patch for CRIT\n", modelId: "claude-opus-4-7" }],
+      [1, { patch: "@@ -1,1 +1,1 @@\n+CRIT_FIX_LINE\n", modelId: "claude-opus-4-7" }],
     ]);
     const out = formatPRComment(findings, { ...META, patchesByIndex: patches });
-    // Patch text must appear in the CRIT section (which renders first
-    // because critical sorts above low).
-    const critIndex = out.indexOf("CRIT");
+    const critIndex = out.indexOf("CRIT ");
     const lowIndex = out.indexOf("LOW");
-    const patchIndex = out.indexOf("patch for CRIT");
+    const patchIndex = out.indexOf("CRIT_FIX_LINE");
     expect(critIndex).toBeLessThan(lowIndex); // sorted: critical first
     expect(patchIndex).toBeGreaterThan(critIndex);
     expect(patchIndex).toBeLessThan(lowIndex); // patch attached to CRIT, not LOW
+  });
+
+  it("omits the suggestion block when the patch has no new-side lines (deletion-only)", () => {
+    const deletionOnly: PatchForRender = {
+      patch: "@@ -1,2 +1,0 @@\n-a\n-b\n",
+      modelId: "claude-opus-4-7",
+    };
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      patchesByIndex: new Map([[0, deletionOnly]]),
+    });
+    // A pure deletion can't be expressed as a ```suggestion``` block
+    // (no replacement text to insert). The fix line still renders.
+    expect(out).not.toContain("```suggestion");
+    expect(out).not.toContain("<details>");
+    expect(out).toContain("**Fix:**");
+  });
+
+  it("switches the fence to ~~~ when the replacement contains triple-backticks", () => {
+    const patchWithFence: PatchForRender = {
+      patch:
+        "@@ -1,3 +1,3 @@\n const example = `\n-old code here\n+```ts\\nnew code\\n```\n const after = `\n",
+      modelId: "claude-opus-4-7",
+    };
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      patchesByIndex: new Map([[0, patchWithFence]]),
+    });
+    // The new-side line contains ```, so the renderer must escape via ~~~.
+    expect(out).toContain("~~~suggestion");
+    expect(out).toContain("~~~\n</details>");
+    // The default ``` fence MUST NOT wrap a body that contains ``` —
+    // GitHub would close the fence early and break the comment.
+    expect(out).not.toContain("```suggestion\n```ts");
   });
 });
 

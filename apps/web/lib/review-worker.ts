@@ -423,6 +423,12 @@ async function processClaimedRow(
             proposedAt: deps.now(),
           })),
         );
+        // Persist the aggregate patch-lane cost (observability only —
+        // the drawdown column is untouched). v1 writes 0 because the
+        // provider modules don't yet surface per-call token spend; the
+        // write lands so /receipts and the wallet aggregator can fold
+        // it in once the provider layer exposes cost.
+        await deps.setReviewPatchCost(reviewId, patchOutcome.costPatchUsd);
         // Fire one onboarder event per shipped patch. Self-gated on
         // ONBOARDER_ENABLED; the call is fire-and-forget at the worker
         // level — its own catch logs without bubbling.

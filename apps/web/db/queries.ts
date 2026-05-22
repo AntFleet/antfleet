@@ -546,13 +546,43 @@ function extractEvidencePathFromAgreement(
   const first = evidence[0];
   if (typeof first !== "object" || first === null) return null;
   const p = (first as Record<string, unknown>)["path"];
-  return typeof p === "string" ? p : null;
+  return typeof p === "string" ? safeRepoRelativePath(p) : null;
 }
 
-function extractPathFromPatch(patch: string): string | null {
-  // Unified diff "+++ b/<path>" line. Fall back when no such line exists.
-  const match = /^\+\+\+ b\/(.+)$/mu.exec(patch);
-  return match?.[1] ?? null;
+// Liberalized to handle the unified-diff variants we see in practice:
+//   +++ b/path/to/file.ts   (git default)
+//   +++ a/path/to/file.ts   (some tools)
+//   +++ ./path/to/file.ts   (LLM-emitted)
+//   +++ path/to/file.ts     (no prefix)
+// The path is then validated against safeRepoRelativePath to reject
+// traversal / absolute / null-byte payloads — this fallback is LLM-
+// controlled and flows into octokit.repos.getContent.
+export function extractPathFromPatch(patch: string): string | null {
+  const match = /^\+\+\+ (?:[ab]\/|\.\/)?(.+?)\s*$/mu.exec(patch);
+  const raw = match?.[1];
+  if (raw === undefined) return null;
+  return safeRepoRelativePath(raw);
+}
+
+// Validates a path is safe to hand to GitHub's getContent API. Returns
+// the cleaned path or null if the input contains traversal, absolute-
+// path prefix, or NUL byte. Defense in depth: the install token already
+// scopes blast radius to the install's repos, but a hallucinated
+// `../../etc/passwd` in an LLM patch header should not reach the API.
+export function safeRepoRelativePath(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.includes("\0")) return null;
+  if (trimmed.startsWith("/")) return null;
+  // Reject any segment containing `..` — covers `..`, `../`, `a/../b`.
+  // Split on / and \ to catch the Windows-style spelling too.
+  for (const segment of trimmed.split(/[\\/]/u)) {
+    if (segment === ".." || segment === "..\\") return null;
+  }
+  // /dev/null is a unified-diff convention for "deleted on this side";
+  // not a real file path, reject explicitly.
+  if (trimmed === "dev/null") return null;
+  return trimmed;
 }
 
 // Mission 3 slices 2-3 — Sweeper marks a finding closed when the evidence

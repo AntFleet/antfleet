@@ -21,8 +21,6 @@
 //   - One provider proposed, the other did not → `models_disagreed`
 //   - All providers errored → `generation_error`
 
-import { ANTHROPIC_DEFAULT_MODEL } from "./anthropic.js";
-
 // Re-declared structurally so this module doesn't take a dep on the web
 // app's lib/. The orchestrator emits this shape and we consume it.
 export type PatchSkipReason =
@@ -36,14 +34,20 @@ export type ProviderPatchProposal = {
   providerName: string;
   findingId: string;
   patch: string | null;
+  // Resolved model id the provider used for this call. Threaded through
+  // from PatchSuggestionResult.modelId so the gate's PatchDecision
+  // records the truthful model rather than a captured-at-module-load
+  // constant. Null when the provider declined or errored.
+  modelId: string | null;
   skipReason: PatchSkipReason | null;
   rationale: string | null;
 };
 
 export type PatchDecision = {
   findingId: string;
-  // Non-null when the gate selected a winning patch. The winner is always
-  // the patch from the WINNING_PROVIDER (anthropic / Opus 4.7) by spec.
+  // Non-null when the gate selected a winning patch. The winner is the
+  // anthropic (Opus) proposal by spec; modelId reflects the resolved
+  // model id the provider actually used.
   patch: string | null;
   modelId: string | null;
   // Non-null exactly when patch is null.
@@ -53,7 +57,6 @@ export type PatchDecision = {
 // Deterministic winner. PR3 hard-codes anthropic; revisit when the eval
 // harness lands and we can move to a quality-based selection.
 const WINNING_PROVIDER = "anthropic";
-const WINNING_MODEL_ID = ANTHROPIC_DEFAULT_MODEL;
 
 /**
  * Decide the patch outcome for every findingId represented in `proposals`.
@@ -94,7 +97,12 @@ function decideOne(
     return {
       findingId,
       patch: anthropic.patch,
-      modelId: WINNING_MODEL_ID,
+      // Use the modelId the anthropic provider actually used for this
+      // call (e.g. "claude-opus-4-7"). Falls back to the providerName
+      // when the provider somehow returned a null modelId — that's a
+      // bug in the provider, not the gate, but we still emit a non-
+      // null value so the receipt comment doesn't say "(model: null)".
+      modelId: anthropic.modelId ?? WINNING_PROVIDER,
       skipReason: null,
     };
   }
@@ -142,6 +150,10 @@ function pickReason(group: readonly ProviderPatchProposal[]): PatchSkipReason | 
     const [only] = [...reasons];
     return only ?? "models_disagreed";
   }
+  // Priority: most-informative-first. `disabled` is in the union for the
+  // worker-layer fallthrough (env flag off) but the orchestrator never
+  // emits it from `proposePatch` calls — the four real reasons below
+  // are what we see here. Kept in the priority chain for completeness.
   if (reasons.has("generation_error")) return "generation_error";
   if (reasons.has("size_cap")) return "size_cap";
   if (reasons.has("outside_diff_hunk")) return "outside_diff_hunk";

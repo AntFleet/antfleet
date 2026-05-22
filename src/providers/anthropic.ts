@@ -9,7 +9,7 @@ import {
 } from "../provider.js";
 import {
   FixPlanOutput,
-  PatchSuggestionOutput,
+  PatchSuggestionResult,
   ReviewOutput,
   RevalidateOutput,
   fixPlanOutputSchema,
@@ -58,17 +58,18 @@ export const anthropicProvider: Provider = {
     _root: string,
     prompt: string,
     model: string | null,
-  ): Promise<PatchSuggestionOutput> {
+  ): Promise<PatchSuggestionResult> {
+    const resolvedModel = model ?? DEFAULT_MODEL;
     const json = await callAnthropic({
       prompt,
-      model: model ?? DEFAULT_MODEL,
+      model: resolvedModel,
       toolName: "submit_patch_suggestion",
       schema: patchSuggestionJsonSchema,
       toolDescription:
         "Submit a single-file unified-diff patch that fixes the given finding, " +
         "or return patch=null if no clean fix fits within 20 changed lines.",
     });
-    return patchSuggestionOutputSchema.parse(json);
+    return { ...patchSuggestionOutputSchema.parse(json), modelId: resolvedModel };
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; applying patches is a separate

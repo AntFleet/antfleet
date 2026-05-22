@@ -375,3 +375,12 @@ export const patchSuggestionOutputSchema = z.object({
 });
 
 export type PatchSuggestionOutput = z.infer<typeof patchSuggestionOutputSchema>;
+
+// Provider-returned per-call payload that carries the resolved model id
+// alongside the schema-validated content. The provider modules know the
+// actual model used (default fallback when caller passes model: null);
+// downstream callers shouldn't have to re-derive it. Used by the
+// orchestrator + agreement gate to record the truthful patchModelId.
+export type PatchSuggestionResult = PatchSuggestionOutput & {
+  modelId: string;
+};

@@ -141,6 +141,13 @@
       "when": 1779290000000,
       "tag": "0019_patch_agent",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1779300000000,
+      "tag": "0020_patch_skip_reason_check",
+      "breakpoints": true
     }
   ]
 }

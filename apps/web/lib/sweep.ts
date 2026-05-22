@@ -394,14 +394,6 @@ async function persistPatchAcceptance(
   sha: string,
   deps: SweepDeps,
 ): Promise<void> {
-  // Mark accepted first so we don't double-post a receipt if the comment
-  // POST throws and the next tick re-runs. Per spec invariant 6: idempotent
-  // re-runs of the patch path must not duplicate side effects.
-  await deps.markPatchAccepted({
-    findingId: candidate.findingId,
-    acceptedSha: sha,
-    now: deps.now(),
-  });
   const body = formatPatchAcceptanceReceipt({
     findingId: candidate.findingId,
     acceptedSha: sha,
@@ -410,6 +402,15 @@ async function persistPatchAcceptance(
     repo: candidate.repo,
     originalCommentUrl: candidate.prCommentUrl,
   });
+  // Audit-response (PR8): post the receipt BEFORE marking accepted.
+  // Reversing the prior order trades "rare duplicate comment on retry"
+  // for the much worse "row marked accepted with no receipt + no retry
+  // path" — the loader filters on patch_accepted_at IS NULL, so a
+  // pre-mark with a post failure would silently drop the receipt.
+  // Duplicate-comment risk is bounded: the loader only picks rows
+  // where patch_accepted_at IS NULL, so a re-run after a successful
+  // post but before the mark would re-post once. That's acceptable;
+  // the missing-receipt scenario is not.
   const posted = await deps.postPRComment({
     installationId: candidate.installationId,
     owner: candidate.owner,
@@ -417,10 +418,16 @@ async function persistPatchAcceptance(
     prNumber: candidate.prNumber,
     body,
   });
-  // Fire onboarder event for the acceptance. Self-gated on
-  // ONBOARDER_ENABLED inside; failure logged but never bubbles
-  // (the comment is already posted, the DB row already updated).
-  await deps.recordPatchAcceptedEvent({
+  await deps.markPatchAccepted({
+    findingId: candidate.findingId,
+    acceptedSha: sha,
+    now: deps.now(),
+  });
+  // Fire-and-forget onboarder event. Self-gated on ONBOARDER_ENABLED
+  // inside; recordPatchAcceptedEvent self-catches and never throws, so
+  // we don't await (the comment is already posted and the DB row
+  // already updated — losing the event log is observability-only).
+  void deps.recordPatchAcceptedEvent({
     installationId: candidate.installationId,
     owner: candidate.owner,
     repo: candidate.repo,

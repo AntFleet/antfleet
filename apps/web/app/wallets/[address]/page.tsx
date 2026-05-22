@@ -57,7 +57,7 @@ function WalletPage({ reputation }: { reputation: WalletReputation }) {
         Aggregated across every AntFleet installation bound to this wallet.
       </p>
 
-      <section className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <section className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <Stat label="Reviews" value={String(reputation.totalReviews)} />
         <Stat
           label="Findings closed"
@@ -76,8 +76,6 @@ function WalletPage({ reputation }: { reputation: WalletReputation }) {
           }
         />
         <Stat label="USDC settled" value={`${formatUsdc(reputation.totalSettledUsdc)} USDC`} />
-      </section>
-      <section className="mt-4">
         <Stat label="Current balance" value={`${formatUsdc(reputation.currentBalanceUsdc)} USDC`} />
       </section>
 
