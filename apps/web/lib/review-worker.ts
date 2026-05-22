@@ -18,6 +18,8 @@ import {
   runFirstReviewSummary as realRunFirstReviewSummary,
 } from "./onboarder";
 import { runPatchAgent as realRunPatchAgent } from "./patch-agent";
+import { isPatchAgentClickApplyEnabledForInstall as realIsPatchAgentClickApplyEnabledForInstall } from "./patch-agent-env";
+import { postPatchReviewComment as realPostPatchReviewComment } from "./patch-review-comment";
 import { logError, logInfo, messageOf } from "./log";
 import { db } from "@/db";
 import {
@@ -27,11 +29,13 @@ import {
 import {
   claimReviewForProcessing as realClaimReviewForProcessing,
   loadReviewQueueRow as realLoadReviewQueueRow,
+  makeFindingId,
   markReviewFailedForRetry as realMarkReviewFailedForRetry,
   markReviewSucceeded as realMarkReviewSucceeded,
   markReviewTerminallyFailed as realMarkReviewTerminallyFailed,
   recordFindingStatuses as realRecordFindingStatuses,
   recordPatchDecisions as realRecordPatchDecisions,
+  recordPatchReviewComment as realRecordPatchReviewComment,
   setReviewComment as realSetReviewComment,
   setReviewPatchCost as realSetReviewPatchCost,
   updateReview as realUpdateReview,
@@ -75,6 +79,9 @@ export type WorkerDeps = {
   runFirstReviewSummary: typeof realRunFirstReviewSummary;
   recordPatchProposedEvent: typeof realRecordPatchProposedEvent;
   runPatchAgent: typeof realRunPatchAgent;
+  isPatchAgentClickApplyEnabledForInstall: typeof realIsPatchAgentClickApplyEnabledForInstall;
+  postPatchReviewComment: typeof realPostPatchReviewComment;
+  recordPatchReviewComment: typeof realRecordPatchReviewComment;
   loadReviewQueueRow: typeof realLoadReviewQueueRow;
   claimReviewForProcessing: typeof realClaimReviewForProcessing;
   updateReview: typeof realUpdateReview;
@@ -98,6 +105,9 @@ export function realWorkerDeps(): WorkerDeps {
     runFirstReviewSummary: realRunFirstReviewSummary,
     recordPatchProposedEvent: realRecordPatchProposedEvent,
     runPatchAgent: realRunPatchAgent,
+    isPatchAgentClickApplyEnabledForInstall: realIsPatchAgentClickApplyEnabledForInstall,
+    postPatchReviewComment: realPostPatchReviewComment,
+    recordPatchReviewComment: realRecordPatchReviewComment,
     loadReviewQueueRow: realLoadReviewQueueRow,
     claimReviewForProcessing: realClaimReviewForProcessing,
     updateReview: realUpdateReview,
@@ -353,6 +363,26 @@ async function processClaimedRow(
     });
   }
 
+  // Patch Agent v1.6 — click-apply lane gate. Resolved ONCE up here so
+  // both the issue-comment shape (formatPRComment receives clickApplyEnabled)
+  // AND the review-comment post loop (below recordPatchDecisions) see the
+  // same answer. Resolved to false on any lookup failure — conservative
+  // default keeps v1.5 behavior on the rare DB hiccup.
+  let clickApplyEnabled = false;
+  if (patchOutcome !== null && patchOutcome.byIndex.size > 0) {
+    try {
+      clickApplyEnabled = await deps.isPatchAgentClickApplyEnabledForInstall(
+        row.installationId,
+        row.repo,
+      );
+    } catch (err) {
+      logError("patch_review_comment.gate_lookup_failed", {
+        reviewId,
+        message: messageOf(err),
+      });
+    }
+  }
+
   // Comment posting + lifecycle persistence. A failure here MUST bubble
   // so the cron retries — but we want to avoid double-posting on retry.
   // postPRComment is not idempotent (GitHub creates a new comment per
@@ -379,6 +409,7 @@ async function processClaimedRow(
     ...(patchOutcome !== null && patchOutcome.byIndex.size > 0
       ? { patchesByIndex: patchOutcome.byIndex }
       : {}),
+    clickApplyEnabled,
   });
   const posted = await deps.postPRComment({
     installationId: row.installationId,
@@ -433,13 +464,87 @@ async function processClaimedRow(
         // the drawdown column is untouched). v1 writes 0 because the
         // provider modules don't yet surface per-call token spend; the
         // write lands so /receipts and the wallet aggregator can fold
-        // it in once the provider layer exposes cost.
+        // it in once the provider layer exposes cost. Drawdown invariant
+        // 3: this is the ONLY cost write in the click-apply path; no new
+        // payments / drawdown rows touched by v1.6.
         await deps.setReviewPatchCost(reviewId, patchOutcome.costPatchUsd);
+
+        // Patch Agent v1.6 — click-apply lane runs BEFORE the patch_proposed
+        // events fire so the events can carry the review_comment_id/url for
+        // the v2.0 conversion metric. Each post + persist is independent;
+        // a failure on one finding does not block the others, and a failure
+        // of this whole block does not block the v1.5 issue comment (already
+        // posted above) or the v1.5 patch_proposed events (which follow).
+        // Forward-only: rows that already have patch_review_comment_id set
+        // are skipped via the UPDATE predicate inside recordPatchReviewComment.
+        //
+        // Failure mode the audit asked us to document (≈ v1.5 §11.3): if
+        // postPatchReviewComment succeeds but recordPatchReviewComment
+        // throws, we leak one orphan GitHub review comment. The DB row
+        // stays NULL so a worker retry on this review row would re-post;
+        // but a new push creates a new review row, so the orphan does not
+        // accumulate beyond one comment per failure. Acceptable per
+        // non-break invariant 2; the issue comment is the contract path.
+        const reviewCommentByFindingId = new Map<string, { id: number; url: string }>();
+        if (clickApplyEnabled) {
+          for (const [findingIndex, patch] of patchOutcome.byIndex.entries()) {
+            const finding = bundle.agreed[findingIndex];
+            if (finding === undefined) continue;
+            const ev = finding.evidence[0];
+            if (ev === undefined || ev.startLine === null) continue;
+            // Operator decision Q2 LOCKED: multi-line evidence falls back
+            // to the v1.5 issue-comment <details> path (more brittle than
+            // useful via GitHub's start_line review comments).
+            const isSingleLine = ev.endLine === null || ev.endLine === ev.startLine;
+            if (!isSingleLine) continue;
+            const findingId = makeFindingId(reviewId, findingIndex);
+            try {
+              const reviewCommentPost = await deps.postPatchReviewComment({
+                installationId: row.installationId,
+                owner: row.owner,
+                repo: row.repo,
+                pullNumber: row.prNumber,
+                commitId: row.commitSha,
+                path: ev.path,
+                line: ev.startLine,
+                patch,
+                bodyPrefix: `**${finding.title}** · proposed patch (model: \`${patch.modelId}\`)`,
+              });
+              if (reviewCommentPost === null) continue;
+              await deps.recordPatchReviewComment({
+                findingId,
+                reviewCommentId: reviewCommentPost.id,
+                reviewCommentUrl: reviewCommentPost.url,
+                proposedAt: deps.now(),
+              });
+              reviewCommentByFindingId.set(findingId, {
+                id: reviewCommentPost.id,
+                url: reviewCommentPost.url,
+              });
+              logInfo("patch_review_comment.posted", {
+                reviewId,
+                findingId,
+                commentId: reviewCommentPost.id,
+                commentUrl: reviewCommentPost.url,
+              });
+            } catch (reviewCommentErr) {
+              logError("patch_review_comment.post_or_persist_failed", {
+                reviewId,
+                findingId,
+                message: messageOf(reviewCommentErr),
+              });
+            }
+          }
+        }
+
         // Fire one onboarder event per shipped patch. Self-gated on
         // ONBOARDER_ENABLED; the call is fire-and-forget at the worker
-        // level — its own catch logs without bubbling.
+        // level — its own catch logs without bubbling. v1.6 plumbs the
+        // review-comment id/url into tool_output when click-apply succeeded
+        // for that finding (else null, matching pre-v1.6 shape).
         for (const d of patchOutcome.decisions) {
           if (d.patch === null || d.modelId === null) continue;
+          const linkedComment = reviewCommentByFindingId.get(d.findingId);
           await deps.recordPatchProposedEvent({
             installationId: row.installationId,
             owner: row.owner,
@@ -448,6 +553,8 @@ async function processClaimedRow(
             findingId: d.findingId,
             modelId: d.modelId,
             suggestedPatch: d.patch,
+            reviewCommentId: linkedComment?.id ?? null,
+            reviewCommentUrl: linkedComment?.url ?? null,
           });
         }
       } catch (patchPersistErr) {

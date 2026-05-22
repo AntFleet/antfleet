@@ -95,3 +95,38 @@ export function patchContentMatchesFile(patch: string, fileContents: string): bo
   }
   return false;
 }
+
+/**
+ * Patch Agent v1.6 — anchor-bound variant of patchContentMatchesFile.
+ *
+ * Requires the new-side content to appear at the exact anchor line
+ * (1-based) the suggestion was posted on. Used by the click-apply
+ * detection pass so an unrelated commit that incidentally adds matching
+ * content elsewhere in the file cannot trigger a false-positive
+ * `patch_apply_clicked` attribution. v1.5's whole-file scan stays for
+ * the broader "the suggestion eventually shipped" signal; this is the
+ * narrower "the button was used at THIS line" signal.
+ *
+ * Returns true iff the normalized new-side lines exactly match the
+ * file's lines starting at (anchorLine - 1).
+ */
+export function patchContentMatchesFileAtLine(
+  patch: string,
+  fileContents: string,
+  anchorLine: number,
+): boolean {
+  if (anchorLine < 1) return false;
+  const newLines = extractNewSideLines(patch).map(normalizeForCompare);
+  if (newLines.length === 0) return false;
+  if (newLines.length > MATCH_NEW_LINE_HARD_CAP) return false;
+  const filtered = newLines.filter((l) => l.length > 0);
+  if (filtered.length === 0) return false;
+
+  const fileLines = fileContents.split("\n").map(normalizeForCompare);
+  const startIdx = anchorLine - 1;
+  if (startIdx + filtered.length > fileLines.length) return false;
+  for (let j = 0; j < filtered.length; j++) {
+    if (fileLines[startIdx + j] !== filtered[j]) return false;
+  }
+  return true;
+}

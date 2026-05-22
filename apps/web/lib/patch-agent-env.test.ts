@@ -2,9 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Mutable mock state. vi.hoisted keeps the closure visible to the
 // vi.mock factory (which is hoisted to the top of the file) and to the
-// test bodies below.
+// test bodies below. The select() builder is column-agnostic — both
+// v1.5 (patchAgentEnabled) and v1.6 (patchAgentClickApplyEnabled) tests
+// push their respective shape into selectResult and the function under
+// test reads the field it cares about.
 const dbMockState = vi.hoisted(() => ({
-  selectResult: [] as Array<{ patchAgentEnabled: boolean | null }>,
+  selectResult: [] as Array<{
+    patchAgentEnabled?: boolean | null;
+    patchAgentClickApplyEnabled?: boolean | null;
+  }>,
   throwOnRead: false,
 }));
 
@@ -26,7 +32,12 @@ vi.mock("@/db", () => {
   };
 });
 
-import { isPatchAgentEnabled, isPatchAgentEnabledForInstall } from "./patch-agent-env";
+import {
+  isPatchAgentEnabled,
+  isPatchAgentEnabledForInstall,
+  isPatchAgentClickApplyEnabled,
+  isPatchAgentClickApplyEnabledForInstall,
+} from "./patch-agent-env";
 
 describe("isPatchAgentEnabled", () => {
   let original: string | undefined;
@@ -138,5 +149,106 @@ describe("isPatchAgentEnabledForInstall — per-install override precedence", ()
     // query includes the repo filter, only the canary row is returned.
     dbMockState.selectResult = [{ patchAgentEnabled: true }];
     await expect(isPatchAgentEnabledForInstall(133030324, "aeon-bench")).resolves.toBe(true);
+  });
+});
+
+describe("isPatchAgentClickApplyEnabled", () => {
+  let original: string | undefined;
+
+  beforeEach(() => {
+    original = process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"];
+  });
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"];
+    } else {
+      process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = original;
+    }
+  });
+
+  it("returns false when unset", () => {
+    delete process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"];
+    expect(isPatchAgentClickApplyEnabled()).toBe(false);
+  });
+
+  it("returns true for 'true' / '1' / case-insensitive", () => {
+    for (const v of ["true", "1", "TRUE", "  true\n"]) {
+      process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = v;
+      expect(isPatchAgentClickApplyEnabled()).toBe(true);
+    }
+  });
+
+  it("returns false for everything else", () => {
+    for (const v of ["false", "no", "", "0", "yes"]) {
+      process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = v;
+      expect(isPatchAgentClickApplyEnabled()).toBe(false);
+    }
+  });
+});
+
+describe("isPatchAgentClickApplyEnabledForInstall — per-install override precedence", () => {
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    originalEnv = process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"];
+    dbMockState.selectResult = [];
+    dbMockState.throwOnRead = false;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"];
+    } else {
+      process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = originalEnv;
+    }
+  });
+
+  it("override=true wins over env=false (aeon-bench canary)", async () => {
+    process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "false";
+    dbMockState.selectResult = [{ patchAgentClickApplyEnabled: true }];
+    await expect(
+      isPatchAgentClickApplyEnabledForInstall(133030324, "aeon-bench"),
+    ).resolves.toBe(true);
+  });
+
+  it("override=false wins over env=true (kill switch on one install)", async () => {
+    process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
+    dbMockState.selectResult = [{ patchAgentClickApplyEnabled: false }];
+    await expect(
+      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
+    ).resolves.toBe(false);
+  });
+
+  it("override=null falls through to env=true", async () => {
+    process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
+    dbMockState.selectResult = [{ patchAgentClickApplyEnabled: null }];
+    await expect(
+      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
+    ).resolves.toBe(true);
+  });
+
+  it("override=null falls through to env=false", async () => {
+    process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "false";
+    dbMockState.selectResult = [{ patchAgentClickApplyEnabled: null }];
+    await expect(
+      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
+    ).resolves.toBe(false);
+  });
+
+  it("DB read failure → conservative fallback to env-only", async () => {
+    process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
+    dbMockState.throwOnRead = true;
+    await expect(
+      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
+    ).resolves.toBe(true);
+  });
+
+  it("missing install row → null override → env wins", async () => {
+    process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
+    dbMockState.selectResult = [];
+    await expect(
+      isPatchAgentClickApplyEnabledForInstall(99999, "missing-repo"),
+    ).resolves.toBe(true);
   });
 });

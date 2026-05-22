@@ -292,6 +292,10 @@ export type WalletReputation = {
   // wallet's installs).
   patchesProposed: number;
   patchesAccepted: number;
+  // Patch Agent v1.6 — subset of patchesAccepted where the maintainer
+  // clicked GitHub's "Commit suggestion" button (sweeper's apply-detection
+  // pass observed the commit_id advance + content match). Always ≤ patchesAccepted.
+  patchClickApplies: number;
   totalSettledUsdc: string;
   currentBalanceUsdc: string;
   installations: Array<{
@@ -351,6 +355,7 @@ export async function loadWalletReputation(
   let findingsClosed = 0;
   let patchesProposed = 0;
   let patchesAccepted = 0;
+  let patchClickApplies = 0;
 
   if (ghIds.length > 0) {
     // reviews table uses installation_id (the GitHub install bigint), not
@@ -373,7 +378,8 @@ export async function loadWalletReputation(
         count(*)::int AS "total",
         count(*) FILTER (WHERE fs.status = 'closed')::int AS "closed",
         count(*) FILTER (WHERE fs.patch_proposed_at IS NOT NULL)::int AS "patchesProposed",
-        count(*) FILTER (WHERE fs.patch_accepted_at IS NOT NULL)::int AS "patchesAccepted"
+        count(*) FILTER (WHERE fs.patch_accepted_at IS NOT NULL)::int AS "patchesAccepted",
+        count(*) FILTER (WHERE fs.patch_apply_clicked_at IS NOT NULL)::int AS "patchClickApplies"
       FROM finding_status fs
       JOIN reviews r ON r.review_id = fs.review_id
       WHERE r.installation_id = ANY (${ghIds}::bigint[])
@@ -383,11 +389,13 @@ export async function loadWalletReputation(
       closed: number | string;
       patchesProposed: number | string;
       patchesAccepted: number | string;
+      patchClickApplies: number | string;
     }>(findingStats);
     findingsTotal = Number(f?.total ?? 0);
     findingsClosed = Number(f?.closed ?? 0);
     patchesProposed = Number(f?.patchesProposed ?? 0);
     patchesAccepted = Number(f?.patchesAccepted ?? 0);
+    patchClickApplies = Number(f?.patchClickApplies ?? 0);
   }
 
   const settledResult = await q.execute(sql`
@@ -412,6 +420,7 @@ export async function loadWalletReputation(
     findingsClosed,
     patchesProposed,
     patchesAccepted,
+    patchClickApplies,
     totalSettledUsdc,
     currentBalanceUsdc,
     installations,
