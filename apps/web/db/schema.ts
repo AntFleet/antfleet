@@ -32,6 +32,11 @@ export const reviews = pgTable(
     agreementDecision: jsonb("agreement_decision").notNull(),
     timingMs: integer("timing_ms").notNull(),
     costEstimatedUsd: numeric("cost_estimated_usd", { precision: 10, scale: 4 }).notNull(),
+    // Patch Agent v1.5 — patch generation cost tracked separately from the
+    // review's reviewer-fleet cost. Drawdown stays at REVIEW_PRICE_USDC; this
+    // column is observability-only for future re-pricing analysis. Nullable
+    // because pre-Patch-Agent reviews and flag-off reviews never set it.
+    costPatchUsd: numeric("cost_patch_usd", { precision: 10, scale: 4 }),
     schemaVersion: integer("schema_version").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     // Set by setReviewComment() after slice 4c posts the markdown comment on
@@ -127,6 +132,21 @@ export const findingStatus = pgTable("finding_status", {
   closureDetectedAt: timestamp("closure_detected_at", { withTimezone: true }),
   lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // Patch Agent v1.5 — suggested-patch lifecycle. All fields nullable so the
+  // flag-off path produces byte-identical rows to pre-sprint behavior.
+  // suggestedPatch holds the unified-diff text that was rendered inside the
+  // ```suggestion block; capped at 20 lines pre-persist. patchModelId names
+  // the provider whose patch shipped (always Opus in v1 — patch-gate.ts
+  // hard-codes the deterministic winner). patchSkipReason explains why no
+  // patch shipped: one of models_disagreed | outside_diff_hunk |
+  // generation_error | disabled | size_cap. patchAcceptedAt + Sha land
+  // when the sweeper's patch-acceptance pass detects the suggestion in HEAD.
+  suggestedPatch: text("suggested_patch"),
+  patchProposedAt: timestamp("patch_proposed_at", { withTimezone: true }),
+  patchModelId: text("patch_model_id"),
+  patchAcceptedAt: timestamp("patch_accepted_at", { withTimezone: true }),
+  patchAcceptedSha: text("patch_accepted_sha"),
+  patchSkipReason: text("patch_skip_reason"),
 });
 
 export const maintainerReactions = pgTable(
@@ -370,6 +390,11 @@ export const installations = pgTable(
     // getting reviews without paying. Backfilled true for every row whose
     // status was 'approved' at the migration boundary.
     legacyPartner: boolean("legacy_partner").notNull().default(false),
+    // Patch Agent v1.5 — per-install override for the PATCH_AGENT_ENABLED
+    // env flag. NULL = inherit env default (false in prod, true in dev).
+    // Non-null = force-on/off for this install regardless of env. Used to
+    // canary one test install before flipping the env-wide default.
+    patchAgentEnabled: boolean("patch_agent_enabled"),
   },
   (t) => [
     unique("installations_install_repo_uniq").on(t.installationId, t.repo),
