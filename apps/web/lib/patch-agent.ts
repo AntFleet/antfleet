@@ -16,15 +16,9 @@
 
 import { anthropicProvider } from "@antfleet/cli/providers/anthropic";
 import { openaiProvider } from "@antfleet/cli/providers/openai";
-import {
-  decidePatchOutcomes,
-  type PatchDecision,
-} from "@antfleet/cli/providers/patch-gate";
+import { decidePatchOutcomes, type PatchDecision } from "@antfleet/cli/providers/patch-gate";
 import { makeFindingId } from "@/db/queries";
-import {
-  generateReviewPatches,
-  type PatchProposingProvider,
-} from "./patch-generation";
+import { generateReviewPatches, type PatchProposingProvider } from "./patch-generation";
 import { isPatchAgentEnabledForInstall } from "./patch-agent-env";
 import type { PatchForRender } from "./pr-comment";
 import type { ChangedFile } from "./github-files";
@@ -90,9 +84,7 @@ export type RunPatchAgentArgs = {
  * Enablement resolution: per-install override (installations.patchAgentEnabled)
  * takes precedence over the env flag. PR6 added the override path.
  */
-export async function runPatchAgent(
-  args: RunPatchAgentArgs,
-): Promise<PatchAgentOutcome | null> {
+export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgentOutcome | null> {
   const enabled = args.enabled
     ? await args.enabled()
     : await isPatchAgentEnabledForInstall(args.installationId, args.repo);

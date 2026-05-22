@@ -119,10 +119,7 @@ describe("formatPRComment — flag-on rendering", () => {
   });
 
   it("renders one suggestion block per finding when multiple patches present", () => {
-    const findings = [
-      mkFinding({ title: "F1" }),
-      mkFinding({ title: "F2", severity: "low" }),
-    ];
+    const findings = [mkFinding({ title: "F1" }), mkFinding({ title: "F2", severity: "low" })];
     const patches = new Map<number, PatchForRender>([
       [0, { patch: "@@ -1,1 +1,1 @@\n-a\n+A\n", modelId: "claude-opus-4-7" }],
       [1, { patch: "@@ -1,1 +1,1 @@\n-b\n+B\n", modelId: "claude-opus-4-7" }],
@@ -139,10 +136,7 @@ describe("formatPRComment — flag-on rendering", () => {
   });
 
   it("renders a suggestion block only for the findings that HAVE a patch", () => {
-    const findings = [
-      mkFinding({ title: "F1" }),
-      mkFinding({ title: "F2", severity: "low" }),
-    ];
+    const findings = [mkFinding({ title: "F1" }), mkFinding({ title: "F2", severity: "low" })];
     // Only F1 (index 0) has a patch.
     const patches = new Map<number, PatchForRender>([
       [0, { patch: "@@ -1,1 +1,1 @@\n-a\n+A\n", modelId: "claude-opus-4-7" }],

@@ -11,8 +11,7 @@ import { openaiProvider } from "./openai.js";
 describe("patchSuggestionOutputSchema", () => {
   it("accepts a well-formed unified-diff patch", () => {
     const parsed = patchSuggestionOutputSchema.parse({
-      patch:
-        "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,1 +1,1 @@\n-const x = 1;\n+const x = 2;\n",
+      patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,1 +1,1 @@\n-const x = 1;\n+const x = 2;\n",
       rationale: "Off-by-one on the counter init.",
     });
     expect(parsed.patch).toContain("@@ -1,1 +1,1 @@");

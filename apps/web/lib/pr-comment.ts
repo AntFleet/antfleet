@@ -64,8 +64,7 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
       `· ${Math.round(meta.totalMs / 1000)}s · ~$${meta.estimatedCostUsd.toFixed(2)}</sub>`,
   ];
   if (meta.settlement !== undefined) {
-    const patchIncluded =
-      meta.patchesByIndex !== undefined && meta.patchesByIndex.size > 0;
+    const patchIncluded = meta.patchesByIndex !== undefined && meta.patchesByIndex.size > 0;
     footerLines.push(formatSettlementFooter(meta.settlement, patchIncluded));
   }
   return `${intro}\n\n---\n\n${body}\n\n—\n\n${footerLines.join("\n")}`;

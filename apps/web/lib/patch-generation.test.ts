@@ -19,9 +19,7 @@ const stubFinding = (overrides: Partial<Finding> = {}): Finding => ({
   category: "bug",
   severity: "high",
   confidence: "high",
-  evidence: [
-    { path: "src/foo.ts", startLine: 10, endLine: 12, symbol: "counter", quote: null },
-  ],
+  evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 12, symbol: "counter", quote: null }],
   reasoning: "Stub.",
   reproduction: "Stub.",
   recommendation: "Stub.",
@@ -47,9 +45,10 @@ const buildProvider = (
   name,
   async proposePatch(_root, prompt) {
     // Read the finding title back from the prompt so the impl can route on it.
-    const titleMatch = /flagged a (?:bug|security|performance|concurrency|api-contract|data-loss|test-gap|docs-gap|build-release|maintainability)[^]*?titled:\s*\n\s+(.+)/u.exec(
-      prompt,
-    );
+    const titleMatch =
+      /flagged a (?:bug|security|performance|concurrency|api-contract|data-loss|test-gap|docs-gap|build-release|maintainability)[^]*?titled:\s*\n\s+(.+)/u.exec(
+        prompt,
+      );
     const title = titleMatch?.[1] ?? "";
     const result = await impl(stubFinding({ title }));
     // The provider modules attach the resolved modelId; the test harness
@@ -58,7 +57,9 @@ const buildProvider = (
   },
 });
 
-const baseArgs = (overrides: Partial<GenerateReviewPatchesArgs> = {}): GenerateReviewPatchesArgs => ({
+const baseArgs = (
+  overrides: Partial<GenerateReviewPatchesArgs> = {},
+): GenerateReviewPatchesArgs => ({
   reviewId: "rev-1",
   findings: [stubFinding()],
   findingIds: ["fid-1"],
@@ -213,9 +214,7 @@ describe("generateReviewPatches — failure isolation", () => {
         return { patch: null, rationale: null, modelId: "stub-model" };
       },
     };
-    const result = await generateReviewPatches(
-      baseArgs({ providers: [provider], timeoutMs: 20 }),
-    );
+    const result = await generateReviewPatches(baseArgs({ providers: [provider], timeoutMs: 20 }));
     expect(result.proposals[0]?.skipReason).toBe("generation_error");
   });
 

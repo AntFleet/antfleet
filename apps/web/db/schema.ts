@@ -403,6 +403,31 @@ export const installations = pgTable(
   ],
 );
 
+// Server-issued single-use nonces for the on-demand review endpoint
+// (POST /api/v1/installations/{id}/review). The /bind endpoint can use
+// a stateless challenge because binding is one-shot per install; review
+// is repeating, so we mint a fresh challenge_id per call and mark it
+// used_at on redemption so signatures can't be replayed.
+export const reviewChallenges = pgTable(
+  "review_challenges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationRowId: uuid("installation_row_id")
+      .notNull()
+      .references(() => installations.id, { onDelete: "cascade" }),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    usedForReviewId: uuid("used_for_review_id").references(() => reviews.reviewId, {
+      onDelete: "set null",
+    }),
+  },
+  (t) => [
+    index("review_challenges_installation_idx").on(t.installationRowId),
+    index("review_challenges_expired_idx").on(t.expiresAt),
+  ],
+);
+
 // One channel per installation. Agent-onboarded installs always have one;
 // legacy_partner rows have no channel and bypass the balance check at the
 // drawdown gate. balanceUsdc is mutated only by atomic UPDATE ... WHERE
@@ -516,6 +541,8 @@ export type FactoryLaunch = typeof factoryLaunches.$inferSelect;
 export type NewFactoryLaunch = typeof factoryLaunches.$inferInsert;
 export type Installation = typeof installations.$inferSelect;
 export type NewInstallation = typeof installations.$inferInsert;
+export type ReviewChallenge = typeof reviewChallenges.$inferSelect;
+export type NewReviewChallenge = typeof reviewChallenges.$inferInsert;
 export type Channel = typeof channels.$inferSelect;
 export type NewChannel = typeof channels.$inferInsert;
 export type Payment = typeof payments.$inferSelect;

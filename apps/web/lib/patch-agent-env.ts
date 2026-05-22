@@ -50,19 +50,11 @@ export async function isPatchAgentEnabledForInstall(
   return isPatchAgentEnabled();
 }
 
-async function loadInstallOverride(
-  installationId: number,
-  repo: string,
-): Promise<boolean | null> {
+async function loadInstallOverride(installationId: number, repo: string): Promise<boolean | null> {
   const rows = await db
     .select({ patchAgentEnabled: installations.patchAgentEnabled })
     .from(installations)
-    .where(
-      and(
-        eq(installations.installationId, installationId),
-        eq(installations.repo, repo),
-      ),
-    )
+    .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
     .limit(1);
   return rows[0]?.patchAgentEnabled ?? null;
 }

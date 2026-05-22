@@ -307,9 +307,7 @@ describe("runReviewWorker", () => {
               skipReason: null,
             },
           ],
-          byIndex: new Map([
-            [0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }],
-          ]),
+          byIndex: new Map([[0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }]]),
           elapsedMs: 1,
         }),
       });
@@ -350,9 +348,7 @@ describe("runReviewWorker", () => {
               skipReason: null,
             },
           ],
-          byIndex: new Map([
-            [0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }],
-          ]),
+          byIndex: new Map([[0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }]]),
           elapsedMs: 1,
         }),
       });
@@ -389,16 +385,15 @@ describe("runReviewWorker", () => {
               skipReason: "models_disagreed",
             },
           ],
-          byIndex: new Map([
-            [0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }],
-          ]),
+          byIndex: new Map([[0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }]]),
           elapsedMs: 1,
         }),
       });
       await runReviewWorker("rev-1", "webhook", deps);
       // One event for the shipped patch; the disagreed one does NOT fire.
       expect(deps.recordPatchProposedEvent).toHaveBeenCalledTimes(1);
-      const callArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      const callArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0];
       expect(callArg?.findingId).toBe("rev-1-0");
       expect(callArg?.modelId).toBe("claude-opus-4-7");
     });

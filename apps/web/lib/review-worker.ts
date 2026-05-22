@@ -60,7 +60,12 @@ export type WorkerOutcome =
   | { kind: "retried"; reviewId: string; attempts: number; nextRetryAt: Date; error: string }
   | { kind: "failed"; reviewId: string; attempts: number; error: string };
 
-export type ClaimSource = "webhook" | "cron";
+// "api" is the on-demand /api/v1/installations/{id}/review path; same
+// claim-source semantics as "webhook" — both arrive immediately after
+// enqueue with the row in 'pending'. The string is kept distinct purely
+// for log attribution so the surface that triggered each review is
+// audit-readable in worker.completed events.
+export type ClaimSource = "webhook" | "cron" | "api";
 
 export type WorkerDeps = {
   getInstallationToken: typeof realGetInstallationToken;
@@ -211,10 +216,10 @@ export async function runReviewWorker(
 }
 
 function allowedClaimSources(source: ClaimSource): ReadonlyArray<ReviewProcessingStatus> {
-  if (source === "webhook") {
-    // Webhook arrives immediately after enqueue — the row is always
-    // 'pending' on the happy path. We refuse to claim from any other
-    // state so a duplicate delivery doesn't shoulder past an
+  if (source === "webhook" || source === "api") {
+    // Webhook / api both arrive immediately after enqueue — the row is
+    // always 'pending' on the happy path. We refuse to claim from any
+    // other state so a duplicate delivery doesn't shoulder past an
     // in-progress retry.
     return ["pending"];
   }

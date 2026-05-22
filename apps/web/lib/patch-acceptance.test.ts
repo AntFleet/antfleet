@@ -9,10 +9,7 @@ describe("extractNewSideLines", () => {
   it("returns the new-side lines without the leading '+'", () => {
     const patch =
       "--- a/foo.ts\n+++ b/foo.ts\n@@ -1,1 +1,2 @@\n-const x = 1;\n+const x = 0;\n+// fixed by Patch Agent\n";
-    expect(extractNewSideLines(patch)).toEqual([
-      "const x = 0;",
-      "// fixed by Patch Agent",
-    ]);
+    expect(extractNewSideLines(patch)).toEqual(["const x = 0;", "// fixed by Patch Agent"]);
   });
 
   it("does not capture the +++ header line", () => {
@@ -99,7 +96,7 @@ export function main(): void {
   it("requires the lines to appear contiguously — non-adjacent matches don't count", () => {
     // The two +lines exist in the file but are NOT adjacent. Should fail.
     const patch =
-      "@@ -3,2 +3,2 @@\n-old1\n-old2\n+import { x } from \"./bar\";\n+  console.log(counter);\n";
+      '@@ -3,2 +3,2 @@\n-old1\n-old2\n+import { x } from "./bar";\n+  console.log(counter);\n';
     expect(patchContentMatchesFile(patch, FILE)).toBe(false);
   });
 

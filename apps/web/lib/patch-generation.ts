@@ -21,10 +21,7 @@ import {
   type HunkRange,
 } from "./diff-hunks";
 import type { PatchSuggestionResult } from "@antfleet/cli/types";
-import type {
-  PatchSkipReason,
-  ProviderPatchProposal,
-} from "@antfleet/cli/providers/patch-gate";
+import type { PatchSkipReason, ProviderPatchProposal } from "@antfleet/cli/providers/patch-gate";
 
 // Per-call timeout. The whole review must finish under 240s; the existing
 // per-provider review call already burns up to ~60s, so the patch call
@@ -174,7 +171,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       args.provider.proposePatch(".", buildPatchPrompt(args.finding), args.model),
       args.timeoutMs,
     );
-  } catch (_err) {
+  } catch {
     return {
       providerName: args.provider.name,
       findingId: args.findingId,

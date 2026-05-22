@@ -1,15 +1,10 @@
 import { describe, it, expect } from "vitest";
-import {
-  decidePatchOutcomes,
-  type ProviderPatchProposal,
-} from "./patch-gate.js";
+import { decidePatchOutcomes, type ProviderPatchProposal } from "./patch-gate.js";
 
 const PATCH_A = "@@ -10,1 +10,1 @@\n-old\n+new\n";
 const PATCH_B = "@@ -10,1 +10,1 @@\n-old\n+different\n";
 
-const anthropic = (
-  overrides: Partial<ProviderPatchProposal> = {},
-): ProviderPatchProposal => ({
+const anthropic = (overrides: Partial<ProviderPatchProposal> = {}): ProviderPatchProposal => ({
   providerName: "anthropic",
   findingId: "fid-1",
   patch: null,
@@ -19,9 +14,7 @@ const anthropic = (
   ...overrides,
 });
 
-const openai = (
-  overrides: Partial<ProviderPatchProposal> = {},
-): ProviderPatchProposal => ({
+const openai = (overrides: Partial<ProviderPatchProposal> = {}): ProviderPatchProposal => ({
   providerName: "openai",
   findingId: "fid-1",
   patch: null,
@@ -33,10 +26,7 @@ const openai = (
 
 describe("decidePatchOutcomes — the four spec cases", () => {
   it("both propose → ships anthropic's patch", () => {
-    const out = decidePatchOutcomes([
-      anthropic({ patch: PATCH_A }),
-      openai({ patch: PATCH_B }),
-    ]);
+    const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: PATCH_B })]);
     expect(out).toHaveLength(1);
     expect(out[0]?.patch).toBe(PATCH_A);
     expect(out[0]?.modelId).toBe("claude-opus-4-7");
@@ -44,28 +34,19 @@ describe("decidePatchOutcomes — the four spec cases", () => {
   });
 
   it("only anthropic proposes → models_disagreed (findings-only)", () => {
-    const out = decidePatchOutcomes([
-      anthropic({ patch: PATCH_A }),
-      openai({ patch: null }),
-    ]);
+    const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: null })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
   });
 
   it("only openai proposes → models_disagreed (findings-only)", () => {
-    const out = decidePatchOutcomes([
-      anthropic({ patch: null }),
-      openai({ patch: PATCH_B }),
-    ]);
+    const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: PATCH_B })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
   });
 
   it("neither proposes (both clean declines) → models_disagreed", () => {
-    const out = decidePatchOutcomes([
-      anthropic({ patch: null }),
-      openai({ patch: null }),
-    ]);
+    const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: null })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
   });

@@ -17,6 +17,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { compareUsdcStrings, parseUsdcUnits } from "@/lib/paywall/deposit-verifier";
 import { getReviewPriceUsdc } from "@/lib/paywall/env";
+import { logError } from "@/lib/log";
 
 type Queryable = Pick<typeof db, "execute">;
 
@@ -179,6 +180,71 @@ export async function recordDrawdown(
   const row = firstRow<{ id: string }>(result);
   if (row === null) throw new Error("drawdown insert returned no row");
   return row.id;
+}
+
+// Shared debit-and-record helper used by both the GitHub webhook handler
+// and the on-demand /api/v1/installations/{id}/review endpoint. Wraps the
+// quantize → debitChannel (atomic CAS) → recordDrawdown sequence with the
+// best-effort drawdown semantics the webhook has used since day one:
+// if the ledger insert throws after the debit succeeded, we log loudly
+// but DO NOT roll back the channel balance — the review is legitimately
+// about to run and the operator can reconcile from channels + reviews if
+// needed (same tradeoff documented in recordDrawdown itself).
+//
+// Returns a discriminated result so each surface chooses what to do with
+// "insufficient_at_debit": the webhook posts an invoice PR comment; the
+// API endpoint returns 402 JSON. Neither path changes the channel state
+// on insufficient — debitChannel's WHERE clause is the source of truth.
+export type DebitForReviewResult =
+  | {
+      ok: true;
+      debitedUsdc: string;
+      newBalanceUsdc: string;
+      // null when the drawdown ledger insert failed after the debit
+      // succeeded. Best-effort recovery: a follow-up sweep can re-link
+      // the row if needed. The debit itself is durable in `channels`.
+      drawdownId: string | null;
+    }
+  | { ok: false; reason: "insufficient_at_debit" };
+
+export async function debitForReview(
+  q: Queryable,
+  args: {
+    decision: Extract<GateDecision, { kind: "debit" }>;
+    reviewId: string;
+    logContext?: Record<string, unknown>;
+  },
+): Promise<DebitForReviewResult> {
+  const priceUsdc = quantizeUsdc(args.decision.priceUsdc);
+  const debited = await debitChannel(q, {
+    channelId: args.decision.channelId,
+    priceUsdc,
+  });
+  if (debited === null) {
+    return { ok: false, reason: "insufficient_at_debit" };
+  }
+  let drawdownId: string | null = null;
+  try {
+    drawdownId = await recordDrawdown(q, {
+      channelId: args.decision.channelId,
+      reviewId: args.reviewId,
+      amountUsdc: priceUsdc,
+      fromAddress: args.decision.walletAddress,
+    });
+  } catch (err) {
+    logError("paywall.gate.drawdown_record_failed", {
+      ...args.logContext,
+      reviewId: args.reviewId,
+      channelId: args.decision.channelId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return {
+    ok: true,
+    debitedUsdc: priceUsdc,
+    newBalanceUsdc: debited.newBalanceUsdc,
+    drawdownId,
+  };
 }
 
 // Parses and re-formats so caller-facing API matches everywhere else.
