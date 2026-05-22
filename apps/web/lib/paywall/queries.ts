@@ -176,6 +176,13 @@ export async function creditChannelFromDeposit(
     blockNumber: number | null;
   },
 ): Promise<boolean> {
+  // The conflict target MUST include the partial index's predicate
+  // (WHERE tx_hash IS NOT NULL) so Postgres matches `payments_tx_hash_uniq`.
+  // Without the predicate, Postgres raises:
+  //   "there is no unique or exclusion constraint matching the ON CONFLICT
+  //    specification"
+  // This was a latent prod bug in the paywall MVP — discovered the first
+  // time a real agent tried to credit a deposit (2026-05-22).
   const insertResult = await q.execute(sql`
     INSERT INTO payments (channel_id, type, tx_hash, chain_id, from_address, amount_usdc, block_number)
     VALUES (
@@ -187,7 +194,7 @@ export async function creditChannelFromDeposit(
       ${args.amountUsdc},
       ${args.blockNumber}
     )
-    ON CONFLICT (chain_id, tx_hash) DO NOTHING
+    ON CONFLICT (chain_id, tx_hash) WHERE tx_hash IS NOT NULL DO NOTHING
     RETURNING id
   `);
   const inserted = firstRow<{ id: string }>(insertResult);
