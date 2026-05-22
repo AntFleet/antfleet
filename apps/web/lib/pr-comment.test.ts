@@ -171,7 +171,9 @@ describe("formatPRComment", () => {
         patchesByIndex: patches,
         clickApplyEnabled: true,
       });
-      expect(out).toContain("→ Proposed patch as a reviewable comment below (click `Commit suggestion`)");
+      expect(out).toContain(
+        "→ Proposed patch as a reviewable comment below (click `Commit suggestion`)",
+      );
       expect(out).not.toContain("<details>");
       expect(out).not.toContain("```suggestion");
     });

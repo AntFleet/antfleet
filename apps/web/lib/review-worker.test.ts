@@ -612,14 +612,11 @@ describe("runReviewWorker", () => {
         reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
         runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
         isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
-        postPatchReviewComment: vi
-          .fn()
-          .mockResolvedValue({ id: 4242, url: "https://gh/pr#r4242" }),
+        postPatchReviewComment: vi.fn().mockResolvedValue({ id: 4242, url: "https://gh/pr#r4242" }),
       });
       await runReviewWorker("rev-1", "webhook", deps);
       expect(deps.recordPatchProposedEvent).toHaveBeenCalledTimes(1);
-      const evtArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock
-        .calls[0]?.[0];
+      const evtArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
       expect(evtArg.findingId).toBe("rev-1-0");
       expect(evtArg.reviewCommentId).toBe(4242);
       expect(evtArg.reviewCommentUrl).toBe("https://gh/pr#r4242");
@@ -634,8 +631,7 @@ describe("runReviewWorker", () => {
         isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(false),
       });
       await runReviewWorker("rev-1", "webhook", deps);
-      const evtArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock
-        .calls[0]?.[0];
+      const evtArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
       expect(evtArg.reviewCommentId).toBeNull();
       expect(evtArg.reviewCommentUrl).toBeNull();
     });

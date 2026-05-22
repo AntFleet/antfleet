@@ -494,9 +494,7 @@ describe("runSweep", () => {
     it("no-op when commit_id equals original_commit_id (no advance)", async () => {
       const deps = mkDeps({
         loadPatchReviewCommentAcceptanceWork: vi.fn().mockResolvedValue([mkClickCandidate()]),
-        fetchReviewComment: vi
-          .fn()
-          .mockResolvedValue({ commitId: "abc", originalCommitId: "abc" }),
+        fetchReviewComment: vi.fn().mockResolvedValue({ commitId: "abc", originalCommitId: "abc" }),
       });
       const out = await runSweep(deps);
       expect(out.patchApplyClicks).toBe(0);
@@ -564,7 +562,15 @@ describe("runSweep", () => {
         fetchFileAtRef: vi
           .fn()
           .mockResolvedValue(
-            ["import x from 'lib';", "", "// unrelated edit by maintainer", "function f() {", "  const x = 2;", "}", ""].join("\n"),
+            [
+              "import x from 'lib';",
+              "",
+              "// unrelated edit by maintainer",
+              "function f() {",
+              "  const x = 2;",
+              "}",
+              "",
+            ].join("\n"),
           ),
       });
       const out = await runSweep(deps);

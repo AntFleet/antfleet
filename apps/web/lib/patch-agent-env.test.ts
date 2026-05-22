@@ -207,48 +207,40 @@ describe("isPatchAgentClickApplyEnabledForInstall — per-install override prece
   it("override=true wins over env=false (aeon-bench canary)", async () => {
     process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "false";
     dbMockState.selectResult = [{ patchAgentClickApplyEnabled: true }];
-    await expect(
-      isPatchAgentClickApplyEnabledForInstall(133030324, "aeon-bench"),
-    ).resolves.toBe(true);
+    await expect(isPatchAgentClickApplyEnabledForInstall(133030324, "aeon-bench")).resolves.toBe(
+      true,
+    );
   });
 
   it("override=false wins over env=true (kill switch on one install)", async () => {
     process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
     dbMockState.selectResult = [{ patchAgentClickApplyEnabled: false }];
-    await expect(
-      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
-    ).resolves.toBe(false);
+    await expect(isPatchAgentClickApplyEnabledForInstall(12345, "some-repo")).resolves.toBe(false);
   });
 
   it("override=null falls through to env=true", async () => {
     process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
     dbMockState.selectResult = [{ patchAgentClickApplyEnabled: null }];
-    await expect(
-      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
-    ).resolves.toBe(true);
+    await expect(isPatchAgentClickApplyEnabledForInstall(12345, "some-repo")).resolves.toBe(true);
   });
 
   it("override=null falls through to env=false", async () => {
     process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "false";
     dbMockState.selectResult = [{ patchAgentClickApplyEnabled: null }];
-    await expect(
-      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
-    ).resolves.toBe(false);
+    await expect(isPatchAgentClickApplyEnabledForInstall(12345, "some-repo")).resolves.toBe(false);
   });
 
   it("DB read failure → conservative fallback to env-only", async () => {
     process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
     dbMockState.throwOnRead = true;
-    await expect(
-      isPatchAgentClickApplyEnabledForInstall(12345, "some-repo"),
-    ).resolves.toBe(true);
+    await expect(isPatchAgentClickApplyEnabledForInstall(12345, "some-repo")).resolves.toBe(true);
   });
 
   it("missing install row → null override → env wins", async () => {
     process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"] = "true";
     dbMockState.selectResult = [];
-    await expect(
-      isPatchAgentClickApplyEnabledForInstall(99999, "missing-repo"),
-    ).resolves.toBe(true);
+    await expect(isPatchAgentClickApplyEnabledForInstall(99999, "missing-repo")).resolves.toBe(
+      true,
+    );
   });
 });

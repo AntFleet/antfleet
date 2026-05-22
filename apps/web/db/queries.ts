@@ -456,10 +456,7 @@ export async function recordPatchReviewComment(
       patchReviewProposedAt: input.proposedAt,
     })
     .where(
-      and(
-        eq(findingStatus.findingId, input.findingId),
-        isNull(findingStatus.patchReviewCommentId),
-      ),
+      and(eq(findingStatus.findingId, input.findingId), isNull(findingStatus.patchReviewCommentId)),
     );
 }
 
@@ -642,10 +639,7 @@ export async function loadPatchReviewCommentAcceptanceWork(): Promise<
       evidencePath:
         extractEvidencePathFromAgreement(r.agreementDecision, r.findingIndex) ??
         extractPathFromPatch(r.suggestedPatch),
-      evidenceStartLine: extractEvidenceStartLineFromAgreement(
-        r.agreementDecision,
-        r.findingIndex,
-      ),
+      evidenceStartLine: extractEvidenceStartLineFromAgreement(r.agreementDecision, r.findingIndex),
       reviewCommentId: r.reviewCommentId,
       reviewCommentUrl: r.reviewCommentUrl,
     });
@@ -659,18 +653,12 @@ export async function loadPatchReviewCommentAcceptanceWork(): Promise<
 // Idempotent on retry: the loader filters out rows where the column
 // is non-null, AND the UPDATE predicate also enforces it for the rare
 // case where two sweep ticks race (the second is a no-op).
-export async function markPatchApplyClicked(args: {
-  findingId: string;
-  now: Date;
-}): Promise<void> {
+export async function markPatchApplyClicked(args: { findingId: string; now: Date }): Promise<void> {
   await db
     .update(findingStatus)
     .set({ patchApplyClickedAt: args.now })
     .where(
-      and(
-        eq(findingStatus.findingId, args.findingId),
-        isNull(findingStatus.patchApplyClickedAt),
-      ),
+      and(eq(findingStatus.findingId, args.findingId), isNull(findingStatus.patchApplyClickedAt)),
     );
 }
 

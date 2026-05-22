@@ -59,10 +59,11 @@ describe("postPatchReviewComment", () => {
     const { mock, create } = makeOctokit({
       resolved: { id: 7777, html_url: "https://github.com/AntFleet/aeon-bench/pull/42#r7777" },
     });
-    const result = await postPatchReviewComment(
-      baseArgs({ octokitFactory: async () => mock }),
-    );
-    expect(result).toEqual({ id: 7777, url: "https://github.com/AntFleet/aeon-bench/pull/42#r7777" });
+    const result = await postPatchReviewComment(baseArgs({ octokitFactory: async () => mock }));
+    expect(result).toEqual({
+      id: 7777,
+      url: "https://github.com/AntFleet/aeon-bench/pull/42#r7777",
+    });
     expect(create).toHaveBeenCalledOnce();
     const call = create.mock.calls[0]?.[0];
     expect(call.owner).toBe("AntFleet");
@@ -94,9 +95,7 @@ describe("postPatchReviewComment", () => {
     const err = Object.assign(new Error("Invalid request"), { status: 422 });
     const { mock } = makeOctokit({ rejected: err });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const result = await postPatchReviewComment(
-      baseArgs({ octokitFactory: async () => mock }),
-    );
+    const result = await postPatchReviewComment(baseArgs({ octokitFactory: async () => mock }));
     expect(result).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -106,9 +105,7 @@ describe("postPatchReviewComment", () => {
     const err = Object.assign(new Error("Not Found"), { status: 404 });
     const { mock } = makeOctokit({ rejected: err });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const result = await postPatchReviewComment(
-      baseArgs({ octokitFactory: async () => mock }),
-    );
+    const result = await postPatchReviewComment(baseArgs({ octokitFactory: async () => mock }));
     expect(result).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
