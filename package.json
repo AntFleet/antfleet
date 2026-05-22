@@ -25,6 +25,10 @@
       "types": "./dist/providers/agreement.d.ts",
       "default": "./dist/providers/agreement.js"
     },
+    "./providers/patch-gate": {
+      "types": "./dist/providers/patch-gate.d.ts",
+      "default": "./dist/providers/patch-gate.js"
+    },
     "./providers/anthropic": {
       "types": "./dist/providers/anthropic.d.ts",
       "default": "./dist/providers/anthropic.js"
