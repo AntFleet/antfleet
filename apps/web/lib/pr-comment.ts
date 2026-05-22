@@ -39,6 +39,14 @@ export type ReviewMeta = {
   // failed the gate). The comment body shape is byte-identical to v1.4
   // in that case.
   patchesByIndex?: ReadonlyMap<number, PatchForRender>;
+  // Patch Agent v1.6 — when true AND a per-finding patch exists AND the
+  // finding has single-line evidence, the issue-comment <details>
+  // suggestion subsection is replaced by a one-liner pointer to the
+  // line-anchored PR review comment (where the "Commit suggestion"
+  // button actually renders). Default false → v1.5 behavior preserved
+  // byte-identically. Operator decision Q1 LOCKED to REMOVE the inline
+  // <details> when click-apply is on (no duplicate suggestion render).
+  clickApplyEnabled?: boolean;
 };
 
 export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
@@ -51,9 +59,10 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
   const intro =
     `## AntFleet · ${findings.length} finding${findings.length === 1 ? "" : "s"}\n\n` +
     "Both reviewers flagged the items below on the changed files. AntFleet posts only what two independent frontier models agree on.";
+  const clickApplyEnabled = meta.clickApplyEnabled === true;
   const body = sorted
     .map(({ f, originalIndex }) =>
-      formatFinding(f, meta.patchesByIndex?.get(originalIndex) ?? null),
+      formatFinding(f, meta.patchesByIndex?.get(originalIndex) ?? null, clickApplyEnabled),
     )
     .join("\n\n---\n\n");
   const stack = Object.values(meta.modelIds)
@@ -88,7 +97,11 @@ function formatSettlementFooter(
   return `<sub>${verb} · tx [\`${shortHash}\`](${basescan}) · channel balance ${balance}</sub>`;
 }
 
-function formatFinding(f: Finding, patch: PatchForRender | null): string {
+function formatFinding(
+  f: Finding,
+  patch: PatchForRender | null,
+  clickApplyEnabled: boolean,
+): string {
   const ev = f.evidence[0];
   const lines: string[] = [];
   lines.push(`**${titleCase(f.category)} · ${titleCase(f.severity)}** — ${f.title}`);
@@ -113,21 +126,37 @@ function formatFinding(f: Finding, patch: PatchForRender | null): string {
   // Backtick safety: a diff body containing ``` would close the markdown
   // fence early and corrupt the comment. We escape by switching to a
   // ~~~ fence when the replacement text contains triple-backticks.
+  //
+  // Patch Agent v1.6 — when clickApplyEnabled AND the finding has single-line
+  // evidence, replace the inline <details> block with a one-line pointer
+  // to the line-anchored PR review comment (operator decision Q1 LOCKED).
+  // Multi-line evidence still gets the v1.5 <details> path because review
+  // comments only render the apply button on a single anchored line and
+  // start_line ranges detach across edits (operator decision Q2 LOCKED).
   if (patch !== null) {
     const block = renderSuggestionBlock(patch);
     if (block !== null) {
-      lines.push("");
-      lines.push(`<details>`);
-      lines.push(`<summary>Proposed patch (model: ${patch.modelId})</summary>`);
-      lines.push("");
-      lines.push(...block);
-      lines.push(`</details>`);
+      const evidenceIsSingleLine =
+        ev !== undefined &&
+        ev.startLine !== null &&
+        (ev.endLine === null || ev.endLine === ev.startLine);
+      if (clickApplyEnabled && evidenceIsSingleLine) {
+        lines.push("");
+        lines.push(`→ Proposed patch as a reviewable comment below (click \`Commit suggestion\`)`);
+      } else {
+        lines.push("");
+        lines.push(`<details>`);
+        lines.push(`<summary>Proposed patch (model: ${patch.modelId})</summary>`);
+        lines.push("");
+        lines.push(...block);
+        lines.push(`</details>`);
+      }
     }
   }
   return lines.join("\n");
 }
 
-function renderSuggestionBlock(patch: PatchForRender): string[] | null {
+export function renderSuggestionBlock(patch: PatchForRender): string[] | null {
   const newLines = extractNewSideLines(patch.patch);
   if (newLines.length === 0) return null;
   const replacement = newLines.join("\n");

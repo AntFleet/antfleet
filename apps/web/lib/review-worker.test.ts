@@ -94,6 +94,11 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     // Patch Agent v1.5 — default: lane disabled (returns null). Tests that
     // exercise the patch path override this with a stub outcome.
     runPatchAgent: vi.fn().mockResolvedValue(null),
+    // Patch Agent v1.6 — default: click-apply lane disabled. Tests that
+    // exercise the click-apply post path override these.
+    isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(false),
+    postPatchReviewComment: vi.fn().mockResolvedValue(null),
+    recordPatchReviewComment: vi.fn().mockResolvedValue(undefined),
     loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow()),
     claimReviewForProcessing: vi.fn().mockResolvedValue(true),
     updateReview: vi.fn().mockResolvedValue(undefined),
@@ -396,6 +401,239 @@ describe("runReviewWorker", () => {
         .calls[0]?.[0];
       expect(callArg?.findingId).toBe("rev-1-0");
       expect(callArg?.modelId).toBe("claude-opus-4-7");
+    });
+  });
+
+  describe("Patch Agent v1.6 — click-apply review-comment lane", () => {
+    const SINGLE_LINE_PATCH = {
+      patch: [
+        "--- a/src/foo.ts",
+        "+++ b/src/foo.ts",
+        "@@ -10,1 +10,1 @@",
+        "-const x = 1;",
+        "+const x = 2;",
+        "",
+      ].join("\n"),
+      modelId: "claude-opus-4-7",
+    };
+
+    const SINGLE_LINE_BUNDLE = mkBundle({
+      agreed: [
+        mkFinding({
+          evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10 }],
+        }),
+      ],
+    });
+
+    const PATCH_OUTCOME = {
+      decisions: [
+        {
+          findingId: "rev-1-0",
+          patch: SINGLE_LINE_PATCH.patch,
+          modelId: SINGLE_LINE_PATCH.modelId,
+          skipReason: null,
+        },
+      ],
+      byIndex: new Map([[0, SINGLE_LINE_PATCH]]),
+      elapsedMs: 1,
+    };
+
+    it("posts the review comment and persists id/url when flag is on + single-line evidence", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+        postPatchReviewComment: vi.fn().mockResolvedValue({
+          id: 7777,
+          url: "https://gh/pull/17#r7777",
+        }),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.postPatchReviewComment).toHaveBeenCalledTimes(1);
+      const postArg = (deps.postPatchReviewComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(postArg.installationId).toBe(132854945);
+      expect(postArg.owner).toBe("antfleet");
+      expect(postArg.repo).toBe("aeon-bench");
+      expect(postArg.pullNumber).toBe(17);
+      expect(postArg.commitId).toBe("abc123");
+      expect(postArg.path).toBe("src/foo.ts");
+      expect(postArg.line).toBe(10);
+      expect(postArg.patch).toEqual(SINGLE_LINE_PATCH);
+      expect(deps.recordPatchReviewComment).toHaveBeenCalledTimes(1);
+      const persistArg = (deps.recordPatchReviewComment as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0];
+      expect(persistArg.findingId).toBe("rev-1-0");
+      expect(persistArg.reviewCommentId).toBe(7777);
+      expect(persistArg.reviewCommentUrl).toBe("https://gh/pull/17#r7777");
+    });
+
+    it("renders the issue comment in click-apply shape (one-liner pointer, no <details>) when flag on", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+        postPatchReviewComment: vi.fn().mockResolvedValue({ id: 1, url: "u" }),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      expect(body).toContain("→ Proposed patch as a reviewable comment below");
+      expect(body).not.toContain("<details>");
+    });
+
+    it("does not post review comment when flag off (v1.5 byte-identical issue comment)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(false),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.postPatchReviewComment).not.toHaveBeenCalled();
+      expect(deps.recordPatchReviewComment).not.toHaveBeenCalled();
+      const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      expect(body).toContain("<details>");
+    });
+
+    it("does not post review comment when evidence is multi-line (Q2 fallback)", async () => {
+      const multiLineBundle = mkBundle({
+        agreed: [mkFinding({ evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 20 }] })],
+      });
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(multiLineBundle),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.postPatchReviewComment).not.toHaveBeenCalled();
+      const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      // Multi-line evidence stays on the v1.5 <details> path even with the flag on
+      expect(body).toContain("<details>");
+    });
+
+    it("does not persist when post returns null (no orphan DB row)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+        postPatchReviewComment: vi.fn().mockResolvedValue(null),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.postPatchReviewComment).toHaveBeenCalledTimes(1);
+      expect(deps.recordPatchReviewComment).not.toHaveBeenCalled();
+    });
+
+    it("does not block when post throws (caught, logged, issue comment still succeeds)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+        postPatchReviewComment: vi.fn().mockRejectedValue(new Error("octokit 500")),
+      });
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+      expect(outcome.kind).toBe("done");
+      expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+      expect(deps.postPRComment).toHaveBeenCalledTimes(1);
+      expect(deps.recordPatchReviewComment).not.toHaveBeenCalled();
+    });
+
+    it("falls back to v1.5 shape when click-apply gate lookup throws (conservative default)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockRejectedValue(new Error("db down")),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.postPatchReviewComment).not.toHaveBeenCalled();
+      const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      expect(body).toContain("<details>");
+    });
+
+    it("does not invoke the click-apply gate when no patches shipped (skips DB call)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue({
+          decisions: [
+            { findingId: "rev-1-0", patch: null, modelId: null, skipReason: "models_disagreed" },
+          ],
+          byIndex: new Map(),
+          elapsedMs: 1,
+        }),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.isPatchAgentClickApplyEnabledForInstall).not.toHaveBeenCalled();
+      expect(deps.postPatchReviewComment).not.toHaveBeenCalled();
+    });
+
+    // Audit M1: previously-missing test for "flag ON, decisions present
+    // but byIndex empty (all skipped)". Worker should evaluate the gate
+    // (decisions.length > 0) but skip both the post loop and the
+    // patch_proposed events that depend on a shipped patch.
+    it("does not post when flag on but every decision was skipped (empty byIndex)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue({
+          decisions: [
+            { findingId: "rev-1-0", patch: null, modelId: null, skipReason: "size_cap" },
+            { findingId: "rev-1-1", patch: null, modelId: null, skipReason: "models_disagreed" },
+          ],
+          byIndex: new Map(),
+          elapsedMs: 1,
+        }),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      // Gate is short-circuited because byIndex.size === 0
+      expect(deps.isPatchAgentClickApplyEnabledForInstall).not.toHaveBeenCalled();
+      expect(deps.postPatchReviewComment).not.toHaveBeenCalled();
+      expect(deps.recordPatchReviewComment).not.toHaveBeenCalled();
+      // recordPatchDecisions still runs (v1.5 persistence of skip reasons)
+      expect(deps.recordPatchDecisions).toHaveBeenCalledTimes(1);
+      // No patch_proposed events because every decision had patch === null
+      expect(deps.recordPatchProposedEvent).not.toHaveBeenCalled();
+    });
+
+    // Audit M2: drawdown invariant 3 regression guard. setReviewPatchCost
+    // is the only $-adjacent write in the patch lane; v1.6 must NOT
+    // add a second write or a duplicate call.
+    it("calls setReviewPatchCost exactly once in the click-apply path (drawdown invariant 3)", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+        postPatchReviewComment: vi.fn().mockResolvedValue({ id: 1, url: "u" }),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.setReviewPatchCost).toHaveBeenCalledTimes(1);
+    });
+
+    // Audit B1: patch_proposed event carries the review_comment_id/url
+    // when click-apply post succeeded for that finding.
+    it("plumbs review_comment_id/url into recordPatchProposedEvent for clicked findings", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+        postPatchReviewComment: vi.fn().mockResolvedValue({ id: 4242, url: "https://gh/pr#r4242" }),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.recordPatchProposedEvent).toHaveBeenCalledTimes(1);
+      const evtArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(evtArg.findingId).toBe("rev-1-0");
+      expect(evtArg.reviewCommentId).toBe(4242);
+      expect(evtArg.reviewCommentUrl).toBe("https://gh/pr#r4242");
+    });
+
+    // Complement to B1: when click-apply is off, patch_proposed event
+    // carries null IDs (matches v1.5 shape — no regression).
+    it("passes null review_comment_id/url to patch_proposed event when click-apply off", async () => {
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue(PATCH_OUTCOME),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(false),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      const evtArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(evtArg.reviewCommentId).toBeNull();
+      expect(evtArg.reviewCommentUrl).toBeNull();
     });
   });
 });

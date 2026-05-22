@@ -7,6 +7,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   lt,
   lte,
   max,
@@ -431,6 +432,34 @@ export async function recordPatchDecisions(
   );
 }
 
+// Patch Agent v1.6 — persist the PR review-comment artifact id/url after
+// the worker posts the suggestion as a line-anchored comment. Idempotent
+// on retry via `WHERE patch_review_comment_id IS NULL` so a worker rerun
+// after a partial-failure does not double-post (the post happens BEFORE
+// this write; if the post succeeded but this write failed, retry would
+// post again — accepted tradeoff; the orphan comment is harmless).
+export type RecordPatchReviewCommentInput = {
+  findingId: string;
+  reviewCommentId: number;
+  reviewCommentUrl: string;
+  proposedAt: Date;
+};
+
+export async function recordPatchReviewComment(
+  input: RecordPatchReviewCommentInput,
+): Promise<void> {
+  await db
+    .update(findingStatus)
+    .set({
+      patchReviewCommentId: input.reviewCommentId,
+      patchReviewCommentUrl: input.reviewCommentUrl,
+      patchReviewProposedAt: input.proposedAt,
+    })
+    .where(
+      and(eq(findingStatus.findingId, input.findingId), isNull(findingStatus.patchReviewCommentId)),
+    );
+}
+
 // Patch Agent v1.5 — observability-only patch cost write. costPatchUsd
 // lives on the reviews row (one number per review). Drawdown is unaffected.
 export async function setReviewPatchCost(reviewId: string, costPatchUsd: number): Promise<void> {
@@ -531,10 +560,136 @@ export async function markPatchAccepted(args: {
     .where(eq(findingStatus.findingId, args.findingId));
 }
 
+// Patch Agent v1.6 — sweeper click-apply detection candidate set. Selects
+// finding_status rows where a PR review comment was posted (v1.6 path)
+// but the click-apply transition has not been observed yet. The heuristic
+// the sweeper applies: re-fetch the review comment, see if its commit_id
+// has advanced beyond the post-time SHA, then verify the suggested patch's
+// new-side content appears at the anchor file at the new SHA.
+export type PatchReviewCommentCandidate = {
+  findingId: string;
+  reviewId: string;
+  installationId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  prCommentUrl: string | null;
+  suggestedPatch: string;
+  patchModelId: string | null;
+  evidencePath: string | null;
+  // 1-based new-side line the review comment was anchored to. Carried
+  // through so the click-apply sweep pass can do an anchor-bound content
+  // match (vs the v1.5 whole-file scan). Null when the agreement JSONB
+  // lacks a numeric startLine — sweep treats null as "skip", because
+  // anchor-bound is the whole point of the v1.6 detection.
+  evidenceStartLine: number | null;
+  reviewCommentId: number;
+  reviewCommentUrl: string | null;
+};
+
+export async function loadPatchReviewCommentAcceptanceWork(): Promise<
+  PatchReviewCommentCandidate[]
+> {
+  const rows = await db
+    .select({
+      findingId: findingStatus.findingId,
+      findingIndex: findingStatus.findingIndex,
+      reviewId: findingStatus.reviewId,
+      suggestedPatch: findingStatus.suggestedPatch,
+      patchModelId: findingStatus.patchModelId,
+      reviewCommentId: findingStatus.patchReviewCommentId,
+      reviewCommentUrl: findingStatus.patchReviewCommentUrl,
+      installationId: reviews.installationId,
+      owner: reviews.owner,
+      repo: reviews.repo,
+      prNumber: reviews.prNumber,
+      prCommentUrl: reviews.prCommentUrl,
+      agreementDecision: reviews.agreementDecision,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(
+      and(
+        isNotNull(findingStatus.patchReviewCommentId),
+        isNull(findingStatus.patchApplyClickedAt),
+        isNotNull(findingStatus.suggestedPatch),
+      ),
+    );
+
+  const out: PatchReviewCommentCandidate[] = [];
+  for (const r of rows) {
+    if (
+      r.installationId === null ||
+      r.owner === null ||
+      r.repo === null ||
+      r.suggestedPatch === null ||
+      r.reviewCommentId === null
+    )
+      continue;
+    out.push({
+      findingId: r.findingId,
+      reviewId: r.reviewId,
+      installationId: r.installationId,
+      owner: r.owner,
+      repo: r.repo,
+      prNumber: r.prNumber,
+      prCommentUrl: r.prCommentUrl,
+      suggestedPatch: r.suggestedPatch,
+      patchModelId: r.patchModelId,
+      evidencePath:
+        extractEvidencePathFromAgreement(r.agreementDecision, r.findingIndex) ??
+        extractPathFromPatch(r.suggestedPatch),
+      evidenceStartLine: extractEvidenceStartLineFromAgreement(r.agreementDecision, r.findingIndex),
+      reviewCommentId: r.reviewCommentId,
+      reviewCommentUrl: r.reviewCommentUrl,
+    });
+  }
+  return out;
+}
+
+// Patch Agent v1.6 — sweeper click-apply detection write. Sets
+// patch_apply_clicked_at when the review-comment poll detects the
+// suggestion has been applied via GitHub's "Commit suggestion" button.
+// Idempotent on retry: the loader filters out rows where the column
+// is non-null, AND the UPDATE predicate also enforces it for the rare
+// case where two sweep ticks race (the second is a no-op).
+export async function markPatchApplyClicked(args: { findingId: string; now: Date }): Promise<void> {
+  await db
+    .update(findingStatus)
+    .set({ patchApplyClickedAt: args.now })
+    .where(
+      and(eq(findingStatus.findingId, args.findingId), isNull(findingStatus.patchApplyClickedAt)),
+    );
+}
+
 function extractEvidencePathFromAgreement(
   agreementDecision: unknown,
   findingIndex: number,
 ): string | null {
+  const ev = extractEvidenceEntryFromAgreement(agreementDecision, findingIndex);
+  if (ev === null) return null;
+  const p = ev["path"];
+  return typeof p === "string" ? safeRepoRelativePath(p) : null;
+}
+
+// Patch Agent v1.6 — pull startLine off the same evidence entry so the
+// click-apply detection pass can anchor its content match to a specific
+// line. Returns null when the JSONB is malformed or the finding has no
+// numeric startLine.
+function extractEvidenceStartLineFromAgreement(
+  agreementDecision: unknown,
+  findingIndex: number,
+): number | null {
+  const ev = extractEvidenceEntryFromAgreement(agreementDecision, findingIndex);
+  if (ev === null) return null;
+  const sl = ev["startLine"];
+  return typeof sl === "number" && Number.isInteger(sl) && sl > 0 ? sl : null;
+}
+
+function extractEvidenceEntryFromAgreement(
+  agreementDecision: unknown,
+  findingIndex: number,
+): Record<string, unknown> | null {
   if (typeof agreementDecision !== "object" || agreementDecision === null) return null;
   const obj = agreementDecision as Record<string, unknown>;
   const agreed = obj["agreed"];
@@ -545,8 +700,7 @@ function extractEvidencePathFromAgreement(
   if (!Array.isArray(evidence) || evidence.length === 0) return null;
   const first = evidence[0];
   if (typeof first !== "object" || first === null) return null;
-  const p = (first as Record<string, unknown>)["path"];
-  return typeof p === "string" ? safeRepoRelativePath(p) : null;
+  return first as Record<string, unknown>;
 }
 
 // Liberalized to handle the unified-diff variants we see in practice:

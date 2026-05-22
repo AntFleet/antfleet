@@ -13,19 +13,25 @@ import {
 import { extractFindingsByIndex } from "./sweep-data";
 import {
   loadPatchAcceptanceWork as loadPatchAcceptanceWorkImpl,
+  loadPatchReviewCommentAcceptanceWork as loadPatchReviewCommentAcceptanceWorkImpl,
   loadSweepWork as loadSweepWorkImpl,
   markFindingClosed as markFindingClosedImpl,
   markPatchAccepted as markPatchAcceptedImpl,
+  markPatchApplyClicked as markPatchApplyClickedImpl,
   recordMaintainerReactions as recordMaintainerReactionsImpl,
   stampFindingPolled as stampFindingPolledImpl,
   type PatchAcceptanceCandidate,
+  type PatchReviewCommentCandidate,
   type SweepReviewBatch,
 } from "../db/queries";
 import type { NewMaintainerReaction } from "../db/schema";
 import { fetchFileAtRef as fetchFileAtRefImpl } from "./github-files";
 import { getInstallationOctokit as getInstallationOctokitImpl } from "./github-app";
-import { recordPatchAcceptedEvent as recordPatchAcceptedEventImpl } from "./onboarder";
-import { patchContentMatchesFile } from "./patch-acceptance";
+import {
+  recordPatchAcceptedEvent as recordPatchAcceptedEventImpl,
+  recordPatchApplyClickedEvent as recordPatchApplyClickedEventImpl,
+} from "./onboarder";
+import { patchContentMatchesFile, patchContentMatchesFileAtLine } from "./patch-acceptance";
 import { messageOf } from "./log";
 
 // Mission 3 slice 3-5 — the orchestrator. Composes every primitive shipped
@@ -46,7 +52,7 @@ import { messageOf } from "./log";
 const REACTION_POLL_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type SweepError = {
-  scope: "batch" | "closure" | "reaction" | "patch_acceptance";
+  scope: "batch" | "closure" | "reaction" | "patch_acceptance" | "patch_apply_clicked";
   reviewId: string;
   findingId: string | null;
   message: string;
@@ -60,6 +66,12 @@ export type SweepResult = {
   // Patch Agent v1.5 — count of suggestions detected as accepted in HEAD
   // during this sweep tick. Additive; existing fields untouched.
   patchesAccepted: number;
+  // Patch Agent v1.6 — count of suggestions detected as click-applied
+  // (via the "Commit suggestion" button) during this sweep tick. Subset
+  // of patchesAccepted (a click-applied suggestion will also typically
+  // be detected by the v1.5 content-match pass once the commit lands
+  // on main).
+  patchApplyClicks: number;
   errors: SweepError[];
 };
 
@@ -77,6 +89,17 @@ export type SweepDeps = {
   markPatchAccepted: typeof markPatchAcceptedImpl;
   fetchFileAtRef: typeof fetchFileAtRefImpl;
   recordPatchAcceptedEvent: typeof recordPatchAcceptedEventImpl;
+  // Patch Agent v1.6 — click-apply detection pass dependencies. Same
+  // separation pattern as v1.5; v1.5 tests are untouched.
+  loadPatchReviewCommentAcceptanceWork: typeof loadPatchReviewCommentAcceptanceWorkImpl;
+  markPatchApplyClicked: typeof markPatchApplyClickedImpl;
+  recordPatchApplyClickedEvent: typeof recordPatchApplyClickedEventImpl;
+  fetchReviewComment: (args: {
+    installationId: number;
+    owner: string;
+    repo: string;
+    commentId: number;
+  }) => Promise<{ commitId: string; originalCommitId: string } | null>;
   getDefaultBranchSha: (args: {
     installationId: number;
     owner: string;
@@ -97,9 +120,43 @@ const REAL_DEPS: SweepDeps = {
   markPatchAccepted: markPatchAcceptedImpl,
   fetchFileAtRef: fetchFileAtRefImpl,
   recordPatchAcceptedEvent: recordPatchAcceptedEventImpl,
+  loadPatchReviewCommentAcceptanceWork: loadPatchReviewCommentAcceptanceWorkImpl,
+  markPatchApplyClicked: markPatchApplyClickedImpl,
+  recordPatchApplyClickedEvent: recordPatchApplyClickedEventImpl,
+  fetchReviewComment: realFetchReviewComment,
   getDefaultBranchSha: realGetDefaultBranchSha,
   now: () => new Date(),
 };
+
+// Resolves the current and original commit_id of a posted PR review comment.
+// commit_id advances when the PR gets new commits (including when GitHub's
+// "Commit suggestion" button is clicked); original_commit_id stays pinned
+// to the SHA at post time. A divergence is the trigger for the apply check.
+async function realFetchReviewComment(args: {
+  installationId: number;
+  owner: string;
+  repo: string;
+  commentId: number;
+}): Promise<{ commitId: string; originalCommitId: string } | null> {
+  try {
+    const octokit = await getInstallationOctokitImpl(args.installationId);
+    const resp = await octokit.rest.pulls.getReviewComment({
+      owner: args.owner,
+      repo: args.repo,
+      comment_id: args.commentId,
+    });
+    return {
+      commitId: resp.data.commit_id,
+      originalCommitId: resp.data.original_commit_id,
+    };
+  } catch {
+    // Comment may have been deleted by the maintainer — silently skip.
+    // Next sweep tick won't pick it up again (the row still has
+    // patchApplyClickedAt=null but the read will keep failing; that's
+    // accepted observability cost rather than a hard write).
+    return null;
+  }
+}
 
 // Resolves the default branch SHA via the installation token. Pulled into
 // a real dep so the patch-acceptance pass can pin its file read to the
@@ -131,6 +188,7 @@ export async function runSweep(deps: SweepDeps = REAL_DEPS): Promise<SweepResult
     reactionsRecorded: 0,
     reviewsSkipped: 0,
     patchesAccepted: 0,
+    patchApplyClicks: 0,
     errors: [],
   };
   const batches = await deps.loadSweepWork();
@@ -191,6 +249,24 @@ export async function runSweep(deps: SweepDeps = REAL_DEPS): Promise<SweepResult
       reviewId: "<top-level>",
       findingId: null,
       message: `patch-acceptance pass: ${messageOf(err)}`,
+    });
+  }
+
+  // Patch Agent v1.6 — click-apply detection pass. Polls each posted PR
+  // review comment for a commit_id advance, then confirms via content
+  // match that the new commit's anchor actually adopted our suggestion.
+  // Independent of the v1.5 patch-acceptance pass — a click-applied
+  // suggestion will also typically register as a v1.5 acceptance once
+  // the commit lands on the default branch; the v1.6 pass adds the
+  // narrower "explicitly button-clicked" signal earlier in the lifecycle.
+  try {
+    await runPatchReviewCommentAcceptancePass(deps, result);
+  } catch (err) {
+    result.errors.push({
+      scope: "patch_apply_clicked",
+      reviewId: "<top-level>",
+      findingId: null,
+      message: `patch-apply-clicked pass: ${messageOf(err)}`,
     });
   }
 
@@ -437,6 +513,138 @@ async function persistPatchAcceptance(
     acceptedSha: sha,
     acceptanceCommentId: posted.id,
     acceptanceCommentUrl: posted.htmlUrl,
+  });
+}
+
+// Patch Agent v1.6 — for every finding_status row with a review-comment
+// posted but click-apply not yet observed, poll the comment, detect a
+// commit_id advance, then verify the new commit's anchor content matches
+// the suggested patch. Match → write patchApplyClickedAt, post the
+// acceptance receipt, and fire the patch_apply_clicked event.
+//
+// Errors are scoped to individual candidates. A comment that's been
+// deleted by the maintainer (fetchReviewComment returns null) is
+// silently skipped — the row will retry next tick, but won't error out.
+async function runPatchReviewCommentAcceptancePass(
+  deps: SweepDeps,
+  result: SweepResult,
+): Promise<void> {
+  const candidates = await deps.loadPatchReviewCommentAcceptanceWork();
+
+  for (const candidate of candidates) {
+    if (candidate.evidencePath === null) {
+      result.errors.push({
+        scope: "patch_apply_clicked",
+        reviewId: candidate.reviewId,
+        findingId: candidate.findingId,
+        message: "no evidence path on candidate",
+      });
+      continue;
+    }
+    // v1.6 detection is anchor-bound — without a numeric startLine we
+    // can't run the tightened heuristic, so we skip rather than fall
+    // back to v1.5's whole-file scan (which v1.5's own pass already
+    // covers via patch_accepted_at).
+    if (candidate.evidenceStartLine === null) {
+      result.errors.push({
+        scope: "patch_apply_clicked",
+        reviewId: candidate.reviewId,
+        findingId: candidate.findingId,
+        message: "no evidence startLine on candidate (anchor-bound match requires it)",
+      });
+      continue;
+    }
+    try {
+      const refs = await deps.fetchReviewComment({
+        installationId: candidate.installationId,
+        owner: candidate.owner,
+        repo: candidate.repo,
+        commentId: candidate.reviewCommentId,
+      });
+      if (refs === null) continue;
+      // commit_id === original_commit_id means the PR head hasn't moved
+      // since post — no advance, so the button hasn't been clicked
+      // (and no manual commits have landed either). Skip without write.
+      if (refs.commitId === refs.originalCommitId) continue;
+
+      // PR head advanced. Confirm the advance was actually the suggestion
+      // being applied (rather than an unrelated push) by reading the
+      // anchor file at the new commit and content-matching against the
+      // suggestion's new-side lines AT the evidence line. The anchor-bound
+      // match (vs v1.5's whole-file scan) is the key tightener against
+      // false-positive misattribution: an unrelated commit elsewhere in
+      // the file cannot trip the v1.6 detection.
+      const contents = await deps.fetchFileAtRef({
+        installationId: candidate.installationId,
+        owner: candidate.owner,
+        repo: candidate.repo,
+        path: candidate.evidencePath,
+        ref: refs.commitId,
+      });
+      if (contents === null) continue;
+      if (
+        !patchContentMatchesFileAtLine(
+          candidate.suggestedPatch,
+          contents,
+          candidate.evidenceStartLine,
+        )
+      )
+        continue;
+
+      await persistPatchApplyClicked(candidate, refs.commitId, deps);
+      result.patchApplyClicks += 1;
+    } catch (err) {
+      result.errors.push({
+        scope: "patch_apply_clicked",
+        reviewId: candidate.reviewId,
+        findingId: candidate.findingId,
+        message: messageOf(err),
+      });
+    }
+  }
+}
+
+async function persistPatchApplyClicked(
+  candidate: PatchReviewCommentCandidate,
+  appliedSha: string,
+  deps: SweepDeps,
+): Promise<void> {
+  const body = formatPatchAcceptanceReceipt({
+    findingId: candidate.findingId,
+    acceptedSha: appliedSha,
+    patchModelId: candidate.patchModelId,
+    owner: candidate.owner,
+    repo: candidate.repo,
+    originalCommentUrl: candidate.reviewCommentUrl ?? candidate.prCommentUrl,
+  });
+  // Same ordering as v1.5: post the receipt BEFORE the DB write so a
+  // partial failure leaves a recoverable row (the loader filters on
+  // patchApplyClickedAt IS NULL; a re-run after successful post but
+  // before mark would re-post once — accepted tradeoff over the worse
+  // "marked-without-receipt" failure mode).
+  await deps.postPRComment({
+    installationId: candidate.installationId,
+    owner: candidate.owner,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+    body,
+  });
+  await deps.markPatchApplyClicked({
+    findingId: candidate.findingId,
+    now: deps.now(),
+  });
+  // Fire-and-forget onboarder event. Self-gated on ONBOARDER_ENABLED;
+  // event recording never throws past its own boundary.
+  void deps.recordPatchApplyClickedEvent({
+    installationId: candidate.installationId,
+    owner: candidate.owner,
+    repo: candidate.repo,
+    reviewId: candidate.reviewId,
+    findingId: candidate.findingId,
+    modelId: candidate.patchModelId,
+    appliedSha,
+    reviewCommentId: candidate.reviewCommentId,
+    reviewCommentUrl: candidate.reviewCommentUrl,
   });
 }
 

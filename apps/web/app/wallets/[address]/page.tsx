@@ -57,7 +57,7 @@ function WalletPage({ reputation }: { reputation: WalletReputation }) {
         Aggregated across every AntFleet installation bound to this wallet.
       </p>
 
-      <section className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      <section className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Reviews" value={String(reputation.totalReviews)} />
         <Stat
           label="Findings closed"
@@ -73,6 +73,14 @@ function WalletPage({ reputation }: { reputation: WalletReputation }) {
             reputation.patchesProposed === 0
               ? "—"
               : `${reputation.patchesAccepted}/${reputation.patchesProposed}`
+          }
+        />
+        <Stat
+          label="Click-applied"
+          value={
+            reputation.patchesAccepted === 0
+              ? "—"
+              : `${reputation.patchClickApplies}/${reputation.patchesAccepted}`
           }
         />
         <Stat label="USDC settled" value={`${formatUsdc(reputation.totalSettledUsdc)} USDC`} />

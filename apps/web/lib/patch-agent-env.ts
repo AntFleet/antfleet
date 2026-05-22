@@ -58,3 +58,49 @@ async function loadInstallOverride(installationId: number, repo: string): Promis
     .limit(1);
   return rows[0]?.patchAgentEnabled ?? null;
 }
+
+// Patch Agent v1.6 — click-to-apply gate. Same two-layer pattern as v1.5:
+// per-install override on installations.patchAgentClickApplyEnabled wins
+// when non-null; env PATCH_AGENT_CLICK_APPLY_ENABLED otherwise. Independent
+// of PATCH_AGENT_ENABLED so the rollouts can decouple (v1.5 stays on
+// while v1.6 canaries on aeon-bench).
+//
+// Callers must ALSO check isPatchAgentEnabled* first — if the v1.5 lane
+// is off there are no patches to attach a review comment to. The two
+// flags are AND-ed at the worker; this helper only answers "is the
+// click-apply lane permitted for this install".
+
+export function isPatchAgentClickApplyEnabled(): boolean {
+  const raw = process.env["PATCH_AGENT_CLICK_APPLY_ENABLED"];
+  if (raw === undefined) return false;
+  const normalized = raw.toLowerCase().trim();
+  return normalized === "true" || normalized === "1";
+}
+
+export async function isPatchAgentClickApplyEnabledForInstall(
+  installationId: number,
+  repo: string,
+): Promise<boolean> {
+  let override: boolean | null = null;
+  try {
+    override = await loadClickApplyInstallOverride(installationId, repo);
+  } catch {
+    return isPatchAgentClickApplyEnabled();
+  }
+  if (override !== null) return override;
+  return isPatchAgentClickApplyEnabled();
+}
+
+async function loadClickApplyInstallOverride(
+  installationId: number,
+  repo: string,
+): Promise<boolean | null> {
+  const rows = await db
+    .select({
+      patchAgentClickApplyEnabled: installations.patchAgentClickApplyEnabled,
+    })
+    .from(installations)
+    .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
+    .limit(1);
+  return rows[0]?.patchAgentClickApplyEnabled ?? null;
+}

@@ -147,6 +147,18 @@ export const findingStatus = pgTable("finding_status", {
   patchAcceptedAt: timestamp("patch_accepted_at", { withTimezone: true }),
   patchAcceptedSha: text("patch_accepted_sha"),
   patchSkipReason: text("patch_skip_reason"),
+  // Patch Agent v1.6 — click-to-apply lane. patchReviewCommentId / Url
+  // track the PR review-comment artifact posted alongside the issue
+  // comment when PATCH_AGENT_CLICK_APPLY_ENABLED is on. Idempotency on
+  // review-worker retry is enforced via `WHERE patch_review_comment_id
+  // IS NULL`. patchApplyClickedAt is set by the sweeper's
+  // runPatchReviewCommentAcceptancePass when GitHub's "Commit suggestion"
+  // button fires (distinct from patchAcceptedAt, which also covers
+  // manual commits whose content happens to match the suggestion).
+  patchReviewCommentId: bigint("patch_review_comment_id", { mode: "number" }),
+  patchReviewCommentUrl: text("patch_review_comment_url"),
+  patchReviewProposedAt: timestamp("patch_review_proposed_at", { withTimezone: true }),
+  patchApplyClickedAt: timestamp("patch_apply_clicked_at", { withTimezone: true }),
 });
 
 export const maintainerReactions = pgTable(
@@ -395,6 +407,11 @@ export const installations = pgTable(
     // Non-null = force-on/off for this install regardless of env. Used to
     // canary one test install before flipping the env-wide default.
     patchAgentEnabled: boolean("patch_agent_enabled"),
+    // Patch Agent v1.6 — per-install override for the
+    // PATCH_AGENT_CLICK_APPLY_ENABLED env flag. Same pattern as
+    // patchAgentEnabled. Canary on AntFleet/aeon-bench before flipping
+    // env-wide.
+    patchAgentClickApplyEnabled: boolean("patch_agent_click_apply_enabled"),
   },
   (t) => [
     unique("installations_install_repo_uniq").on(t.installationId, t.repo),

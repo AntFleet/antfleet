@@ -134,6 +134,89 @@ describe("formatPRComment", () => {
     expect(out).toContain("Settled · channel balance 3.000000 USDC");
     expect(out).not.toContain("basescan.org");
   });
+
+  describe("Patch Agent v1.6 — click-apply suggestion swap", () => {
+    const PATCH = {
+      patch: [
+        "--- a/src/foo.ts",
+        "+++ b/src/foo.ts",
+        "@@ -10,1 +10,1 @@",
+        "-const x = 1;",
+        "+const x = 2;",
+        "",
+      ].join("\n"),
+      modelId: "claude-opus-4-7",
+    };
+
+    it("flag off + patch + single-line evidence → renders <details> block (v1.5 byte-identical)", () => {
+      const finding = mkFinding({
+        evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10, symbol: null, quote: null }],
+      });
+      const patches = new Map([[0, PATCH]]);
+      const out = formatPRComment([finding], { ...META, patchesByIndex: patches });
+      expect(out).toContain("<details>");
+      expect(out).toContain("Proposed patch (model: claude-opus-4-7)");
+      expect(out).toContain("```suggestion");
+      expect(out).toContain("const x = 2;");
+      expect(out).not.toContain("→ Proposed patch as a reviewable comment");
+    });
+
+    it("flag on + patch + single-line evidence → renders one-liner pointer, no <details>", () => {
+      const finding = mkFinding({
+        evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10, symbol: null, quote: null }],
+      });
+      const patches = new Map([[0, PATCH]]);
+      const out = formatPRComment([finding], {
+        ...META,
+        patchesByIndex: patches,
+        clickApplyEnabled: true,
+      });
+      expect(out).toContain(
+        "→ Proposed patch as a reviewable comment below (click `Commit suggestion`)",
+      );
+      expect(out).not.toContain("<details>");
+      expect(out).not.toContain("```suggestion");
+    });
+
+    it("flag on + patch + multi-line evidence → still renders <details> block (Q2 fallback)", () => {
+      const finding = mkFinding({
+        evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+      });
+      const patches = new Map([[0, PATCH]]);
+      const out = formatPRComment([finding], {
+        ...META,
+        patchesByIndex: patches,
+        clickApplyEnabled: true,
+      });
+      expect(out).toContain("<details>");
+      expect(out).toContain("```suggestion");
+      expect(out).not.toContain("→ Proposed patch as a reviewable comment");
+    });
+
+    it("flag on + no patch → no suggestion subsection (no pointer, no details)", () => {
+      const finding = mkFinding({
+        evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10, symbol: null, quote: null }],
+      });
+      const out = formatPRComment([finding], { ...META, clickApplyEnabled: true });
+      expect(out).not.toContain("<details>");
+      expect(out).not.toContain("→ Proposed patch as a reviewable comment");
+      expect(out).not.toContain("```suggestion");
+    });
+
+    it("settlement footer still says 'Patch settled' when click-apply on with patches", () => {
+      const finding = mkFinding({
+        evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10, symbol: null, quote: null }],
+      });
+      const patches = new Map([[0, PATCH]]);
+      const out = formatPRComment([finding], {
+        ...META,
+        patchesByIndex: patches,
+        clickApplyEnabled: true,
+        settlement: { channelBalanceUsdc: "5.0", lastDepositTxHash: null },
+      });
+      expect(out).toContain("Patch settled");
+    });
+  });
 });
 
 describe("formatClosureReceipt", () => {

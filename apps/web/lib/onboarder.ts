@@ -714,6 +714,15 @@ export type PatchProposedEventInput = {
   findingId: string;
   modelId: string;
   suggestedPatch: string;
+  // Patch Agent v1.6 — optional review-comment identifiers for findings
+  // where the click-apply lane succeeded in posting a line-anchored
+  // comment alongside the issue-comment. Both null when click-apply was
+  // disabled, the evidence was multi-line (v1.5 fallback), or the post
+  // failed. Persisted into tool_output JSONB so the v2.0 conversion
+  // metric can join patch_proposed → patch_apply_clicked by id without
+  // a second lookup against finding_status.
+  reviewCommentId?: number | null;
+  reviewCommentUrl?: string | null;
 };
 
 export async function recordPatchProposedEvent(args: PatchProposedEventInput): Promise<void> {
@@ -733,6 +742,10 @@ export async function recordPatchProposedEvent(args: PatchProposedEventInput): P
         // Capture the diff body for audit replay — same shape as the
         // posted PR comment's ```suggestion``` block contents.
         suggested_patch: args.suggestedPatch,
+        // v1.6 click-apply linkage. Absent when not applicable; null
+        // when the post failed. Read by the v2.0 conversion metric.
+        review_comment_id: args.reviewCommentId ?? null,
+        review_comment_url: args.reviewCommentUrl ?? null,
       },
       commentId: null,
       commentUrl: null,
@@ -744,6 +757,7 @@ export async function recordPatchProposedEvent(args: PatchProposedEventInput): P
       repo: args.repo,
       reviewId: args.reviewId,
       findingId: args.findingId,
+      reviewCommentId: args.reviewCommentId ?? null,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -798,6 +812,75 @@ export async function recordPatchAcceptedEvent(args: PatchAcceptedEventInput): P
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logError("onboarder.patch_accepted_persist_failed", {
+      reviewId: args.reviewId,
+      findingId: args.findingId,
+      message,
+    });
+  }
+}
+
+// Patch Agent v1.6 — fires when the sweeper's click-apply detection pass
+// observes the user-applied transition on a posted PR review comment.
+// Distinct from patch_accepted (v1.5): patch_accepted fires whenever a
+// commit lands on the default branch whose anchor file content matches
+// our suggestion (could be button-click OR manual commit); this event
+// fires only when the GitHub "Commit suggestion" button is specifically
+// the path of acceptance. The two fire independently — a click-applied
+// suggestion typically generates BOTH events as the commit propagates
+// to the default branch. Useful for the v2.0 button-vs-manual conversion
+// metric. Always PRIVATE (operator decision Q3 LOCKED).
+export type PatchApplyClickedEventInput = {
+  installationId: number;
+  owner: string;
+  repo: string;
+  reviewId: string;
+  findingId: string;
+  modelId: string | null;
+  // The new SHA on the PR head after the click — distinct from the
+  // post-time SHA stored on the v1.5 patch_accepted_sha column.
+  appliedSha: string;
+  // The review comment whose Apply button fired.
+  reviewCommentId: number;
+  reviewCommentUrl: string | null;
+};
+
+export async function recordPatchApplyClickedEvent(
+  args: PatchApplyClickedEventInput,
+): Promise<void> {
+  if (!isOnboarderEnabled()) return;
+  try {
+    await recordOnboardingEvent({
+      eventType: "patch_apply_clicked",
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      repoHash: hashRepo(args.owner, args.repo),
+      modelId: args.modelId,
+      prompt: null,
+      toolOutput: {
+        review_id: args.reviewId,
+        finding_id: args.findingId,
+        applied_sha: args.appliedSha,
+        review_comment_id: args.reviewCommentId,
+        review_comment_url: args.reviewCommentUrl,
+      },
+      commentId: args.reviewCommentId,
+      commentUrl: args.reviewCommentUrl,
+      // Operator decision Q3 LOCKED — private. Matches patch_proposed /
+      // patch_accepted precedent. /activity gating filters this out.
+      public: false,
+    });
+    logInfo("onboarder.patch_apply_clicked_recorded", {
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      reviewId: args.reviewId,
+      findingId: args.findingId,
+      appliedSha: args.appliedSha,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("onboarder.patch_apply_clicked_persist_failed", {
       reviewId: args.reviewId,
       findingId: args.findingId,
       message,
