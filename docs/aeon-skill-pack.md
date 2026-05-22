@@ -7,7 +7,7 @@ a specific PR or commit, mid-session.
 - **Push-mode** (existing): AntFleet's GitHub App reviews automatically
   when a PR opens. No caller action; runs on every commit.
 - **Pull-mode** (this doc): Aeon agent calls `POST /api/v1/installations/{id}/review`
-  to trigger a review *right now* against a named PR/SHA. Same channel,
+  to trigger a review _right now_ against a named PR/SHA. Same channel,
   same price, same finding pipeline — purely an additional trigger.
 
 There is no new payment surface. Both push and pull flows debit the
@@ -51,11 +51,35 @@ minutes.
   "challenge_id": "11111111-1111-4111-8111-111111111111",
   "challenge": "AntFleet review: 11111111-1111-4111-8111-111111111111 22222222-2222-4222-8222-222222222222 0xabcd...abcd 2026-05-22T14:30:00.000Z",
   "installation_id": "22222222-2222-4222-8222-222222222222",
-  "wallet_address": "0xabcd...abcd",
   "issued_at": "2026-05-22T14:30:00.000Z",
   "expires_at": "2026-05-22T14:40:00.000Z"
 }
 ```
+
+The `wallet_address` is intentionally **not** included as a top-level
+response field. The legitimate caller already knows their wallet (they
+are about to sign with it), and anonymous probes of installation UUIDs
+should not be able to read the bound wallet from this surface. The
+wallet still appears inside the `challenge` string (it must, to be
+signable) — that's acceptable because forging a signature requires the
+private key.
+
+**Failure response (404):**
+
+```json
+{
+  "error": {
+    "code": "not_eligible",
+    "message": "installation is not eligible for review challenges"
+  }
+}
+```
+
+This single code covers three internal states: the row does not exist,
+the row has no wallet claimed, or the row's wallet was claimed but never
+bound. Collapsed deliberately so an unauth caller cannot enumerate the
+lifecycle stage of a target installation. Operators can disambiguate
+via the `paywall.review_challenge.rejected` log entries.
 
 **Why two calls instead of one?** The `/bind` challenge is stateless
 because binding is one-shot per install. Review is repeating, so the
@@ -117,9 +141,15 @@ const signature = await account.signMessage({ message: challenge });
     "is_benchmark": false,
     "pr_comment_url": "https://github.com/acme/demo/pull/42#issuecomment-..."
   },
-  "findings": [ /* Finding[] — see types/review-output.ts */ ],
-  "finding": { /* the first finding, for callers that want one */ },
-  "evidence": [ /* flat list of EvidenceRef with finding_title for context */ ],
+  "findings": [
+    /* Finding[] — see types/review-output.ts */
+  ],
+  "finding": {
+    /* the first finding, for callers that want one */
+  },
+  "evidence": [
+    /* flat list of EvidenceRef with finding_title for context */
+  ],
   "channel": {
     "debited_usdc": "0.500000",
     "remaining_usdc": "4.500000",
@@ -130,24 +160,25 @@ const signature = await account.signMessage({ message: challenge });
 
 **Error responses (selected):**
 
-| HTTP | `error.code` | Meaning |
-|---|---|---|
-| 400 | `invalid_input` | Body schema failed (missing target, malformed sig/uuid, bad repo string) |
-| 400 | `sha_has_no_open_pr` | sha given but no open PR has it as head |
-| 400 | `sha_matches_multiple_prs` | sha is the head of multiple open PRs; pass `pr_number` |
-| 401 | `unknown_challenge` | `challenge_id` not found |
-| 401 | `challenge_install_mismatch` | challenge was issued for a different install |
-| 401 | `challenge_already_used` | challenge was redeemed by a prior call |
-| 401 | `expired_challenge` | challenge older than 10 min |
-| 401 | `signature_mismatch` | signature doesn't recover to bound wallet |
-| 402 | `insufficient_channel_balance` | balance < `REVIEW_PRICE_USDC`; response includes `required_usdc`, `current_usdc`, `wallet_address` |
-| 404 | `not_found` | install row missing |
-| 404 | `pr_not_found` | pr_number doesn't exist in the repo |
-| 409 | `missing_wallet` / `wallet_not_bound` / `github_app_not_installed` | install row not ready |
-| 409 | `install_repo_mismatch` | install doesn't cover the requested repo |
-| 501 | `force_not_yet_supported` | `?force=true` is deferred to v2 |
-| 502 | `github_auth_failed` / `github_lookup_failed` / `review_failed` | upstream / pipeline error |
-| 503 | `review_in_progress` | review hit a transient failure; cron will finish it |
+| HTTP | `error.code`                                                       | Meaning                                                                                            |
+| ---- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| 400  | `invalid_input`                                                    | Body schema failed (missing target, malformed sig/uuid, bad repo string)                           |
+| 400  | `pr_not_open`                                                      | pr_number resolves to a closed/merged PR; only open PRs are reviewable                             |
+| 400  | `sha_has_no_open_pr`                                               | sha given but no open PR has it as head                                                            |
+| 400  | `sha_matches_multiple_prs`                                         | sha is the head of multiple open PRs; pass `pr_number`                                             |
+| 401  | `unknown_challenge`                                                | `challenge_id` not found                                                                           |
+| 401  | `challenge_install_mismatch`                                       | challenge was issued for a different install                                                       |
+| 401  | `challenge_already_used`                                           | challenge was redeemed by a prior call                                                             |
+| 401  | `expired_challenge`                                                | challenge older than 10 min                                                                        |
+| 401  | `signature_mismatch`                                               | signature doesn't recover to bound wallet                                                          |
+| 402  | `insufficient_channel_balance`                                     | balance < `REVIEW_PRICE_USDC`; response includes `required_usdc`, `current_usdc`, `wallet_address` |
+| 404  | `not_found`                                                        | install row missing                                                                                |
+| 404  | `pr_not_found`                                                     | pr_number doesn't exist in the repo                                                                |
+| 409  | `missing_wallet` / `wallet_not_bound` / `github_app_not_installed` | install row not ready                                                                              |
+| 409  | `install_repo_mismatch`                                            | install doesn't cover the requested repo                                                           |
+| 501  | `force_not_yet_supported`                                          | `?force=true` is deferred to v2                                                                    |
+| 502  | `github_auth_failed` / `github_lookup_failed` / `review_failed`    | upstream / pipeline error                                                                          |
+| 503  | `review_in_progress`                                               | review hit a transient failure; cron will finish it                                                |
 
 ### Idempotency
 

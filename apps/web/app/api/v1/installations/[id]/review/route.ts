@@ -30,11 +30,12 @@ import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { debitForReview, decideGate } from "@/lib/paywall/gate";
 import { getReviewPriceUsdc } from "@/lib/paywall/env";
 import {
+  claimReviewChallenge,
+  linkReviewChallengeToReview,
   loadChannelBalanceForInstallation,
   loadPaywallInstallation,
   loadReviewChallenge,
   loadReviewForResponse,
-  markReviewChallengeUsed,
   type PaywallInstallationRow,
   type ReviewChallengeRow,
   type ReviewResponsePayload,
@@ -85,7 +86,7 @@ export type ReviewOctokit = {
   rest: {
     pulls: {
       get: (params: { owner: string; repo: string; pull_number: number }) => Promise<{
-        data: { head: { sha: string } };
+        data: { state: string; head: { sha: string } };
       }>;
     };
     repos: {
@@ -107,11 +108,8 @@ export type ReviewEndpointDeps = {
   decideGate: typeof decideGate;
   enqueueReview: typeof enqueueReview;
   debitForReview: typeof debitForReview;
-  markChallengeUsed: (args: {
-    challengeId: string;
-    usedAt: Date;
-    reviewId: string;
-  }) => Promise<boolean>;
+  claimChallenge: (args: { challengeId: string; usedAt: Date }) => Promise<boolean>;
+  linkChallengeToReview: (args: { challengeId: string; reviewId: string }) => Promise<void>;
   markReviewTerminallyFailed: typeof markReviewTerminallyFailed;
   runReviewWorker: typeof runReviewWorker;
   loadReviewForResponse: (reviewId: string) => Promise<ReviewResponsePayload | null>;
@@ -131,7 +129,8 @@ const DEFAULT_DEPS: ReviewEndpointDeps = {
   decideGate,
   enqueueReview,
   debitForReview,
-  markChallengeUsed: (args) => markReviewChallengeUsed(db, args),
+  claimChallenge: (args) => claimReviewChallenge(db, args),
+  linkChallengeToReview: (args) => linkReviewChallengeToReview(db, args),
   markReviewTerminallyFailed,
   runReviewWorker,
   loadReviewForResponse: (id) => loadReviewForResponse(db, id),
@@ -317,6 +316,23 @@ export async function handleReviewRequest(
     }
     // gate.kind is "bypass" (legacy_partner) or "debit"
 
+    // Atomic challenge redemption — claim BEFORE enqueue so a lost-race
+    // redemption doesn't leave a stale reviews row behind. The UPDATE's
+    // used_at IS NULL guard is the anti-replay surface; two concurrent
+    // verifications for the same challenge_id race here, the loser sees
+    // 0 rows and bails out without any side effects on the reviews table.
+    const claimed = await deps.claimChallenge({
+      challengeId: challenge.id,
+      usedAt: now,
+    });
+    if (!claimed) {
+      return jsonError(
+        401,
+        "challenge_already_used",
+        "challenge_id was redeemed by another request",
+      );
+    }
+
     // Mission 5 / 6 visibility flags. Same calls the webhook makes; the
     // helpers are fail-closed so a missing public-repo lookup defaults to
     // privateReceipt=false (safe). Per project memory, this endpoint also
@@ -350,37 +366,19 @@ export async function handleReviewRequest(
     });
     const { reviewId, isNew } = enqueued;
 
-    // Atomic challenge redemption. The UPDATE's used_at IS NULL guard is
-    // the anti-replay surface — two concurrent verifications for the same
-    // challenge_id race here; the loser sees 0 rows. We terminally fail
-    // the just-enqueued row (when isNew) so cron doesn't run a free review
-    // off a lost-race redemption.
-    const claimed = await deps.markChallengeUsed({
-      challengeId: challenge.id,
-      usedAt: now,
-      reviewId,
-    });
-    if (!claimed) {
-      if (isNew) {
-        try {
-          await deps.markReviewTerminallyFailed({
-            reviewId,
-            now: deps.now(),
-            error: "challenge_lost_race",
-          });
-        } catch (err) {
-          logError("review_endpoint.fail_after_lost_race", {
-            id,
-            reviewId,
-            message: messageOf(err),
-          });
-        }
-      }
-      return jsonError(
-        401,
-        "challenge_already_used",
-        "challenge_id was redeemed by another request",
-      );
+    // Audit-only link from the claimed challenge to the review row.
+    // Best-effort: a failure here is logged but never blocks the flow —
+    // the challenge is already marked used (anti-replay holds) and the
+    // review row exists; the linkage is recoverable from timestamps.
+    try {
+      await deps.linkChallengeToReview({ challengeId: challenge.id, reviewId });
+    } catch (err) {
+      logError("review_endpoint.challenge_link_failed", {
+        id,
+        challengeId: challenge.id,
+        reviewId,
+        message: messageOf(err),
+      });
     }
 
     // Debit only on isNew=true. Per the brief, cached responses for a
@@ -550,10 +548,17 @@ async function resolveTarget(args: {
     }
     owner = bo;
     repo = br;
+    // GitHub repo slugs are case-insensitive on the wire — both `Acme/demo`
+    // and `acme/demo` route to the same repository — so the cross-check
+    // against install.owner/install.repo must be case-insensitive too. We
+    // continue forwarding the caller-provided case to GitHub so the gate
+    // query (which uses the install row's stored case) keeps working
+    // against the same row.
     if (
       install.owner !== null &&
       install.repo !== null &&
-      (install.owner !== owner || install.repo !== repo)
+      (install.owner.toLowerCase() !== owner.toLowerCase() ||
+        install.repo.toLowerCase() !== repo.toLowerCase())
     ) {
       return {
         kind: "error",
@@ -561,6 +566,13 @@ async function resolveTarget(args: {
         code: "repo_install_mismatch",
         message: `installation is bound to ${install.owner}/${install.repo}; body.repo names ${owner}/${repo}`,
       };
+    }
+    // Use the install row's canonical case for downstream gate lookups
+    // and findings persistence — that's what the (installation_id, repo)
+    // unique index in `installations` uses as the source of truth.
+    if (install.owner !== null && install.repo !== null) {
+      owner = install.owner;
+      repo = install.repo;
     }
   } else if (install.owner !== null && install.repo !== null) {
     owner = install.owner;
@@ -582,6 +594,20 @@ async function resolveTarget(args: {
         repo,
         pull_number: body.pr_number,
       });
+      // Mirror webhook semantics: the GitHub App webhook only dispatches
+      // on opened/reopened/synchronize, so closed/merged PRs never reach
+      // the gate via push-mode. The on-demand endpoint must reject the
+      // same set so a caller can't pay to review a long-closed PR. The
+      // sha-only branch already filters on state === "open"; this is the
+      // matching guard for the pr_number path.
+      if (pr.data.state !== "open") {
+        return {
+          kind: "error",
+          status: 400,
+          code: "pr_not_open",
+          message: `pr_number ${body.pr_number} is ${pr.data.state}; only open PRs can be reviewed`,
+        };
+      }
       const sha = pr.data.head.sha;
       // If the caller supplied both pr_number and sha and they disagree,
       // they're asking about a stale PR head. Reject so we don't review

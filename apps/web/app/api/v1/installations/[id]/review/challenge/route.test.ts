@@ -3,9 +3,11 @@
 // Issues a single-use nonce. Auth is intentionally absent (the
 // signature step on POST .../review is the actual gate); this endpoint
 // is allowed to be hit by anyone for any installation. Tests pin:
-//   - 200 happy path: issues challenge_id + canonical challenge string
-//   - 404 when install row missing
-//   - 409 when wallet is missing / unbound
+//   - 200 happy path: issues challenge_id + canonical challenge string,
+//     does NOT leak wallet_address in the response
+//   - 404 not_eligible (collapsed) for: row missing, no wallet claimed,
+//     wallet claimed but never bound — the unauth caller can't tell
+//     which lifecycle stage the install is in
 
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
@@ -63,7 +65,6 @@ describe("POST /api/v1/installations/{id}/review/challenge", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["challenge_id"]).toBe(CHALLENGE_ID);
     expect(body["installation_id"]).toBe(ROW_ID);
-    expect(body["wallet_address"]).toBe(WALLET);
     expect(body["challenge"]).toBe(
       `AntFleet review: ${CHALLENGE_ID} ${ROW_ID} ${WALLET} ${NOW.toISOString()}`,
     );
@@ -71,29 +72,41 @@ describe("POST /api/v1/installations/{id}/review/challenge", () => {
     expect(expiry).toBe(10 * 60 * 1000);
   });
 
-  it("returns 404 when the installation row is missing", async () => {
+  it("does not leak wallet_address in the response body (info hygiene)", async () => {
+    // Unauthenticated probe of an installation UUID must not learn the
+    // bound wallet from the response. The wallet is still embedded in
+    // the challenge string (it must be, to be signable), but the bare
+    // wallet field is removed.
+    const res = await handleIssueReviewChallenge(req, ctx, deps());
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body["wallet_address"]).toBeUndefined();
+  });
+
+  it("returns 404 not_eligible (collapsed) when the installation row is missing", async () => {
     const d = deps({ loadInstallation: vi.fn(async () => null) });
     const res = await handleIssueReviewChallenge(req, ctx, d);
     expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("not_eligible");
   });
 
-  it("returns 409 when the installation has no wallet bound", async () => {
+  it("returns 404 not_eligible (collapsed) when the installation has no wallet bound", async () => {
     const d = deps({
       loadInstallation: vi.fn(async () => row({ walletAddress: null, walletBoundAt: null })),
     });
     const res = await handleIssueReviewChallenge(req, ctx, d);
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(404);
     const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("missing_wallet");
+    expect(body.error.code).toBe("not_eligible");
   });
 
-  it("returns 409 when the wallet exists but binding never completed", async () => {
+  it("returns 404 not_eligible (collapsed) when wallet exists but binding never completed", async () => {
     const d = deps({
       loadInstallation: vi.fn(async () => row({ status: "pending_binding", walletBoundAt: null })),
     });
     const res = await handleIssueReviewChallenge(req, ctx, d);
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(404);
     const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("wallet_not_bound");
+    expect(body.error.code).toBe("not_eligible");
   });
 });

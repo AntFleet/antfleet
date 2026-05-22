@@ -119,6 +119,7 @@ function reviewPayload(overrides: Partial<ReviewResponsePayload> = {}): ReviewRe
 function octokitStub(opts?: {
   prSha?: string;
   prNumber?: number;
+  prState?: string;
   associatedPrs?: Array<{ number: number; state: string; headSha: string }>;
   prThrow?: { status: number };
 }): ReviewOctokit {
@@ -131,7 +132,7 @@ function octokitStub(opts?: {
             err.status = opts.prThrow.status;
             throw err;
           }
-          return { data: { head: { sha: opts?.prSha ?? SHA } } };
+          return { data: { state: opts?.prState ?? "open", head: { sha: opts?.prSha ?? SHA } } };
         }),
       },
       repos: {
@@ -160,7 +161,8 @@ function deps(overrides: Partial<ReviewEndpointDeps> = {}): ReviewEndpointDeps {
       newBalanceUsdc: "0.500000",
       drawdownId: "drawdown-1" as string | null,
     })),
-    markChallengeUsed: vi.fn(async () => true),
+    claimChallenge: vi.fn(async () => true),
+    linkChallengeToReview: vi.fn(async () => undefined),
     markReviewTerminallyFailed: vi.fn(async () => undefined),
     runReviewWorker: vi.fn(async () => ({
       kind: "done" as const,
@@ -219,7 +221,8 @@ describe("POST /api/v1/installations/{id}/review", () => {
     });
     expect(d.debitForReview).toHaveBeenCalledTimes(1);
     expect(d.runReviewWorker).toHaveBeenCalledTimes(1);
-    expect(d.markChallengeUsed).toHaveBeenCalledTimes(1);
+    expect(d.claimChallenge).toHaveBeenCalledTimes(1);
+    expect(d.linkChallengeToReview).toHaveBeenCalledTimes(1);
   });
 
   it("cached path (isNew=false): skips debit and worker, returns cached finding", async () => {
@@ -240,7 +243,8 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(d.debitForReview).not.toHaveBeenCalled();
     expect(d.runReviewWorker).not.toHaveBeenCalled();
     // Challenge is still consumed — single-use even on cached returns.
-    expect(d.markChallengeUsed).toHaveBeenCalledTimes(1);
+    expect(d.claimChallenge).toHaveBeenCalledTimes(1);
+    expect(d.linkChallengeToReview).toHaveBeenCalledTimes(1);
   });
 
   it("returns 401 when signature does not recover to the bound wallet", async () => {
@@ -284,7 +288,7 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(body["required_usdc"]).toBe("0.50");
     expect(body["current_usdc"]).toBe("0.250000");
     expect(d.debitForReview).not.toHaveBeenCalled();
-    expect(d.markChallengeUsed).not.toHaveBeenCalled();
+    expect(d.claimChallenge).not.toHaveBeenCalled();
   });
 
   it("returns 401 when challenge_id is not found", async () => {
@@ -343,9 +347,14 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(body.error.code).toBe("challenge_install_mismatch");
   });
 
-  it("returns 401 and terminally-fails the enqueued row when markChallengeUsed loses the race", async () => {
+  it("returns 401 with NO side effects when challenge claim loses the race", async () => {
+    // After PR #48's reorder (post-Phase-4 fix), claim happens BEFORE
+    // enqueue — so a lost race must NOT create a stale reviews row that
+    // would later need terminal failure. The flow short-circuits at the
+    // claim, returning 401 immediately. Pins this property so a future
+    // refactor doesn't silently re-introduce the stale-row regression.
     const d = deps({
-      markChallengeUsed: vi.fn(async () => false),
+      claimChallenge: vi.fn(async () => false),
     });
     const res = await handleReviewRequest(
       req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR }),
@@ -355,15 +364,10 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("challenge_already_used");
-    // The just-enqueued row must be marked terminally failed so the
-    // cron sweep doesn't run a free review for the lost-race redemption.
-    expect(d.markReviewTerminallyFailed).toHaveBeenCalledWith({
-      reviewId: REVIEW_ID,
-      now: NOW,
-      error: "challenge_lost_race",
-    });
+    expect(d.enqueueReview).not.toHaveBeenCalled();
     expect(d.debitForReview).not.toHaveBeenCalled();
     expect(d.runReviewWorker).not.toHaveBeenCalled();
+    expect(d.markReviewTerminallyFailed).not.toHaveBeenCalled();
   });
 
   it("returns 400 when neither pr_number nor sha is provided", async () => {
@@ -468,6 +472,50 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("sha_has_no_open_pr");
+  });
+
+  it("rejects pr_number requests when the PR is closed (matches webhook semantics)", async () => {
+    // The webhook only dispatches on opened/reopened/synchronize. The
+    // on-demand endpoint must mirror that so callers can't pay to review
+    // a long-closed PR. This is the post-Phase-4 fix; the prior code
+    // would happily debit USDC for a review of a merged PR.
+    const d = deps({
+      makeOctokit: vi.fn(() => octokitStub({ prState: "closed", prSha: SHA })),
+    });
+    const res = await handleReviewRequest(
+      req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR }),
+      ctx,
+      d,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("pr_not_open");
+    expect(d.debitForReview).not.toHaveBeenCalled();
+    expect(d.enqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("accepts body.repo with different case than install row (GitHub slugs are case-insensitive)", async () => {
+    // body.repo "ACME/Demo" must match install row "acme/demo". The
+    // canonical case from the install row flows through to the gate
+    // lookup so the (installation_id, repo) unique index still hits.
+    const d = deps();
+    const res = await handleReviewRequest(
+      req({
+        challenge_id: CHALLENGE_ID,
+        signature: SIG,
+        pr_number: PR,
+        repo: `${OWNER.toUpperCase()}/${REPO.toUpperCase()}`,
+      }),
+      ctx,
+      d,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // Receipt repo reflects the install row's canonical case, not the
+    // caller's input case.
+    expect(body["receipt"]).toMatchObject({
+      repo: { owner: OWNER, name: REPO },
+    });
   });
 
   it("rejects sha-only requests when multiple open PRs match", async () => {

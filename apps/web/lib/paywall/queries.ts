@@ -511,26 +511,46 @@ export async function loadReviewChallenge(
   return firstRow<ReviewChallengeRow>(result);
 }
 
-// Atomically marks a challenge used. The WHERE clause on used_at IS NULL
-// is the race-safe guard: two concurrent verifications for the same
-// challenge_id will see the second UPDATE return 0 rows, and the loser
-// returns 401 challenge_already_used. used_for_review_id is set to the
-// reviewId we're about to enqueue so audit can correlate the redemption
-// to its review row.
-export async function markReviewChallengeUsed(
+// Atomically claims a challenge. The WHERE clause on used_at IS NULL is
+// the race-safe anti-replay guard: two concurrent verifications for the
+// same challenge_id will see the second UPDATE return 0 rows, and the
+// loser returns 401 challenge_already_used. Called BEFORE enqueueReview
+// so a lost-race redemption doesn't leave a stale reviews row behind
+// (the prior order — enqueue then mark — was clean for billing but left
+// audit cruft on each race loss; see code review feedback on PR #48).
+//
+// used_for_review_id is filled in by linkReviewChallengeToReview after
+// enqueueReview returns. The brief window between claim and link is
+// audit-only — the race guard above already lives in used_at.
+export async function claimReviewChallenge(
   q: Queryable,
-  args: { challengeId: string; usedAt: Date; reviewId: string },
+  args: { challengeId: string; usedAt: Date },
 ): Promise<boolean> {
   const result = await q.execute(sql`
     UPDATE review_challenges
-    SET
-      used_at = ${args.usedAt},
-      used_for_review_id = ${args.reviewId}
+    SET used_at = ${args.usedAt}
     WHERE id = ${args.challengeId}
       AND used_at IS NULL
     RETURNING id
   `);
   return firstRow<{ id: string }>(result) !== null;
+}
+
+// Audit-only link from the claimed challenge to its review row. Called
+// after enqueueReview returns the reviewId. Best-effort: if this UPDATE
+// fails, the challenge is still marked used (the race guard) and the
+// review still proceeds; the link is recoverable from the reviews row's
+// created_at + the challenge's used_at.
+export async function linkReviewChallengeToReview(
+  q: Queryable,
+  args: { challengeId: string; reviewId: string },
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_challenges
+    SET used_for_review_id = ${args.reviewId}
+    WHERE id = ${args.challengeId}
+      AND used_for_review_id IS NULL
+  `);
 }
 
 function firstRow<T>(result: unknown): T | null {
