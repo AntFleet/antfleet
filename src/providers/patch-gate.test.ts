@@ -13,6 +13,7 @@ const anthropic = (
   providerName: "anthropic",
   findingId: "fid-1",
   patch: null,
+  modelId: "claude-opus-4-7",
   skipReason: null,
   rationale: null,
   ...overrides,
@@ -24,6 +25,7 @@ const openai = (
   providerName: "openai",
   findingId: "fid-1",
   patch: null,
+  modelId: "gpt-5",
   skipReason: null,
   rationale: null,
   ...overrides,
@@ -163,6 +165,7 @@ describe("decidePatchOutcomes — degenerate inputs", () => {
       providerName: "openrouter",
       findingId: "fid-1",
       patch: null,
+      modelId: null,
       skipReason: "outside_diff_hunk",
       rationale: null,
     };
@@ -173,6 +176,27 @@ describe("decidePatchOutcomes — degenerate inputs", () => {
     ]);
     expect(out[0]?.patch).toBe(PATCH_A);
     expect(out[0]?.skipReason).toBeNull();
+  });
+});
+
+describe("decidePatchOutcomes — modelId threading (audit-response)", () => {
+  it("uses the modelId reported by the winning anthropic proposal, not a captured constant", () => {
+    // Future anthropic upgrade scenario: the provider's resolved model
+    // for this call is claude-opus-4-8 (not the module-load default).
+    // The gate must record that, not the const.
+    const out = decidePatchOutcomes([
+      anthropic({ patch: PATCH_A, modelId: "claude-opus-4-8" }),
+      openai({ patch: PATCH_B, modelId: "gpt-6" }),
+    ]);
+    expect(out[0]?.modelId).toBe("claude-opus-4-8");
+  });
+
+  it("falls back to provider name when modelId is unexpectedly null", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ patch: PATCH_A, modelId: null }),
+      openai({ patch: PATCH_B, modelId: "gpt-5" }),
+    ]);
+    expect(out[0]?.modelId).toBe("anthropic");
   });
 });
 

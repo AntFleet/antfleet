@@ -24,7 +24,11 @@
 export function extractNewSideLines(patch: string): string[] {
   const out: string[] = [];
   for (const line of patch.split("\n")) {
-    if (line.startsWith("+++")) continue;
+    // Use the trailing-space variant for symmetry with diff-hunks.ts's
+    // countAddedLines — `+++ b/path` always has the space, but a real
+    // content line starting with `+++` (e.g. an MDX frontmatter delim)
+    // should NOT be skipped.
+    if (line.startsWith("+++ ")) continue;
     if (line.startsWith("+")) {
       out.push(line.slice(1));
     }
@@ -36,6 +40,13 @@ export function extractNewSideLines(patch: string): string[] {
   }
   return out;
 }
+
+// Defensive cap: the orchestrator enforces a 20-line size cap before
+// persist, but `patchContentMatchesFile` is also called directly from
+// the sweeper against DB content. A manual SQL backfill or future code
+// path could bypass the orchestrator cap; this floor stops a runaway
+// patch from blowing the n*m bound of the matcher.
+const MATCH_NEW_LINE_HARD_CAP = 100;
 
 // Whitespace-tolerant comparator. Two strings are equivalent if their
 // whitespace-normalized forms match. Used to dodge tab-vs-spaces drift
@@ -60,6 +71,10 @@ export function patchContentMatchesFile(patch: string, fileContents: string): bo
   // representable as ```suggestion``` blocks anyway, so this is a safety
   // floor rather than a real codepath.
   if (newLines.length === 0) return false;
+  // Defensive: refuse to match anything with more than the hard cap of
+  // new-side lines. The orchestrator caps at 20 pre-persist; this is the
+  // floor for the post-persist read path.
+  if (newLines.length > MATCH_NEW_LINE_HARD_CAP) return false;
   // Skip pure-whitespace new lines from the search — they're useless as
   // anchors and would inflate false positives.
   const filtered = newLines.filter((l) => l.length > 0);

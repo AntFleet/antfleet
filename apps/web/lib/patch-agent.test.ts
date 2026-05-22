@@ -34,14 +34,14 @@ const stubFile = (): ChangedFile => ({
 const opus: PatchProposingProvider = {
   name: "anthropic",
   async proposePatch() {
-    return { patch: "-old\n+new\n", rationale: null };
+    return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null, modelId: "claude-opus-4-7" };
   },
 };
 
 const gpt: PatchProposingProvider = {
   name: "openai",
   async proposePatch() {
-    return { patch: "-old\n+other\n", rationale: null };
+    return { patch: "@@ -10,1 +10,1 @@\n-old\n+other\n", rationale: null, modelId: "gpt-5" };
   },
 };
 
@@ -85,7 +85,7 @@ describe("runPatchAgent — happy path", () => {
     });
     const patch = out!.byIndex.get(0);
     expect(patch).toBeDefined();
-    expect(patch?.patch).toBe("-old\n+new\n");
+    expect(patch?.patch).toBe("@@ -10,1 +10,1 @@\n-old\n+new\n");
     expect(patch?.modelId).toBe("claude-opus-4-7");
   });
 
@@ -94,7 +94,7 @@ describe("runPatchAgent — happy path", () => {
     const decline: PatchProposingProvider = {
       name: "openai",
       async proposePatch() {
-        return { patch: null, rationale: null };
+        return { patch: null, rationale: null, modelId: "gpt-5" };
       },
     };
     const out = await runPatchAgent({
@@ -120,7 +120,39 @@ describe("runPatchAgent — degenerate paths", () => {
       providers: [opus, gpt],
       enabled: () => true,
     });
-    expect(out).toEqual({ decisions: [], byIndex: new Map(), elapsedMs: 0 });
+    expect(out).toEqual({ decisions: [], byIndex: new Map(), elapsedMs: 0, costPatchUsd: 0 });
+  });
+
+  it("short-circuits when anthropic is missing even if 2+ providers are present", async () => {
+    // Audit-response fix: previously this would burn API calls before
+    // the gate returned models_disagreed. The orchestrator now matches
+    // the gate's "winning provider must be anthropic" rule.
+    let calls = 0;
+    const openaiOnly: PatchProposingProvider = {
+      name: "openai",
+      async proposePatch() {
+        calls += 1;
+        return { patch: "...", rationale: null, modelId: "stub-model" };
+      },
+    };
+    const third: PatchProposingProvider = {
+      name: "openrouter",
+      async proposePatch() {
+        calls += 1;
+        return { patch: "...", rationale: null, modelId: "stub-model" };
+      },
+    };
+    const out = await runPatchAgent({
+      reviewId: "rev-1",
+      installationId: 12345,
+      findings: [stubFinding()],
+      changedFiles: [stubFile()],
+      providers: [openaiOnly, third],
+      enabled: () => true,
+    });
+    expect(calls).toBe(0);
+    expect(out!.byIndex.size).toBe(0);
+    expect(out!.decisions).toEqual([]);
   });
 
   it("short-circuits when fewer than 2 providers are configured", async () => {

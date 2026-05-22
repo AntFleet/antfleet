@@ -267,13 +267,13 @@ describe("runReviewWorker", () => {
           decisions: [
             {
               findingId: "rev-1-0",
-              patch: "-old\n+new\n",
+              patch: "@@ -1,1 +1,1 @@\n-old\n+new\n",
               modelId: "claude-opus-4-7",
               skipReason: null,
             },
           ],
           byIndex: new Map([
-            [0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }],
+            [0, { patch: "@@ -1,1 +1,1 @@\n-old\n+new\n", modelId: "claude-opus-4-7" }],
           ]),
           elapsedMs: 1500,
         }),
@@ -281,7 +281,10 @@ describe("runReviewWorker", () => {
       await runReviewWorker("rev-1", "webhook", deps);
       const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
       expect(body).toContain("```suggestion");
-      expect(body).toContain("+new");
+      // Suggestion body contains literal replacement text (the new-side
+      // line "new"), NOT the unified-diff prefix "+new".
+      expect(body).toContain("\nnew\n");
+      expect(body).not.toContain("+new");
       expect(body).toContain("Proposed patch (model: claude-opus-4-7)");
     });
 

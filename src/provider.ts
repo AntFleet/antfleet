@@ -5,7 +5,7 @@ import { runCommand } from "./exec.js";
 import { FleetError } from "./errors.js";
 import {
   FixPlanOutput,
-  PatchSuggestionOutput,
+  PatchSuggestionResult,
   ReviewOutput,
   RevalidateOutput,
   fixPlanOutputSchema,
@@ -32,11 +32,14 @@ export type Provider = {
   // implement this can participate in the suggested-patch lane; providers
   // without it (mock, mock-fail, codex) silently opt out. The orchestrator
   // checks `typeof provider.proposePatch === "function"` before invoking.
+  // Returns the resolved modelId alongside the schema-validated content
+  // so downstream code (gate, persistence) records the actual model used
+  // rather than re-deriving it from the provider module's exported const.
   proposePatch?: (
     root: string,
     prompt: string,
     model: string | null,
-  ) => Promise<PatchSuggestionOutput>;
+  ) => Promise<PatchSuggestionResult>;
 };
 
 export function providerByName(name: string): Provider {

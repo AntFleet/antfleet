@@ -56,6 +56,13 @@ export type PatchAgentOutcome = {
   decisions: PatchDecision[];
   byIndex: Map<number, PatchForRender>;
   elapsedMs: number;
+  // Aggregate USD cost of the patch lane for this review. v1 reports 0
+  // because the provider modules don't yet expose per-call token spend;
+  // the column exists for forward compatibility so review-worker can
+  // persist a real value without a schema change. Tracked separately
+  // from review.estimatedCostUsd (which covers the reviewer fleet, not
+  // the patch lane).
+  costPatchUsd: number;
 };
 
 export type RunPatchAgentArgs = {
@@ -86,15 +93,18 @@ export async function runPatchAgent(
     : await isPatchAgentEnabledForInstall(args.installationId);
   if (!enabled) return null;
   if (args.findings.length === 0) {
-    return { decisions: [], byIndex: new Map(), elapsedMs: 0 };
+    return { decisions: [], byIndex: new Map(), elapsedMs: 0, costPatchUsd: 0 };
   }
 
   const providers = args.providers ?? DEFAULT_PATCH_PROVIDERS;
-  if (providers.length < 2) {
-    // The agreement gate requires anthropic + at least one other provider.
-    // Configuration without two providers is "models_disagreed" by default;
-    // we short-circuit here to save the API calls.
-    return { decisions: [], byIndex: new Map(), elapsedMs: 0 };
+  // The agreement gate requires anthropic + at least one other provider.
+  // Configurations missing either contribute zero shippable patches; we
+  // short-circuit here to save the API calls. (Audit-response: this used
+  // to gate on `length < 2`, which let an anthropic-less stack burn API
+  // calls before the gate returned `models_disagreed`.)
+  const hasAnthropic = providers.some((p) => p.name === "anthropic");
+  if (!hasAnthropic || providers.length < 2) {
+    return { decisions: [], byIndex: new Map(), elapsedMs: 0, costPatchUsd: 0 };
   }
 
   const findingIds = args.findings.map((_f, index) => makeFindingId(args.reviewId, index));
@@ -117,5 +127,5 @@ export async function runPatchAgent(
     }
   }
 
-  return { decisions, byIndex, elapsedMs: generation.elapsedMs };
+  return { decisions, byIndex, elapsedMs: generation.elapsedMs, costPatchUsd: 0 };
 }

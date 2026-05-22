@@ -51,7 +51,10 @@ const buildProvider = (
       prompt,
     );
     const title = titleMatch?.[1] ?? "";
-    return impl(stubFinding({ title }));
+    const result = await impl(stubFinding({ title }));
+    // The provider modules attach the resolved modelId; the test harness
+    // synthesizes one so the orchestrator's modelId-threading is exercised.
+    return { ...result, modelId: `${name}-test-model` };
   },
 });
 
@@ -88,7 +91,7 @@ describe("generateReviewPatches — fan-out", () => {
         peakInFlight = Math.max(peakInFlight, inFlight);
         await new Promise((r) => setTimeout(r, delayMs));
         inFlight -= 1;
-        return { patch: null, rationale: null };
+        return { patch: null, rationale: null, modelId: "stub-model" };
       },
     });
     const findings = [stubFinding(), stubFinding({ title: "F2" })];
@@ -152,7 +155,7 @@ describe("generateReviewPatches — diff-hunk filter", () => {
       name: "anthropic",
       async proposePatch() {
         called = true;
-        return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null };
+        return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null, modelId: "stub-model" };
       },
     };
     const result = await generateReviewPatches(baseArgs({ providers: [provider] }));
@@ -207,7 +210,7 @@ describe("generateReviewPatches — failure isolation", () => {
       name: "slow",
       async proposePatch() {
         await new Promise((r) => setTimeout(r, 80));
-        return { patch: null, rationale: null };
+        return { patch: null, rationale: null, modelId: "stub-model" };
       },
     };
     const result = await generateReviewPatches(
@@ -220,7 +223,7 @@ describe("generateReviewPatches — failure isolation", () => {
     const opus: PatchProposingProvider = {
       name: "anthropic",
       async proposePatch() {
-        return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null };
+        return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null, modelId: "stub-model" };
       },
     };
     const gpt: PatchProposingProvider = {
