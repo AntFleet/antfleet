@@ -25,7 +25,7 @@ import {
   generateReviewPatches,
   type PatchProposingProvider,
 } from "./patch-generation";
-import { isPatchAgentEnabled } from "./patch-agent-env";
+import { isPatchAgentEnabledForInstall } from "./patch-agent-env";
 import type { PatchForRender } from "./pr-comment";
 import type { ChangedFile } from "./github-files";
 import type { Finding } from "./review-types";
@@ -60,12 +60,13 @@ export type PatchAgentOutcome = {
 
 export type RunPatchAgentArgs = {
   reviewId: string;
+  installationId: number;
   findings: readonly Finding[];
   changedFiles: readonly ChangedFile[];
   // Test seam — overrides DEFAULT_PATCH_PROVIDERS.
   providers?: readonly PatchProposingProvider[];
-  // Test seam — overrides isPatchAgentEnabled().
-  enabled?: () => boolean;
+  // Test seam — overrides isPatchAgentEnabledForInstall().
+  enabled?: () => Promise<boolean> | boolean;
 };
 
 /**
@@ -73,12 +74,17 @@ export type RunPatchAgentArgs = {
  * Returns an outcome otherwise. Throws are caught here: spec §2 mandates
  * generation failure cannot block comment posting, so the worker treats
  * a thrown error as "no patches this run".
+ *
+ * Enablement resolution: per-install override (installations.patchAgentEnabled)
+ * takes precedence over the env flag. PR6 added the override path.
  */
 export async function runPatchAgent(
   args: RunPatchAgentArgs,
 ): Promise<PatchAgentOutcome | null> {
-  const enabledFn = args.enabled ?? isPatchAgentEnabled;
-  if (!enabledFn()) return null;
+  const enabled = args.enabled
+    ? await args.enabled()
+    : await isPatchAgentEnabledForInstall(args.installationId);
+  if (!enabled) return null;
   if (args.findings.length === 0) {
     return { decisions: [], byIndex: new Map(), elapsedMs: 0 };
   }

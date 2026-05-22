@@ -323,6 +323,7 @@ async function processClaimedRow(
   try {
     patchOutcome = await deps.runPatchAgent({
       reviewId,
+      installationId: row.installationId,
       findings: bundle.agreed,
       changedFiles: files,
     });

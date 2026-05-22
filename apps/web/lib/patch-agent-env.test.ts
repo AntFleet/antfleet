@@ -1,5 +1,32 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { isPatchAgentEnabled } from "./patch-agent-env";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// Mutable mock state. vi.hoisted keeps the closure visible to the
+// vi.mock factory (which is hoisted to the top of the file) and to the
+// test bodies below.
+const dbMockState = vi.hoisted(() => ({
+  selectResult: [] as Array<{ patchAgentEnabled: boolean | null }>,
+  throwOnRead: false,
+}));
+
+vi.mock("@/db", () => {
+  const builder = {
+    from: () => builder,
+    where: () => builder,
+    limit: () => {
+      if (dbMockState.throwOnRead) {
+        return Promise.reject(new Error("db down"));
+      }
+      return Promise.resolve(dbMockState.selectResult);
+    },
+  };
+  return {
+    db: {
+      select: () => builder,
+    },
+  };
+});
+
+import { isPatchAgentEnabled, isPatchAgentEnabledForInstall } from "./patch-agent-env";
 
 describe("isPatchAgentEnabled", () => {
   let original: string | undefined;
@@ -41,5 +68,62 @@ describe("isPatchAgentEnabled", () => {
       process.env["PATCH_AGENT_ENABLED"] = v;
       expect(isPatchAgentEnabled()).toBe(false);
     }
+  });
+});
+
+describe("isPatchAgentEnabledForInstall — per-install override precedence", () => {
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    originalEnv = process.env["PATCH_AGENT_ENABLED"];
+    dbMockState.selectResult = [];
+    dbMockState.throwOnRead = false;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env["PATCH_AGENT_ENABLED"];
+    } else {
+      process.env["PATCH_AGENT_ENABLED"] = originalEnv;
+    }
+  });
+
+  it("override=true wins over env=false (canary install)", async () => {
+    process.env["PATCH_AGENT_ENABLED"] = "false";
+    dbMockState.selectResult = [{ patchAgentEnabled: true }];
+    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(true);
+  });
+
+  it("override=false wins over env=true (kill switch on a single install)", async () => {
+    process.env["PATCH_AGENT_ENABLED"] = "true";
+    dbMockState.selectResult = [{ patchAgentEnabled: false }];
+    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(false);
+  });
+
+  it("override=null falls through to env=true", async () => {
+    process.env["PATCH_AGENT_ENABLED"] = "true";
+    dbMockState.selectResult = [{ patchAgentEnabled: null }];
+    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(true);
+  });
+
+  it("override=null falls through to env=false", async () => {
+    process.env["PATCH_AGENT_ENABLED"] = "false";
+    dbMockState.selectResult = [{ patchAgentEnabled: null }];
+    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(false);
+  });
+
+  it("missing install row → behaves as null override → env wins", async () => {
+    process.env["PATCH_AGENT_ENABLED"] = "true";
+    dbMockState.selectResult = []; // no row
+    await expect(isPatchAgentEnabledForInstall(99999)).resolves.toBe(true);
+  });
+
+  it("DB read failure → conservative fallback to env-only check", async () => {
+    process.env["PATCH_AGENT_ENABLED"] = "true";
+    dbMockState.throwOnRead = true;
+    // Per the function contract: a read failure never blocks the env path;
+    // we'd rather honor the env flag than silently disable the canary
+    // because the lookup failed.
+    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(true);
   });
 });

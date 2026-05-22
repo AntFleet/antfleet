@@ -49,6 +49,7 @@ describe("runPatchAgent — env-flag gate", () => {
   it("returns null when disabled", async () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
+      installationId: 12345,
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus, gpt],
@@ -60,6 +61,7 @@ describe("runPatchAgent — env-flag gate", () => {
   it("returns an outcome when enabled", async () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
+      installationId: 12345,
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus, gpt],
@@ -75,6 +77,7 @@ describe("runPatchAgent — happy path", () => {
   it("emits a PatchForRender keyed by original finding index", async () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
+      installationId: 12345,
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus, gpt],
@@ -96,6 +99,7 @@ describe("runPatchAgent — happy path", () => {
     };
     const out = await runPatchAgent({
       reviewId: "rev-1",
+      installationId: 12345,
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [onlyOpus, decline],
@@ -110,6 +114,7 @@ describe("runPatchAgent — degenerate paths", () => {
   it("returns empty outcome when no findings", async () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
+      installationId: 12345,
       findings: [],
       changedFiles: [],
       providers: [opus, gpt],
@@ -121,6 +126,7 @@ describe("runPatchAgent — degenerate paths", () => {
   it("short-circuits when fewer than 2 providers are configured", async () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
+      installationId: 12345,
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus],
