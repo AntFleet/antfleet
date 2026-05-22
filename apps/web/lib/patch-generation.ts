@@ -21,6 +21,10 @@ import {
   type HunkRange,
 } from "./diff-hunks";
 import type { PatchSuggestionOutput } from "@antfleet/cli/types";
+import type {
+  PatchSkipReason,
+  ProviderPatchProposal,
+} from "@antfleet/cli/providers/patch-gate";
 
 // Per-call timeout. The whole review must finish under 240s; the existing
 // per-provider review call already burns up to ~60s, so the patch call
@@ -31,25 +35,7 @@ export const PATCH_GENERATION_TIMEOUT_MS = 60_000;
 // findings need bigger fixes fall through to patchSkipReason="size_cap".
 export const PATCH_SIZE_LINE_CAP = 20;
 
-export type PatchSkipReason =
-  | "models_disagreed"
-  | "outside_diff_hunk"
-  | "generation_error"
-  | "disabled"
-  | "size_cap";
-
-// One per (finding, provider) pair. `patch` is the raw unified-diff string
-// when the provider returned a usable patch that survived all post-call
-// validation; null when this provider declined or its output was rejected.
-// `skipReason` is non-null exactly when patch is null. The patch agreement
-// gate (PR3) consumes these to decide which patch (if any) ships.
-export type ProviderPatchProposal = {
-  providerName: string;
-  findingId: string;
-  patch: string | null;
-  skipReason: PatchSkipReason | null;
-  rationale: string | null;
-};
+export type { PatchSkipReason, ProviderPatchProposal };
 
 export type PatchGenerationResult = {
   proposals: ProviderPatchProposal[];
