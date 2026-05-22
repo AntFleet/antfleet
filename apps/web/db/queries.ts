@@ -440,6 +440,121 @@ export async function setReviewPatchCost(reviewId: string, costPatchUsd: number)
     .where(eq(reviews.reviewId, reviewId));
 }
 
+// Patch Agent v1.5 — sweeper patch-acceptance work loader. Returns one row
+// per finding that has a proposed patch but no acceptance yet, joined to
+// the parent review so the sweep pass has install + repo context to read
+// HEAD content. Rows are dropped silently when the parent review is
+// missing dispatch fields (same pattern as loadSweepWork).
+export type PatchAcceptanceCandidate = {
+  findingId: string;
+  reviewId: string;
+  installationId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  prCommentUrl: string | null;
+  suggestedPatch: string;
+  patchModelId: string | null;
+  // Path the suggestion targets — extracted from the JSONB agreement_decision
+  // at the finding's index. Falls back to the patch's "+++ b/..." header
+  // when JSONB lookup fails; null when neither yields a path.
+  evidencePath: string | null;
+};
+
+export async function loadPatchAcceptanceWork(): Promise<PatchAcceptanceCandidate[]> {
+  const rows = await db
+    .select({
+      findingId: findingStatus.findingId,
+      findingIndex: findingStatus.findingIndex,
+      reviewId: findingStatus.reviewId,
+      suggestedPatch: findingStatus.suggestedPatch,
+      patchModelId: findingStatus.patchModelId,
+      installationId: reviews.installationId,
+      owner: reviews.owner,
+      repo: reviews.repo,
+      prNumber: reviews.prNumber,
+      prCommentUrl: reviews.prCommentUrl,
+      agreementDecision: reviews.agreementDecision,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(
+      and(
+        isNotNull(findingStatus.patchProposedAt),
+        sql`${findingStatus.patchAcceptedAt} IS NULL`,
+        isNotNull(findingStatus.suggestedPatch),
+      ),
+    );
+
+  const out: PatchAcceptanceCandidate[] = [];
+  for (const r of rows) {
+    if (
+      r.installationId === null ||
+      r.owner === null ||
+      r.repo === null ||
+      r.suggestedPatch === null
+    )
+      continue;
+    out.push({
+      findingId: r.findingId,
+      reviewId: r.reviewId,
+      installationId: r.installationId,
+      owner: r.owner,
+      repo: r.repo,
+      prNumber: r.prNumber,
+      prCommentUrl: r.prCommentUrl,
+      suggestedPatch: r.suggestedPatch,
+      patchModelId: r.patchModelId,
+      evidencePath:
+        extractEvidencePathFromAgreement(r.agreementDecision, r.findingIndex) ??
+        extractPathFromPatch(r.suggestedPatch),
+    });
+  }
+  return out;
+}
+
+// Patch Agent v1.5 — sweeper acceptance write. Sets patch_accepted_at + sha
+// when the sweep pass detects the suggestion's new-side content in HEAD.
+// Idempotent at the DB layer (re-running won't overwrite a prior write
+// because the loader filters out rows where patchAcceptedAt is non-null).
+export async function markPatchAccepted(args: {
+  findingId: string;
+  acceptedSha: string;
+  now: Date;
+}): Promise<void> {
+  await db
+    .update(findingStatus)
+    .set({
+      patchAcceptedAt: args.now,
+      patchAcceptedSha: args.acceptedSha,
+    })
+    .where(eq(findingStatus.findingId, args.findingId));
+}
+
+function extractEvidencePathFromAgreement(
+  agreementDecision: unknown,
+  findingIndex: number,
+): string | null {
+  if (typeof agreementDecision !== "object" || agreementDecision === null) return null;
+  const obj = agreementDecision as Record<string, unknown>;
+  const agreed = obj["agreed"];
+  if (!Array.isArray(agreed)) return null;
+  const finding = agreed[findingIndex];
+  if (typeof finding !== "object" || finding === null) return null;
+  const evidence = (finding as Record<string, unknown>)["evidence"];
+  if (!Array.isArray(evidence) || evidence.length === 0) return null;
+  const first = evidence[0];
+  if (typeof first !== "object" || first === null) return null;
+  const p = (first as Record<string, unknown>)["path"];
+  return typeof p === "string" ? p : null;
+}
+
+function extractPathFromPatch(patch: string): string | null {
+  // Unified diff "+++ b/<path>" line. Fall back when no such line exists.
+  const match = /^\+\+\+ b\/(.+)$/mu.exec(patch);
+  return match?.[1] ?? null;
+}
+
 // Mission 3 slices 2-3 — Sweeper marks a finding closed when the evidence
 // file has changed on the default branch since the review's commit_sha.
 // Slice 3 extends the helper to optionally record the closure-receipt

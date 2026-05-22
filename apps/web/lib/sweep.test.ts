@@ -62,6 +62,13 @@ function mkDeps(overrides: Partial<SweepDeps> = {}): SweepDeps {
     pollReactions: vi.fn().mockResolvedValue([]),
     recordMaintainerReactions: vi.fn().mockResolvedValue(0),
     stampFindingPolled: vi.fn().mockResolvedValue(undefined),
+    // Patch Agent v1.5 — patch-acceptance pass deps. Default: empty
+    // candidate set (no patches awaiting acceptance). Tests that exercise
+    // the pass override this.
+    loadPatchAcceptanceWork: vi.fn().mockResolvedValue([]),
+    markPatchAccepted: vi.fn().mockResolvedValue(undefined),
+    fetchFileAtRef: vi.fn().mockResolvedValue(null),
+    getDefaultBranchSha: vi.fn().mockResolvedValue(null),
     now: () => NOW,
     ...overrides,
   };
@@ -74,6 +81,7 @@ describe("runSweep", () => {
     expect(out).toEqual({
       swept: 0,
       closed: 0,
+      patchesAccepted: 0,
       reactionsRecorded: 0,
       reviewsSkipped: 0,
       errors: [],
@@ -290,5 +298,134 @@ describe("runSweep", () => {
     });
     await runSweep(deps);
     expect(deps.pollReactions).toHaveBeenCalledTimes(1);
+  });
+
+  // Patch Agent v1.5 — patch-acceptance pass tests. Co-exist with the
+  // closure pass: both can fire on the same tick without interfering.
+  describe("patch-acceptance pass", () => {
+    const candidate = {
+      findingId: "review-1-0",
+      reviewId: "review-1",
+      installationId: 132854945,
+      owner: "owner",
+      repo: "repo",
+      prNumber: 1,
+      prCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-9001",
+      suggestedPatch: "@@ -1,1 +1,1 @@\n-const x = 1;\n+const x = 0;\n",
+      patchModelId: "claude-opus-4-7",
+      evidencePath: "src/foo.ts",
+    };
+
+    it("marks accepted + posts a receipt when the suggestion is present in HEAD", async () => {
+      const deps = mkDeps({
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([candidate]),
+        getDefaultBranchSha: vi.fn().mockResolvedValue("abc123"),
+        fetchFileAtRef: vi.fn().mockResolvedValue("const x = 0;\nreturn x;\n"),
+      });
+      const result = await runSweep(deps);
+      expect(result.patchesAccepted).toBe(1);
+      expect(deps.markPatchAccepted).toHaveBeenCalledWith({
+        findingId: "review-1-0",
+        acceptedSha: "abc123",
+        now: expect.any(Date),
+      });
+      expect(deps.postPRComment).toHaveBeenCalledTimes(1);
+      const postedBody = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      expect(postedBody).toContain("suggested patch for `review-1-0` accepted in");
+      expect(postedBody).toContain("`claude-opus-4-7`");
+    });
+
+    it("does nothing when the suggestion is NOT present in HEAD", async () => {
+      const deps = mkDeps({
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([candidate]),
+        getDefaultBranchSha: vi.fn().mockResolvedValue("abc123"),
+        // File has different content than the suggestion proposed.
+        fetchFileAtRef: vi.fn().mockResolvedValue("const x = 42;\n"),
+      });
+      const result = await runSweep(deps);
+      expect(result.patchesAccepted).toBe(0);
+      expect(deps.markPatchAccepted).not.toHaveBeenCalled();
+      expect(deps.postPRComment).not.toHaveBeenCalled();
+    });
+
+    it("skips when default-branch SHA cannot be resolved", async () => {
+      const deps = mkDeps({
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([candidate]),
+        getDefaultBranchSha: vi.fn().mockResolvedValue(null),
+      });
+      const result = await runSweep(deps);
+      expect(result.patchesAccepted).toBe(0);
+      expect(deps.fetchFileAtRef).not.toHaveBeenCalled();
+      // No error scoped — silent retry next tick.
+      expect(result.errors).toEqual([]);
+    });
+
+    it("caches the default-branch SHA across multiple candidates in the same repo", async () => {
+      const second = {
+        ...candidate,
+        findingId: "review-1-1",
+        suggestedPatch: "@@ -1,1 +1,1 @@\n-const y = 1;\n+const y = 0;\n",
+      };
+      const getSha = vi.fn().mockResolvedValue("abc123");
+      const deps = mkDeps({
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([candidate, second]),
+        getDefaultBranchSha: getSha,
+        fetchFileAtRef: vi.fn().mockResolvedValue("nothing matches\n"),
+      });
+      await runSweep(deps);
+      // Single resolution despite two candidates on the same repo.
+      expect(getSha).toHaveBeenCalledTimes(1);
+    });
+
+    it("scopes per-candidate errors without halting the pass", async () => {
+      const second = { ...candidate, findingId: "review-1-1", reviewId: "review-2" };
+      const deps = mkDeps({
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([candidate, second]),
+        getDefaultBranchSha: vi.fn().mockResolvedValue("abc123"),
+        fetchFileAtRef: vi
+          .fn()
+          .mockImplementationOnce(() => {
+            throw new Error("octokit 500");
+          })
+          .mockResolvedValueOnce("const x = 0;\n"),
+      });
+      const result = await runSweep(deps);
+      // Second candidate still detected; first errored but was scoped.
+      expect(result.patchesAccepted).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]?.scope).toBe("patch_acceptance");
+      expect(result.errors[0]?.findingId).toBe("review-1-0");
+    });
+
+    it("does not interfere with the closure pass (both can fire on the same tick)", async () => {
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([mkBatch()]),
+        detectClosures: vi
+          .fn()
+          .mockResolvedValue([
+            { findingId: "review-1-0", status: "closed", closureSha: "closuresha" },
+          ]),
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([candidate]),
+        getDefaultBranchSha: vi.fn().mockResolvedValue("abc123"),
+        fetchFileAtRef: vi.fn().mockResolvedValue("const x = 0;\n"),
+      });
+      const result = await runSweep(deps);
+      expect(result.closed).toBe(1);
+      expect(result.patchesAccepted).toBe(1);
+      // Two receipt comments — one closure, one patch-acceptance.
+      expect(deps.postPRComment).toHaveBeenCalledTimes(2);
+    });
+
+    it("records an error and skips when candidate has no evidence path", async () => {
+      const deps = mkDeps({
+        loadPatchAcceptanceWork: vi
+          .fn()
+          .mockResolvedValue([{ ...candidate, evidencePath: null }]),
+      });
+      const result = await runSweep(deps);
+      expect(result.patchesAccepted).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]?.scope).toBe("patch_acceptance");
+    });
   });
 });

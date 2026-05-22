@@ -242,3 +242,43 @@ export async function getChangedFiles(args: {
   const octokit = await getInstallationOctokit(args.installationId);
   return fetchChangedFilesWith(octokit, args);
 }
+
+// Patch Agent v1.5 — single-file fetcher used by the sweeper's patch-
+// acceptance pass. Unlike fetchChangedFilesWith (which iterates a PR's
+// listFiles), this reads ONE file at a specific ref (e.g. "main" HEAD
+// after a merge). Returns null when the file is missing, binary, or
+// over the size cap — the pass treats null as "no match" rather than
+// throwing, so a single broken read can't crash the sweep tick.
+export async function fetchFileAtRefWith(
+  octokit: OctokitMinimal,
+  args: { owner: string; repo: string; path: string; ref: string },
+): Promise<string | null> {
+  try {
+    const resp = await octokit.rest.repos.getContent({
+      owner: args.owner,
+      repo: args.repo,
+      path: args.path,
+      ref: args.ref,
+    });
+    const data = resp.data as FileContentBody | unknown[];
+    if (Array.isArray(data) || data.type !== "file" || typeof data.content !== "string") {
+      return null;
+    }
+    const buf = Buffer.from(data.content, "base64");
+    if (!isWithinSizeLimit(buf.byteLength)) return null;
+    return buf.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchFileAtRef(args: {
+  installationId: number;
+  owner: string;
+  repo: string;
+  path: string;
+  ref: string;
+}): Promise<string | null> {
+  const octokit = await getInstallationOctokit(args.installationId);
+  return fetchFileAtRefWith(octokit, args);
+}
