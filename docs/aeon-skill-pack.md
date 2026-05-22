@@ -204,8 +204,168 @@ lives at `lib/paywall/review-challenge.ts`.
 
 ## Aeon skill pack
 
-> Phase 2 of the partnership ship. This section will be expanded with
-> the `packages/aeon-skills/` install flow, env-var contract, and MCP
-> tool naming once the skill pack lands. Until then the endpoint above
-> is callable directly from any HTTP client that can sign EIP-191
-> messages.
+Phase 2 of the partnership ship — the
+[`packages/aeon-skills/`](../packages/aeon-skills/) directory is an
+Aeon-compatible skill pack containing one skill, `pr-review-antfleet`,
+that exercises the endpoint contract above.
+
+### Layout
+
+The pack ships at `packages/aeon-skills/` inside the AntFleet monorepo
+during the partnership rollout, then extracts to a standalone
+`AntFleet/aeon-skills` GitHub repo once the surface stabilizes. The
+extraction is mechanical because the contents are self-contained.
+
+```
+packages/aeon-skills/
+├── README.md                    cold-install human docs
+├── package.json                 npm metadata + viem dep
+├── .gitignore                   excludes node_modules, .outputs
+├── client/
+│   └── antfleet.mjs             shared client (mintChallenge, signChallenge,
+│                                 submitReview, triggerReview) for non-Aeon callers
+└── pr-review-antfleet/          ← only this folder gets copied by ./add-skill
+    ├── SKILL.md                 natural-language instructions for the AI agent
+    ├── package.json             declares viem dep for the skill's runtime
+    └── run.mjs                  the three-call runner (self-contained)
+```
+
+The depth-1 skill folder is required: Aeon's `./add-skill` script uses
+`find -maxdepth 2 -name SKILL.md` to discover installable skills inside
+a repo tarball, so a nested `skills/<name>/SKILL.md` layout (which the
+luca-aeon-skills reference uses) doesn't actually get discovered. We
+match the working convention used by `BankrBot/skills` and Aeon's own
+built-in skills.
+
+### Install flow
+
+From an Aeon project root:
+
+```bash
+./add-skill antfleet/aeon-skills pr-review-antfleet
+cd skills/pr-review-antfleet
+npm install                              # one-time, adds viem
+```
+
+`./add-skill`:
+
+1. Downloads the repo tarball from
+   `https://github.com/antfleet/aeon-skills/archive/refs/heads/main.tar.gz`.
+2. Finds skills via `find … -maxdepth 2 -name SKILL.md`.
+3. Runs a security scan on each skill's SKILL.md (waived for trusted
+   sources listed in `skills/security/trusted-sources.txt`).
+4. `cp -r`s the skill folder into `<aeon>/skills/<skill-name>/`.
+5. Records provenance (source repo, commit SHA, imported_at) in
+   `skills.lock`.
+6. Adds a disabled entry to `aeon.yml`:
+   `pr-review-antfleet: { enabled: false, schedule: "0 12 * * *" }`.
+
+Note: `add-skill` only copies the per-skill folder. The pack's
+top-level `client/`, `README.md`, and `package.json` are NOT bundled
+into the Aeon project — that's why the skill's `run.mjs` is
+intentionally self-contained (imports `viem` from its own
+`node_modules`, makes its own HTTP calls). The top-level `client/`
+module is a parallel surface for non-Aeon consumers who want to import
+the helpers via npm.
+
+### Env-var contract
+
+Set as GitHub Actions secrets on the Aeon project (or in `aeon.yml`
+`vars`):
+
+| Name                          | Required | What                                         |
+| ----------------------------- | -------- | -------------------------------------------- |
+| `ANTFLEET_INSTALLATION_ID`    | yes      | UUID from the AntFleet dashboard             |
+| `ANTFLEET_WALLET_PRIVATE_KEY` | yes      | 0x-prefixed 64 hex chars of the bound wallet |
+| `ANTFLEET_API_BASE`           | no       | default `https://www.antfleet.dev`           |
+| `ANTFLEET_OUTPUT_PATH`        | no       | default `.outputs/pr-review-antfleet.md`     |
+
+**Security of `ANTFLEET_WALLET_PRIVATE_KEY`:** the key only authorizes
+review-trigger signatures on this single installation. It cannot move
+USDC out of the channel — only spend channel funds on reviews at the
+`REVIEW_PRICE_USDC` rate (default $0.50/call). Blast radius if exposed
+is bounded to the channel balance. Use a single-purpose wallet and
+rotate cheaply (re-run the onboarding flow with a fresh wallet) if you
+suspect compromise.
+
+### Invocation contract
+
+The SKILL.md takes a single `var` value:
+
+- `PR=42` — review PR #42 on the install's bound repo
+- `SHA=deadbeef1234` — review by head SHA (server resolves to PR via
+  GitHub API; rejects 0/>1 matches)
+- `PR=42;REPO=acme/demo` — disambiguate for multi-repo installs
+
+In the Aeon `aeon.yml`:
+
+```yaml
+skills:
+  pr-review-antfleet:
+    enabled: true
+    var: "PR=42"
+    schedule: "0 12 * * *" # or omit for ad-hoc only
+```
+
+Direct invocation (skipping Aeon's runtime, useful for testing):
+
+```bash
+cd skills/pr-review-antfleet
+ANTFLEET_INSTALLATION_ID=<uuid> \
+ANTFLEET_WALLET_PRIVATE_KEY=0x... \
+node run.mjs --pr 42
+```
+
+Exit codes: `0` = success, `2` = 4xx from API (e.g. insufficient
+balance, closed PR, signature mismatch — error report written to the
+output path), `3` = unexpected error (network, signing).
+
+### Three-call protocol
+
+The runner executes:
+
+```
+[1] POST {ANTFLEET_API_BASE}/api/v1/installations/{id}/review/challenge
+    ← { challenge_id, challenge, expires_at }
+[2] sign(challenge) with ANTFLEET_WALLET_PRIVATE_KEY via EIP-191
+    ← signature
+[3] POST {ANTFLEET_API_BASE}/api/v1/installations/{id}/review
+    body: { challenge_id, signature, pr_number?, sha?, repo? }
+    ← { findings, receipt, channel }
+```
+
+Then writes a structured Markdown report to
+`${ANTFLEET_OUTPUT_PATH:-.outputs/pr-review-antfleet.md}` containing:
+target repo/PR/SHA, finding count, channel debit, receipt URL, and
+each finding's severity/evidence/reasoning/recommendation. On 4xx, an
+error report is written instead with a contextual hint for the most
+common codes (`insufficient_channel_balance`, `signature_mismatch`,
+`pr_not_open`, etc.).
+
+### MCP surface
+
+When the operator runs `./add-mcp` in their Aeon project (after this
+skill is installed), it registers an MCP server with Claude Code /
+Claude Desktop. Every Aeon skill appears as an `aeon-<skill-name>`
+tool, so this skill exposes the MCP tool name
+**`aeon-pr-review-antfleet`** in the Claude tool surface. That's the
+user-facing path most Aeon users will hit — calling the skill
+conversationally from within Claude rather than scheduling it via
+`aeon.yml`.
+
+### Phase 2 verification status
+
+| Check                                                | Status                                                                                                                |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `add-skill --maxdepth 2` discovery                   | ✅ verified: `find packages/aeon-skills -maxdepth 2 -name SKILL.md` returns `pr-review-antfleet/SKILL.md`             |
+| Skill folder self-contained (no shared imports)      | ✅ verified: `run.mjs` only imports `viem` (declared in same folder's `package.json`)                                 |
+| `npm install` works in installed location            | ✅ verified end-to-end inside `/tmp/aeon-scratch/aeon/skills/pr-review-antfleet/`                                     |
+| CLI parses args, exits cleanly on missing target/env | ✅ verified: exit code 1 with clear stderr                                                                            |
+| Live network call against prod endpoint              | ✅ verified: bogus UUID returns `404 not_eligible`, error report written, exit code 2                                 |
+| MCP tool name maps to `aeon-pr-review-antfleet`      | ✅ verified via `./add-mcp` convention in aeon source                                                                 |
+| Real funded-install end-to-end                       | ❌ requires test wallet + funded channel — see [follow-up note](../.omc/plans/note-followup-user-as-agent-testing.md) |
+| MCP server invocation via Claude Code / Desktop      | ❌ requires the user to run `./add-mcp` + a real install — same blocker as above                                      |
+
+The two ❌ items are gated on a real funded install. Until they're
+done, the skill is shippable as a code artifact but not declared
+production-grade for the Aeon partnership announcement.
