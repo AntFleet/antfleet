@@ -34,7 +34,11 @@ const stubFile = (): ChangedFile => ({
 const opus: PatchProposingProvider = {
   name: "anthropic",
   async proposePatch() {
-    return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null, modelId: "claude-opus-4-7" };
+    return {
+      patch: "@@ -10,1 +10,1 @@\n-old\n+new\n",
+      rationale: null,
+      modelId: "claude-opus-4-7",
+    };
   },
 };
 

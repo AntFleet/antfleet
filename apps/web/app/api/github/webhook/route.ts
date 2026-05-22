@@ -15,13 +15,7 @@ import {
   upsertInstallEntry,
 } from "@/db/queries";
 import { db } from "@/db";
-import {
-  debitChannel,
-  decideGate,
-  quantizeUsdc,
-  recordDrawdown,
-  type GateDecision,
-} from "@/lib/paywall/gate";
+import { debitForReview, decideGate, type GateDecision } from "@/lib/paywall/gate";
 import { buildInvoice, renderInvoiceComment } from "@/lib/paywall/invoice";
 import { getDepositAddress } from "@/lib/paywall/env";
 
@@ -529,13 +523,19 @@ async function applyGateToReview(args: {
     return "skipped";
   }
 
-  // decision.kind === "debit"
-  const priceUsdc = quantizeUsdc(decision.priceUsdc);
-  const debited = await debitChannel(db, {
-    channelId: decision.channelId,
-    priceUsdc,
+  // decision.kind === "debit" — delegate the quantize → debitChannel →
+  // recordDrawdown sequence to the shared helper. Both this surface and
+  // the on-demand /api/v1/installations/{id}/review endpoint funnel
+  // through debitForReview so the channel state mutation lives in
+  // exactly one place. Webhook keeps its own outer wrapper because the
+  // "insufficient" branch posts a PR invoice comment; the API endpoint
+  // returns 402 JSON instead.
+  const debitResult = await debitForReview(db, {
+    decision,
+    reviewId,
+    logContext: { delivery, surface: "webhook" },
   });
-  if (debited === null) {
+  if (!debitResult.ok) {
     await failInsufficient({
       reviewId,
       decision,
@@ -544,37 +544,17 @@ async function applyGateToReview(args: {
       prRepo,
       prNumber,
       delivery,
-      reason: "insufficient_at_debit",
+      reason: debitResult.reason,
     });
     return "skipped";
-  }
-
-  try {
-    await recordDrawdown(db, {
-      channelId: decision.channelId,
-      reviewId,
-      amountUsdc: priceUsdc,
-      fromAddress: decision.walletAddress,
-    });
-  } catch (err) {
-    // Debit already happened; the per-review ledger link is lost. Log
-    // loudly so the operator can manually reconcile from channels +
-    // reviews if needed. Do NOT roll back the debit — the review is
-    // legitimately about to run.
-    logError("webhook.gate.drawdown_record_failed", {
-      delivery,
-      reviewId,
-      channelId: decision.channelId,
-      message: messageOf(err),
-    });
   }
 
   logInfo("webhook.gate.debited", {
     delivery,
     reviewId,
     channelId: decision.channelId,
-    priceUsdc,
-    newBalanceUsdc: debited.newBalanceUsdc,
+    priceUsdc: debitResult.debitedUsdc,
+    newBalanceUsdc: debitResult.newBalanceUsdc,
   });
   return "ok";
 }

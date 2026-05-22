@@ -69,9 +69,7 @@ const WINNING_PROVIDER = "anthropic";
  * orchestrator's input — that itself is a degenerate case the gate refuses
  * to ship through).
  */
-export function decidePatchOutcomes(
-  proposals: readonly ProviderPatchProposal[],
-): PatchDecision[] {
+export function decidePatchOutcomes(proposals: readonly ProviderPatchProposal[]): PatchDecision[] {
   const byFinding = groupByFinding(proposals);
   const decisions: PatchDecision[] = [];
   for (const [findingId, group] of byFinding) {
@@ -81,10 +79,7 @@ export function decidePatchOutcomes(
   return decisions.toSorted((a, b) => a.findingId.localeCompare(b.findingId));
 }
 
-function decideOne(
-  findingId: string,
-  group: readonly ProviderPatchProposal[],
-): PatchDecision {
+function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): PatchDecision {
   const withPatch = group.filter((p) => p.patch !== null);
 
   // Happy path: every provider in the group proposed a patch. Ship the

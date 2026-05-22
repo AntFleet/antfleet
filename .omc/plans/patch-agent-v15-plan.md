@@ -30,38 +30,38 @@ one per deliverable (1 → 7), each independently mergeable behind the env flag.
 
 ## Existing files to touch
 
-| File | Change |
-| --- | --- |
-| `apps/web/db/schema.ts` | add fields to `findingStatus` + `reviews` + `installations` |
-| `apps/web/db/migrations/0019_patch_agent.sql` | NEW migration |
-| `apps/web/db/queries.ts` | extend `recordFindingStatuses`, add `recordPatchProposal`, `recordPatchAccepted`, `loadPatchAcceptanceWork`; wallet aggregator updates |
-| `apps/web/lib/github-files.ts` | retain `patch?: string \| null` on every `ChangedFile` |
-| `apps/web/lib/review-pipeline.ts` | thread `patches` into `ReviewBundle` when flag enabled |
-| `apps/web/lib/review-worker.ts` | wire patch generation between agreement gate and comment post; persist proposals |
-| `apps/web/lib/pr-comment.ts` | add suggestion block sub-section; conditional footer line; closure receipt unchanged |
-| `apps/web/lib/sweep.ts` | add `runPatchAcceptancePass` (NEW pass), reuses existing octokit + payment of pattern |
-| `apps/web/lib/onboarder.ts` | add `patch_proposed` / `patch_accepted` events; 7-day aggregator now reports `patchesProposed`/`patchesAccepted` |
-| `apps/web/lib/paywall/queries.ts` | add `patchesProposed` + `patchesAccepted` counters to `WalletReputation` |
-| `apps/web/app/wallets/[address]/page.tsx` | render "Patches accepted" stat next to close rate |
-| `src/providers/anthropic.ts` | add `proposePatch(...)` second-call method (no breakage to existing `review`/`fix`) |
-| `src/providers/openai.ts` | same |
-| `src/provider.ts` | extend `Provider` interface (optional method) + ship JSON schema `patchSuggestionJsonSchema` |
-| `src/types.ts` | add `PatchSuggestionOutput` zod schema |
+| File                                          | Change                                                                                                                                 |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web/db/schema.ts`                       | add fields to `findingStatus` + `reviews` + `installations`                                                                            |
+| `apps/web/db/migrations/0019_patch_agent.sql` | NEW migration                                                                                                                          |
+| `apps/web/db/queries.ts`                      | extend `recordFindingStatuses`, add `recordPatchProposal`, `recordPatchAccepted`, `loadPatchAcceptanceWork`; wallet aggregator updates |
+| `apps/web/lib/github-files.ts`                | retain `patch?: string \| null` on every `ChangedFile`                                                                                 |
+| `apps/web/lib/review-pipeline.ts`             | thread `patches` into `ReviewBundle` when flag enabled                                                                                 |
+| `apps/web/lib/review-worker.ts`               | wire patch generation between agreement gate and comment post; persist proposals                                                       |
+| `apps/web/lib/pr-comment.ts`                  | add suggestion block sub-section; conditional footer line; closure receipt unchanged                                                   |
+| `apps/web/lib/sweep.ts`                       | add `runPatchAcceptancePass` (NEW pass), reuses existing octokit + payment of pattern                                                  |
+| `apps/web/lib/onboarder.ts`                   | add `patch_proposed` / `patch_accepted` events; 7-day aggregator now reports `patchesProposed`/`patchesAccepted`                       |
+| `apps/web/lib/paywall/queries.ts`             | add `patchesProposed` + `patchesAccepted` counters to `WalletReputation`                                                               |
+| `apps/web/app/wallets/[address]/page.tsx`     | render "Patches accepted" stat next to close rate                                                                                      |
+| `src/providers/anthropic.ts`                  | add `proposePatch(...)` second-call method (no breakage to existing `review`/`fix`)                                                    |
+| `src/providers/openai.ts`                     | same                                                                                                                                   |
+| `src/provider.ts`                             | extend `Provider` interface (optional method) + ship JSON schema `patchSuggestionJsonSchema`                                           |
+| `src/types.ts`                                | add `PatchSuggestionOutput` zod schema                                                                                                 |
 
 ## New files to add
 
-| File | Purpose |
-| --- | --- |
-| `src/providers/patch-gate.ts` | patch agreement: both non-null per findingId → ship Opus's |
-| `src/providers/patch-gate.test.ts` | 4-case agreement matrix + idempotency |
-| `apps/web/lib/patch-generation.ts` | per-review fan-out: takes agreed findings + ChangedFile patches, returns `PatchProposal[]` with skip reasons |
-| `apps/web/lib/patch-generation.test.ts` | size cap, outside-hunk filter, timeout, idempotency |
-| `apps/web/lib/patch-acceptance.ts` | sweeper-side detection: fetch file at HEAD, match suggestion against current content |
-| `apps/web/lib/patch-acceptance.test.ts` | whitespace tolerance, no false positive on unrelated changes |
-| `apps/web/lib/diff-hunks.ts` | parse `f.patch` into `{ path, hunkRanges: [{ start, end }] }`; check whether `(startLine, endLine)` of finding evidence lies inside a hunk |
-| `apps/web/lib/diff-hunks.test.ts` | 4 cases: in-hunk / out / no-startLine / binary (no patch) |
-| `apps/web/lib/pr-comment-patch.test.ts` | byte-identical regression test fixture (flag=off) + patch-included render |
-| `.omc/plans/patch-agent-v15-plan.md` | this file |
+| File                                    | Purpose                                                                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/providers/patch-gate.ts`           | patch agreement: both non-null per findingId → ship Opus's                                                                                 |
+| `src/providers/patch-gate.test.ts`      | 4-case agreement matrix + idempotency                                                                                                      |
+| `apps/web/lib/patch-generation.ts`      | per-review fan-out: takes agreed findings + ChangedFile patches, returns `PatchProposal[]` with skip reasons                               |
+| `apps/web/lib/patch-generation.test.ts` | size cap, outside-hunk filter, timeout, idempotency                                                                                        |
+| `apps/web/lib/patch-acceptance.ts`      | sweeper-side detection: fetch file at HEAD, match suggestion against current content                                                       |
+| `apps/web/lib/patch-acceptance.test.ts` | whitespace tolerance, no false positive on unrelated changes                                                                               |
+| `apps/web/lib/diff-hunks.ts`            | parse `f.patch` into `{ path, hunkRanges: [{ start, end }] }`; check whether `(startLine, endLine)` of finding evidence lies inside a hunk |
+| `apps/web/lib/diff-hunks.test.ts`       | 4 cases: in-hunk / out / no-startLine / binary (no patch)                                                                                  |
+| `apps/web/lib/pr-comment-patch.test.ts` | byte-identical regression test fixture (flag=off) + patch-included render                                                                  |
+| `.omc/plans/patch-agent-v15-plan.md`    | this file                                                                                                                                  |
 
 ## Deliverable order (one PR each)
 
@@ -75,16 +75,16 @@ one per deliverable (1 → 7), each independently mergeable behind the env flag.
 
 ## Non-break invariants — test mapping
 
-| Invariant | Test |
-| --- | --- |
-| Flag=off byte-identical | `pr-comment-patch.test.ts` snapshot |
-| Generation failure → findings-only | `patch-generation.test.ts` timeout branch |
-| One-side propose → findings-only | `patch-gate.test.ts` only-Opus + only-GPT |
-| Drawdown stays 1 per review | new test in `review-worker.test.ts` |
+| Invariant                             | Test                                             |
+| ------------------------------------- | ------------------------------------------------ |
+| Flag=off byte-identical               | `pr-comment-patch.test.ts` snapshot              |
+| Generation failure → findings-only    | `patch-generation.test.ts` timeout branch        |
+| One-side propose → findings-only      | `patch-gate.test.ts` only-Opus + only-GPT        |
+| Drawdown stays 1 per review           | new test in `review-worker.test.ts`              |
 | Sweeper retains evidence-file closure | `sweep.test.ts` existing tests must keep passing |
-| Idempotent regeneration | `patch-generation.test.ts` re-run |
-| Public receipt governs visibility | `wallets/[address]` query filter test |
-| Comment header unchanged for sweeper | `pr-comment.test.ts` `Review {id8}` regex |
+| Idempotent regeneration               | `patch-generation.test.ts` re-run                |
+| Public receipt governs visibility     | `wallets/[address]` query filter test            |
+| Comment header unchanged for sweeper  | `pr-comment.test.ts` `Review {id8}` regex        |
 
 ## Verification per PR
 

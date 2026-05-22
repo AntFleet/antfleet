@@ -19,14 +19,22 @@ export function jsonOk(body: unknown, opts: { cacheControl: string }): NextRespo
   });
 }
 
-export function jsonError(status: number, code: string, message: string): NextResponse {
-  return NextResponse.json(
-    { error: { code, message } },
-    {
-      status,
-      headers: jsonHeaders(NO_STORE),
-    },
-  );
+export function jsonError(
+  status: number,
+  code: string,
+  message: string,
+  extras?: Record<string, unknown>,
+): NextResponse {
+  const body: Record<string, unknown> = { error: { code, message } };
+  if (extras !== undefined) {
+    for (const [k, v] of Object.entries(extras)) {
+      body[k] = v;
+    }
+  }
+  return NextResponse.json(body, {
+    status,
+    headers: jsonHeaders(NO_STORE),
+  });
 }
 
 export function jsonStats(body: unknown): NextResponse {

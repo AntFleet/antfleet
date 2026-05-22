@@ -370,6 +370,189 @@ export async function loadWalletReputation(
   };
 }
 
+// Full review payload for the synchronous /api/v1/installations/{id}/review
+// endpoint. The webhook path's after() runs runReviewWorker async and
+// never reads back; the on-demand path awaits the worker and then loads
+// these fields to compose its response. agreementDecision.agreed lives
+// in the reviews JSONB (set by review-worker's updateReview call); the
+// findingIds come from finding_status (set by recordFindingStatuses).
+export type ReviewResponsePayload = {
+  reviewId: string;
+  installationId: number | null;
+  owner: string | null;
+  repo: string | null;
+  prNumber: number;
+  commitSha: string;
+  agreementDecision: unknown;
+  publicReceipt: boolean;
+  isBenchmark: boolean;
+  prCommentUrl: string | null;
+  processingStatus: string;
+  processingError: string | null;
+  timingMs: number;
+  costEstimatedUsd: string;
+  findingIds: string[];
+};
+
+export async function loadReviewForResponse(
+  q: Queryable,
+  reviewId: string,
+): Promise<ReviewResponsePayload | null> {
+  const result = await q.execute(sql`
+    SELECT
+      r.review_id AS "reviewId",
+      r.installation_id AS "installationId",
+      r.owner,
+      r.repo,
+      r.pr_number AS "prNumber",
+      r.commit_sha AS "commitSha",
+      r.agreement_decision AS "agreementDecision",
+      r.public_receipt AS "publicReceipt",
+      r.is_benchmark AS "isBenchmark",
+      r.pr_comment_url AS "prCommentUrl",
+      r.processing_status AS "processingStatus",
+      r.processing_error AS "processingError",
+      r.timing_ms AS "timingMs",
+      r.cost_estimated_usd::text AS "costEstimatedUsd",
+      COALESCE(
+        ARRAY(
+          SELECT finding_id
+          FROM finding_status
+          WHERE review_id = r.review_id
+          ORDER BY finding_index
+        ),
+        ARRAY[]::text[]
+      ) AS "findingIds"
+    FROM reviews r
+    WHERE r.review_id = ${reviewId}
+    LIMIT 1
+  `);
+  return firstRow<ReviewResponsePayload>(result);
+}
+
+// Read current channel balance for response composition. Used by the
+// on-demand review endpoint to surface { remaining_usdc } regardless of
+// whether the request hit the debit path or the cached path. Returns
+// null when the installation has no channel (legacy_partner installs).
+export async function loadChannelBalanceForInstallation(
+  q: Queryable,
+  installationRowId: string,
+): Promise<string | null> {
+  const result = await q.execute(sql`
+    SELECT balance_usdc::text AS "balanceUsdc"
+    FROM channels
+    WHERE installation_id = ${installationRowId}
+    LIMIT 1
+  `);
+  const row = firstRow<{ balanceUsdc: string }>(result);
+  return row?.balanceUsdc ?? null;
+}
+
+// review_challenges helpers. Server-issued single-use nonces backing the
+// on-demand /api/v1/installations/{id}/review endpoint. The /bind endpoint
+// uses a stateless challenge (derived from installations.created_at), safe
+// because binding is one-shot per install. Review is repeating, so each
+// trigger mints a fresh row here and marks used_at on redemption — this
+// is the anti-replay surface.
+
+export type ReviewChallengeRow = {
+  id: string;
+  installationRowId: string;
+  issuedAt: Date;
+  expiresAt: Date;
+  usedAt: Date | null;
+  usedForReviewId: string | null;
+};
+
+export async function insertReviewChallenge(
+  q: Queryable,
+  args: { installationRowId: string; issuedAt: Date; expiresAt: Date },
+): Promise<ReviewChallengeRow> {
+  const result = await q.execute(sql`
+    INSERT INTO review_challenges (
+      installation_row_id,
+      issued_at,
+      expires_at
+    )
+    VALUES (
+      ${args.installationRowId},
+      ${args.issuedAt},
+      ${args.expiresAt}
+    )
+    RETURNING
+      id,
+      installation_row_id AS "installationRowId",
+      issued_at AS "issuedAt",
+      expires_at AS "expiresAt",
+      used_at AS "usedAt",
+      used_for_review_id AS "usedForReviewId"
+  `);
+  const row = firstRow<ReviewChallengeRow>(result);
+  if (row === null) throw new Error("review_challenges insert returned no row");
+  return row;
+}
+
+export async function loadReviewChallenge(
+  q: Queryable,
+  challengeId: string,
+): Promise<ReviewChallengeRow | null> {
+  const result = await q.execute(sql`
+    SELECT
+      id,
+      installation_row_id AS "installationRowId",
+      issued_at AS "issuedAt",
+      expires_at AS "expiresAt",
+      used_at AS "usedAt",
+      used_for_review_id AS "usedForReviewId"
+    FROM review_challenges
+    WHERE id = ${challengeId}
+    LIMIT 1
+  `);
+  return firstRow<ReviewChallengeRow>(result);
+}
+
+// Atomically claims a challenge. The WHERE clause on used_at IS NULL is
+// the race-safe anti-replay guard: two concurrent verifications for the
+// same challenge_id will see the second UPDATE return 0 rows, and the
+// loser returns 401 challenge_already_used. Called BEFORE enqueueReview
+// so a lost-race redemption doesn't leave a stale reviews row behind
+// (the prior order — enqueue then mark — was clean for billing but left
+// audit cruft on each race loss; see code review feedback on PR #48).
+//
+// used_for_review_id is filled in by linkReviewChallengeToReview after
+// enqueueReview returns. The brief window between claim and link is
+// audit-only — the race guard above already lives in used_at.
+export async function claimReviewChallenge(
+  q: Queryable,
+  args: { challengeId: string; usedAt: Date },
+): Promise<boolean> {
+  const result = await q.execute(sql`
+    UPDATE review_challenges
+    SET used_at = ${args.usedAt}
+    WHERE id = ${args.challengeId}
+      AND used_at IS NULL
+    RETURNING id
+  `);
+  return firstRow<{ id: string }>(result) !== null;
+}
+
+// Audit-only link from the claimed challenge to its review row. Called
+// after enqueueReview returns the reviewId. Best-effort: if this UPDATE
+// fails, the challenge is still marked used (the race guard) and the
+// review still proceeds; the link is recoverable from the reviews row's
+// created_at + the challenge's used_at.
+export async function linkReviewChallengeToReview(
+  q: Queryable,
+  args: { challengeId: string; reviewId: string },
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_challenges
+    SET used_for_review_id = ${args.reviewId}
+    WHERE id = ${args.challengeId}
+      AND used_for_review_id IS NULL
+  `);
+}
+
 function firstRow<T>(result: unknown): T | null {
   const rows = rowsOf<T>(result);
   return rows[0] ?? null;

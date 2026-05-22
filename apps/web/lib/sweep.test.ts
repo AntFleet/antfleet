@@ -419,9 +419,7 @@ describe("runSweep", () => {
 
     it("records an error and skips when candidate has no evidence path", async () => {
       const deps = mkDeps({
-        loadPatchAcceptanceWork: vi
-          .fn()
-          .mockResolvedValue([{ ...candidate, evidencePath: null }]),
+        loadPatchAcceptanceWork: vi.fn().mockResolvedValue([{ ...candidate, evidencePath: null }]),
       });
       const result = await runSweep(deps);
       expect(result.patchesAccepted).toBe(0);
