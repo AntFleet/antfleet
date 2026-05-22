@@ -5,6 +5,26 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 
+// Neon's serverless driver returns `timestamp with time zone` columns as
+// ISO-8601 strings, not Date objects. Our row types declare these fields as
+// `Date` (which matches what Drizzle's typed-select API would yield), so any
+// caller that hits `.getTime()` or `.toISOString()` on a freshly-loaded row
+// crashes with "X.getTime is not a function" / "X.toISOString is not a
+// function". `parseDate` normalizes both shapes so the runtime values match
+// the declared types — used by every loader below that returns a timestamp
+// field. Long-term fix is to migrate these queries to the typed-select API;
+// this is the hotfix.
+function parseDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === "string") return new Date(value);
+  throw new Error(`expected Date or ISO string, got ${typeof value}`);
+}
+
+function parseDateOrNull(value: unknown): Date | null {
+  if (value === null || value === undefined) return null;
+  return parseDate(value);
+}
+
 export type PaywallInstallationRow = {
   id: string;
   status: string;
@@ -57,7 +77,11 @@ export async function insertPaywallInstallation(
   `);
   const row = firstRow<PaywallInstallationRow>(result);
   if (row === null) throw new Error("insert returned no row");
-  return row;
+  return {
+    ...row,
+    walletBoundAt: parseDateOrNull(row.walletBoundAt),
+    createdAt: parseDate(row.createdAt),
+  };
 }
 
 export async function loadPaywallInstallation(
@@ -80,7 +104,13 @@ export async function loadPaywallInstallation(
     WHERE id = ${installationRowId}
     LIMIT 1
   `);
-  return firstRow<PaywallInstallationRow>(result);
+  const row = firstRow<PaywallInstallationRow>(result);
+  if (row === null) return null;
+  return {
+    ...row,
+    walletBoundAt: parseDateOrNull(row.walletBoundAt),
+    createdAt: parseDate(row.createdAt),
+  };
 }
 
 export async function markPaywallBound(
@@ -121,7 +151,13 @@ export async function loadChannelForInstallation(
     WHERE installation_id = ${installationRowId}
     LIMIT 1
   `);
-  return firstRow<PaywallChannelRow>(result);
+  const row = firstRow<PaywallChannelRow>(result);
+  if (row === null) return null;
+  return {
+    ...row,
+    createdAt: parseDate(row.createdAt),
+    lastDrawdownAt: parseDateOrNull(row.lastDrawdownAt),
+  };
 }
 
 // Credits a channel from an on-chain deposit. Idempotent on (chainId, txHash):
@@ -283,7 +319,7 @@ export async function loadWalletReputation(
     WHERE i.wallet_address = ${wallet}
     ORDER BY i.created_at DESC
   `);
-  const installations = rowsOf<{
+  const installationsRaw = rowsOf<{
     installationRowId: string;
     githubInstallationId: number | null;
     owner: string | null;
@@ -292,7 +328,12 @@ export async function loadWalletReputation(
     boundAt: Date | null;
     channelBalanceUsdc: string | null;
   }>(installRows);
-  if (installations.length === 0) return null;
+  if (installationsRaw.length === 0) return null;
+  // Normalize timestamp strings → Date (Neon serverless returns ISO strings).
+  const installations = installationsRaw.map((i) => ({
+    ...i,
+    boundAt: parseDateOrNull(i.boundAt),
+  }));
 
   const ghIds = installations
     .map((i) => i.githubInstallationId)
@@ -489,7 +530,7 @@ export async function insertReviewChallenge(
   `);
   const row = firstRow<ReviewChallengeRow>(result);
   if (row === null) throw new Error("review_challenges insert returned no row");
-  return row;
+  return parseReviewChallengeRow(row);
 }
 
 export async function loadReviewChallenge(
@@ -508,7 +549,18 @@ export async function loadReviewChallenge(
     WHERE id = ${challengeId}
     LIMIT 1
   `);
-  return firstRow<ReviewChallengeRow>(result);
+  const row = firstRow<ReviewChallengeRow>(result);
+  if (row === null) return null;
+  return parseReviewChallengeRow(row);
+}
+
+function parseReviewChallengeRow(row: ReviewChallengeRow): ReviewChallengeRow {
+  return {
+    ...row,
+    issuedAt: parseDate(row.issuedAt),
+    expiresAt: parseDate(row.expiresAt),
+    usedAt: parseDateOrNull(row.usedAt),
+  };
 }
 
 // Atomically claims a challenge. The WHERE clause on used_at IS NULL is
