@@ -38,7 +38,12 @@ type OnboarderEventTypeJson =
   | "wallet_bound"
   | "channel_funded"
   | "channel_low_balance"
-  | "drawdown_recorded";
+  | "drawdown_recorded"
+  // Patch Agent v1.5 — listed for type symmetry with OnboarderEventType.
+  // Surfacing on /activity is queries.ts's call (via the
+  // ACTIVITY_SURFACED_ONBOARDER_KINDS allowlist), not this file's.
+  | "patch_proposed"
+  | "patch_accepted";
 
 type FleetActivityEventJson =
   | {
@@ -632,5 +637,9 @@ function onboarderBodyFor(eventType: OnboarderEventTypeJson): string {
       return "Paywall channel below review price; agent invoiced";
     case "drawdown_recorded":
       return "Per-review drawdown debited from a paywall channel";
+    case "patch_proposed":
+      return "Patch Agent shipped a suggested patch on a PR";
+    case "patch_accepted":
+      return "Suggested patch detected in HEAD on the default branch";
   }
 }

@@ -696,6 +696,115 @@ export async function recordPartnerReply(args: {
 
 export { isWelcomeIssue };
 
+// Patch Agent v1.5 — fire-and-forget onboarder events for the suggested-
+// patch lifecycle. Distinct entrypoints (vs. inlining the recordOnboarding
+// Event call at the worker / sweeper) so a future onboarder summary cron
+// can route on patch_proposed / patch_accepted without touching upstream
+// code. Both events are private; the public flag is intentionally false
+// (publicReceipt at the review layer governs whether the underlying
+// finding / patch is publicly visible).
+//
+// Errors are caught and logged — the patch already shipped; losing the
+// event log is observability-only.
+export type PatchProposedEventInput = {
+  installationId: number;
+  owner: string;
+  repo: string;
+  reviewId: string;
+  findingId: string;
+  modelId: string;
+  suggestedPatch: string;
+};
+
+export async function recordPatchProposedEvent(args: PatchProposedEventInput): Promise<void> {
+  if (!isOnboarderEnabled()) return;
+  try {
+    await recordOnboardingEvent({
+      eventType: "patch_proposed",
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      repoHash: hashRepo(args.owner, args.repo),
+      modelId: args.modelId,
+      prompt: null,
+      toolOutput: {
+        review_id: args.reviewId,
+        finding_id: args.findingId,
+        // Capture the diff body for audit replay — same shape as the
+        // posted PR comment's ```suggestion``` block contents.
+        suggested_patch: args.suggestedPatch,
+      },
+      commentId: null,
+      commentUrl: null,
+      public: false,
+    });
+    logInfo("onboarder.patch_proposed_recorded", {
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      reviewId: args.reviewId,
+      findingId: args.findingId,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("onboarder.patch_proposed_persist_failed", {
+      reviewId: args.reviewId,
+      findingId: args.findingId,
+      message,
+    });
+  }
+}
+
+export type PatchAcceptedEventInput = {
+  installationId: number;
+  owner: string;
+  repo: string;
+  reviewId: string;
+  findingId: string;
+  modelId: string | null;
+  acceptedSha: string;
+  acceptanceCommentId: number | null;
+  acceptanceCommentUrl: string | null;
+};
+
+export async function recordPatchAcceptedEvent(args: PatchAcceptedEventInput): Promise<void> {
+  if (!isOnboarderEnabled()) return;
+  try {
+    await recordOnboardingEvent({
+      eventType: "patch_accepted",
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      repoHash: hashRepo(args.owner, args.repo),
+      modelId: args.modelId,
+      prompt: null,
+      toolOutput: {
+        review_id: args.reviewId,
+        finding_id: args.findingId,
+        accepted_sha: args.acceptedSha,
+      },
+      commentId: args.acceptanceCommentId,
+      commentUrl: args.acceptanceCommentUrl,
+      public: false,
+    });
+    logInfo("onboarder.patch_accepted_recorded", {
+      installationId: args.installationId,
+      owner: args.owner,
+      repo: args.repo,
+      reviewId: args.reviewId,
+      findingId: args.findingId,
+      acceptedSha: args.acceptedSha,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError("onboarder.patch_accepted_persist_failed", {
+      reviewId: args.reviewId,
+      findingId: args.findingId,
+      message,
+    });
+  }
+}
+
 // Top-level cron driver — fans out check-ins for every install whose
 // install_welcome row lies in the 7-to-8-day window. Logs per-candidate
 // outcomes so the cron caller can include a summary in its response.

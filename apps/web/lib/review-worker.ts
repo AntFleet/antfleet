@@ -13,7 +13,10 @@ import { getInstallationToken as realGetInstallationToken } from "./github-app";
 import { getChangedFiles as realGetChangedFiles } from "./github-files";
 import { formatPRComment, postPRComment as realPostPRComment } from "./pr-comment";
 import { reviewPR as realReviewPR } from "./review-pipeline";
-import { runFirstReviewSummary as realRunFirstReviewSummary } from "./onboarder";
+import {
+  recordPatchProposedEvent as realRecordPatchProposedEvent,
+  runFirstReviewSummary as realRunFirstReviewSummary,
+} from "./onboarder";
 import { runPatchAgent as realRunPatchAgent } from "./patch-agent";
 import { logError, logInfo, messageOf } from "./log";
 import { db } from "@/db";
@@ -65,6 +68,7 @@ export type WorkerDeps = {
   reviewPR: typeof realReviewPR;
   postPRComment: typeof realPostPRComment;
   runFirstReviewSummary: typeof realRunFirstReviewSummary;
+  recordPatchProposedEvent: typeof realRecordPatchProposedEvent;
   runPatchAgent: typeof realRunPatchAgent;
   loadReviewQueueRow: typeof realLoadReviewQueueRow;
   claimReviewForProcessing: typeof realClaimReviewForProcessing;
@@ -87,6 +91,7 @@ export function realWorkerDeps(): WorkerDeps {
     reviewPR: realReviewPR,
     postPRComment: realPostPRComment,
     runFirstReviewSummary: realRunFirstReviewSummary,
+    recordPatchProposedEvent: realRecordPatchProposedEvent,
     runPatchAgent: realRunPatchAgent,
     loadReviewQueueRow: realLoadReviewQueueRow,
     claimReviewForProcessing: realClaimReviewForProcessing,
@@ -418,6 +423,21 @@ async function processClaimedRow(
             proposedAt: deps.now(),
           })),
         );
+        // Fire one onboarder event per shipped patch. Self-gated on
+        // ONBOARDER_ENABLED; the call is fire-and-forget at the worker
+        // level — its own catch logs without bubbling.
+        for (const d of patchOutcome.decisions) {
+          if (d.patch === null || d.modelId === null) continue;
+          await deps.recordPatchProposedEvent({
+            installationId: row.installationId,
+            owner: row.owner,
+            repo: row.repo,
+            reviewId,
+            findingId: d.findingId,
+            modelId: d.modelId,
+            suggestedPatch: d.patch,
+          });
+        }
       } catch (patchPersistErr) {
         logError("patch_agent.persist_failed", {
           reviewId,

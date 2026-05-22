@@ -67,7 +67,17 @@ function WalletPage({ reputation }: { reputation: WalletReputation }) {
               : `${reputation.findingsClosed}/${reputation.findingsTotal} (${closeRate}%)`
           }
         />
+        <Stat
+          label="Patches accepted"
+          value={
+            reputation.patchesProposed === 0
+              ? "—"
+              : `${reputation.patchesAccepted}/${reputation.patchesProposed}`
+          }
+        />
         <Stat label="USDC settled" value={`${formatUsdc(reputation.totalSettledUsdc)} USDC`} />
+      </section>
+      <section className="mt-4">
         <Stat label="Current balance" value={`${formatUsdc(reputation.currentBalanceUsdc)} USDC`} />
       </section>
 
