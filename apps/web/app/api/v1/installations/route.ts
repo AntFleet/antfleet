@@ -22,12 +22,10 @@ const bodySchema = z.object({
 
 export type CreateInstallationDeps = {
   insertInstallation: (args: { walletAddress: string }) => Promise<PaywallInstallationRow>;
-  now: () => Date;
 };
 
 const DEFAULT_DEPS: CreateInstallationDeps = {
   insertInstallation: (args) => insertPaywallInstallation(db, args),
-  now: () => new Date(),
 };
 
 export async function POST(req: NextRequest) {
@@ -47,7 +45,13 @@ export async function handleCreateInstallation(req: NextRequest, deps: CreateIns
     }
     const walletAddress = parsed.data.wallet_address.toLowerCase();
     const row = await deps.insertInstallation({ walletAddress });
-    const issuedAt = deps.now();
+    // CRITICAL: use row.createdAt (set by Postgres `DEFAULT now()`) — NOT
+    // deps.now(). The bind endpoint reconstructs the challenge from the
+    // SAME row.createdAt later. Using deps.now() here desyncs the JS clock
+    // from the Postgres clock; the agent signs message_T_js but the
+    // server verifies against message_T_pg, producing a 401 signature
+    // mismatch. Found in prod 2026-05-22 during the first real bind.
+    const issuedAt = row.createdAt;
     const challenge = buildBindingChallenge({
       installationId: row.id,
       walletAddress,
