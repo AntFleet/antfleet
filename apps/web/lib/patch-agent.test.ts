@@ -50,6 +50,7 @@ describe("runPatchAgent — env-flag gate", () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
       installationId: 12345,
+      repo: "test-repo",
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus, gpt],
@@ -62,6 +63,7 @@ describe("runPatchAgent — env-flag gate", () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
       installationId: 12345,
+      repo: "test-repo",
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus, gpt],
@@ -78,6 +80,7 @@ describe("runPatchAgent — happy path", () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
       installationId: 12345,
+      repo: "test-repo",
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus, gpt],
@@ -100,6 +103,7 @@ describe("runPatchAgent — happy path", () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
       installationId: 12345,
+      repo: "test-repo",
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [onlyOpus, decline],
@@ -115,6 +119,7 @@ describe("runPatchAgent — degenerate paths", () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
       installationId: 12345,
+      repo: "test-repo",
       findings: [],
       changedFiles: [],
       providers: [opus, gpt],
@@ -145,6 +150,7 @@ describe("runPatchAgent — degenerate paths", () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
       installationId: 12345,
+      repo: "test-repo",
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [openaiOnly, third],
@@ -159,6 +165,7 @@ describe("runPatchAgent — degenerate paths", () => {
     const out = await runPatchAgent({
       reviewId: "rev-1",
       installationId: 12345,
+      repo: "test-repo",
       findings: [stubFinding()],
       changedFiles: [stubFile()],
       providers: [opus],

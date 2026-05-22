@@ -68,6 +68,11 @@ export type PatchAgentOutcome = {
 export type RunPatchAgentArgs = {
   reviewId: string;
   installationId: number;
+  // Required to disambiguate when one GitHub installation_id grants
+  // access to multiple repos. Each (installation_id, repo) gets its
+  // own override; v1.5-canary discovered that filtering by
+  // installation_id alone returns an arbitrary sibling row.
+  repo: string;
   findings: readonly Finding[];
   changedFiles: readonly ChangedFile[];
   // Test seam — overrides DEFAULT_PATCH_PROVIDERS.
@@ -90,7 +95,7 @@ export async function runPatchAgent(
 ): Promise<PatchAgentOutcome | null> {
   const enabled = args.enabled
     ? await args.enabled()
-    : await isPatchAgentEnabledForInstall(args.installationId);
+    : await isPatchAgentEnabledForInstall(args.installationId, args.repo);
   if (!enabled) return null;
   if (args.findings.length === 0) {
     return { decisions: [], byIndex: new Map(), elapsedMs: 0, costPatchUsd: 0 };

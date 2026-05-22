@@ -91,31 +91,31 @@ describe("isPatchAgentEnabledForInstall — per-install override precedence", ()
   it("override=true wins over env=false (canary install)", async () => {
     process.env["PATCH_AGENT_ENABLED"] = "false";
     dbMockState.selectResult = [{ patchAgentEnabled: true }];
-    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(true);
+    await expect(isPatchAgentEnabledForInstall(12345, "test-repo")).resolves.toBe(true);
   });
 
   it("override=false wins over env=true (kill switch on a single install)", async () => {
     process.env["PATCH_AGENT_ENABLED"] = "true";
     dbMockState.selectResult = [{ patchAgentEnabled: false }];
-    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(false);
+    await expect(isPatchAgentEnabledForInstall(12345, "test-repo")).resolves.toBe(false);
   });
 
   it("override=null falls through to env=true", async () => {
     process.env["PATCH_AGENT_ENABLED"] = "true";
     dbMockState.selectResult = [{ patchAgentEnabled: null }];
-    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(true);
+    await expect(isPatchAgentEnabledForInstall(12345, "test-repo")).resolves.toBe(true);
   });
 
   it("override=null falls through to env=false", async () => {
     process.env["PATCH_AGENT_ENABLED"] = "false";
     dbMockState.selectResult = [{ patchAgentEnabled: null }];
-    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(false);
+    await expect(isPatchAgentEnabledForInstall(12345, "test-repo")).resolves.toBe(false);
   });
 
   it("missing install row → behaves as null override → env wins", async () => {
     process.env["PATCH_AGENT_ENABLED"] = "true";
     dbMockState.selectResult = []; // no row
-    await expect(isPatchAgentEnabledForInstall(99999)).resolves.toBe(true);
+    await expect(isPatchAgentEnabledForInstall(99999, "missing-repo")).resolves.toBe(true);
   });
 
   it("DB read failure → conservative fallback to env-only check", async () => {
@@ -124,6 +124,19 @@ describe("isPatchAgentEnabledForInstall — per-install override precedence", ()
     // Per the function contract: a read failure never blocks the env path;
     // we'd rather honor the env flag than silently disable the canary
     // because the lookup failed.
-    await expect(isPatchAgentEnabledForInstall(12345)).resolves.toBe(true);
+    await expect(isPatchAgentEnabledForInstall(12345, "test-repo")).resolves.toBe(true);
+  });
+
+  it("disambiguates installs that share an installation_id by repo", async () => {
+    // Regression for v1.5-canary bug: a single GitHub installation_id can
+    // grant access to multiple repos, each with its own override. The
+    // pre-fix query (installation_id only, LIMIT 1) returned an arbitrary
+    // sibling row — in prod, that was a null-override row, silently
+    // disabling the patch lane on the install that did have the flag.
+    process.env["PATCH_AGENT_ENABLED"] = "false";
+    // Mock returns the row matching (installation_id, repo) — when the
+    // query includes the repo filter, only the canary row is returned.
+    dbMockState.selectResult = [{ patchAgentEnabled: true }];
+    await expect(isPatchAgentEnabledForInstall(133030324, "aeon-bench")).resolves.toBe(true);
   });
 });
