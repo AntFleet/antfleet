@@ -129,9 +129,12 @@ async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
       sha = pr.data.head.sha;
     } catch (err) {
       if ((err as { failureModeTag?: string }).failureModeTag) throw err;
+      // GitHub 404 = PR doesn't exist (user_input); 5xx = GitHub outage (provider_error)
+      const httpStatus = (err as { status?: number })?.status;
+      const mode = httpStatus !== undefined && httpStatus < 500 ? "user_input" : "provider_error";
       throw Object.assign(
         new Error(`Failed to resolve PR: ${messageOf(err)}`),
-        { failureModeTag: "provider_error" },
+        { failureModeTag: mode },
       );
     }
   }
