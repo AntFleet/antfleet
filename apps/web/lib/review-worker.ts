@@ -458,6 +458,8 @@ async function processClaimedRow(
             patchModelId: d.modelId,
             patchSkipReason: d.skipReason,
             proposedAt: deps.now(),
+            candidates: d.candidates,
+            selector: d.selector,
           })),
         );
         // Persist the aggregate patch-lane cost (observability only —

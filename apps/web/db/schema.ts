@@ -159,6 +159,14 @@ export const findingStatus = pgTable("finding_status", {
   patchReviewCommentUrl: text("patch_review_comment_url"),
   patchReviewProposedAt: timestamp("patch_review_proposed_at", { withTimezone: true }),
   patchApplyClickedAt: timestamp("patch_apply_clicked_at", { withTimezone: true }),
+  // Eval Phase 0 — dual-candidate persistence. Per-provider patch candidates
+  // so eval-harness step 3 can ETL (category x severity x proposing_model x
+  // accepted). Original suggested_patch + patch_model_id columns preserved for
+  // backward compat; new writes populate BOTH old + new.
+  suggestedPatchOpus: text("suggested_patch_opus"),
+  suggestedPatchGpt5: text("suggested_patch_gpt5"),
+  patchShipped: text("patch_shipped"),
+  patchSelector: text("patch_selector"),
 });
 
 export const maintainerReactions = pgTable(
