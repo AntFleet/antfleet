@@ -9,10 +9,10 @@ import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const selfPath = fileURLToPath(import.meta.url);
+const selfDir = dirname(selfPath);
 
-dotenv.config({ path: join(__dirname, "../.env.local") });
+dotenv.config({ path: join(selfDir, "../.env.local") });
 
 const url = process.env["DATABASE_URL"];
 if (!url) {
@@ -30,7 +30,7 @@ if (PROD_PATTERNS.some((p) => host.includes(p))) {
 }
 
 const sqlFile = readFileSync(
-  join(__dirname, "../db/migrations/0024_review_jobs.sql"),
+  join(selfDir, "../db/migrations/0024_review_jobs.sql"),
   "utf-8",
 );
 
