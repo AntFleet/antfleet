@@ -1,30 +1,27 @@
-// POST /api/v1/installations/{id}/review — synchronous on-demand review.
+// POST /api/v1/installations/{id}/review — async on-demand review.
 //
-// Pull-mode counterpart to the GitHub App's push-mode webhook. The
-// webhook reviews automatically on PR open; Aeon agents (and other
-// install-bound callers) hit this endpoint to trigger a review on a
-// specific PR/SHA mid-session and get a two-model-consensus finding
-// back inline.
+// Async-default contract (migration from sync). POST enqueues a review_jobs
+// row, debits the channel, returns 202 + jobId immediately, then fires the
+// worker via next/server after(). Caller polls GET .../review/{jobId} for
+// the result.
 //
-// Surface contract (see docs/aeon-skill-pack.md for the long-form):
+// Surface contract:
 //   1. Caller GETs a challenge from POST .../review/challenge.
 //   2. Caller signs the challenge string with the wallet bound to the
 //      installation (EIP-191 personal_sign, same shape as /bind).
 //   3. Caller POSTs here with { challenge_id, signature, pr_number? | sha?, repo? }.
+//   4. Response: 202 { jobId, statusUrl, expectedDurationSec }
+//   5. Caller polls GET .../review/{jobId} until status != "queued" && != "running"
 //
-// Both this endpoint and the webhook funnel channel debits through
-// lib/paywall/gate.ts::debitForReview so the channel state mutation
-// lives in one place. The webhook posts an invoice PR comment on
-// insufficient balance; this endpoint returns 402 JSON. Same channel,
-// same price, same finding schema.
+// Legacy sync callers that pass ?legacy=true get 410 Gone with migration doc.
 
 import type { NextRequest } from "next/server";
+import { after } from "next/server";
 import { Octokit } from "@octokit/rest";
 import { recoverMessageAddress as viemRecoverMessageAddress } from "viem";
 import { z } from "zod";
 import { db } from "@/db";
-import { enqueueReview, hashRepo, markReviewTerminallyFailed } from "@/db/queries";
-import { jsonError, jsonOk, NO_STORE, optionsResponse } from "@/lib/api-v1/responses";
+import { jsonError, NO_STORE, optionsResponse } from "@/lib/api-v1/responses";
 import { getInstallationToken } from "@/lib/github-app";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { debitForReview, decideGate } from "@/lib/paywall/gate";
@@ -32,30 +29,32 @@ import { getReviewPriceUsdc } from "@/lib/paywall/env";
 import {
   claimReviewChallenge,
   linkReviewChallengeToReview,
-  loadChannelBalanceForInstallation,
   loadPaywallInstallation,
   loadReviewChallenge,
-  loadReviewForResponse,
   type PaywallInstallationRow,
   type ReviewChallengeRow,
-  type ReviewResponsePayload,
 } from "@/lib/paywall/queries";
 import {
   buildReviewChallenge,
   REVIEW_CHALLENGE_FUTURE_SKEW_MS,
   REVIEW_CHALLENGE_MAX_AGE_MS,
 } from "@/lib/paywall/review-challenge";
-import { isBenchmarkRepo } from "@/lib/repo-benchmark";
-import { isPublicRepo } from "@/lib/repo-visibility";
-import { runReviewWorker } from "@/lib/review-worker";
+import {
+  createReviewJob,
+  findJobByIdempotencyKey,
+  linkDebitPaymentToJob,
+  type ReviewJobRow,
+} from "@/lib/review-job-queries";
+import { processReviewJob } from "@/lib/review-job-worker";
+import { NextResponse } from "next/server";
 
 // node:crypto is Node-only — lock this route off the Edge runtime.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Same ceiling as the webhook — the review itself runs synchronously
-// inside this request so the worker needs the full 300s window for its
-// first attempt. Cron retry is the recovery surface on timeout.
-export const maxDuration = 300;
+// Shorter maxDuration since POST now returns 202 immediately. The worker
+// runs in after() with its own timeout. Keep enough headroom for auth +
+// debit + enqueue (all are fast DB ops).
+export const maxDuration = 30;
 
 const bodySchema = z
   .object({
@@ -70,6 +69,7 @@ const bodySchema = z
       .string()
       .regex(/^[^/\s]+\/[^/\s]+$/, "repo must be owner/name")
       .optional(),
+    idempotency_key: z.string().max(128).optional(),
   })
   .refine((v) => v.pr_number !== undefined || v.sha !== undefined, {
     message: "either pr_number or sha is required",
@@ -78,10 +78,6 @@ const bodySchema = z
 
 type ParsedBody = z.infer<typeof bodySchema>;
 
-// Structural duck-type for the Octokit surface this endpoint touches.
-// Lets the test pass a minimal stub without instantiating the full
-// @octokit/rest client. Methods mirror the production Octokit shape so
-// the prod default just hands through `new Octokit({ auth })`.
 export type ReviewOctokit = {
   rest: {
     pulls: {
@@ -106,20 +102,17 @@ export type ReviewEndpointDeps = {
   loadChallenge: (challengeId: string) => Promise<ReviewChallengeRow | null>;
   recoverMessageAddress: (args: { message: string; signature: `0x${string}` }) => Promise<string>;
   decideGate: typeof decideGate;
-  enqueueReview: typeof enqueueReview;
   debitForReview: typeof debitForReview;
   claimChallenge: (args: { challengeId: string; usedAt: Date }) => Promise<boolean>;
   linkChallengeToReview: (args: { challengeId: string; reviewId: string }) => Promise<void>;
-  markReviewTerminallyFailed: typeof markReviewTerminallyFailed;
-  runReviewWorker: typeof runReviewWorker;
-  loadReviewForResponse: (reviewId: string) => Promise<ReviewResponsePayload | null>;
-  loadChannelBalance: (installationRowId: string) => Promise<string | null>;
   getInstallationToken: typeof getInstallationToken;
   makeOctokit: (token: string) => ReviewOctokit;
-  isPublicRepo: (octokit: ReviewOctokit, owner: string, repo: string) => Promise<boolean>;
-  isBenchmarkRepo: (octokit: ReviewOctokit, owner: string, repo: string) => Promise<boolean>;
   getPriceUsdc: () => string;
   now: () => Date;
+  createReviewJob: (args: Parameters<typeof createReviewJob>[1]) => Promise<ReviewJobRow>;
+  findJobByIdempotencyKey: (installationId: string, idempotencyKey: string) => Promise<ReviewJobRow | null>;
+  linkDebitToJob: (jobId: string, debitPaymentId: string) => Promise<void>;
+  scheduleWorker: (jobId: string) => void;
 };
 
 const DEFAULT_DEPS: ReviewEndpointDeps = {
@@ -127,22 +120,29 @@ const DEFAULT_DEPS: ReviewEndpointDeps = {
   loadChallenge: (id) => loadReviewChallenge(db, id),
   recoverMessageAddress: viemRecoverMessageAddress,
   decideGate,
-  enqueueReview,
   debitForReview,
   claimChallenge: (args) => claimReviewChallenge(db, args),
   linkChallengeToReview: (args) => linkReviewChallengeToReview(db, args),
-  markReviewTerminallyFailed,
-  runReviewWorker,
-  loadReviewForResponse: (id) => loadReviewForResponse(db, id),
-  loadChannelBalance: (id) => loadChannelBalanceForInstallation(db, id),
   getInstallationToken,
   makeOctokit: (token) => new Octokit({ auth: token }) as unknown as ReviewOctokit,
-  isPublicRepo: (octokit, owner, repo) =>
-    isPublicRepo(octokit as unknown as Parameters<typeof isPublicRepo>[0], owner, repo),
-  isBenchmarkRepo: (octokit, owner, repo) =>
-    isBenchmarkRepo(octokit as unknown as Parameters<typeof isBenchmarkRepo>[0], owner, repo),
   getPriceUsdc: getReviewPriceUsdc,
   now: () => new Date(),
+  createReviewJob: (args) => createReviewJob(db, args),
+  findJobByIdempotencyKey: (installationId, idempotencyKey) =>
+    findJobByIdempotencyKey(db, installationId, idempotencyKey),
+  linkDebitToJob: (jobId, debitPaymentId) => linkDebitPaymentToJob(db, jobId, debitPaymentId),
+  scheduleWorker: (jobId) => {
+    after(async () => {
+      try {
+        await processReviewJob(jobId);
+      } catch (err) {
+        logError("review_endpoint.after_worker_failed", {
+          jobId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  },
 };
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -150,7 +150,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 }
 
 export function OPTIONS() {
-  return optionsResponse();
+  return optionsResponse("POST, OPTIONS");
 }
 
 export async function handleReviewRequest(
@@ -161,19 +161,19 @@ export async function handleReviewRequest(
   try {
     const { id } = await ctx.params;
     const url = new URL(req.url);
+
+    // 410 Gone for legacy sync callers
+    if (url.searchParams.get("legacy") === "true") {
+      return jsonError(410, "sync_mode_removed", "Synchronous /api/v1/installations/{id}/review was removed in the async-default contract. POST now returns 202 + jobId; poll GET /api/v1/installations/{id}/review/{jobId} for status. AntFleet/aeon-skills users: update to ≥v2.0.", {
+        migrationDoc: "https://www.antfleet.dev/changelog",
+      });
+    }
+
     if (url.searchParams.get("force") === "true") {
-      // v1 boundary — re-running a cached review would need either a
-      // separate force_seq dimension on the (repo_hash, pr_number,
-      // commit_sha) idempotency key or a delete-and-reinsert flow that
-      // breaks finding_status FK history. Both are scope creep for the
-      // Aeon partnership ship; idempotent caching by SHA already covers
-      // the actual use case (Aeon asks for a review of a specific PR/SHA;
-      // if the SHA hasn't moved the prior finding is still valid). When
-      // demand justifies it we add a force surface in v2.
       return jsonError(
         501,
         "force_not_yet_supported",
-        "force=true is not yet implemented; idempotency by (installation, sha) caches the prior finding",
+        "force=true is not yet implemented; idempotency by (installation, idempotency_key) deduplicates",
       );
     }
 
@@ -202,6 +202,7 @@ export async function handleReviewRequest(
       );
     }
 
+    // Validate challenge + signature (same EIP-191 flow as before)
     const challenge = await deps.loadChallenge(body.challenge_id);
     if (challenge === null) {
       return jsonError(401, "unknown_challenge", "challenge_id not found");
@@ -229,7 +230,6 @@ export async function handleReviewRequest(
     if (now.getTime() > challenge.expiresAt.getTime()) {
       return jsonError(401, "expired_challenge", "challenge has expired; mint a fresh one");
     }
-    // Defensive: any old challenge that escaped the expires_at clamp.
     if (-skewMs > REVIEW_CHALLENGE_MAX_AGE_MS) {
       return jsonError(401, "expired_challenge", "challenge has expired; mint a fresh one");
     }
@@ -266,10 +266,7 @@ export async function handleReviewRequest(
       );
     }
 
-    // Signature verified — now resolve the GitHub target. Auth context
-    // (installationToken) comes first because we need an Octokit for both
-    // PR resolution (sha → PR lookup) and visibility checks (publicReceipt,
-    // isBenchmark) regardless of which input path the caller chose.
+    // Resolve target repo/PR
     let installationToken: string;
     try {
       installationToken = await deps.getInstallationToken(install.installationId);
@@ -289,11 +286,8 @@ export async function handleReviewRequest(
     }
 
     // Gate decision against the (github_installation_id, repo) channel.
-    // Identical to webhook's pre-enqueue gate read.
     const gate = await deps.decideGate(
       { installationId: install.installationId, repo: target.repo },
-      // Default deps inside decideGate look up the gate row from db; we
-      // don't override here so the prod surface uses the same query.
     );
     if (gate.kind === "not_installed") {
       return jsonError(
@@ -314,13 +308,35 @@ export async function handleReviewRequest(
         },
       );
     }
-    // gate.kind is "bypass" (legacy_partner) or "debit"
 
-    // Atomic challenge redemption — claim BEFORE enqueue so a lost-race
-    // redemption doesn't leave a stale reviews row behind. The UPDATE's
-    // used_at IS NULL guard is the anti-replay surface; two concurrent
-    // verifications for the same challenge_id race here, the loser sees
-    // 0 rows and bails out without any side effects on the reviews table.
+    // Idempotency check BEFORE challenge claim: if caller sent an
+    // idempotency_key and a job exists, return it without consuming the
+    // challenge. This lets callers retry with the same or a fresh
+    // challenge and get the existing job back.
+    if (body.idempotency_key) {
+      const existing = await deps.findJobByIdempotencyKey(install.id, body.idempotency_key);
+      if (existing !== null) {
+        return NextResponse.json(
+          {
+            jobId: existing.jobId,
+            statusUrl: `/api/v1/installations/${id}/review/${existing.jobId}`,
+            status: existing.status,
+            expectedDurationSec: 180,
+          },
+          {
+            status: 200,
+            headers: {
+              "Access-Control-Allow-Origin": "*",
+              "Cache-Control": NO_STORE,
+              "Content-Type": "application/json; charset=utf-8",
+            },
+          },
+        );
+      }
+    }
+
+    // Claim challenge atomically — AFTER idempotency check so a retry
+    // with the same idempotency_key doesn't waste challenges.
     const claimed = await deps.claimChallenge({
       challengeId: challenge.id,
       usedAt: now,
@@ -333,174 +349,84 @@ export async function handleReviewRequest(
       );
     }
 
-    // Mission 5 / 6 visibility flags. Same calls the webhook makes; the
-    // helpers are fail-closed so a missing public-repo lookup defaults to
-    // privateReceipt=false (safe). Per project memory, this endpoint also
-    // honors the publicReceipt default-true rule for public repos.
-    const [publicReceipt, isBenchmark] = await Promise.all([
-      deps.isPublicRepo(octokit, target.owner, target.repo),
-      deps.isBenchmarkRepo(octokit, target.owner, target.repo),
-    ]);
-
-    // Enqueue → returns reviewId. Idempotent on (repo_hash, pr_number,
-    // commit_sha): isNew=false means a prior trigger (webhook or earlier
-    // API call) already produced a review for this exact SHA.
-    const repoHash = hashRepo(target.owner, target.repo);
-    const enqueued = await deps.enqueueReview({
-      repoHash,
+    // Create the job row FIRST (no debit link yet). If debit fails
+    // afterward, we mark the job failed. If job creation fails, no
+    // channel mutation has occurred — no orphaned payments.
+    const job = await deps.createReviewJob({
+      installationId: install.id,
+      walletAddress: install.walletAddress,
+      repoOwner: target.owner,
+      repoName: target.repo,
       prNumber: target.prNumber,
-      commitSha: target.sha,
-      filesReviewed: [],
-      promptVersion: "spike-v1",
-      providerModelIds: {},
-      providerResponses: { status: "pending" },
-      agreementDecision: { status: "pending" },
-      timingMs: 0,
-      costEstimatedUsd: 0,
-      schemaVersion: 1,
-      installationId: install.installationId,
-      owner: target.owner,
-      repo: target.repo,
-      publicReceipt,
-      isBenchmark,
+      sha: target.sha,
+      idempotencyKey: body.idempotency_key ?? null,
+      debitPaymentId: null,
     });
-    const { reviewId, isNew } = enqueued;
 
-    // Audit-only link from the claimed challenge to the review row.
-    // Best-effort: a failure here is logged but never blocks the flow —
-    // the challenge is already marked used (anti-replay holds) and the
-    // review row exists; the linkage is recoverable from timestamps.
+    // Debit channel (only for gate.kind === "debit").
+    // bypass (legacy partner): no debit — job proceeds with debitPaymentId=NULL.
+    if (gate.kind === "debit") {
+      const debit = await deps.debitForReview(db, {
+        decision: gate,
+        reviewId: job.jobId,
+        logContext: { id, surface: "api-async" },
+      });
+      if (!debit.ok) {
+        return jsonError(
+          402,
+          "insufficient_channel_balance",
+          "channel balance dropped below review price between gate read and debit",
+          {
+            required_usdc: gate.priceUsdc,
+            current_usdc: gate.balanceUsdc,
+            wallet_address: gate.walletAddress,
+          },
+        );
+      }
+      // Link the debit payment to the job row
+      if (debit.drawdownId !== null) {
+        await deps.linkDebitToJob(job.jobId, debit.drawdownId);
+      }
+    } else if (gate.kind === "bypass") {
+      logInfo("review_endpoint.bypass_legacy_partner", { id, jobId: job.jobId });
+    }
+
+    // Audit-link challenge to the job (best-effort)
     try {
-      await deps.linkChallengeToReview({ challengeId: challenge.id, reviewId });
+      await deps.linkChallengeToReview({ challengeId: challenge.id, reviewId: job.jobId });
     } catch (err) {
       logError("review_endpoint.challenge_link_failed", {
         id,
         challengeId: challenge.id,
-        reviewId,
+        jobId: job.jobId,
         message: messageOf(err),
       });
     }
 
-    // Debit only on isNew=true. Per the brief, cached responses for a
-    // prior (installation, sha) MUST NOT debit again — the prior call
-    // already paid for the finding being returned.
-    let debitedUsdc: string | null = null;
-    let drawdownId: string | null = null;
-    if (isNew) {
-      if (gate.kind === "debit") {
-        const debit = await deps.debitForReview(db, {
-          decision: gate,
-          reviewId,
-          logContext: { id, surface: "api" },
-        });
-        if (!debit.ok) {
-          // Race: balance dropped between the gate read and the atomic
-          // debit (concurrent webhook on a different PR drained it). Mark
-          // the row terminally failed — cron won't run a free review — and
-          // surface 402 to the caller. Challenge is consumed but caller
-          // can mint a fresh one once the channel is topped up.
-          try {
-            await deps.markReviewTerminallyFailed({
-              reviewId,
-              now: deps.now(),
-              error: debit.reason,
-            });
-          } catch (err) {
-            logError("review_endpoint.fail_after_debit_race", {
-              id,
-              reviewId,
-              message: messageOf(err),
-            });
-          }
-          return jsonError(
-            402,
-            "insufficient_channel_balance",
-            "channel balance dropped below review price between gate read and debit",
-            {
-              required_usdc: gate.priceUsdc,
-              current_usdc: gate.balanceUsdc,
-              wallet_address: gate.walletAddress,
-            },
-          );
-        }
-        debitedUsdc = debit.debitedUsdc;
-        drawdownId = debit.drawdownId;
-      }
-      // bypass branch — legacy_partner installs never reach the new
-      // endpoint in practice (they have no bound wallet), but the gate
-      // can still return "bypass" if the operator manually flips the
-      // flag on a wallet-bound row. No debit; proceed to worker.
+    logInfo("review_job", {
+      jobId: job.jobId,
+      event: "enqueued",
+      installationId: install.id,
+    });
 
-      // Run the review synchronously. runReviewWorker handles its own
-      // retry / terminal-fail accounting; on transient errors it returns
-      // { kind: "retried", ... } and leaves the row in pending_retry for
-      // the cron sweep to finish. On terminal errors, { kind: "failed" }
-      // and we surface 502 to the caller.
-      const outcome = await deps.runReviewWorker(reviewId, "api");
-      logInfo("review_endpoint.worker_outcome", {
-        id,
-        reviewId,
-        kind: outcome.kind,
-      });
-      if (outcome.kind === "failed") {
-        return jsonError(502, "review_failed", outcome.error);
-      }
-      if (outcome.kind === "retried") {
-        // Tell the caller the review is in flight; their next call with a
-        // fresh challenge for the same SHA will return the cached finding.
-        return jsonError(
-          503,
-          "review_in_progress",
-          "review failed transiently and will be retried by the cron sweep",
-        );
-      }
-      // outcome.kind === "done" | "skipped" (skipped only on
-      // comment_already_posted re-settle, which means the row IS done)
-    }
+    // Fire worker in background
+    deps.scheduleWorker(job.jobId);
 
-    const payload = await deps.loadReviewForResponse(reviewId);
-    if (payload === null) {
-      logError("review_endpoint.response_load_missing", { id, reviewId });
-      return jsonError(500, "internal", "review row vanished after worker completion");
-    }
-
-    // bypass = legacy_partner installs have no channel; loadChannelBalance
-    // returns null and the remaining_usdc field is omitted from the
-    // response payload. For paid (debit) installs, the post-debit balance
-    // is the source of truth — read it fresh rather than computing
-    // gate.balanceUsdc - price (the gate balance was read before debit).
-    const remainingUsdcLoaded = await deps.loadChannelBalance(install.id);
-    const remainingUsdc = remainingUsdcLoaded ?? (gate.kind === "debit" ? gate.balanceUsdc : null);
-
-    const agreed = extractAgreedFindings(payload.agreementDecision);
-    return jsonOk(
+    // Return 202 immediately
+    return NextResponse.json(
       {
-        cached: !isNew,
-        receipt: {
-          review_id: payload.reviewId,
-          repo: { owner: target.owner, name: target.repo },
-          pr_number: payload.prNumber,
-          sha: payload.commitSha,
-          finding_count: agreed.length,
-          finding_ids: payload.findingIds,
-          public_receipt: payload.publicReceipt,
-          is_benchmark: payload.isBenchmark,
-          pr_comment_url: payload.prCommentUrl,
-        },
-        findings: agreed,
-        finding: agreed[0] ?? null,
-        evidence: agreed.flatMap((f) =>
-          Array.isArray(f.evidence)
-            ? f.evidence.map((e) => ({ ...e, finding_title: f.title }))
-            : [],
-        ),
-        channel: {
-          debited_usdc: debitedUsdc,
-          remaining_usdc: remainingUsdc,
-          drawdown_id: drawdownId,
+        jobId: job.jobId,
+        statusUrl: `/api/v1/installations/${id}/review/${job.jobId}`,
+        expectedDurationSec: 180,
+      },
+      {
+        status: 202,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": NO_STORE,
+          "Content-Type": "application/json; charset=utf-8",
         },
       },
-      { cacheControl: NO_STORE },
     );
   } catch (err) {
     logError("review_endpoint.internal", {
@@ -527,13 +453,6 @@ async function resolveTarget(args: {
 }): Promise<ResolvedTarget> {
   const { body, install, octokit } = args;
 
-  // owner/repo resolution. The install row carries (owner, repo) for
-  // single-repo installs; multi-repo installs carry one row per repo
-  // (unique(installation_id, repo)), and the caller picks which one via
-  // the URL's {id} — so install.owner/install.repo are unambiguous for
-  // the chosen row. body.repo only matters if the caller wants to
-  // override (e.g., the install row is missing owner/repo because the
-  // GitHub App's first webhook hasn't landed yet).
   let owner: string;
   let repo: string;
   if (body.repo !== undefined) {
@@ -548,12 +467,6 @@ async function resolveTarget(args: {
     }
     owner = bo;
     repo = br;
-    // GitHub repo slugs are case-insensitive on the wire — both `Acme/demo`
-    // and `acme/demo` route to the same repository — so the cross-check
-    // against install.owner/install.repo must be case-insensitive too. We
-    // continue forwarding the caller-provided case to GitHub so the gate
-    // query (which uses the install row's stored case) keeps working
-    // against the same row.
     if (
       install.owner !== null &&
       install.repo !== null &&
@@ -567,9 +480,6 @@ async function resolveTarget(args: {
         message: `installation is bound to ${install.owner}/${install.repo}; body.repo names ${owner}/${repo}`,
       };
     }
-    // Use the install row's canonical case for downstream gate lookups
-    // and findings persistence — that's what the (installation_id, repo)
-    // unique index in `installations` uses as the source of truth.
     if (install.owner !== null && install.repo !== null) {
       owner = install.owner;
       repo = install.repo;
@@ -586,7 +496,6 @@ async function resolveTarget(args: {
     };
   }
 
-  // PR/SHA resolution.
   if (body.pr_number !== undefined) {
     try {
       const pr = await octokit.rest.pulls.get({
@@ -594,12 +503,6 @@ async function resolveTarget(args: {
         repo,
         pull_number: body.pr_number,
       });
-      // Mirror webhook semantics: the GitHub App webhook only dispatches
-      // on opened/reopened/synchronize, so closed/merged PRs never reach
-      // the gate via push-mode. The on-demand endpoint must reject the
-      // same set so a caller can't pay to review a long-closed PR. The
-      // sha-only branch already filters on state === "open"; this is the
-      // matching guard for the pr_number path.
       if (pr.data.state !== "open") {
         return {
           kind: "error",
@@ -609,9 +512,6 @@ async function resolveTarget(args: {
         };
       }
       const sha = pr.data.head.sha;
-      // If the caller supplied both pr_number and sha and they disagree,
-      // they're asking about a stale PR head. Reject so we don't review
-      // a non-existent target.
       if (body.sha !== undefined && body.sha.toLowerCase() !== sha.toLowerCase()) {
         return {
           kind: "error",
@@ -640,9 +540,7 @@ async function resolveTarget(args: {
     }
   }
 
-  // body.sha is set (the Zod refine guarantees pr_number XOR sha).
   if (body.sha === undefined) {
-    // Defensive — the Zod refine should make this unreachable.
     return {
       kind: "error",
       status: 400,
@@ -679,7 +577,6 @@ async function resolveTarget(args: {
     }
     const pr = openMatches[0];
     if (pr === undefined) {
-      // Unreachable after the length checks above; defensive.
       return {
         kind: "error",
         status: 400,
@@ -696,34 +593,6 @@ async function resolveTarget(args: {
       message: `could not resolve sha ${body.sha}: ${messageOf(err)}`,
     };
   }
-}
-
-type AgreedFinding = {
-  title: string;
-  severity: string;
-  category: string;
-  confidence?: string;
-  evidence?: Array<{
-    path: string;
-    startLine: number | null;
-    endLine: number | null;
-    symbol: string | null;
-    quote: string | null;
-  }>;
-  reasoning?: string;
-  recommendation?: string;
-  reproduction?: string | null;
-  suggestedRegressionTest?: string | null;
-  minimumFixScope?: string;
-  whyTestsDoNotAlreadyCoverThis?: string;
-};
-
-function extractAgreedFindings(agreementDecision: unknown): AgreedFinding[] {
-  if (typeof agreementDecision !== "object" || agreementDecision === null) return [];
-  const d = agreementDecision as Record<string, unknown>;
-  const agreed = d["agreed"];
-  if (!Array.isArray(agreed)) return [];
-  return agreed.filter((f): f is AgreedFinding => typeof f === "object" && f !== null);
 }
 
 async function readJson(req: NextRequest): Promise<unknown> {
