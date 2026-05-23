@@ -162,6 +162,13 @@
       "when": 1779320000000,
       "tag": "0022_patch_review_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1779330000000,
+      "tag": "0023_eval_phase_0_dual_candidate",
+      "breakpoints": true
     }
   ]
 }

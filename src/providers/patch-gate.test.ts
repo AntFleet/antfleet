@@ -31,24 +31,57 @@ describe("decidePatchOutcomes — the four spec cases", () => {
     expect(out[0]?.patch).toBe(PATCH_A);
     expect(out[0]?.modelId).toBe("claude-opus-4-7");
     expect(out[0]?.skipReason).toBeNull();
+    expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: PATCH_B });
+    expect(out[0]?.selector).toBe("deterministic-opus");
   });
 
   it("only anthropic proposes → models_disagreed (findings-only)", () => {
     const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: null })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
+    expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
+    expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
   });
 
   it("only openai proposes → models_disagreed (findings-only)", () => {
     const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: PATCH_B })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
+    expect(out[0]?.candidates).toEqual({ opus: null, gpt5: PATCH_B });
+    expect(out[0]?.selector).toBe("no-opus-deterministic-skip");
   });
 
   it("neither proposes (both clean declines) → models_disagreed", () => {
     const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: null })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
+    expect(out[0]?.candidates).toEqual({ opus: null, gpt5: null });
+    expect(out[0]?.selector).toBe("no-candidates");
+  });
+});
+
+describe("decidePatchOutcomes — shipping behavior regression", () => {
+  it("shipped patch is byte-identical to pre-refactor output (both propose)", () => {
+    const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: PATCH_B })]);
+    // Pre-refactor: returned { patch: PATCH_A, modelId: 'claude-opus-4-7', skipReason: null }
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.modelId).toBe("claude-opus-4-7");
+    expect(out[0]?.skipReason).toBeNull();
+  });
+
+  it("shipped patch is null when only anthropic proposes (pre-refactor behavior)", () => {
+    const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: null })]);
+    expect(out[0]?.patch).toBeNull();
+  });
+
+  it("shipped patch is null when only openai proposes (pre-refactor behavior)", () => {
+    const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: PATCH_B })]);
+    expect(out[0]?.patch).toBeNull();
+  });
+
+  it("shipped patch is null when neither proposes (pre-refactor behavior)", () => {
+    const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: null })]);
+    expect(out[0]?.patch).toBeNull();
   });
 });
 
@@ -59,6 +92,7 @@ describe("decidePatchOutcomes — skip-reason surfacing", () => {
       openai({ skipReason: "outside_diff_hunk" }),
     ]);
     expect(out[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(out[0]?.selector).toBe("no-candidates");
   });
 
   it("prioritizes generation_error when any provider errored", () => {
@@ -96,6 +130,8 @@ describe("decidePatchOutcomes — disagreement keeps the loser's reason out", ()
     ]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
+    expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
+    expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
   });
 });
 
@@ -112,8 +148,11 @@ describe("decidePatchOutcomes — multi-finding fan-out", () => {
     expect(out).toHaveLength(3);
     const byId = new Map(out.map((d) => [d.findingId, d]));
     expect(byId.get("fid-A")?.patch).toBe(PATCH_A);
+    expect(byId.get("fid-A")?.selector).toBe("deterministic-opus");
     expect(byId.get("fid-B")?.skipReason).toBe("outside_diff_hunk");
+    expect(byId.get("fid-B")?.selector).toBe("no-candidates");
     expect(byId.get("fid-C")?.skipReason).toBe("models_disagreed");
+    expect(byId.get("fid-C")?.selector).toBe("no-gpt5-deterministic-skip");
   });
 
   it("emits stable findingId-sorted output", () => {
@@ -139,6 +178,7 @@ describe("decidePatchOutcomes — degenerate inputs", () => {
     const out = decidePatchOutcomes([anthropic({ patch: PATCH_A })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
+    expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
   });
 
   it("ships when more than two providers exist as long as anthropic + ONE other propose", () => {
@@ -157,6 +197,7 @@ describe("decidePatchOutcomes — degenerate inputs", () => {
     ]);
     expect(out[0]?.patch).toBe(PATCH_A);
     expect(out[0]?.skipReason).toBeNull();
+    expect(out[0]?.selector).toBe("deterministic-opus");
   });
 });
 

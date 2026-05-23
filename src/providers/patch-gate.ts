@@ -43,6 +43,12 @@ export type ProviderPatchProposal = {
   rationale: string | null;
 };
 
+export type PatchSelector =
+  | "deterministic-opus"
+  | "no-opus-deterministic-skip"
+  | "no-gpt5-deterministic-skip"
+  | "no-candidates";
+
 export type PatchDecision = {
   findingId: string;
   // Non-null when the gate selected a winning patch. The winner is the
@@ -52,6 +58,10 @@ export type PatchDecision = {
   modelId: string | null;
   // Non-null exactly when patch is null.
   skipReason: PatchSkipReason | null;
+  // Eval Phase 0 — dual-candidate persistence. These fields are additive;
+  // existing callers that only read patch/modelId/skipReason are unaffected.
+  candidates: { opus: string | null; gpt5: string | null };
+  selector: PatchSelector;
 };
 
 // Deterministic winner. PR3 hard-codes anthropic; revisit when the eval
@@ -82,6 +92,14 @@ export function decidePatchOutcomes(proposals: readonly ProviderPatchProposal[])
 function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): PatchDecision {
   const withPatch = group.filter((p) => p.patch !== null);
 
+  // Extract per-provider candidates for eval persistence.
+  const anthropicProposal = group.find((p) => p.providerName === WINNING_PROVIDER);
+  const openaiProposal = group.find((p) => p.providerName === "openai");
+  const candidates = {
+    opus: anthropicProposal?.patch ?? null,
+    gpt5: openaiProposal?.patch ?? null,
+  };
+
   // Happy path: every provider in the group proposed a patch. Ship the
   // anthropic one. Tolerant of additional providers (future stack growth)
   // — if anthropic and openai both proposed, we ship even if a third
@@ -99,6 +117,8 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       // null value so the receipt comment doesn't say "(model: null)".
       modelId: anthropic.modelId ?? WINNING_PROVIDER,
       skipReason: null,
+      candidates,
+      selector: "deterministic-opus",
     };
   }
 
@@ -107,11 +127,15 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
   // a structural reason on the declining side — prefer that when it's
   // more informative than the generic "disagreed".
   if (withPatch.length > 0) {
+    const selector: PatchSelector =
+      candidates.opus !== null ? "no-gpt5-deterministic-skip" : "no-opus-deterministic-skip";
     return {
       findingId,
       patch: null,
       modelId: null,
       skipReason: "models_disagreed",
+      candidates,
+      selector,
     };
   }
 
@@ -124,6 +148,8 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     patch: null,
     modelId: null,
     skipReason: reason,
+    candidates,
+    selector: "no-candidates",
   };
 }
 

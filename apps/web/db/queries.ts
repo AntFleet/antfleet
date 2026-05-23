@@ -408,6 +408,13 @@ export type RecordPatchDecisionInput = {
   // so the caller can hand the gate's output back unmodified — we ignore
   // it for the SQL write.
   proposedAt: Date;
+  // Eval Phase 0 — dual-candidate persistence.
+  candidates: { opus: string | null; gpt5: string | null };
+  selector:
+    | "deterministic-opus"
+    | "no-opus-deterministic-skip"
+    | "no-gpt5-deterministic-skip"
+    | "no-candidates";
 };
 
 export async function recordPatchDecisions(
@@ -422,10 +429,16 @@ export async function recordPatchDecisions(
       db
         .update(findingStatus)
         .set({
+          // Existing writes — UNCHANGED (backward compat for sweeper + click-apply reads)
           suggestedPatch: i.suggestedPatch,
           patchModelId: i.patchModelId,
           patchSkipReason: i.patchSkipReason,
           patchProposedAt: i.proposedAt,
+          // Eval Phase 0 — new writes
+          suggestedPatchOpus: i.candidates.opus,
+          suggestedPatchGpt5: i.candidates.gpt5,
+          patchShipped: i.suggestedPatch,
+          patchSelector: i.selector,
         })
         .where(eq(findingStatus.findingId, i.findingId)),
     ),
