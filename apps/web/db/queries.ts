@@ -410,7 +410,11 @@ export type RecordPatchDecisionInput = {
   proposedAt: Date;
   // Eval Phase 0 — dual-candidate persistence.
   candidates: { opus: string | null; gpt5: string | null };
-  selector: string;
+  selector:
+    | "deterministic-opus"
+    | "no-opus-deterministic-skip"
+    | "no-gpt5-deterministic-skip"
+    | "no-candidates";
 };
 
 export async function recordPatchDecisions(
