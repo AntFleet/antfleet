@@ -1,6 +1,7 @@
 import { getInstallationOctokit } from "./github-app";
 import { extractNewSideLines } from "./patch-acceptance";
 import type { Finding } from "./review-types";
+import { shortenReviewId, shortenSha } from "./short-id";
 
 // Order matches AGENTS.md §15 framing — direct, technical. Highest-priority
 // items first so reviewers see them before scrolling.
@@ -69,7 +70,7 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
     .map((m) => `\`${m}\``)
     .join(" + ");
   const footerLines: string[] = [
-    `<sub>Review \`${meta.reviewId.slice(0, 8)}\` · ${stack} (unanimous) ` +
+    `<sub>Review \`${shortenReviewId(meta.reviewId)}\` · ${stack} (unanimous) ` +
       `· ${Math.round(meta.totalMs / 1000)}s · ~$${meta.estimatedCostUsd.toFixed(2)}</sub>`,
   ];
   if (meta.settlement !== undefined) {
@@ -212,7 +213,7 @@ export type ClosureReceiptInput = {
 
 export function formatClosureReceipt(args: ClosureReceiptInput): string {
   const f = args.finding;
-  const shortSha = args.closureSha.slice(0, 7);
+  const shortSha = shortenSha(args.closureSha);
   const closingCommitUrl = `https://github.com/${args.owner}/${args.repo}/commit/${args.closureSha}`;
   const ev = f.evidence[0];
 
@@ -254,7 +255,7 @@ export type PatchAcceptanceReceiptInput = {
 };
 
 export function formatPatchAcceptanceReceipt(args: PatchAcceptanceReceiptInput): string {
-  const shortSha = args.acceptedSha.slice(0, 7);
+  const shortSha = shortenSha(args.acceptedSha);
   const commitUrl = `https://github.com/${args.owner}/${args.repo}/commit/${args.acceptedSha}`;
   const modelLabel = args.patchModelId === null ? "" : ` (model: \`${args.patchModelId}\`)`;
   const lines: string[] = [];

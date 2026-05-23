@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { shortenReviewId } from "../lib/short-id";
 import {
   and,
   count,
@@ -345,7 +346,7 @@ export async function updateReview(reviewId: string, input: UpdateReviewInput): 
 
 /** Stable id format: `<first-8-of-reviewId>-<findingIndex>`. */
 export function makeFindingId(reviewId: string, findingIndex: number): string {
-  return `${reviewId.slice(0, 8)}-${findingIndex}`;
+  return `${shortenReviewId(reviewId)}-${findingIndex}`;
 }
 
 export async function setReviewComment(args: {

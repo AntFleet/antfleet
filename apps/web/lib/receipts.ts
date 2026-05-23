@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
 import { outgoingPrs, type OutgoingPr } from "@/db/schema";
+import { shortenRepoHash, shortenReviewId, shortenSha } from "./short-id";
 
 // Pure view-model for the public /receipts page. Lives apart from the DB
 // query so the adapter (privacy labels + relative time) can be unit-tested
@@ -25,8 +26,6 @@ export type DisplayReceipt = {
   receiptUrl: string | null;
 };
 
-const REPO_LABEL_LEN = 8;
-const SHA_LABEL_LEN = 7;
 
 export function toDisplayReceipt(row: PublicReceiptRow, now: Date): DisplayReceipt {
   return {
@@ -34,9 +33,9 @@ export function toDisplayReceipt(row: PublicReceiptRow, now: Date): DisplayRecei
     severity: row.severity,
     category: row.category,
     title: row.title,
-    repoLabel: `repo ${row.repoHash.slice(0, REPO_LABEL_LEN)}`,
+    repoLabel: `repo ${shortenRepoHash(row.repoHash)}`,
     prLabel: `PR #${row.prNumber}`,
-    shaLabel: row.closureSha === null ? null : row.closureSha.slice(0, SHA_LABEL_LEN),
+    shaLabel: row.closureSha === null ? null : shortenSha(row.closureSha),
     relativeClosedAt: row.closedAt === null ? null : formatRelativeTime(now, row.closedAt),
     closedAtIso: row.closedAt === null ? null : row.closedAt.toISOString(),
     receiptUrl: row.closureCommentUrl,
@@ -200,7 +199,7 @@ export function toDisplayReceiptDetail(
   return {
     ...base,
     reviewId: row.reviewId,
-    reviewIdShort: row.reviewId.slice(0, 8),
+    reviewIdShort: shortenReviewId(row.reviewId),
     reviewerLabels,
     providerTimings,
     reviewedAtIso: row.reviewCreatedAt.toISOString(),
