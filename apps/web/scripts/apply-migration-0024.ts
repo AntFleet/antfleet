@@ -4,9 +4,13 @@
 // Without --apply, prints the SQL and exits (dry run).
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 dotenv.config({ path: join(__dirname, "../.env.local") });
 
@@ -42,7 +46,18 @@ const sql = neon(url);
 
 async function main() {
   console.log("Applying migration 0024_review_jobs...");
-  await sql(sqlFile);
+  // Neon serverless driver can't run multiple statements in one call.
+  // Split on semicolons and run each statement individually.
+  const statements = sqlFile
+    .split(";")
+    .map((s) => s.trim())
+    // Strip leading comment lines but keep the SQL that follows
+    .map((s) => s.replace(/^(--[^\n]*\n)+/, "").trim())
+    .filter((s) => s.length > 0);
+  for (const stmt of statements) {
+    console.log(`  Running: ${stmt.slice(0, 60)}...`);
+    await sql(stmt);
+  }
   console.log("Migration 0024 applied successfully.");
 }
 
