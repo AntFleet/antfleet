@@ -507,6 +507,38 @@ export const payments = pgTable(
 // Generic cursor store for cron-style scripts. Pattern avoids per-job tables
 // for tiny state. Key = job name (e.g. "poll-factory.last_block"), value =
 // opaque string the job owns.
+// API async-default — review job queue. POST /api/v1/installations/{id}/review
+// enqueues a row here and returns 202 + jobId immediately. The worker picks it
+// up via waitUntil(); a safety-net cron re-triggers orphan/stuck jobs. Generic
+// naming: every v1 review caller shares this queue.
+export const reviewJobs = pgTable(
+  "review_jobs",
+  {
+    jobId: text("job_id").primaryKey(),
+    installationId: text("installation_id").notNull(),
+    walletAddress: text("wallet_address").notNull(),
+    repoOwner: text("repo_owner").notNull(),
+    repoName: text("repo_name").notNull(),
+    prNumber: integer("pr_number"),
+    sha: text("sha"),
+    idempotencyKey: text("idempotency_key"),
+    status: text("status").notNull().default("queued"),
+    failureMode: text("failure_mode"),
+    failureMessage: text("failure_message"),
+    result: jsonb("result"),
+    debitPaymentId: uuid("debit_payment_id").references(() => payments.id),
+    refundPaymentId: uuid("refund_payment_id").references(() => payments.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("review_jobs_status_started_idx").on(t.status, t.startedAt),
+    index("review_jobs_installation_idx").on(t.installationId, t.createdAt),
+  ],
+);
+
 export const cronCursors = pgTable("cron_cursors", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -578,3 +610,5 @@ export type AgentClaim = typeof agentClaims.$inferSelect;
 export type NewAgentClaim = typeof agentClaims.$inferInsert;
 export type WeeklyFeature = typeof weeklyFeatures.$inferSelect;
 export type NewWeeklyFeature = typeof weeklyFeatures.$inferInsert;
+export type ReviewJob = typeof reviewJobs.$inferSelect;
+export type NewReviewJob = typeof reviewJobs.$inferInsert;

@@ -1,34 +1,25 @@
-// Integration tests for POST /api/v1/installations/{id}/review.
+// Integration tests for POST /api/v1/installations/{id}/review (async contract).
 //
-// Drives the route through its exported handleReviewRequest with a
-// fully-mocked deps surface — no real Postgres, no real GitHub. Pins
-// the contract for:
+// POST now returns 202 + jobId (async enqueue). The worker runs via after().
+// Tests pin the contract for:
+//   - 202 happy path: auth → debit → job row → 202 + jobId
 //   - 400 on missing target / malformed body
 //   - 401 on bad / expired / used / cross-install challenge
 //   - 401 on signature mismatch
 //   - 402 with required/current breakdown on insufficient balance
-//   - 200 happy path: gate → debit → worker → finding response
-//   - 200 cached on duplicate (isNew=false): no debit, finding returned
-//   - 501 on ?force=true (v1 boundary)
+//   - 410 Gone on ?legacy=true
+//   - 501 on ?force=true
 //   - 409 on missing wallet / missing install_id
-//
-// The webhook flow exercises debitForReview via its own tests; here we
-// confirm the API surface returns the right HTTP code and body shape
-// for each gate decision.
 
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { handleReviewRequest, type ReviewEndpointDeps, type ReviewOctokit } from "./route";
 import type { GateDecision } from "@/lib/paywall/gate";
-import type {
-  PaywallInstallationRow,
-  ReviewChallengeRow,
-  ReviewResponsePayload,
-} from "@/lib/paywall/queries";
+import type { PaywallInstallationRow, ReviewChallengeRow } from "@/lib/paywall/queries";
+import type { ReviewJobRow } from "@/lib/review-job-queries";
 
 const ROW_ID = "00000000-0000-4000-8000-000000000001";
 const CHALLENGE_ID = "11111111-1111-4111-8111-111111111111";
-const REVIEW_ID = "22222222-2222-4222-8222-222222222222";
 const CHANNEL_ID = "33333333-3333-4333-8333-333333333333";
 const WALLET = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 const SIG = `0x${"a".repeat(130)}`;
@@ -37,6 +28,7 @@ const OWNER = "acme";
 const REPO = "demo";
 const PR = 7;
 const SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+const JOB_ID = "test-job-id-123456789";
 
 const ISSUED_AT = new Date("2026-05-22T14:30:00.000Z");
 const NOW = new Date("2026-05-22T14:31:00.000Z");
@@ -81,44 +73,32 @@ function debitGate(): Extract<GateDecision, { kind: "debit" }> {
   };
 }
 
-function reviewPayload(overrides: Partial<ReviewResponsePayload> = {}): ReviewResponsePayload {
+function jobRow(overrides: Partial<ReviewJobRow> = {}): ReviewJobRow {
   return {
-    reviewId: REVIEW_ID,
-    installationId: GH_INSTALL,
-    owner: OWNER,
-    repo: REPO,
+    jobId: JOB_ID,
+    installationId: ROW_ID,
+    walletAddress: WALLET,
+    repoOwner: OWNER,
+    repoName: REPO,
     prNumber: PR,
-    commitSha: SHA,
-    agreementDecision: {
-      agreed: [
-        {
-          title: "Off-by-one in date math",
-          severity: "high",
-          category: "bug",
-          confidence: "high",
-          evidence: [
-            { path: "src/date.ts", startLine: 12, endLine: 14, symbol: null, quote: null },
-          ],
-          reasoning: "The increment runs before the boundary check.",
-          recommendation: "Move the boundary check above the increment.",
-        },
-      ],
-    },
-    publicReceipt: true,
-    isBenchmark: false,
-    prCommentUrl: "https://github.com/acme/demo/pull/7#issuecomment-1",
-    processingStatus: "done",
-    processingError: null,
-    timingMs: 1234,
-    costEstimatedUsd: "0.0500",
-    findingIds: [`${REVIEW_ID.slice(0, 8)}-0`],
+    sha: SHA,
+    idempotencyKey: null,
+    status: "queued",
+    failureMode: null,
+    failureMessage: null,
+    result: null,
+    debitPaymentId: null,
+    refundPaymentId: null,
+    createdAt: NOW,
+    startedAt: null,
+    completedAt: null,
+    expiresAt: new Date(NOW.getTime() + 24 * 60 * 60 * 1000),
     ...overrides,
   };
 }
 
 function octokitStub(opts?: {
   prSha?: string;
-  prNumber?: number;
   prState?: string;
   associatedPrs?: Array<{ number: number; state: string; headSha: string }>;
   prThrow?: { status: number };
@@ -154,7 +134,6 @@ function deps(overrides: Partial<ReviewEndpointDeps> = {}): ReviewEndpointDeps {
     loadChallenge: vi.fn(async () => challengeRow()),
     recoverMessageAddress: vi.fn(async () => WALLET),
     decideGate: vi.fn(async () => debitGate() as GateDecision),
-    enqueueReview: vi.fn(async () => ({ reviewId: REVIEW_ID, isNew: true })),
     debitForReview: vi.fn(async () => ({
       ok: true as const,
       debitedUsdc: "0.500000",
@@ -163,21 +142,14 @@ function deps(overrides: Partial<ReviewEndpointDeps> = {}): ReviewEndpointDeps {
     })),
     claimChallenge: vi.fn(async () => true),
     linkChallengeToReview: vi.fn(async () => undefined),
-    markReviewTerminallyFailed: vi.fn(async () => undefined),
-    runReviewWorker: vi.fn(async () => ({
-      kind: "done" as const,
-      reviewId: REVIEW_ID,
-      agreedCount: 1,
-      degraded: false,
-    })),
-    loadReviewForResponse: vi.fn(async () => reviewPayload()),
-    loadChannelBalance: vi.fn(async () => "0.500000"),
     getInstallationToken: vi.fn(async () => "ghs_token"),
     makeOctokit: vi.fn(() => octokitStub({ prSha: SHA })),
-    isPublicRepo: vi.fn(async () => true),
-    isBenchmarkRepo: vi.fn(async () => false),
     getPriceUsdc: () => "0.50",
     now: () => NOW,
+    createReviewJob: vi.fn(async () => jobRow()),
+    findJobByIdempotencyKey: vi.fn(async () => null),
+    linkDebitToJob: vi.fn(async () => undefined),
+    scheduleWorker: vi.fn(),
     ...overrides,
   };
 }
@@ -193,58 +165,38 @@ function req(body: unknown, opts?: { searchParams?: string }): NextRequest {
 
 const ctx = { params: Promise.resolve({ id: ROW_ID }) };
 
-describe("POST /api/v1/installations/{id}/review", () => {
-  it("happy path: verifies sig, debits channel, runs worker, returns finding", async () => {
+describe("POST /api/v1/installations/{id}/review (async)", () => {
+  it("happy path: verifies sig, debits channel, enqueues job, returns 202 + jobId", async () => {
     const d = deps();
     const res = await handleReviewRequest(
       req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR }),
       ctx,
       d,
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body["cached"]).toBe(false);
-    expect(body["findings"]).toHaveLength(1);
-    expect((body["finding"] as { title: string }).title).toBe("Off-by-one in date math");
-    expect(body["receipt"]).toMatchObject({
-      review_id: REVIEW_ID,
-      repo: { owner: OWNER, name: REPO },
-      pr_number: PR,
-      sha: SHA,
-      public_receipt: true,
-      finding_count: 1,
-    });
-    expect(body["channel"]).toMatchObject({
-      debited_usdc: "0.500000",
-      remaining_usdc: "0.500000",
-      drawdown_id: "drawdown-1",
-    });
+    expect(body["jobId"]).toBe(JOB_ID);
+    expect(body["statusUrl"]).toBe(`/api/v1/installations/${ROW_ID}/review/${JOB_ID}`);
+    expect(body["expectedDurationSec"]).toBe(180);
     expect(d.debitForReview).toHaveBeenCalledTimes(1);
-    expect(d.runReviewWorker).toHaveBeenCalledTimes(1);
+    expect(d.createReviewJob).toHaveBeenCalledTimes(1);
+    expect(d.scheduleWorker).toHaveBeenCalledWith(JOB_ID);
     expect(d.claimChallenge).toHaveBeenCalledTimes(1);
     expect(d.linkChallengeToReview).toHaveBeenCalledTimes(1);
   });
 
-  it("cached path (isNew=false): skips debit and worker, returns cached finding", async () => {
-    const d = deps({
-      enqueueReview: vi.fn(async () => ({ reviewId: REVIEW_ID, isNew: false })),
-    });
+  it("returns 410 Gone on ?legacy=true", async () => {
     const res = await handleReviewRequest(
-      req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR }),
+      req(
+        { challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR },
+        { searchParams: "legacy=true" },
+      ),
       ctx,
-      d,
+      deps(),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body["cached"]).toBe(true);
-    expect(body["findings"]).toHaveLength(1);
-    expect((body["channel"] as { debited_usdc: unknown }).debited_usdc).toBeNull();
-    expect((body["channel"] as { drawdown_id: unknown }).drawdown_id).toBeNull();
-    expect(d.debitForReview).not.toHaveBeenCalled();
-    expect(d.runReviewWorker).not.toHaveBeenCalled();
-    // Challenge is still consumed — single-use even on cached returns.
-    expect(d.claimChallenge).toHaveBeenCalledTimes(1);
-    expect(d.linkChallengeToReview).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(410);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("sync_mode_removed");
   });
 
   it("returns 401 when signature does not recover to the bound wallet", async () => {
@@ -260,7 +212,7 @@ describe("POST /api/v1/installations/{id}/review", () => {
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("signature_mismatch");
     expect(d.debitForReview).not.toHaveBeenCalled();
-    expect(d.enqueueReview).not.toHaveBeenCalled();
+    expect(d.createReviewJob).not.toHaveBeenCalled();
   });
 
   it("returns 402 with required/current on insufficient balance at the gate", async () => {
@@ -348,11 +300,6 @@ describe("POST /api/v1/installations/{id}/review", () => {
   });
 
   it("returns 401 with NO side effects when challenge claim loses the race", async () => {
-    // After PR #48's reorder (post-Phase-4 fix), claim happens BEFORE
-    // enqueue — so a lost race must NOT create a stale reviews row that
-    // would later need terminal failure. The flow short-circuits at the
-    // claim, returning 401 immediately. Pins this property so a future
-    // refactor doesn't silently re-introduce the stale-row regression.
     const d = deps({
       claimChallenge: vi.fn(async () => false),
     });
@@ -364,10 +311,9 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("challenge_already_used");
-    expect(d.enqueueReview).not.toHaveBeenCalled();
     expect(d.debitForReview).not.toHaveBeenCalled();
-    expect(d.runReviewWorker).not.toHaveBeenCalled();
-    expect(d.markReviewTerminallyFailed).not.toHaveBeenCalled();
+    expect(d.createReviewJob).not.toHaveBeenCalled();
+    expect(d.scheduleWorker).not.toHaveBeenCalled();
   });
 
   it("returns 400 when neither pr_number nor sha is provided", async () => {
@@ -455,9 +401,8 @@ describe("POST /api/v1/installations/{id}/review", () => {
       ctx,
       d,
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect((body["receipt"] as { pr_number: number }).pr_number).toBe(PR);
+    expect(res.status).toBe(202);
+    expect(d.createReviewJob).toHaveBeenCalledTimes(1);
   });
 
   it("rejects sha-only requests when no open PR matches", async () => {
@@ -474,11 +419,7 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(body.error.code).toBe("sha_has_no_open_pr");
   });
 
-  it("rejects pr_number requests when the PR is closed (matches webhook semantics)", async () => {
-    // The webhook only dispatches on opened/reopened/synchronize. The
-    // on-demand endpoint must mirror that so callers can't pay to review
-    // a long-closed PR. This is the post-Phase-4 fix; the prior code
-    // would happily debit USDC for a review of a merged PR.
+  it("rejects pr_number requests when the PR is closed", async () => {
     const d = deps({
       makeOctokit: vi.fn(() => octokitStub({ prState: "closed", prSha: SHA })),
     });
@@ -491,13 +432,10 @@ describe("POST /api/v1/installations/{id}/review", () => {
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("pr_not_open");
     expect(d.debitForReview).not.toHaveBeenCalled();
-    expect(d.enqueueReview).not.toHaveBeenCalled();
+    expect(d.createReviewJob).not.toHaveBeenCalled();
   });
 
-  it("accepts body.repo with different case than install row (GitHub slugs are case-insensitive)", async () => {
-    // body.repo "ACME/Demo" must match install row "acme/demo". The
-    // canonical case from the install row flows through to the gate
-    // lookup so the (installation_id, repo) unique index still hits.
+  it("accepts body.repo with different case than install row", async () => {
     const d = deps();
     const res = await handleReviewRequest(
       req({
@@ -509,13 +447,7 @@ describe("POST /api/v1/installations/{id}/review", () => {
       ctx,
       d,
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    // Receipt repo reflects the install row's canonical case, not the
-    // caller's input case.
-    expect(body["receipt"]).toMatchObject({
-      repo: { owner: OWNER, name: REPO },
-    });
+    expect(res.status).toBe(202);
   });
 
   it("rejects sha-only requests when multiple open PRs match", async () => {
@@ -555,42 +487,22 @@ describe("POST /api/v1/installations/{id}/review", () => {
     expect(body.error.code).toBe("github_auth_failed");
   });
 
-  it("propagates worker failure as 502", async () => {
+  it("returns existing job on idempotency_key match (no new debit)", async () => {
     const d = deps({
-      runReviewWorker: vi.fn(async () => ({
-        kind: "failed" as const,
-        reviewId: REVIEW_ID,
-        attempts: 1,
-        error: "model timeout",
-      })),
+      findJobByIdempotencyKey: vi.fn(async () => jobRow({ idempotencyKey: "my-key", status: "running" })),
     });
     const res = await handleReviewRequest(
-      req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR }),
+      req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR, idempotency_key: "my-key" }),
       ctx,
       d,
     );
-    expect(res.status).toBe(502);
-    const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("review_failed");
-  });
-
-  it("propagates worker transient retry as 503 (cron will finish it)", async () => {
-    const d = deps({
-      runReviewWorker: vi.fn(async () => ({
-        kind: "retried" as const,
-        reviewId: REVIEW_ID,
-        attempts: 1,
-        nextRetryAt: new Date(NOW.getTime() + 60_000),
-        error: "rate_limited",
-      })),
-    });
-    const res = await handleReviewRequest(
-      req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR }),
-      ctx,
-      d,
-    );
-    expect(res.status).toBe(503);
-    const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("review_in_progress");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body["jobId"]).toBe(JOB_ID);
+    expect(body["status"]).toBe("running");
+    // No new debit or job creation
+    expect(d.debitForReview).not.toHaveBeenCalled();
+    expect(d.createReviewJob).not.toHaveBeenCalled();
+    expect(d.scheduleWorker).not.toHaveBeenCalled();
   });
 });
