@@ -54,6 +54,9 @@ function SiteHeader() {
           <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             Receipts
           </a>
+          <a href="/disagreements" className="hover:text-[var(--color-ink)] transition-colors">
+            Disagreements
+          </a>
           <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
             Benchmarks
           </a>
@@ -83,6 +86,9 @@ function SiteFooter() {
         <nav className="flex items-center gap-5 font-mono text-xs">
           <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             receipts
+          </a>
+          <a href="/disagreements" className="hover:text-[var(--color-ink)] transition-colors">
+            disagreements
           </a>
           <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
             benchmarks
