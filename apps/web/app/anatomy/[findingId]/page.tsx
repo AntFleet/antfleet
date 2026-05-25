@@ -408,6 +408,12 @@ function CrossLinks({ bundle }: { bundle: BundleType }) {
           >
             view disagreements &rarr;
           </a>
+          <a
+            href="/retro"
+            className="text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 transition-colors"
+          >
+            case studies &rarr;
+          </a>
         </div>
       </ContentWrap>
     </section>

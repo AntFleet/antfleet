@@ -45,26 +45,30 @@ function SiteHeader() {
           AntFleet
         </a>
         <nav className="flex items-center gap-7 text-sm text-[var(--color-ink-muted)]">
-          <a href="/architecture" className="hover:text-[var(--color-ink)] transition-colors">
-            Architecture
-          </a>
-          <a href="/activity" className="hover:text-[var(--color-ink)] transition-colors">
-            Activity
-          </a>
           <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             Receipts
           </a>
           <a href="/disagreements" className="hover:text-[var(--color-ink)] transition-colors">
             Disagreements
           </a>
-          <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
-            Benchmarks
-          </a>
           <a href="/agents" className="hover:text-[var(--color-ink)] transition-colors">
             Agents
           </a>
-          <a href="/roast" className="hover:text-[var(--color-ink)] transition-colors">
+          <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
+            Benchmarks
+          </a>
+          <a href="/roasts" className="hover:text-[var(--color-ink)] transition-colors">
             Roasts
+          </a>
+          <a href="/impact" className="hover:text-[var(--color-ink)] transition-colors">
+            Impact
+          </a>
+          <span className="text-[var(--color-line)]">&middot;</span>
+          <a href="/architecture" className="hover:text-[var(--color-ink)] transition-colors">
+            Architecture
+          </a>
+          <a href="/api" className="hover:text-[var(--color-ink)] transition-colors">
+            API
           </a>
           <a href="/roadmap" className="hover:text-[var(--color-ink)] transition-colors">
             Roadmap
@@ -83,21 +87,34 @@ function SiteFooter() {
     <footer className="border-t border-[var(--color-line)]">
       <div className="mx-auto flex max-w-5xl flex-col gap-3 px-6 py-8 text-sm text-[var(--color-ink-subtle)] sm:flex-row sm:items-center sm:justify-between">
         <span>AntFleet — the trust layer for code written by agents.</span>
-        <nav className="flex items-center gap-5 font-mono text-xs">
+        <nav className="flex flex-wrap items-center gap-5 font-mono text-xs">
           <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             receipts
           </a>
           <a href="/disagreements" className="hover:text-[var(--color-ink)] transition-colors">
             disagreements
           </a>
-          <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
-            benchmarks
-          </a>
           <a href="/agents" className="hover:text-[var(--color-ink)] transition-colors">
             agents
           </a>
-          <a href="/roast" className="hover:text-[var(--color-ink)] transition-colors">
+          <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
+            benchmarks
+          </a>
+          <a href="/roasts" className="hover:text-[var(--color-ink)] transition-colors">
             roasts
+          </a>
+          <a href="/impact" className="hover:text-[var(--color-ink)] transition-colors">
+            impact
+          </a>
+          <span className="text-[var(--color-line)]">&middot;</span>
+          <a href="/digest" className="hover:text-[var(--color-ink)] transition-colors">
+            digest
+          </a>
+          <a href="/retro" className="hover:text-[var(--color-ink)] transition-colors">
+            retro
+          </a>
+          <a href="/activity" className="hover:text-[var(--color-ink)] transition-colors">
+            activity
           </a>
           <a href="/changelog" className="hover:text-[var(--color-ink)] transition-colors">
             changelog
