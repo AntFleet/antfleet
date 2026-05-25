@@ -281,6 +281,28 @@ function Header({
             tweet ↗
           </TweetIntent>
         </div>
+        {(() => {
+          const repos = Array.from(
+            new Set(detail.findings.map((f) => f.repoFullName).filter((r): r is string => r !== null)),
+          );
+          if (repos.length === 0) return null;
+          return (
+            <div className="mt-1 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1 break-all">
+              <span>repos covered</span>
+              {repos.map((repo) => (
+                <a
+                  key={repo}
+                  href={`https://github.com/${repo}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[var(--color-ink)] underline underline-offset-2 hover:opacity-80 transition-opacity"
+                >
+                  {repo} ↗
+                </a>
+              ))}
+            </div>
+          );
+        })()}
       </ContentWrap>
     </section>
   );
