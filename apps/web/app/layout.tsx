@@ -40,11 +40,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 function SiteHeader() {
   return (
     <header className="border-b border-[var(--color-line)]">
-      <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
         <a href="/" className="font-semibold tracking-tight text-[var(--color-ink)]">
           AntFleet
         </a>
-        <nav className="flex items-center gap-7 text-sm text-[var(--color-ink-muted)]">
+        <nav className="flex items-center gap-6 text-sm text-[var(--color-ink-muted)]">
           <NavDropdown label="Evidence">
             <DropdownLink href="/receipts" label="Receipts" />
             <DropdownLink href="/disagreements" label="Disagreements" />
