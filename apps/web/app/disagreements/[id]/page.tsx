@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { and, eq, sql } from "drizzle-orm";
 import { TweetIntent } from "@/components/TweetIntent";
+import { db } from "@/db/index";
+import { findingStatus, reviews } from "@/db/schema";
 import {
   loadDisagreementDetail,
   redactSecrets,
@@ -10,6 +13,23 @@ import {
 } from "@/lib/disagreements";
 import { formatRelativeTime } from "@/lib/receipts";
 import { shortenRepoHash } from "@/lib/short-id";
+
+type RelatedFinding = { findingId: string; title: string; severity: string; category: string };
+
+async function loadRelatedFindings(reviewId: string): Promise<RelatedFinding[]> {
+  const rows = await db
+    .select({
+      findingId: findingStatus.findingId,
+      title: findingStatus.title,
+      severity: findingStatus.severity,
+      category: findingStatus.category,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(and(eq(reviews.reviewId, reviewId), eq(reviews.publicReceipt, true)))
+    .limit(10);
+  return rows;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +63,7 @@ export default async function DisagreementDetailPage({ params }: { params: Promi
   const now = new Date();
   const tweetText = tweetTextForCategory(detail.category);
   const tweetUrl = `${SITE_URL}/disagreements/${encodeURIComponent(detail.id)}`;
+  const related = await loadRelatedFindings(detail.reviewId);
 
   return (
     <>
@@ -51,6 +72,12 @@ export default async function DisagreementDetailPage({ params }: { params: Promi
       <FindingComparison detail={detail} />
       <SectionDivider />
       <UnanimousGate />
+      {related.length > 0 && (
+        <>
+          <SectionDivider />
+          <RelatedFindings findings={related} />
+        </>
+      )}
       <SectionDivider />
       <FooterLinks detail={detail} tweetText={tweetText} tweetUrl={tweetUrl} />
     </>
@@ -184,6 +211,41 @@ function UnanimousGate() {
             read the methodology →
           </a>
         </div>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function RelatedFindings({ findings }: { findings: RelatedFinding[] }) {
+  return (
+    <section>
+      <ContentWrap>
+        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-5">
+          From the same review
+        </h2>
+        <p className="text-sm text-[var(--color-ink-muted)] mb-5 max-w-xl leading-relaxed">
+          These findings passed the unanimous gate on the same PR review. The disagreement above was
+          filtered out; the findings below were posted.
+        </p>
+        <ul className="flex flex-col gap-3">
+          {findings.map((f) => (
+            <li
+              key={f.findingId}
+              className="rounded-md border border-[var(--color-line)] p-4 hover:bg-[var(--color-bg-elevated)] transition-colors"
+            >
+              <a href={`/anatomy/${encodeURIComponent(f.findingId)}`} className="block">
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <Badge>{f.severity}</Badge>
+                  <Badge>{f.category}</Badge>
+                </div>
+                <p className="text-sm text-[var(--color-ink)] leading-snug">{f.title}</p>
+                <span className="mt-2 inline-block font-mono text-[11px] text-[var(--color-ink-subtle)]">
+                  view anatomy →
+                </span>
+              </a>
+            </li>
+          ))}
+        </ul>
       </ContentWrap>
     </section>
   );
