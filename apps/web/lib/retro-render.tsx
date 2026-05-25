@@ -289,7 +289,9 @@ export function renderRetroEvidence(
         </h2>
         {evidence.unanimousFindings.length === 0 ? (
           <p className="text-sm italic text-[var(--color-ink-muted)]">
-            (none — the unanimous gate did not fire on any finding)
+            {evidence.outcome === "A"
+              ? "(both providers flagged independent security issues in the introducing commit — no single finding was verbatim-identical across providers; see per-provider findings above)"
+              : "(none — the unanimous gate did not fire on any finding)"}
           </p>
         ) : (
           <div className="flex flex-col gap-6">
