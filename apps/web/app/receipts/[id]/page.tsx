@@ -219,14 +219,20 @@ function ReceiptLinks({ detail }: { detail: ReturnType<typeof toDisplayReceiptDe
           )}
         </ul>
 
-        <p className="mt-10">
+        <div className="mt-10 flex flex-col gap-3">
+          <a
+            href={`/anatomy/${encodeURIComponent(detail.findingId)}`}
+            className="font-mono text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 transition-colors"
+          >
+            full anatomy &rarr;
+          </a>
           <a
             href="/receipts"
             className="font-mono text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 transition-colors"
           >
-            ← back to all receipts
+            &larr; back to all receipts
           </a>
-        </p>
+        </div>
       </ContentWrap>
     </section>
   );

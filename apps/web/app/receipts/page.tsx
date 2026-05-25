@@ -359,6 +359,12 @@ function ReceiptRow({ display }: { display: DisplayReceipt }) {
           detail →
         </span>
       </a>
+      <a
+        href={`/anatomy/${encodeURIComponent(display.findingId)}`}
+        className="self-start font-mono text-[11px] text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)] sm:self-center sm:shrink-0"
+      >
+        anatomy &rarr;
+      </a>
       <TweetIntent
         text={receiptTweetText(display)}
         url={tweetUrl}

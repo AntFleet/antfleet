@@ -215,6 +215,12 @@ function FooterLinks({
             >
               view public receipts
             </a>
+            <a
+              href="/receipts"
+              className="text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 transition-colors"
+            >
+              see unanimous findings + anatomies &rarr;
+            </a>
           </div>
           <TweetIntent
             text={tweetText}
