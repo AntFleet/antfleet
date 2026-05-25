@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 const ABOUT_LINKS = [
   { href: "/about", label: "Architecture" },
-  { href: "/api", label: "API" },
+  { href: "/about/api", label: "API" },
   { href: "/about/methodology", label: "Methodology" },
   { href: "/about/changelog", label: "Changelog" },
   { href: "/about/roadmap", label: "Roadmap" },

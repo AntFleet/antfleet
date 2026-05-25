@@ -70,7 +70,7 @@ function SiteHeader() {
             <div className="invisible absolute right-0 top-full z-50 pt-2 group-hover:visible">
               <div className="flex flex-col gap-1 rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1 py-1 shadow-md min-w-[160px]">
                 <AboutLink href="/about" label="Architecture" />
-                <AboutLink href="/api" label="API" />
+                <AboutLink href="/about/api" label="API" />
                 <AboutLink href="/about/methodology" label="Methodology" />
                 <AboutLink href="/about/changelog" label="Changelog" />
                 <AboutLink href="/about/roadmap" label="Roadmap" />
