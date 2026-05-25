@@ -68,6 +68,25 @@ function SiteHeader() {
             <DropdownLink href="/about/roadmap" label="Roadmap" />
             <DropdownLink href="/about/policy" label="Policy" />
           </NavDropdown>
+          <span className="text-[var(--color-line)]">&middot;</span>
+          <a
+            href="https://github.com/AntFleet/antfleet"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-[var(--color-ink)] transition-colors"
+            aria-label="GitHub"
+          >
+            GitHub
+          </a>
+          <a
+            href="https://x.com/AntFleetDev"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-[var(--color-ink)] transition-colors"
+            aria-label="X"
+          >
+            X
+          </a>
         </nav>
       </div>
     </header>
