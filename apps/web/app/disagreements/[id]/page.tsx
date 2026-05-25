@@ -178,7 +178,7 @@ function UnanimousGate() {
             same severity and category are posted to the PR. This one fell through.
           </p>
           <a
-            href="/disagreements/methodology"
+            href="/about/methodology"
             className="mt-5 inline-block font-mono text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 transition-colors"
           >
             read the methodology →
