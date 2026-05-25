@@ -63,22 +63,35 @@ function SiteHeader() {
           <a href="/impact" className="hover:text-[var(--color-ink)] transition-colors">
             Impact
           </a>
-          <span className="text-[var(--color-line)]">&middot;</span>
-          <a href="/architecture" className="hover:text-[var(--color-ink)] transition-colors">
-            Architecture
-          </a>
-          <a href="/api" className="hover:text-[var(--color-ink)] transition-colors">
-            API
-          </a>
-          <a href="/roadmap" className="hover:text-[var(--color-ink)] transition-colors">
-            Roadmap
-          </a>
-          <a href="/policy" className="hover:text-[var(--color-ink)] transition-colors">
-            Policy
-          </a>
+          <div className="relative group">
+            <span className="cursor-default hover:text-[var(--color-ink)] transition-colors">
+              About
+            </span>
+            <div className="invisible absolute right-0 top-full z-50 pt-2 group-hover:visible">
+              <div className="flex flex-col gap-1 rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1 py-1 shadow-md min-w-[160px]">
+                <AboutLink href="/about" label="Architecture" />
+                <AboutLink href="/api" label="API" />
+                <AboutLink href="/about/methodology" label="Methodology" />
+                <AboutLink href="/about/changelog" label="Changelog" />
+                <AboutLink href="/about/roadmap" label="Roadmap" />
+                <AboutLink href="/about/policy" label="Policy" />
+              </div>
+            </div>
+          </div>
         </nav>
       </div>
     </header>
+  );
+}
+
+function AboutLink({ href, label }: { href: string; label: string }) {
+  return (
+    <a
+      href={href}
+      className="block rounded px-3 py-1.5 text-sm text-[var(--color-ink-muted)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-ink)] transition-colors"
+    >
+      {label}
+    </a>
   );
 }
 
@@ -116,13 +129,13 @@ function SiteFooter() {
           <a href="/activity" className="hover:text-[var(--color-ink)] transition-colors">
             activity
           </a>
-          <a href="/changelog" className="hover:text-[var(--color-ink)] transition-colors">
+          <a href="/about/changelog" className="hover:text-[var(--color-ink)] transition-colors">
             changelog
           </a>
-          <a href="/roadmap" className="hover:text-[var(--color-ink)] transition-colors">
+          <a href="/about/roadmap" className="hover:text-[var(--color-ink)] transition-colors">
             roadmap
           </a>
-          <a href="/policy" className="hover:text-[var(--color-ink)] transition-colors">
+          <a href="/about/policy" className="hover:text-[var(--color-ink)] transition-colors">
             policy
           </a>
           <a

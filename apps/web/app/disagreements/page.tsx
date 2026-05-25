@@ -103,7 +103,7 @@ function DisagreementsHero({ totalCount }: { totalCount: number }) {
         <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
           See how AntFleet classifies reviewer conflicts in the{" "}
           <a
-            href="/disagreements/methodology"
+            href="/about/methodology"
             className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
           >
             disagreement methodology
