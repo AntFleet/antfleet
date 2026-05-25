@@ -105,40 +105,18 @@ function SiteFooter() {
     <footer className="border-t border-[var(--color-line)]">
       <div className="mx-auto flex max-w-5xl flex-col gap-3 px-6 py-8 text-sm text-[var(--color-ink-subtle)] sm:flex-row sm:items-center sm:justify-between">
         <span>AntFleet — the trust layer for code written by agents.</span>
-        <nav className="flex flex-wrap items-center gap-5 font-mono text-xs">
+        <nav className="flex items-center gap-5 font-mono text-xs">
           <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
             receipts
-          </a>
-          <a href="/disagreements" className="hover:text-[var(--color-ink)] transition-colors">
-            disagreements
           </a>
           <a href="/agents" className="hover:text-[var(--color-ink)] transition-colors">
             agents
           </a>
-          <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
-            benchmarks
-          </a>
-          <a href="/roasts" className="hover:text-[var(--color-ink)] transition-colors">
-            roasts
-          </a>
           <a href="/impact" className="hover:text-[var(--color-ink)] transition-colors">
             impact
           </a>
-          <span className="text-[var(--color-line)]">&middot;</span>
-          <a href="/digest" className="hover:text-[var(--color-ink)] transition-colors">
-            digest
-          </a>
-          <a href="/retro" className="hover:text-[var(--color-ink)] transition-colors">
-            retro
-          </a>
-          <a href="/activity" className="hover:text-[var(--color-ink)] transition-colors">
-            activity
-          </a>
-          <a href="/about/changelog" className="hover:text-[var(--color-ink)] transition-colors">
-            changelog
-          </a>
-          <a href="/about/roadmap" className="hover:text-[var(--color-ink)] transition-colors">
-            roadmap
+          <a href="/about" className="hover:text-[var(--color-ink)] transition-colors">
+            about
           </a>
           <a href="/about/policy" className="hover:text-[var(--color-ink)] transition-colors">
             policy
