@@ -45,46 +45,51 @@ function SiteHeader() {
           AntFleet
         </a>
         <nav className="flex items-center gap-7 text-sm text-[var(--color-ink-muted)]">
-          <a href="/receipts" className="hover:text-[var(--color-ink)] transition-colors">
-            Receipts
-          </a>
-          <a href="/disagreements" className="hover:text-[var(--color-ink)] transition-colors">
-            Disagreements
-          </a>
-          <a href="/agents" className="hover:text-[var(--color-ink)] transition-colors">
-            Agents
-          </a>
-          <a href="/benchmarks" className="hover:text-[var(--color-ink)] transition-colors">
-            Benchmarks
-          </a>
-          <a href="/roasts" className="hover:text-[var(--color-ink)] transition-colors">
-            Roasts
-          </a>
+          <NavDropdown label="Evidence">
+            <DropdownLink href="/receipts" label="Receipts" />
+            <DropdownLink href="/disagreements" label="Disagreements" />
+            <DropdownLink href="/retro" label="Case Studies" />
+          </NavDropdown>
+          <NavDropdown label="Investigations">
+            <DropdownLink href="/agents" label="Agents" />
+            <DropdownLink href="/benchmarks" label="Benchmarks" />
+            <DropdownLink href="/roasts" label="Roasts" />
+            <DropdownLink href="/digest" label="Weekly Digest" />
+            <DropdownLink href="/activity" label="Activity" />
+          </NavDropdown>
           <a href="/impact" className="hover:text-[var(--color-ink)] transition-colors">
             Impact
           </a>
-          <div className="relative group">
-            <span className="cursor-default hover:text-[var(--color-ink)] transition-colors">
-              About
-            </span>
-            <div className="invisible absolute right-0 top-full z-50 pt-2 group-hover:visible">
-              <div className="flex flex-col gap-1 rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1 py-1 shadow-md min-w-[160px]">
-                <AboutLink href="/about" label="Architecture" />
-                <AboutLink href="/about/api" label="API" />
-                <AboutLink href="/about/methodology" label="Methodology" />
-                <AboutLink href="/about/changelog" label="Changelog" />
-                <AboutLink href="/about/roadmap" label="Roadmap" />
-                <AboutLink href="/about/policy" label="Policy" />
-              </div>
-            </div>
-          </div>
+          <NavDropdown label="About">
+            <DropdownLink href="/about" label="Architecture" />
+            <DropdownLink href="/about/api" label="API" />
+            <DropdownLink href="/about/methodology" label="Methodology" />
+            <DropdownLink href="/about/changelog" label="Changelog" />
+            <DropdownLink href="/about/roadmap" label="Roadmap" />
+            <DropdownLink href="/about/policy" label="Policy" />
+          </NavDropdown>
         </nav>
       </div>
     </header>
   );
 }
 
-function AboutLink({ href, label }: { href: string; label: string }) {
+function NavDropdown({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="relative group">
+      <span className="cursor-default hover:text-[var(--color-ink)] transition-colors">
+        {label}
+      </span>
+      <div className="invisible absolute left-1/2 -translate-x-1/2 top-full z-50 pt-2 group-hover:visible">
+        <div className="flex flex-col gap-1 rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1 py-1 shadow-md min-w-[170px]">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DropdownLink({ href, label }: { href: string; label: string }) {
   return (
     <a
       href={href}
