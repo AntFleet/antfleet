@@ -8,6 +8,15 @@ export const metadata: Metadata = {
 
 const CASES = [
   {
+    slug: "openclaw-cve-2026-31998-synology-chat",
+    title: "OpenClaw CVE-2026-31998 — synology-chat auth bypass",
+    subtitle:
+      "HIGH CVE on the fastest-growing OSS project in GitHub history — GPT-5 named the exact vulnerability; unanimous gate fired",
+    date: "March 2026",
+    severity: "high",
+    category: "security",
+  },
+  {
     slug: "moonwell-mipx43-2026-02",
     title: "Moonwell MIP-X43 oracle bug",
     subtitle:
