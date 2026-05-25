@@ -35,6 +35,7 @@ import {
   type NewReview,
   type OnboardingEvent,
   type RoastSubmission,
+  scorecardSnapshots,
 } from "./schema";
 import { writePostDraft } from "@/lib/post-drafts";
 
@@ -2473,4 +2474,83 @@ export async function setInstallStatus(
     .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
     .returning({ id: installations.id });
   return updated.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Scorecard snapshot queries
+// ---------------------------------------------------------------------------
+
+import type { ScorecardPayload } from "@/lib/scorecard";
+
+export type ScorecardSnapshotRow = {
+  yyyyMmDd: string;
+  generatedAt: Date;
+  generatorVersion: string;
+  payload: ScorecardPayload;
+};
+
+export async function loadScorecardSnapshot(
+  yyyyMmDd: string,
+): Promise<ScorecardSnapshotRow | null> {
+  const rows = await db
+    .select()
+    .from(scorecardSnapshots)
+    .where(eq(scorecardSnapshots.yyyyMmDd, yyyyMmDd))
+    .limit(1);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    yyyyMmDd: row.yyyyMmDd,
+    generatedAt: row.generatedAt,
+    generatorVersion: row.generatorVersion,
+    payload: row.payload as ScorecardPayload,
+  };
+}
+
+export async function loadScorecardIndex(args: {
+  limit: number;
+  before?: string;
+}): Promise<{ rows: ScorecardSnapshotRow[]; hasMore: boolean }> {
+  const fetchLimit = args.limit + 1;
+  const conditions =
+    args.before !== undefined
+      ? lt(scorecardSnapshots.yyyyMmDd, args.before)
+      : undefined;
+
+  const rows = await db
+    .select()
+    .from(scorecardSnapshots)
+    .where(conditions)
+    .orderBy(desc(scorecardSnapshots.yyyyMmDd))
+    .limit(fetchLimit);
+
+  const hasMore = rows.length > args.limit;
+  const page = hasMore ? rows.slice(0, args.limit) : rows;
+
+  return {
+    rows: page.map((row) => ({
+      yyyyMmDd: row.yyyyMmDd,
+      generatedAt: row.generatedAt,
+      generatorVersion: row.generatorVersion,
+      payload: row.payload as ScorecardPayload,
+    })),
+    hasMore,
+  };
+}
+
+export async function insertScorecardSnapshot(
+  yyyyMmDd: string,
+  payload: ScorecardPayload,
+  generatorVersion: string,
+): Promise<boolean> {
+  const result = await db
+    .insert(scorecardSnapshots)
+    .values({
+      yyyyMmDd,
+      payload,
+      generatorVersion,
+    })
+    .onConflictDoNothing()
+    .returning({ yyyyMmDd: scorecardSnapshots.yyyyMmDd });
+  return result.length > 0;
 }

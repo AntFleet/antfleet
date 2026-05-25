@@ -578,6 +578,17 @@ export const agentClaims = pgTable("agent_claims", {
   verifiedAt: timestamp("verified_at", { withTimezone: true }),
 });
 
+// AI Scorecard — immutable weekly snapshots of provider-comparison stats.
+// One row per week, keyed on the week-ending Sunday (YYYY-MM-DD). Payload
+// is the full aggregated numbers produced by lib/scorecard.ts. Once published,
+// snapshots never change even if underlying data evolves.
+export const scorecardSnapshots = pgTable("scorecard_snapshots", {
+  yyyyMmDd: text("yyyy_mm_dd").primaryKey(),
+  generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+  generatorVersion: text("generator_version").notNull(),
+  payload: jsonb("payload").notNull(),
+});
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -612,3 +623,5 @@ export type WeeklyFeature = typeof weeklyFeatures.$inferSelect;
 export type NewWeeklyFeature = typeof weeklyFeatures.$inferInsert;
 export type ReviewJob = typeof reviewJobs.$inferSelect;
 export type NewReviewJob = typeof reviewJobs.$inferInsert;
+export type ScorecardSnapshot = typeof scorecardSnapshots.$inferSelect;
+export type NewScorecardSnapshot = typeof scorecardSnapshots.$inferInsert;
