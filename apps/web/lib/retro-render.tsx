@@ -282,25 +282,25 @@ export function renderRetroEvidence(
         </div>
       </section>
 
-      {/* 6 — UNANIMOUS GATE */}
-      <section className="mb-16">
-        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-5">
-          Unanimous gate (intersection)
-        </h2>
-        {evidence.unanimousFindings.length === 0 ? (
-          <p className="text-sm italic text-[var(--color-ink-muted)]">
-            {evidence.outcome === "A"
-              ? "(both providers flagged independent security issues in the introducing commit — no single finding was verbatim-identical across providers; see per-provider findings above)"
-              : "(none — the unanimous gate did not fire on any finding)"}
-          </p>
-        ) : (
-          <div className="flex flex-col gap-6">
-            {evidence.unanimousFindings.map((f, i) => (
-              <FindingCard key={`u-${i}`} finding={f} />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* 6 — UNANIMOUS GATE (omitted for outcome A with empty intersection: opener already explains) */}
+      {(evidence.unanimousFindings.length > 0 || evidence.outcome !== "A") && (
+        <section className="mb-16">
+          <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-5">
+            Unanimous gate (intersection)
+          </h2>
+          {evidence.unanimousFindings.length === 0 ? (
+            <p className="text-sm italic text-[var(--color-ink-muted)]">
+              (none — the unanimous gate did not fire on any finding)
+            </p>
+          ) : (
+            <div className="flex flex-col gap-6">
+              {evidence.unanimousFindings.map((f, i) => (
+                <FindingCard key={`u-${i}`} finding={f} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* 7 — SOURCES FOOTER (gated: omitted when no real URLs supplied) */}
       {sources !== undefined && sources.length > 0 && (
