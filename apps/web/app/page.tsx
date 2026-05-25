@@ -7,7 +7,7 @@ import {
   getPublicBaseUrl,
   getReviewPriceUsdc,
 } from "@/lib/paywall/env";
-import { formatRelativeTime } from "@/lib/receipts";
+import { formatRelativeTime, loadCrossRepoReceipts, type CrossRepoReceiptRow } from "@/lib/receipts";
 
 // Sprint 4 — homepage now queries weekly_features for the receipt-of-the-week
 // card. Skip static pre-render so the build doesn't query the prod DB before
@@ -128,6 +128,53 @@ function Hero({ installUrl }: { installUrl: string }) {
             View Receipts
           </a>
         </div>
+      </ContentWrap>
+    </section>
+  );
+}
+
+// ─── latest upstream fix ──────────────────────────────────────────────────────
+
+function LatestImpactCard({ row }: { row: CrossRepoReceiptRow }) {
+  const arrowLabel = `AntFleet → ${row.upstreamOwner}/${row.upstreamRepo}`;
+  const relative = formatRelativeTime(new Date(), row.mergedAt);
+
+  return (
+    <section>
+      <ContentWrap>
+        <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-6">
+          Latest upstream fix
+        </h2>
+
+        <article className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] px-5 py-6 sm:px-7 sm:py-7">
+          <p className="font-mono text-xs text-[var(--color-ink-muted)]">
+            {arrowLabel} · PR #{row.upstreamPrNumber}
+          </p>
+          <p className="mt-3 text-sm text-[var(--color-ink-muted)] leading-relaxed">
+            Merged at{" "}
+            <span className="font-mono text-xs text-[var(--color-ink)]">
+              {row.mergeSha.slice(0, 7)}
+            </span>{" "}
+            · {relative}
+          </p>
+
+          <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            <a
+              href="/impact"
+              className="inline-flex w-fit items-center gap-2 rounded-md bg-[var(--color-ink)] px-4 py-2 text-sm font-medium text-[var(--color-accent-fg)] transition-opacity hover:opacity-80"
+            >
+              View all impact →
+            </a>
+            <a
+              href={row.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono text-[11px] text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)] transition-colors"
+            >
+              view PR on GitHub →
+            </a>
+          </div>
+        </article>
       </ContentWrap>
     </section>
   );
@@ -422,7 +469,10 @@ function BottomCta({ installUrl }: { installUrl: string }) {
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 export default async function Home() {
-  const feature = await loadCurrentWeeklyFeature();
+  const [feature, latestImpact] = await Promise.all([
+    loadCurrentWeeklyFeature(),
+    loadCrossRepoReceipts(1),
+  ]);
   const installUrl = getGitHubAppInstallUrl();
   const baseUrl = getPublicBaseUrl();
   const reviewPrice = getReviewPriceUsdc();
@@ -436,6 +486,12 @@ export default async function Home() {
       {feature !== null && (
         <>
           <ReceiptOfTheWeekCard feature={feature} />
+          <SectionDivider />
+        </>
+      )}
+      {latestImpact.recent.length > 0 && (
+        <>
+          <LatestImpactCard row={latestImpact.recent[0]!} />
           <SectionDivider />
         </>
       )}
