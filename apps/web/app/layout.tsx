@@ -48,6 +48,7 @@ function SiteHeader() {
           <NavDropdown label="Evidence">
             <DropdownLink href="/receipts" label="Receipts" />
             <DropdownLink href="/disagreements" label="Disagreements" />
+            <DropdownLink href="/scorecard" label="Scorecard" />
             <DropdownLink href="/retro" label="Case Studies" />
           </NavDropdown>
           <NavDropdown label="Investigations">

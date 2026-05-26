@@ -28,6 +28,10 @@
     {
       "path": "/api/cron/review-jobs",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/scorecard-snapshot",
+      "schedule": "0 0 * * 6"
     }
   ]
 }
