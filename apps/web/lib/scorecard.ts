@@ -321,7 +321,7 @@ async function computeRolling4Week(
       suggestedPatchGpt5: findingStatus.suggestedPatchGpt5,
     })
     .from(findingStatus)
-    .where(sql`${findingStatus.reviewId} = ANY(${rollingReviewIds})`);
+    .where(inArray(findingStatus.reviewId, rollingReviewIds));
 
   const anthropicTimes: number[] = [];
   const openaiTimes: number[] = [];
