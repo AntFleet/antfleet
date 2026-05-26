@@ -104,11 +104,7 @@ export default async function ScorecardIndexPage({
 }
 
 function ScorecardRow({ payload, date }: { payload: ScorecardPayload; date: string }) {
-  const rolling = payload.rolling4Week;
-  const agreementPct =
-    rolling.bothProposedRate !== null
-      ? `${(rolling.bothProposedRate * 100).toFixed(0)}%`
-      : `${(payload.agreement.rate * 100).toFixed(0)}%`;
+  const agreementPct = `${(payload.agreement.rate * 100).toFixed(0)}%`;
 
   return (
     <a
