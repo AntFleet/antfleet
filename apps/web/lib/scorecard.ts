@@ -1,4 +1,4 @@
-import { and, eq, gte, lt, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import { db } from "@/db/index";
 import { reviews, findingStatus } from "@/db/schema";
 
@@ -139,7 +139,7 @@ export async function computeScorecardForWeek(weekEndingDate: Date): Promise<Sco
             suggestedPatchGpt5: findingStatus.suggestedPatchGpt5,
           })
           .from(findingStatus)
-          .where(sql`${findingStatus.reviewId} = ANY(${reviewIds})`)
+          .where(inArray(findingStatus.reviewId, reviewIds))
       : [];
 
   const payload = aggregatePayload(
