@@ -112,7 +112,7 @@ export default function DisagreementMethodologyPage() {
           </code>{" "}
           is{" "}
           <a
-            href="https://github.com/AntFleet/antfleet"
+            href="https://github.com/AntFleet/antfleet-core"
             target="_blank"
             rel="noopener noreferrer"
             className="text-[var(--color-ink)] underline underline-offset-2"

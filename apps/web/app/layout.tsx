@@ -71,7 +71,7 @@ function SiteHeader() {
           </NavDropdown>
           <span className="text-[var(--color-line)]">&middot;</span>
           <a
-            href="https://github.com/AntFleet/antfleet"
+            href="https://github.com/AntFleet/antfleet-core"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-[var(--color-ink)] transition-colors"
@@ -142,7 +142,7 @@ function SiteFooter() {
             policy
           </a>
           <a
-            href="https://github.com/AntFleet/antfleet"
+            href="https://github.com/AntFleet/antfleet-core"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-[var(--color-ink)] transition-colors"

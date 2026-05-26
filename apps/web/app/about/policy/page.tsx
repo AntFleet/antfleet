@@ -59,7 +59,7 @@ export default function PolicyPage() {
             <code className="font-mono text-xs">reviews</code>,{" "}
             <code className="font-mono text-xs">finding_status</code>,{" "}
             <code className="font-mono text-xs">maintainer_reactions</code>. Schema is documented in{" "}
-            <PolicyLink href="https://github.com/Augustas11/antfleet/blob/main/apps/web/db/schema.ts">
+            <PolicyLink href="https://github.com/AntFleet/antfleet-core/blob/main/apps/web/db/schema.ts">
               <code className="font-mono text-xs">apps/web/db/schema.ts</code>
             </PolicyLink>
             . Per-customer raw rows are accessible only via explicit auth (database credentials, not
