@@ -67,17 +67,17 @@ export default async function Image({
 
         {/* Main content */}
         <div style={{ display: "flex", flexDirection: "column", marginTop: 48 }}>
-          <div style={{ fontSize: 56, fontWeight: 600, marginBottom: 24 }}>
-            Week of {p.weekEnd}
+          <div style={{ display: "flex", fontSize: 56, fontWeight: 600, marginBottom: 24 }}>
+            {`Week of ${p.weekEnd}`}
           </div>
-          <div style={{ fontFamily: MONO, fontSize: 32, color: INK_MUTED, marginBottom: 16 }}>
-            {p.sample.reviewsAnalyzed} reviews &middot; {p.sample.findingsPosted} findings
+          <div style={{ display: "flex", fontFamily: MONO, fontSize: 32, color: INK_MUTED, marginBottom: 16 }}>
+            {`${p.sample.reviewsAnalyzed} reviews · ${p.sample.findingsPosted} findings`}
           </div>
-          <div style={{ fontFamily: MONO, fontSize: 28, color: INK_MUTED, marginBottom: 12 }}>
-            Anthropic {avgA}/PR &middot; OpenAI {avgO}/PR
+          <div style={{ display: "flex", fontFamily: MONO, fontSize: 28, color: INK_MUTED, marginBottom: 12 }}>
+            {`Anthropic ${avgA}/PR · OpenAI ${avgO}/PR`}
           </div>
-          <div style={{ fontFamily: MONO, fontSize: 28, color: INK_MUTED }}>
-            Agreement {agreementPct}%
+          <div style={{ display: "flex", fontFamily: MONO, fontSize: 28, color: INK_MUTED }}>
+            {`Agreement ${agreementPct}%`}
           </div>
         </div>
 
@@ -92,7 +92,7 @@ export default async function Image({
           }}
         >
           <span style={{ fontFamily: MONO, fontSize: 28, color: INK }}>
-            antfleet.dev/scorecard/{dateStr}
+            {`antfleet.dev/scorecard/${dateStr}`}
           </span>
         </div>
       </div>

@@ -41,15 +41,13 @@ export default async function Image(): Promise<ImageResponse> {
           fontFamily: SANS,
         }}
       >
-        <div style={{ fontSize: 72, fontWeight: 600, marginBottom: 24 }}>
+        <div style={{ display: "flex", fontSize: 72, fontWeight: 600, marginBottom: 24 }}>
           AntFleet AI Scorecard
         </div>
-        <div style={{ fontFamily: MONO, fontSize: 28, color: INK_MUTED, marginBottom: 48 }}>
-          Weekly provider comparison{cumulativeReviews > 0
-            ? ` · ${cumulativeReviews} reviews · ${cumulativeFindings} findings`
-            : ""}
+        <div style={{ display: "flex", fontFamily: MONO, fontSize: 28, color: INK_MUTED, marginBottom: 48 }}>
+          {`Weekly provider comparison${cumulativeReviews > 0 ? ` · ${cumulativeReviews} reviews · ${cumulativeFindings} findings` : ""}`}
         </div>
-        <div style={{ fontFamily: MONO, fontSize: 24, color: INK_MUTED }}>
+        <div style={{ display: "flex", fontFamily: MONO, fontSize: 24, color: INK_MUTED }}>
           antfleet.dev/scorecard
         </div>
       </div>
