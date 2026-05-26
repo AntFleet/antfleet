@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { loadScorecardSnapshot } from "@/db/queries";
 import { parseWeekEndingDate } from "@/lib/scorecard";
-import type { ScorecardPayload } from "@/lib/scorecard";
 import { ScorecardTable } from "@/components/ScorecardTable";
+import { ScorecardThreadTemplate } from "@/components/ScorecardThreadTemplate";
 
 export const dynamic = "force-dynamic";
 
@@ -135,6 +135,16 @@ export default async function ScorecardWeekPage({
             <CategoryList categories={p.perProvider.openai.topCategories} />
           </div>
         </div>
+      </Section>
+
+      <SectionDivider />
+
+      {/* Tweet thread */}
+      <Section title="Share">
+        <ScorecardThreadTemplate
+          payload={p}
+          pageUrl={`https://www.antfleet.dev/scorecard/${dateStr}`}
+        />
       </Section>
 
       <SectionDivider />
