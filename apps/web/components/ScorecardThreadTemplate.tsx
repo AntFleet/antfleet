@@ -14,10 +14,16 @@ export function ScorecardThreadTemplate({
   const thread = buildThread(payload, pageUrl);
 
   function handleCopy() {
-    navigator.clipboard.writeText(thread).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    navigator.clipboard.writeText(thread).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => {
+        // Clipboard blocked (HTTP or permissions); no-op — user can still
+        // select the text manually from the <pre> block below.
+      },
+    );
   }
 
   return (

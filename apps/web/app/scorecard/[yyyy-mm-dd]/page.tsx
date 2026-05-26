@@ -15,6 +15,9 @@ export async function generateMetadata({
   params: Promise<RouteParams>;
 }): Promise<Metadata> {
   const { "yyyy-mm-dd": date } = await params;
+  if (parseWeekEndingDate(date) === null) {
+    return { title: "AntFleet · Scorecard" };
+  }
   return {
     title: `AntFleet · Scorecard ${date}`,
     description: `Weekly provider comparison for the week ending ${date}.`,
