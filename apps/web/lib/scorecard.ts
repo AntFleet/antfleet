@@ -241,8 +241,8 @@ export function aggregatePayload(
         medianWallTimeSeconds: median(anthropicTimes),
         avgCostUsd: costCount > 0 ? round(totalCostUsd / costCount, 4) : null,
         patchProposalRate:
-          anthropicTotalFindings > 0
-            ? round((bothProposed + opusOnly) / findingsPosted || 0, 4)
+          anthropicTotalFindings > 0 && findingsPosted > 0
+            ? round((bothProposed + opusOnly) / findingsPosted, 4)
             : 0,
         topCategories: topN(anthropicCategories, 3),
       },
@@ -251,8 +251,8 @@ export function aggregatePayload(
         medianWallTimeSeconds: median(openaiTimes),
         avgCostUsd: costCount > 0 ? round(totalCostUsd / costCount, 4) : null,
         patchProposalRate:
-          openaiTotalFindings > 0
-            ? round((bothProposed + gpt5Only) / findingsPosted || 0, 4)
+          openaiTotalFindings > 0 && findingsPosted > 0
+            ? round((bothProposed + gpt5Only) / findingsPosted, 4)
             : 0,
         topCategories: topN(openaiCategories, 3),
       },
@@ -353,8 +353,8 @@ async function computeRolling4Week(
     bothProposedRate: totalFindings > 0 ? round(bothProposed / totalFindings, 4) : null,
     avgFindingsPerPRAnthropic: reviewCount > 0 ? round(anthropicFindings / reviewCount, 2) : null,
     avgFindingsPerPROpenai: reviewCount > 0 ? round(openaiFindings / reviewCount, 2) : null,
-    medianWallTimeAnthropic: median(anthropicTimes) || null,
-    medianWallTimeOpenai: median(openaiTimes) || null,
+    medianWallTimeAnthropic: anthropicTimes.length > 0 ? median(anthropicTimes) : null,
+    medianWallTimeOpenai: openaiTimes.length > 0 ? median(openaiTimes) : null,
   };
 }
 
@@ -375,7 +375,13 @@ function parsePerProvider(providerResponses: unknown): PerProviderEntry[] {
     const name = e["name"];
     const ms = e["ms"];
     if (typeof name !== "string" || typeof ms !== "number") continue;
-    const output = e["output"] as PerProviderEntry["output"];
+    const rawOutput = e["output"];
+    const output: PerProviderEntry["output"] =
+      typeof rawOutput === "object" &&
+      rawOutput !== null &&
+      Array.isArray((rawOutput as Record<string, unknown>)["findings"])
+        ? (rawOutput as PerProviderEntry["output"])
+        : null;
     result.push({ name, ms, output });
   }
   return result;

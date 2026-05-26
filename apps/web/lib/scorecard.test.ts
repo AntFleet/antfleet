@@ -183,6 +183,27 @@ describe("aggregatePayload", () => {
     expect(result.perProvider.anthropic.avgCostUsd).toBeNull();
   });
 
+  it("computes patchProposalRate without division by zero", () => {
+    const reviewRows = [
+      {
+        reviewId: "r1",
+        providerResponses: makeProviderResponses(
+          [{ category: "test" }],
+          [{ category: "test" }],
+          1000,
+          2000,
+        ),
+        costEstimatedUsd: "0.50",
+      },
+    ];
+    // No finding_status rows (findingsPosted = 0, but provider findings exist)
+    const result = aggregatePayload(reviewRows, [], weekStart, weekEnd);
+    expect(result.perProvider.anthropic.patchProposalRate).toBe(0);
+    expect(result.perProvider.openai.patchProposalRate).toBe(0);
+    expect(Number.isFinite(result.perProvider.anthropic.patchProposalRate)).toBe(true);
+    expect(Number.isFinite(result.perProvider.openai.patchProposalRate)).toBe(true);
+  });
+
   it("handles skipped provider responses", () => {
     const reviewRows = [
       {
