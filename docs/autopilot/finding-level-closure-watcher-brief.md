@@ -31,7 +31,7 @@ By end of sprint:
 - Commit identity: `antfleet-ops <285575208+antfleet-ops@users.noreply.github.com>`. Never `Augustas11`. Never `ops@antfleet.dev` as committer email.
 
 ### Brand voice
-- AntFleet voice (technical, evidence-first, no lowercase aesthetic, no emoji). Do NOT use Colony Scout / `@AntFeed` voice anywhere.
+- AntFleet voice: technical, evidence-first, no lowercase aesthetic, no emoji.
 - New copy aligns with `docs/positioning.md` Layer 1-3 messaging.
 
 ### Production database writes

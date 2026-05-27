@@ -110,7 +110,6 @@ This document.
 - **Specific over general.** Name the models, name the repos, name the SHAs. Concrete details create trust.
 - **No emoji, no hype, no lowercase-aesthetic.** AntFleet is infrastructure, not a vibes account.
 - **Receipts over claims.** When in doubt, link to the artifact. The receipts are the artifact (this is already in the README and is the line that should propagate everywhere).
-- **NEVER mix with Colony Scout / @AntFeed voice.** Those belong to a different brand (the AntFeed inference-provider node on antseed). AntFleet voice is its own thing.
 
 ## What this thesis explicitly forecloses
 
@@ -119,7 +118,6 @@ To make the positioning defensible, certain doors close:
 - **No FLEET token launch on Liquid Protocol.** Retired due to mechanism mismatch (StakesaleVault DIEM-flow) and timing (launchpad not shipped).
 - **No Liquid-launchpad-dependent roadmap items.** The Liquid relationship continues via PRs (cheap, valuable), but no roadmap milestone depends on Liquid's pace.
 - **No FLEET-as-agent-token narrative.** When FLEET eventually launches (Q3+, venue TBD), it will be positioned as a platform token (discount path, holder benefits, revshare) — not as the funding mechanism for AntFleet's inference.
-- **No Colony Scout voice on AntFleet channels.** AntFleet has its own brand identity.
 - **No sourcing facts from `autonomopoly.pro` or similar lookalike domains.** Only canonical GitHub orgs and operator-confirmed sources.
 
 ## What this thesis explicitly opens
