@@ -16,7 +16,12 @@ import { logInfo, logWarn } from "./log";
 const JUDGE_MODEL = "claude-opus-4-7";
 const JUDGE_MAX_TOKENS = 512;
 const CONFIDENCE_THRESHOLD = 0.7;
-const MAX_CANDIDATE_COMMITS = 20;
+// Raised from 20 to 100 after PR #8 verification gap: repos with heavy
+// automated commit noise (e.g. autonomopoly's cron-failure loop produces
+// ~5 commits/hour) push human/maintainer commits past a 20-deep window
+// within a day. The file-overlap pre-filter keeps LLM cost bounded —
+// only commits touching the same files as the PR get judged.
+const MAX_CANDIDATE_COMMITS = 100;
 // Diff size caps to avoid blowing up the LLM context window and cost.
 const MAX_PR_DIFF_CHARS = 30_000;
 const MAX_COMMIT_DIFF_CHARS = 30_000;
@@ -365,8 +370,9 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
           {
             name: "judge_equivalence",
             description:
-              "Judge whether a commit applies the same fix as the PR. " +
-              "Bundled adjacent work is OK — the fix must be present somewhere in the commit. " +
+              "Judge whether a commit applies the substantive fix from the PR. " +
+              "Bundled adjacent work is OK; missing cosmetic/documentation parts " +
+              "of the PR is also OK as long as the functional substance is present. " +
               "Pure coincidence on file paths is NOT a match.",
             input_schema: JUDGE_TOOL_SCHEMA as unknown as Anthropic.Messages.Tool["input_schema"],
           },
@@ -374,12 +380,21 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
         tool_choice: { type: "tool", name: "judge_equivalence" },
         system:
           "You are AntFleet's absorbed-inline judge. Your job is to determine whether " +
-          "a given upstream commit applies the same fix as a closed PR. " +
-          "Strict criterion: the commit must contain the substance of the PR's fix. " +
-          "The commit may also contain unrelated changes bundled alongside — that's fine. " +
-          "But mere file-path overlap with semantically different changes is NOT a match. " +
-          "Commit messages that reference the fix verbatim are a strong prior, but the " +
-          "diff is the ground truth. Be conservative: when in doubt, say equivalent=false.",
+          "a given upstream commit applies the same SUBSTANTIVE fix as a closed PR. " +
+          "Criterion: the commit must apply the functional behavioral change from the PR — " +
+          "the code that addresses the underlying bug, security issue, or correctness problem. " +
+          "The commit MAY bundle additional unrelated work — that's fine. " +
+          "The commit MAY also OMIT secondary parts of the PR like documentation edits, " +
+          "comment corrections, formatting changes, or other cosmetic improvements — " +
+          "that's also fine, as long as the functional substance is present. " +
+          "Mere file-path overlap with semantically different changes is NOT a match. " +
+          "Strong prior: if the commit message explicitly references the PR by number or " +
+          "describes the same fix in equivalent terms, weight this highly — only override " +
+          "if the diff clearly diverges from what the message claims. " +
+          "Be conservative on the substance: when in doubt about whether the functional " +
+          "change is present, say equivalent=false. But do NOT conflate 'missing cosmetic " +
+          "part' with 'wrong fix' — partial absorption of the PR's substantive change is " +
+          "still a match.",
         messages: [
           {
             role: "user",
