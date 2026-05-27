@@ -23,7 +23,11 @@ import {
 } from "../lib/absorbed-inline";
 
 const selfDir = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: join(selfDir, "../.env.local") });
+// override: true is required when the parent shell pre-sets these env vars to
+// empty (e.g. Claude Code session inheritance — ANTHROPIC_API_KEY is exported
+// as ""). Without override, dotenv refuses to overwrite the empty value and
+// the LLM judge silently fails. No effect in prod (Vercel sets env directly).
+dotenv.config({ path: join(selfDir, "../.env.local"), override: true });
 
 const url = process.env["DATABASE_URL"];
 if (!url) {
