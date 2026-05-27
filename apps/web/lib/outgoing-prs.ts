@@ -4,6 +4,12 @@ import { db } from "@/db/index";
 import { outgoingPrs } from "@/db/schema";
 import { logError, logInfo, logWarn } from "./log";
 import { writePostDraft } from "./post-drafts";
+import {
+  detectAbsorbedInline,
+  realAbsorbedInlineDeps,
+  type AbsorbedInlineDeps,
+  type AbsorbedInlineResult,
+} from "./absorbed-inline";
 
 // Cross-repo receipts — Slice B of Phase-2 receipt density work.
 //
@@ -28,6 +34,8 @@ export type OpenOutgoingPr = {
   upstreamOwner: string;
   upstreamRepo: string;
   upstreamPrNumber: number;
+  openedAt: Date;
+  branchOnFork: string;
 };
 
 export type UpstreamPrState = {
@@ -55,6 +63,14 @@ export type PollOutgoingDeps = {
     polledAt: Date;
   }) => Promise<void>;
   markClosed: (args: { id: string; polledAt: Date }) => Promise<void>;
+  markAbsorbed: (args: {
+    id: string;
+    closureSha: string;
+    closureConfidence: number;
+    closureNotes: string;
+    polledAt: Date;
+  }) => Promise<void>;
+  detectAbsorbed: (pr: OpenOutgoingPr) => Promise<AbsorbedInlineResult>;
   stampPolled: (args: { id: string; polledAt: Date }) => Promise<void>;
 };
 
@@ -62,6 +78,7 @@ export type PollOutgoingResult = {
   attempted: number;
   merged: number;
   closed: number;
+  absorbed: number;
   unchanged: number;
   errors: number;
 };
@@ -73,6 +90,7 @@ export async function pollOutgoingPrs(
   const open = await deps.loadOpenPrs(now);
   let merged = 0;
   let closed = 0;
+  let absorbed = 0;
   let unchanged = 0;
   let errors = 0;
   for (const pr of open) {
@@ -108,12 +126,33 @@ export async function pollOutgoingPrs(
           upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
         });
       } else if (state.state === "closed") {
-        await deps.markClosed({ id: pr.id, polledAt: now });
-        closed += 1;
-        logInfo("outgoing_prs.declined", {
-          id: pr.id,
-          upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
-        });
+        // Closed without merge — run absorbed-inline detection before
+        // classifying. The LLM judge compares our PR diff against recent
+        // upstream commits to see if the fix landed independently.
+        const detection = await deps.detectAbsorbed(pr);
+        if (detection.absorbed) {
+          await deps.markAbsorbed({
+            id: pr.id,
+            closureSha: detection.commitSha,
+            closureConfidence: detection.confidence,
+            closureNotes: detection.reasoning,
+            polledAt: now,
+          });
+          absorbed += 1;
+          logInfo("outgoing_prs.absorbed_inline", {
+            id: pr.id,
+            upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+            closureSha: detection.commitSha,
+            confidence: detection.confidence,
+          });
+        } else {
+          await deps.markClosed({ id: pr.id, polledAt: now });
+          closed += 1;
+          logInfo("outgoing_prs.declined", {
+            id: pr.id,
+            upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+          });
+        }
       } else {
         await deps.stampPolled({ id: pr.id, polledAt: now });
         unchanged += 1;
@@ -128,7 +167,7 @@ export async function pollOutgoingPrs(
       errors += 1;
     }
   }
-  return { attempted: open.length, merged, closed, unchanged, errors };
+  return { attempted: open.length, merged, closed, absorbed, unchanged, errors };
 }
 
 // ─── Real-deps wiring (used by cron sweep) ─────────────────────────────────
@@ -155,6 +194,8 @@ export function realPollDeps(): PollOutgoingDeps {
           upstreamOwner: outgoingPrs.upstreamOwner,
           upstreamRepo: outgoingPrs.upstreamRepo,
           upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+          openedAt: outgoingPrs.openedAt,
+          branchOnFork: outgoingPrs.branchOnFork,
         })
         .from(outgoingPrs)
         .where(
@@ -201,6 +242,9 @@ export function realPollDeps(): PollOutgoingDeps {
           mergedAt,
           mergeSha,
           lastPolledAt: polledAt,
+          closureMethod: "merged",
+          closureSha: mergeSha,
+          closureDetectedAt: polledAt,
         })
         .where(eq(outgoingPrs.id, id));
       const row = rows[0];
@@ -223,7 +267,12 @@ export function realPollDeps(): PollOutgoingDeps {
         .where(eq(outgoingPrs.id, id));
       await db
         .update(outgoingPrs)
-        .set({ status: "closed", lastPolledAt: polledAt })
+        .set({
+          status: "closed",
+          lastPolledAt: polledAt,
+          closureMethod: "declined",
+          closureDetectedAt: polledAt,
+        })
         .where(eq(outgoingPrs.id, id));
       const row = rows[0];
       if (row !== undefined) {
@@ -233,6 +282,40 @@ export function realPollDeps(): PollOutgoingDeps {
           body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} closed without merge at ${polledAt.toISOString()}.`,
         });
       }
+    },
+    markAbsorbed: async ({ id, closureSha, closureConfidence, closureNotes, polledAt }) => {
+      const rows = await db
+        .select({
+          upstreamOwner: outgoingPrs.upstreamOwner,
+          upstreamRepo: outgoingPrs.upstreamRepo,
+          upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+        })
+        .from(outgoingPrs)
+        .where(eq(outgoingPrs.id, id));
+      await db
+        .update(outgoingPrs)
+        .set({
+          status: "closed_absorbed",
+          lastPolledAt: polledAt,
+          closureMethod: "absorbed_inline",
+          closureSha,
+          closureDetectedAt: polledAt,
+          closureConfidence,
+          closureNotes,
+        })
+        .where(eq(outgoingPrs.id, id));
+      const row = rows[0];
+      if (row !== undefined) {
+        await writePostDraft({
+          slug: `outgoing-pr-absorbed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
+          title: "Outgoing PR absorbed inline",
+          body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} fix absorbed via upstream commit ${closureSha.slice(0, 7)} (confidence: ${closureConfidence.toFixed(2)}).`,
+        });
+      }
+    },
+    detectAbsorbed: async (pr: OpenOutgoingPr) => {
+      const absorbedDeps = realAbsorbedInlineDeps();
+      return detectAbsorbedInline(pr, absorbedDeps);
     },
     stampPolled: async ({ id, polledAt }) => {
       await db.update(outgoingPrs).set({ lastPolledAt: polledAt }).where(eq(outgoingPrs.id, id));

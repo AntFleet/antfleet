@@ -15,6 +15,8 @@ function makePr(overrides: Partial<OpenOutgoingPr> = {}): OpenOutgoingPr {
     upstreamOwner: "Liquid-Protocol-Ops",
     upstreamRepo: "agent-autonomopoly",
     upstreamPrNumber: 3,
+    openedAt: new Date("2026-05-18T05:00:00.000Z"),
+    branchOnFork: "antfleet/agent-autonomopoly-bench:fix/threshold-harmonization",
     ...overrides,
   };
 }
@@ -25,6 +27,8 @@ function makeDeps(overrides: Partial<PollOutgoingDeps> = {}): PollOutgoingDeps {
     getUpstreamPrState: vi.fn(),
     markMerged: vi.fn().mockResolvedValue(undefined),
     markClosed: vi.fn().mockResolvedValue(undefined),
+    markAbsorbed: vi.fn().mockResolvedValue(undefined),
+    detectAbsorbed: vi.fn().mockResolvedValue({ absorbed: false }),
     stampPolled: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -59,6 +63,7 @@ describe("pollOutgoingPrs", () => {
       attempted: 0,
       merged: 0,
       closed: 0,
+      absorbed: 0,
       unchanged: 0,
       errors: 0,
     });

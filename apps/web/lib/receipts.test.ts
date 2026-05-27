@@ -94,7 +94,7 @@ describe("formatRelativeTime", () => {
 });
 
 import type { OutgoingPr } from "@/db/schema";
-import { mapMergedRowsToReceipts, upstreamPrUrl } from "./receipts";
+import { mapReceiptEligibleRows, upstreamPrUrl } from "./receipts";
 
 describe("upstreamPrUrl", () => {
   it("renders https://github.com/owner/repo/pull/n", () => {
@@ -116,28 +116,34 @@ const MERGED_ROW: OutgoingPr = {
   mergedAt: new Date("2026-05-19T08:15:00.000Z"),
   mergeSha: "a".repeat(40),
   lastPolledAt: new Date("2026-05-19T08:30:00.000Z"),
+  closureMethod: "merged",
+  closureSha: "a".repeat(40),
+  closureDetectedAt: new Date("2026-05-19T08:30:00.000Z"),
+  closureConfidence: null,
+  closureNotes: null,
 };
 
-describe("mapMergedRowsToReceipts", () => {
+describe("mapReceiptEligibleRows", () => {
   it("maps merged rows to receipt rows with the prUrl built from owner/repo/number", () => {
-    const { receipts, lastMergedAt } = mapMergedRowsToReceipts([MERGED_ROW]);
+    const { receipts, lastResolvedAt } = mapReceiptEligibleRows([MERGED_ROW]);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]?.prUrl).toBe(
       "https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/3",
     );
-    expect(receipts[0]?.mergeSha).toBe("a".repeat(40));
-    expect(lastMergedAt).toEqual(new Date("2026-05-19T08:15:00.000Z"));
+    expect(receipts[0]?.resolutionSha).toBe("a".repeat(40));
+    expect(receipts[0]?.closureMethod).toBe("merged");
+    expect(lastResolvedAt).toEqual(new Date("2026-05-19T08:15:00.000Z"));
   });
 
-  it("drops rows missing mergedAt or mergeSha (belt-and-braces; the WHERE should already filter)", () => {
+  it("drops rows missing resolution data (belt-and-braces guard)", () => {
     const incomplete: OutgoingPr = { ...MERGED_ROW, mergeSha: null };
     const incomplete2: OutgoingPr = { ...MERGED_ROW, id: "id-2", mergedAt: null };
-    const { receipts, lastMergedAt } = mapMergedRowsToReceipts([incomplete, incomplete2]);
+    const { receipts, lastResolvedAt } = mapReceiptEligibleRows([incomplete, incomplete2]);
     expect(receipts).toHaveLength(0);
-    expect(lastMergedAt).toBeNull();
+    expect(lastResolvedAt).toBeNull();
   });
 
-  it("tracks lastMergedAt as the max(mergedAt) across rows", () => {
+  it("tracks lastResolvedAt as the max(resolvedAt) across rows", () => {
     const older: OutgoingPr = {
       ...MERGED_ROW,
       id: "id-old",
@@ -148,7 +154,27 @@ describe("mapMergedRowsToReceipts", () => {
       id: "id-new",
       mergedAt: new Date("2026-05-20T08:00:00.000Z"),
     };
-    const { lastMergedAt } = mapMergedRowsToReceipts([MERGED_ROW, older, newer]);
-    expect(lastMergedAt).toEqual(new Date("2026-05-20T08:00:00.000Z"));
+    const { lastResolvedAt } = mapReceiptEligibleRows([MERGED_ROW, older, newer]);
+    expect(lastResolvedAt).toEqual(new Date("2026-05-20T08:00:00.000Z"));
+  });
+
+  it("maps closed_absorbed rows using closureSha and closureDetectedAt", () => {
+    const absorbed: OutgoingPr = {
+      ...MERGED_ROW,
+      id: "id-absorbed",
+      status: "closed_absorbed",
+      mergedAt: null,
+      mergeSha: null,
+      closureMethod: "absorbed_inline",
+      closureSha: "bab1e4b" + "0".repeat(33),
+      closureDetectedAt: new Date("2026-05-20T10:00:00.000Z"),
+      closureConfidence: 0.92,
+      closureNotes: "Same fix applied inline",
+    };
+    const { receipts, lastResolvedAt } = mapReceiptEligibleRows([absorbed]);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.resolutionSha).toBe("bab1e4b" + "0".repeat(33));
+    expect(receipts[0]?.closureMethod).toBe("absorbed_inline");
+    expect(lastResolvedAt).toEqual(new Date("2026-05-20T10:00:00.000Z"));
   });
 });

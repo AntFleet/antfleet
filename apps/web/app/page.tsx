@@ -137,7 +137,9 @@ function Hero({ installUrl }: { installUrl: string }) {
 
 function LatestImpactCard({ row }: { row: CrossRepoReceiptRow }) {
   const arrowLabel = `AntFleet → ${row.upstreamOwner}/${row.upstreamRepo}`;
-  const relative = formatRelativeTime(new Date(), row.mergedAt);
+  const relative = formatRelativeTime(new Date(), row.resolvedAt);
+  const isAbsorbed = row.closureMethod === "absorbed_inline";
+  const verb = isAbsorbed ? "Fix absorbed at" : "Merged at";
 
   return (
     <section>
@@ -151,9 +153,9 @@ function LatestImpactCard({ row }: { row: CrossRepoReceiptRow }) {
             {arrowLabel} · PR #{row.upstreamPrNumber}
           </p>
           <p className="mt-3 text-sm text-[var(--color-ink-muted)] leading-relaxed">
-            Merged at{" "}
+            {verb}{" "}
             <span className="font-mono text-xs text-[var(--color-ink)]">
-              {row.mergeSha.slice(0, 7)}
+              {row.resolutionSha.slice(0, 7)}
             </span>{" "}
             · {relative}
           </p>

@@ -7,6 +7,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  real,
   text,
   timestamp,
   unique,
@@ -262,12 +263,24 @@ export const outgoingPrs = pgTable(
     // bench corpus.
     branchOnFork: text("branch_on_fork").notNull(),
     openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
-    // open | merged | closed. "closed" means closed-without-merge (declined);
-    // not surfaced publicly. "merged" is the receipt-eligible state.
+    // open | merged | closed | closed_absorbed.
+    // "closed" = closed-without-merge (declined), not surfaced publicly.
+    // "merged" and "closed_absorbed" are receipt-eligible states.
     status: text("status").notNull().default("open"),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
     mergeSha: text("merge_sha"),
     lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+    // Absorbed-inline closure detection (migration 0026).
+    // closureMethod: merged | absorbed_inline | declined | stale_timeout
+    closureMethod: text("closure_method"),
+    // Upstream commit SHA that applied the fix (merge SHA for merged, or
+    // the independent commit for absorbed_inline).
+    closureSha: text("closure_sha"),
+    closureDetectedAt: timestamp("closure_detected_at", { withTimezone: true }),
+    // LLM-judge confidence score: 0.0..1.0
+    closureConfidence: real("closure_confidence"),
+    // LLM-judge reasoning text for audit
+    closureNotes: text("closure_notes"),
   },
   (t) => [
     // GitHub guarantees PR numbers are unique per (owner, repo); the unique

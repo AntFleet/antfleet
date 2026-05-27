@@ -377,10 +377,18 @@ function ReceiptAnatomySection() {
         <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-8">
           What is in a receipt
         </h2>
-        <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-8">
+        <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-4">
           A closure receipt is the artifact the Sweeper posts on the original PR when a finding
           closes. Every field below is either authored by AntFleet or third-party-witnessed by
           GitHub&apos;s event log. Nothing is rendered from a database we control alone.
+        </p>
+        <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-xl mb-8">
+          AntFleet&apos;s signal succeeds when the underlying fix lands on upstream — whether via
+          merge of our PR (<code className="font-mono text-xs">merged</code>) or via a separate
+          upstream commit that applies the same fix (
+          <code className="font-mono text-xs">absorbed_inline</code>). Both are receipt-eligible.
+          Absorbed-inline detection uses an LLM judge to compare our PR&apos;s diff against recent
+          upstream commits; only matches above 70% confidence are classified.
         </p>
 
         <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] overflow-hidden">

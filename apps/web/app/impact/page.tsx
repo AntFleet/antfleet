@@ -119,7 +119,9 @@ function UpstreamList({ rows, now }: { rows: CrossRepoReceiptRow[]; now: Date })
 
 function UpstreamRow({ row, now }: { row: CrossRepoReceiptRow; now: Date }) {
   const arrowLabel = `AntFleet → ${row.upstreamOwner}/${row.upstreamRepo}`;
-  const shortSha = row.mergeSha.slice(0, 7);
+  const shortSha = row.resolutionSha.slice(0, 7);
+  const isAbsorbed = row.closureMethod === "absorbed_inline";
+  const resolvedLabel = isAbsorbed ? "fix absorbed at" : "merged at";
   return (
     <div className="group -mx-3 flex flex-col gap-3 rounded-md px-3 py-5 transition-colors hover:bg-[var(--color-bg-elevated)] sm:flex-row sm:items-start sm:gap-6">
       <a
@@ -128,7 +130,7 @@ function UpstreamRow({ row, now }: { row: CrossRepoReceiptRow; now: Date }) {
       >
         <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
           <span className="rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-ink-muted)]">
-            cross-repo
+            {isAbsorbed ? "fix absorbed" : "cross-repo"}
           </span>
         </div>
         <div className="flex-1 min-w-0">
@@ -139,10 +141,10 @@ function UpstreamRow({ row, now }: { row: CrossRepoReceiptRow; now: Date }) {
             <span>PR #{row.upstreamPrNumber}</span>
             <span className="text-[var(--color-line-strong)]">·</span>
             <span>
-              merged at <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
+              {resolvedLabel} <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
             </span>
             <span className="text-[var(--color-line-strong)]">·</span>
-            <span>{formatRelativeTime(now, row.mergedAt)}</span>
+            <span>{formatRelativeTime(now, row.resolvedAt)}</span>
           </div>
         </div>
         <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] transition-colors group-hover:text-[var(--color-ink)] sm:shrink-0 sm:self-center">

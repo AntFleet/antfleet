@@ -30,7 +30,7 @@ Shipping in production:
 
 In the queue:
 
-- **Patch Bot** — proposes fixes and pins a closure SHA on apply.
+- **Patch Agent** — proposes fixes and pins a closure SHA on apply.
   Phase 3+ work; design partners pull this first.
 - **Email intake** for the public-receipts opt-in flow at
   `agent@antfleet.dev`.

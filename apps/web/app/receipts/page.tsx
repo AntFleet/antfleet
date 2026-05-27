@@ -57,12 +57,12 @@ export default async function ReceiptsPage({
   const [pageData, crossRepo] = await Promise.all([
     loadPublicReceiptsPage({ limit: RECENT_LIMIT, before }),
     // Cross-repo receipts skip pagination — they're a curated stream
-    // surfaced only on the latest view, since the corpus is small (Phase 2
-    // has two known upstream PRs) and the cross-repo lifecycle is rare
-    // enough that scrolling back makes no sense yet.
+    // surfaced only on the latest view, since the corpus is small and the
+    // cross-repo lifecycle is rare enough that scrolling back makes no
+    // sense yet. Includes both merged and absorbed-inline rows.
     before === undefined
       ? loadCrossRepoReceipts(CROSS_REPO_LIMIT)
-      : Promise.resolve({ total: 0, recent: [], lastMergedAt: null }),
+      : Promise.resolve({ total: 0, recent: [], lastResolvedAt: null }),
   ]);
   const { totalClosed, recent, lastUpdatedAt, hasMore } = pageData;
   const now = new Date();
@@ -72,10 +72,12 @@ export default async function ReceiptsPage({
   const nextCursor =
     hasMore && displays.length > 0 ? (displays[displays.length - 1]?.closedAtIso ?? null) : null;
   const isPaginated = before !== undefined;
+  // Aggregate headline: same-repo closures + cross-repo receipts (merged + absorbed)
+  const totalReceipts = totalClosed + crossRepo.total;
 
   return (
     <>
-      <ReceiptsHero totalClosed={totalClosed} lastUpdatedRelative={lastUpdatedRelative} />
+      <ReceiptsHero totalClosed={totalReceipts} lastUpdatedRelative={lastUpdatedRelative} />
       <SectionDivider />
       {crossRepo.recent.length > 0 && (
         <>
@@ -102,13 +104,13 @@ function CrossRepoSection({ rows, now }: { rows: CrossRepoReceiptRow[]; now: Dat
             Cross-repo receipts
           </h2>
           <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-            {rows.length} {rows.length === 1 ? "merge" : "merges"} upstream
+            {rows.length} {rows.length === 1 ? "fix" : "fixes"} landed upstream
           </span>
         </div>
         <p className="mb-5 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-          AntFleet flagged a bug on a repo it doesn&apos;t own, and the upstream owner merged the
-          fix. The highest-trust receipt class — the maintainer of a project we don&apos;t control
-          accepted the change.
+          AntFleet flagged a bug on a repo it doesn&apos;t own, and the underlying fix landed on
+          upstream — whether via merge of our PR or via a separate upstream commit that applies the
+          same fix. Both are receipt-eligible.
         </p>
         <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
           {rows.map((row) => (
@@ -124,17 +126,23 @@ function CrossRepoSection({ rows, now }: { rows: CrossRepoReceiptRow[]; now: Dat
 
 function CrossRepoRow({ row, now }: { row: CrossRepoReceiptRow; now: Date }) {
   const arrowLabel = `AntFleet → ${row.upstreamOwner.toLowerCase()}/${row.upstreamRepo.toLowerCase()}`;
-  const shortSha = row.mergeSha.slice(0, 7);
+  const shortSha = row.resolutionSha.slice(0, 7);
+  const isAbsorbed = row.closureMethod === "absorbed_inline";
+  const resolvedLabel = isAbsorbed ? "fix absorbed at" : "merged at";
+  // For absorbed rows, link to the upstream commit instead of the PR.
+  const linkUrl = isAbsorbed
+    ? `https://github.com/${row.upstreamOwner}/${row.upstreamRepo}/commit/${row.resolutionSha}`
+    : row.prUrl;
   return (
     <a
-      href={row.prUrl}
+      href={linkUrl}
       target="_blank"
       rel="noopener noreferrer"
       className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group transition-colors hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md"
     >
       <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
         <span className="rounded-full border border-[var(--color-line-strong)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-ink-muted)]">
-          cross-repo
+          {isAbsorbed ? "fix absorbed" : "cross-repo"}
         </span>
       </div>
       <div className="flex-1 min-w-0">
@@ -145,14 +153,14 @@ function CrossRepoRow({ row, now }: { row: CrossRepoReceiptRow; now: Date }) {
           <span>PR #{row.upstreamPrNumber}</span>
           <span className="text-[var(--color-line-strong)]">·</span>
           <span>
-            merged at <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
+            {resolvedLabel} <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
           </span>
           <span className="text-[var(--color-line-strong)]">·</span>
-          <span>{formatRelativeTime(now, row.mergedAt)}</span>
+          <span>{formatRelativeTime(now, row.resolvedAt)}</span>
         </div>
       </div>
       <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
-        view PR →
+        {isAbsorbed ? "view commit →" : "view PR →"}
       </span>
     </a>
   );
@@ -191,7 +199,7 @@ function ReceiptsHero({
         </p>
 
         <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug max-w-xl">
-          Closed findings, SHA-pinned to the commit that resolved them.
+          Independent code review. Two-model consensus. Every fix that landed upstream, by any path.
         </h1>
 
         <div className="mt-10 flex items-baseline gap-4">

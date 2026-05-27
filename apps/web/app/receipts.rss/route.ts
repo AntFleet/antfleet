@@ -40,15 +40,15 @@ export async function GET(): Promise<Response> {
     // guid prefixed with `cross-repo:` so it can never collide with a
     // same-repo finding_id even if both happen to share the same uuid prefix.
     guid: `cross-repo:${r.id}`,
-    pubDate: r.mergedAt,
+    pubDate: r.resolvedAt,
     description: buildCrossRepoDescription(r),
-    category: "cross-repo",
+    category: r.closureMethod === "absorbed_inline" ? "fix-absorbed" : "cross-repo",
   }));
 
   const items = [...sameRepoItems, ...crossRepoItems].toSorted(
     (a, b) => b.pubDate.getTime() - a.pubDate.getTime(),
   );
-  const newestCrossRepo = crossRepo.lastMergedAt;
+  const newestCrossRepo = crossRepo.lastResolvedAt;
   const newestSameRepo = lastUpdatedAt;
   const lastBuildDate =
     newestSameRepo === null
@@ -89,9 +89,10 @@ function buildDescription(row: PublicReceiptRow): string {
 }
 
 function buildCrossRepoDescription(row: CrossRepoReceiptRow): string {
+  const verb = row.closureMethod === "absorbed_inline" ? "fix absorbed at" : "merged at";
   return [
     `AntFleet → ${row.upstreamOwner}/${row.upstreamRepo}`,
     `PR #${row.upstreamPrNumber}`,
-    `merged at ${row.mergeSha.slice(0, 7)}`,
+    `${verb} ${row.resolutionSha.slice(0, 7)}`,
   ].join(" · ");
 }

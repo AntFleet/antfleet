@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
 import { outgoingPrs, type OutgoingPr } from "@/db/schema";
@@ -87,37 +87,53 @@ export type CrossRepoReceiptRow = {
   upstreamOwner: string;
   upstreamRepo: string;
   upstreamPrNumber: number;
-  mergedAt: Date;
-  mergeSha: string;
+  // For merged: mergedAt/mergeSha. For absorbed: closureDetectedAt/closureSha.
+  resolvedAt: Date;
+  resolutionSha: string;
   prUrl: string;
+  // "merged" or "absorbed_inline" — drives the badge on the receipts page.
+  closureMethod: string;
 };
 
 export type CrossRepoReceiptsPage = {
   total: number;
   recent: CrossRepoReceiptRow[];
-  lastMergedAt: Date | null;
+  lastResolvedAt: Date | null;
 };
 
 export function upstreamPrUrl(owner: string, repo: string, number: number): string {
   return `https://github.com/${owner}/${repo}/pull/${number}`;
 }
 
-// Pure mapping from raw outgoing_prs rows to the display shape. Drops
-// rows missing the receipt-bearing columns (mergedAt / mergeSha) as a
-// belt-and-braces guard; the WHERE status='merged' filter at the query
-// layer should already exclude them, but the table has no CHECK
-// constraint pinning that invariant. Extracted from the DB function so
-// it can be unit-tested without a database.
-export function mapMergedRowsToReceipts(rows: readonly OutgoingPr[]): {
+// Pure mapping from raw outgoing_prs rows to the display shape. Handles
+// both merged rows (receipt via merge SHA) and absorbed rows (receipt via
+// closure SHA). Drops rows missing the receipt-bearing columns as a
+// belt-and-braces guard. Extracted from the DB function so it can be
+// unit-tested without a database.
+export function mapReceiptEligibleRows(rows: readonly OutgoingPr[]): {
   receipts: CrossRepoReceiptRow[];
-  lastMergedAt: Date | null;
+  lastResolvedAt: Date | null;
 } {
   const receipts: CrossRepoReceiptRow[] = [];
-  let lastMergedAt: Date | null = null;
+  let lastResolvedAt: Date | null = null;
   for (const r of rows) {
-    if (r.mergedAt === null || r.mergeSha === null) continue;
-    if (lastMergedAt === null || r.mergedAt > lastMergedAt) {
-      lastMergedAt = r.mergedAt;
+    let resolvedAt: Date | null = null;
+    let resolutionSha: string | null = null;
+    let closureMethod = r.closureMethod ?? "merged";
+
+    if (r.status === "merged") {
+      resolvedAt = r.mergedAt;
+      resolutionSha = r.mergeSha;
+      closureMethod = "merged";
+    } else if (r.status === "closed_absorbed") {
+      resolvedAt = r.closureDetectedAt;
+      resolutionSha = r.closureSha;
+      closureMethod = "absorbed_inline";
+    }
+
+    if (resolvedAt === null || resolutionSha === null) continue;
+    if (lastResolvedAt === null || resolvedAt > lastResolvedAt) {
+      lastResolvedAt = resolvedAt;
     }
     receipts.push({
       id: r.id,
@@ -125,30 +141,32 @@ export function mapMergedRowsToReceipts(rows: readonly OutgoingPr[]): {
       upstreamOwner: r.upstreamOwner,
       upstreamRepo: r.upstreamRepo,
       upstreamPrNumber: r.upstreamPrNumber,
-      mergedAt: r.mergedAt,
-      mergeSha: r.mergeSha,
+      resolvedAt,
+      resolutionSha,
       prUrl: upstreamPrUrl(r.upstreamOwner, r.upstreamRepo, r.upstreamPrNumber),
+      closureMethod,
     });
   }
-  return { receipts, lastMergedAt };
+  return { receipts, lastResolvedAt };
 }
 
 export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoReceiptsPage> {
+  const receiptStatuses = ["merged", "closed_absorbed"];
   const rows = (await db
     .select()
     .from(outgoingPrs)
-    .where(eq(outgoingPrs.status, "merged"))
-    .orderBy(sql`${outgoingPrs.mergedAt} DESC NULLS LAST`)
+    .where(inArray(outgoingPrs.status, receiptStatuses))
+    .orderBy(sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) DESC NULLS LAST`)
     .limit(limit)) as OutgoingPr[];
 
-  const { receipts, lastMergedAt } = mapMergedRowsToReceipts(rows);
+  const { receipts, lastResolvedAt } = mapReceiptEligibleRows(rows);
 
   const [countRow] = await db
     .select({ value: sql<number>`count(*)::int`.as("value") })
     .from(outgoingPrs)
-    .where(eq(outgoingPrs.status, "merged"));
+    .where(inArray(outgoingPrs.status, receiptStatuses));
 
-  return { total: countRow?.value ?? 0, recent: receipts, lastMergedAt };
+  return { total: countRow?.value ?? 0, recent: receipts, lastResolvedAt };
 }
 
 // Phase-2 P2-E — detail-page adapter. Maps a single-receipt query row into
