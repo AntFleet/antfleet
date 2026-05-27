@@ -227,6 +227,9 @@ export function realPollDeps(): PollOutgoingDeps {
       };
     },
     markMerged: async ({ id, mergedAt, mergeSha, polledAt }) => {
+      let draftRow:
+        | { upstreamOwner: string; upstreamRepo: string; upstreamPrNumber: number }
+        | undefined;
       await db.transaction(async (tx) => {
         const rows = await tx
           .update(outgoingPrs)
@@ -245,17 +248,28 @@ export function realPollDeps(): PollOutgoingDeps {
             upstreamRepo: outgoingPrs.upstreamRepo,
             upstreamPrNumber: outgoingPrs.upstreamPrNumber,
           });
-        const row = rows[0];
-        if (row !== undefined) {
+        draftRow = rows[0];
+      });
+      if (draftRow !== undefined) {
+        const row = draftRow;
+        try {
           await writePostDraft({
             slug: `outgoing-pr-merged-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
             title: "Outgoing PR merged",
             body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} merged at ${mergeSha} on ${mergedAt.toISOString()}.`,
           });
+        } catch (err) {
+          logWarn("outgoing_prs.post_draft_failed", {
+            event: "merged",
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
-      });
+      }
     },
     markClosed: async ({ id, polledAt }) => {
+      let draftRow:
+        | { upstreamOwner: string; upstreamRepo: string; upstreamPrNumber: number }
+        | undefined;
       await db.transaction(async (tx) => {
         const rows = await tx
           .update(outgoingPrs)
@@ -271,17 +285,28 @@ export function realPollDeps(): PollOutgoingDeps {
             upstreamRepo: outgoingPrs.upstreamRepo,
             upstreamPrNumber: outgoingPrs.upstreamPrNumber,
           });
-        const row = rows[0];
-        if (row !== undefined) {
+        draftRow = rows[0];
+      });
+      if (draftRow !== undefined) {
+        const row = draftRow;
+        try {
           await writePostDraft({
             slug: `outgoing-pr-closed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
             title: "Outgoing PR closed",
             body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} closed without merge at ${polledAt.toISOString()}.`,
           });
+        } catch (err) {
+          logWarn("outgoing_prs.post_draft_failed", {
+            event: "closed",
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
-      });
+      }
     },
     markAbsorbed: async ({ id, closureSha, closureConfidence, closureNotes, polledAt }) => {
+      let draftRow:
+        | { upstreamOwner: string; upstreamRepo: string; upstreamPrNumber: number }
+        | undefined;
       await db.transaction(async (tx) => {
         const rows = await tx
           .update(outgoingPrs)
@@ -300,15 +325,23 @@ export function realPollDeps(): PollOutgoingDeps {
             upstreamRepo: outgoingPrs.upstreamRepo,
             upstreamPrNumber: outgoingPrs.upstreamPrNumber,
           });
-        const row = rows[0];
-        if (row !== undefined) {
+        draftRow = rows[0];
+      });
+      if (draftRow !== undefined) {
+        const row = draftRow;
+        try {
           await writePostDraft({
             slug: `outgoing-pr-absorbed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
             title: "Outgoing PR absorbed inline",
             body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} fix absorbed via upstream commit ${closureSha.slice(0, 7)} (confidence: ${closureConfidence.toFixed(2)}).`,
           });
+        } catch (err) {
+          logWarn("outgoing_prs.post_draft_failed", {
+            event: "absorbed",
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
-      });
+      }
     },
     detectAbsorbed: async (pr: OpenOutgoingPr) => {
       const absorbedDeps = realAbsorbedInlineDeps();
