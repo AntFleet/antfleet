@@ -68,7 +68,11 @@ async function main() {
       branchOnFork: outgoingPrs.branchOnFork,
     })
     .from(outgoingPrs)
-    .where(and(eq(outgoingPrs.status, "closed"), isNull(outgoingPrs.closureSha)));
+    .where(and(
+      eq(outgoingPrs.status, "closed"),
+      isNull(outgoingPrs.closureSha),
+      isNull(outgoingPrs.closureMethod),
+    ));
 
   console.log(`Found ${rows.length} unprocessed closed rows.`);
   if (rows.length === 0) {

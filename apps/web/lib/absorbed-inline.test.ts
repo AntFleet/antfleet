@@ -28,13 +28,6 @@ const MATCHING_COMMIT_DIFF = `--- a/skills/on-chain-monitor/SKILL.md
 +Additional schema check work
 `;
 
-const UNRELATED_COMMIT_DIFF = `--- a/README.md
-+++ b/README.md
-@@ -1 +1 @@
--# Old title
-+# New title
-`;
-
 function makeDeps(overrides: Partial<AbsorbedInlineDeps> = {}): AbsorbedInlineDeps {
   return {
     getPrDiff: vi.fn().mockResolvedValue(PR_DIFF),

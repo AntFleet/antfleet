@@ -97,13 +97,18 @@ export type AbsorbedInlineDeps = {
 export function extractDiffFilePaths(diff: string): Set<string> {
   const paths = new Set<string>();
   for (const line of diff.split("\n")) {
+    if (line === "--- /dev/null" || line === "+++ /dev/null") continue;
     if (line.startsWith("+++ b/") || line.startsWith("--- a/")) {
-      const path = line.slice(6);
-      if (path !== "/dev/null") paths.add(path);
+      paths.add(line.slice(6));
     }
   }
   return paths;
 }
+
+// Default time budget for a single detection run. The cron tick shares
+// 180s across sweep + onboarder + outgoing polls; 60s per PR keeps
+// headroom for 2-3 PRs closing simultaneously.
+const DEFAULT_MAX_MS = 60_000;
 
 export async function detectAbsorbedInline(
   pr: {
@@ -114,7 +119,9 @@ export async function detectAbsorbedInline(
     branchOnFork: string;
   },
   deps: AbsorbedInlineDeps,
+  opts: { maxMs?: number } = {},
 ): Promise<AbsorbedInlineResult> {
+  const deadline = Date.now() + (opts.maxMs ?? DEFAULT_MAX_MS);
   // Step 1: Fetch the PR diff
   let prDiff: string;
   try {
@@ -206,6 +213,13 @@ export async function detectAbsorbedInline(
     null;
 
   for (const candidate of filtered) {
+    if (Date.now() >= deadline) {
+      logWarn("absorbed_inline.time_budget_exhausted", {
+        pr: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+        candidatesRemaining: filtered.length - filtered.indexOf(candidate),
+      });
+      break;
+    }
     try {
       const result = await deps.judgeEquivalence({
         prTitle,
@@ -264,12 +278,33 @@ function getAntfleetOpsToken(): string {
   return token;
 }
 
+function parseJudgeOutput(raw: unknown): JudgeOutput {
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("JUDGE_BAD_RESPONSE: output is not an object");
+  }
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.equivalent !== "boolean") {
+    throw new Error("JUDGE_BAD_RESPONSE: equivalent is not boolean");
+  }
+  if (typeof obj.confidence !== "number") {
+    throw new Error("JUDGE_BAD_RESPONSE: confidence is not a number");
+  }
+  if (typeof obj.reasoning !== "string") {
+    throw new Error("JUDGE_BAD_RESPONSE: reasoning is not a string");
+  }
+  return {
+    equivalent: obj.equivalent,
+    confidence: Math.max(0, Math.min(1, obj.confidence)),
+    reasoning: obj.reasoning.slice(0, 500),
+  };
+}
+
 export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
-  const tokenReader = () => new Octokit({ auth: getAntfleetOpsToken() });
+  const octokit = new Octokit({ auth: getAntfleetOpsToken() });
 
   return {
     getPrDiff: async ({ owner, repo, pullNumber }) => {
-      const octokit = tokenReader();
+
       const resp = await octokit.rest.pulls.get({
         owner,
         repo,
@@ -282,7 +317,7 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
     },
 
     listRecentCommits: async ({ owner, repo, since }) => {
-      const octokit = tokenReader();
+
       const resp = await octokit.rest.repos.listCommits({
         owner,
         repo,
@@ -297,7 +332,7 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
     },
 
     getCommitDiff: async ({ owner, repo, sha }) => {
-      const octokit = tokenReader();
+
       const resp = await octokit.rest.repos.getCommit({
         owner,
         repo,
@@ -308,7 +343,7 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
     },
 
     getCommitFiles: async ({ owner, repo, sha }) => {
-      const octokit = tokenReader();
+
       const resp = await octokit.rest.repos.getCommit({
         owner,
         repo,
@@ -359,7 +394,7 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
 
       for (const block of response.content) {
         if (block.type === "tool_use" && block.name === "judge_equivalence") {
-          return block.input as JudgeOutput;
+          return parseJudgeOutput(block.input);
         }
       }
       throw new Error("JUDGE_BAD_RESPONSE: missing tool_use(judge_equivalence)");

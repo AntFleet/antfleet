@@ -103,7 +103,7 @@ describe("pollOutgoingPrs", () => {
     });
   });
 
-  it("transitions closed-without-merge to status=closed", async () => {
+  it("transitions closed-without-merge to status=closed when detection returns absorbed=false", async () => {
     const pr = makePr();
     const markClosed = vi.fn().mockResolvedValue(undefined);
     const deps = makeDeps({
@@ -113,7 +113,58 @@ describe("pollOutgoingPrs", () => {
     });
     const result = await pollOutgoingPrs(deps, NOW);
     expect(result.closed).toBe(1);
+    expect(result.absorbed).toBe(0);
     expect(markClosed).toHaveBeenCalledWith({ id: pr.id, polledAt: NOW });
+  });
+
+  it("transitions closed-without-merge to closed_absorbed when detection returns absorbed=true", async () => {
+    const pr = makePr();
+    const markAbsorbed = vi.fn().mockResolvedValue(undefined);
+    const markClosed = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      loadOpenPrs: vi.fn().mockResolvedValue([pr]),
+      getUpstreamPrState: vi.fn().mockResolvedValue(CLOSED_NO_MERGE_STATE),
+      markAbsorbed,
+      markClosed,
+      detectAbsorbed: vi.fn().mockResolvedValue({
+        absorbed: true,
+        commitSha: "abc1234567890",
+        confidence: 0.92,
+        reasoning: "Same fix applied",
+        commitMessage: "fix: apply the same change",
+      }),
+    });
+    const result = await pollOutgoingPrs(deps, NOW);
+    expect(result.absorbed).toBe(1);
+    expect(result.closed).toBe(0);
+    expect(markAbsorbed).toHaveBeenCalledWith({
+      id: pr.id,
+      closureSha: "abc1234567890",
+      closureConfidence: 0.92,
+      closureNotes: "Same fix applied",
+      polledAt: NOW,
+    });
+    expect(markClosed).not.toHaveBeenCalled();
+  });
+
+  it("counts as error when detectAbsorbed throws — loop continues", async () => {
+    const ok = makePr({ id: "ok" });
+    const bad = makePr({ id: "bad", upstreamPrNumber: 99 });
+    const state = vi
+      .fn()
+      .mockResolvedValueOnce(CLOSED_NO_MERGE_STATE)
+      .mockResolvedValueOnce(MERGED_STATE);
+    const markMerged = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      loadOpenPrs: vi.fn().mockResolvedValue([bad, ok]),
+      getUpstreamPrState: state,
+      markMerged,
+      detectAbsorbed: vi.fn().mockRejectedValue(new Error("LLM timeout")),
+    });
+    const result = await pollOutgoingPrs(deps, NOW);
+    expect(result.errors).toBe(1);
+    expect(result.merged).toBe(1);
+    expect(markMerged).toHaveBeenCalledTimes(1);
   });
 
   it("isolates failures per row — one error does not abort the loop", async () => {

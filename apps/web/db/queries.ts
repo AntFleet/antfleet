@@ -1899,8 +1899,9 @@ export type AgentCrossRepoMerge = {
   upstreamOwner: string;
   upstreamRepo: string;
   upstreamPrNumber: number;
-  mergedAt: Date;
-  mergeSha: string;
+  resolvedAt: Date;
+  resolutionSha: string;
+  closureMethod: string;
   prUrl: string;
 };
 
@@ -1958,28 +1959,40 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
         upstreamPrNumber: outgoingPrs.upstreamPrNumber,
         mergedAt: outgoingPrs.mergedAt,
         mergeSha: outgoingPrs.mergeSha,
+        status: outgoingPrs.status,
+        closureMethod: outgoingPrs.closureMethod,
+        closureSha: outgoingPrs.closureSha,
+        closureDetectedAt: outgoingPrs.closureDetectedAt,
       })
       .from(outgoingPrs)
       .where(
         and(
-          eq(outgoingPrs.status, "merged"),
+          inArray(outgoingPrs.status, ["merged", "closed_absorbed"]),
           sql`lower(${outgoingPrs.upstreamRepo}) = ${first.agentName.toLowerCase()}`,
         ),
       )
-      .orderBy(sql`${outgoingPrs.mergedAt} DESC NULLS LAST`),
+      .orderBy(sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) DESC NULLS LAST`),
   ]);
 
   const crossRepoMerges: AgentCrossRepoMerge[] = mergedOutgoingRows
-    .filter((r) => r.mergedAt !== null && r.mergeSha !== null)
-    .map((r) => ({
-      id: r.id,
-      upstreamOwner: r.upstreamOwner,
-      upstreamRepo: r.upstreamRepo,
-      upstreamPrNumber: r.upstreamPrNumber,
-      mergedAt: r.mergedAt as Date,
-      mergeSha: r.mergeSha as string,
-      prUrl: `https://github.com/${r.upstreamOwner}/${r.upstreamRepo}/pull/${r.upstreamPrNumber}`,
-    }));
+    .filter((r) => {
+      if (r.status === "merged") return r.mergedAt !== null && r.mergeSha !== null;
+      if (r.status === "closed_absorbed") return r.closureDetectedAt !== null && r.closureSha !== null;
+      return false;
+    })
+    .map((r) => {
+      const isAbsorbed = r.status === "closed_absorbed";
+      return {
+        id: r.id,
+        upstreamOwner: r.upstreamOwner,
+        upstreamRepo: r.upstreamRepo,
+        upstreamPrNumber: r.upstreamPrNumber,
+        resolvedAt: isAbsorbed ? (r.closureDetectedAt as Date) : (r.mergedAt as Date),
+        resolutionSha: isAbsorbed ? (r.closureSha as string) : (r.mergeSha as string),
+        closureMethod: r.closureMethod ?? (isAbsorbed ? "absorbed_inline" : "merged"),
+        prUrl: `https://github.com/${r.upstreamOwner}/${r.upstreamRepo}/pull/${r.upstreamPrNumber}`,
+      };
+    });
 
   return {
     agentTokenAddress: first.agentTokenAddress,

@@ -227,91 +227,88 @@ export function realPollDeps(): PollOutgoingDeps {
       };
     },
     markMerged: async ({ id, mergedAt, mergeSha, polledAt }) => {
-      const rows = await db
-        .select({
-          upstreamOwner: outgoingPrs.upstreamOwner,
-          upstreamRepo: outgoingPrs.upstreamRepo,
-          upstreamPrNumber: outgoingPrs.upstreamPrNumber,
-        })
-        .from(outgoingPrs)
-        .where(eq(outgoingPrs.id, id));
-      await db
-        .update(outgoingPrs)
-        .set({
-          status: "merged",
-          mergedAt,
-          mergeSha,
-          lastPolledAt: polledAt,
-          closureMethod: "merged",
-          closureSha: mergeSha,
-          closureDetectedAt: polledAt,
-        })
-        .where(eq(outgoingPrs.id, id));
-      const row = rows[0];
-      if (row !== undefined) {
-        await writePostDraft({
-          slug: `outgoing-pr-merged-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
-          title: "Outgoing PR merged",
-          body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} merged at ${mergeSha} on ${mergedAt.toISOString()}.`,
-        });
-      }
+      await db.transaction(async (tx) => {
+        const rows = await tx
+          .update(outgoingPrs)
+          .set({
+            status: "merged",
+            mergedAt,
+            mergeSha,
+            lastPolledAt: polledAt,
+            closureMethod: "merged",
+            closureSha: mergeSha,
+            closureDetectedAt: polledAt,
+          })
+          .where(eq(outgoingPrs.id, id))
+          .returning({
+            upstreamOwner: outgoingPrs.upstreamOwner,
+            upstreamRepo: outgoingPrs.upstreamRepo,
+            upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+          });
+        const row = rows[0];
+        if (row !== undefined) {
+          await writePostDraft({
+            slug: `outgoing-pr-merged-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
+            title: "Outgoing PR merged",
+            body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} merged at ${mergeSha} on ${mergedAt.toISOString()}.`,
+          });
+        }
+      });
     },
     markClosed: async ({ id, polledAt }) => {
-      const rows = await db
-        .select({
-          upstreamOwner: outgoingPrs.upstreamOwner,
-          upstreamRepo: outgoingPrs.upstreamRepo,
-          upstreamPrNumber: outgoingPrs.upstreamPrNumber,
-        })
-        .from(outgoingPrs)
-        .where(eq(outgoingPrs.id, id));
-      await db
-        .update(outgoingPrs)
-        .set({
-          status: "closed",
-          lastPolledAt: polledAt,
-          closureMethod: "declined",
-          closureDetectedAt: polledAt,
-        })
-        .where(eq(outgoingPrs.id, id));
-      const row = rows[0];
-      if (row !== undefined) {
-        await writePostDraft({
-          slug: `outgoing-pr-closed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
-          title: "Outgoing PR closed",
-          body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} closed without merge at ${polledAt.toISOString()}.`,
-        });
-      }
+      await db.transaction(async (tx) => {
+        const rows = await tx
+          .update(outgoingPrs)
+          .set({
+            status: "closed",
+            lastPolledAt: polledAt,
+            closureMethod: "declined",
+            closureDetectedAt: polledAt,
+          })
+          .where(eq(outgoingPrs.id, id))
+          .returning({
+            upstreamOwner: outgoingPrs.upstreamOwner,
+            upstreamRepo: outgoingPrs.upstreamRepo,
+            upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+          });
+        const row = rows[0];
+        if (row !== undefined) {
+          await writePostDraft({
+            slug: `outgoing-pr-closed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
+            title: "Outgoing PR closed",
+            body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} closed without merge at ${polledAt.toISOString()}.`,
+          });
+        }
+      });
     },
     markAbsorbed: async ({ id, closureSha, closureConfidence, closureNotes, polledAt }) => {
-      const rows = await db
-        .select({
-          upstreamOwner: outgoingPrs.upstreamOwner,
-          upstreamRepo: outgoingPrs.upstreamRepo,
-          upstreamPrNumber: outgoingPrs.upstreamPrNumber,
-        })
-        .from(outgoingPrs)
-        .where(eq(outgoingPrs.id, id));
-      await db
-        .update(outgoingPrs)
-        .set({
-          status: "closed_absorbed",
-          lastPolledAt: polledAt,
-          closureMethod: "absorbed_inline",
-          closureSha,
-          closureDetectedAt: polledAt,
-          closureConfidence,
-          closureNotes,
-        })
-        .where(eq(outgoingPrs.id, id));
-      const row = rows[0];
-      if (row !== undefined) {
-        await writePostDraft({
-          slug: `outgoing-pr-absorbed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
-          title: "Outgoing PR absorbed inline",
-          body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} fix absorbed via upstream commit ${closureSha.slice(0, 7)} (confidence: ${closureConfidence.toFixed(2)}).`,
-        });
-      }
+      await db.transaction(async (tx) => {
+        const rows = await tx
+          .update(outgoingPrs)
+          .set({
+            status: "closed_absorbed",
+            lastPolledAt: polledAt,
+            closureMethod: "absorbed_inline",
+            closureSha,
+            closureDetectedAt: polledAt,
+            closureConfidence,
+            closureNotes,
+          })
+          .where(eq(outgoingPrs.id, id))
+          .returning({
+            upstreamOwner: outgoingPrs.upstreamOwner,
+            upstreamRepo: outgoingPrs.upstreamRepo,
+            upstreamPrNumber: outgoingPrs.upstreamPrNumber,
+          });
+        const row = rows[0];
+        if (row !== undefined) {
+          await writePostDraft({
+            slug: `outgoing-pr-absorbed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
+            title: "Outgoing PR absorbed inline",
+            body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} fix absorbed via upstream commit ${closureSha.slice(0, 7)} (confidence: ${closureConfidence.toFixed(2)}).`,
+          });
+        }
+      });
     },
     detectAbsorbed: async (pr: OpenOutgoingPr) => {
       const absorbedDeps = realAbsorbedInlineDeps();

@@ -20,3 +20,4 @@ examples/dogfood-results/[0-9]*.md
 examples/antseed-corpus/apps/
 
 .vercel
+.env.vercel*

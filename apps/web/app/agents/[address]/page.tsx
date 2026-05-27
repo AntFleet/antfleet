@@ -377,16 +377,15 @@ function CrossRepoMergesSection({ merges, now }: { merges: AgentCrossRepoMerge[]
       <ContentWrap>
         <div className="mb-5 flex items-baseline justify-between">
           <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
-            Upstream merges
+            Upstream fixes
           </h2>
           <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-            {merges.length} {merges.length === 1 ? "merge" : "merges"} on this agent
+            {merges.length} {merges.length === 1 ? "fix" : "fixes"} landed on this agent
           </span>
         </div>
         <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
-          PRs AntFleet opened against this agent&apos;s own repo and the upstream owner merged. The
-          highest-trust attribution class — the maintainer of a project AntFleet doesn&apos;t
-          control accepted the change.
+          PRs AntFleet opened against this agent&apos;s own repo where the underlying fix landed
+          upstream — whether via merge or via a separate upstream commit that applies the same fix.
         </p>
         <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
           {merges.map((m) => (
@@ -402,17 +401,21 @@ function CrossRepoMergesSection({ merges, now }: { merges: AgentCrossRepoMerge[]
 
 function CrossRepoMergeRow({ merge, now }: { merge: AgentCrossRepoMerge; now: Date }) {
   const arrowLabel = `AntFleet → ${merge.upstreamOwner.toLowerCase()}/${merge.upstreamRepo.toLowerCase()}`;
-  const shortSha = merge.mergeSha.slice(0, 7);
+  const shortSha = merge.resolutionSha.slice(0, 7);
+  const isAbsorbed = merge.closureMethod === "absorbed_inline";
+  const resolvedLabel = isAbsorbed ? "fix absorbed at" : "merged at";
+  const linkUrl = isAbsorbed
+    ? `https://github.com/${merge.upstreamOwner}/${merge.upstreamRepo}/commit/${merge.resolutionSha}`
+    : merge.prUrl;
   return (
     <a
-      href={merge.prUrl}
+      href={linkUrl}
       target="_blank"
       rel="noopener noreferrer"
       className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group transition-colors hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md"
     >
       <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
-        <Badge>cross-repo</Badge>
-        <Badge>merged</Badge>
+        <Badge>{isAbsorbed ? "fix absorbed" : "cross-repo"}</Badge>
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm text-[var(--color-ink)] leading-snug group-hover:underline underline-offset-2 font-mono">
@@ -422,14 +425,14 @@ function CrossRepoMergeRow({ merge, now }: { merge: AgentCrossRepoMerge; now: Da
           <span>PR #{merge.upstreamPrNumber}</span>
           <span className="text-[var(--color-line-strong)]">·</span>
           <span>
-            merged at <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
+            {resolvedLabel} <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
           </span>
           <span className="text-[var(--color-line-strong)]">·</span>
-          <span>{formatRelativeTime(now, merge.mergedAt)}</span>
+          <span>{formatRelativeTime(now, merge.resolvedAt)}</span>
         </div>
       </div>
       <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
-        view PR →
+        {isAbsorbed ? "view commit →" : "view PR →"}
       </span>
     </a>
   );
