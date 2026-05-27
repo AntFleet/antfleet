@@ -1,11 +1,12 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { Pool } from "@neondatabase/serverless";
 import { Octokit } from "@octokit/rest";
 import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/neon-serverless";
 import { nanoid } from "nanoid";
 import { recoverMessageAddress as viemRecoverMessageAddress } from "viem";
 import { z } from "zod";
-import { db } from "@/db";
 import { agentClaims, factoryLaunches } from "@/db/schema";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import { parseClaimMessage } from "@/lib/claim-message";
@@ -24,7 +25,14 @@ const claimBodySchema = z.object({
   message: z.string().min(50).max(500),
 });
 
-type ClaimDb = typeof db;
+// The shared `@/db` export uses neon-http, which is single-statement only and
+// throws on `db.transaction()`. The verified-claim INSERT + factory-launch
+// UPDATE below must be atomic to prevent split-brain on concurrent claims
+// (race-vs-unique-index), so this route uses neon-serverless (WebSocket)
+// with a per-request Pool — mirrors the cron scripts and avoids leaking
+// WebSocket connections across Vercel freeze/thaw between invocations.
+const claimSchema = { agentClaims, factoryLaunches };
+type ClaimDb = ReturnType<typeof drizzle<typeof claimSchema>>;
 type ClaimQueryable = Pick<ClaimDb, "execute">;
 
 class AlreadyAttributedError extends Error {
@@ -43,8 +51,7 @@ export type ClaimDeps = {
   now: () => Date;
 };
 
-const DEFAULT_DEPS: ClaimDeps = {
-  db,
+const DEFAULT_DEPS_WITHOUT_DB: Omit<ClaimDeps, "db"> = {
   octokit: new Octokit({
     auth: process.env["ROAST_GH_TOKEN"] ?? process.env["GITHUB_TOKEN"] ?? undefined,
     userAgent: "antfleet-claim-api",
@@ -56,7 +63,23 @@ const DEFAULT_DEPS: ClaimDeps = {
 };
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  return handleClaim(req, DEFAULT_DEPS);
+  const databaseUrl = process.env["DATABASE_URL"];
+  if (databaseUrl === undefined || databaseUrl.length === 0) {
+    logError("claim.internal", { message: "DATABASE_URL is unset" });
+    return NextResponse.json(
+      { error: "internal" },
+      { status: 500, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    return await handleClaim(req, {
+      ...DEFAULT_DEPS_WITHOUT_DB,
+      db: drizzle(pool, { schema: claimSchema }),
+    });
+  } finally {
+    await pool.end();
+  }
 }
 
 export async function handleClaim(req: NextRequest, deps: ClaimDeps): Promise<NextResponse> {

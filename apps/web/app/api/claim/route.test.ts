@@ -261,4 +261,81 @@ describe("handleClaim", () => {
     expect(racingDb.attemptedInserts).toBe(1);
     expect(racingDb.persistedInserts).toBe(0);
   });
+
+  it("two truly concurrent claim attempts race on the unique index — exactly one succeeds", async () => {
+    // Shared global state across both sessions. The unique index is enforced
+    // at INSERT (step 3): a second INSERT after the first commits throws 23505.
+    const globalLaunch: { deployerAddress: string; repoFullName: string | null } = {
+      deployerAddress: DEPLOYER,
+      repoFullName: null,
+    };
+    let verifiedClaim: ClaimRow | null = null;
+    let insertCount = 0;
+
+    // Both sessions must observe "no verified claim yet" at step 2 before
+    // either reaches step 3. Without this gate, JS microtask scheduling could
+    // let session A complete steps 2→3→4 before B even runs step 2 — which
+    // is the idempotent path, not the race we want to test.
+    let reachedStep2 = 0;
+    let releaseStep2: () => void = () => {};
+    const step2Gate = new Promise<void>((resolve) => {
+      releaseStep2 = resolve;
+    });
+
+    class RacingSession {
+      step = 0;
+      inserts: unknown[] = [];
+
+      async transaction<T>(cb: (tx: this) => Promise<T>): Promise<T> {
+        return cb(this);
+      }
+
+      async execute(): Promise<unknown> {
+        const step = this.step++;
+        if (step === 0) return [globalLaunch];
+        if (step === 1) return [{ value: 0 }];
+        if (step === 2) {
+          reachedStep2 += 1;
+          if (reachedStep2 === 2) releaseStep2();
+          await step2Gate;
+          return verifiedClaim === null ? [] : [verifiedClaim];
+        }
+        if (step === 3) {
+          if (verifiedClaim !== null) {
+            const err = new Error("duplicate key value violates unique constraint");
+            (err as { code?: string }).code = "23505";
+            throw err;
+          }
+          insertCount += 1;
+          verifiedClaim = { id: `claim_${insertCount}`, repoFullName: "antfleet/agent-one" };
+          this.inserts.push({});
+          return { rowCount: 1 };
+        }
+        if (step === 4) {
+          if (globalLaunch.repoFullName === null) {
+            globalLaunch.repoFullName = "antfleet/agent-one";
+            return { rowCount: 1 };
+          }
+          return { rowCount: 0 };
+        }
+        return [];
+      }
+    }
+
+    const sessionA = new RacingSession();
+    const sessionB = new RacingSession();
+
+    const [resA, resB] = await Promise.all([
+      handleClaim(makeReq(body()), deps(sessionA as unknown as FakeDb)),
+      handleClaim(makeReq(body()), deps(sessionB as unknown as FakeDb)),
+    ]);
+
+    const statuses = [resA.status, resB.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(insertCount).toBe(1);
+    expect(sessionA.inserts.length + sessionB.inserts.length).toBe(1);
+    expect(globalLaunch.repoFullName).toBe("antfleet/agent-one");
+    const loser = (await (resA.status === 409 ? resA : resB).json()) as { error: string };
+    expect(loser.error).toBe("already-attributed");
+  });
 });
