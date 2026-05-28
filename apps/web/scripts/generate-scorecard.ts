@@ -39,6 +39,7 @@ if (endDate === null) {
   console.error(`Invalid date or not a Sunday: ${dateStr}`);
   process.exit(1);
 }
+const targetEndDate = endDate;
 
 async function generateOne(weekEndDate: Date): Promise<void> {
   const yyyyMmDd = weekEndDate.toISOString().slice(0, 10);
@@ -56,7 +57,7 @@ async function generateOne(weekEndDate: Date): Promise<void> {
 
 async function main(): Promise<void> {
   if (!backfill) {
-    await generateOne(endDate!);
+    await generateOne(targetEndDate);
     return;
   }
 
@@ -75,12 +76,13 @@ async function main(): Promise<void> {
 
   // Start from the Sunday of the earliest review's week
   const startSunday = weekEndingSunday(earliest.createdAt);
-  const current = new Date(startSunday + "T00:00:00Z");
+  let currentMs = new Date(startSunday + "T00:00:00Z").getTime();
+  const targetEndMs = targetEndDate.getTime();
   let count = 0;
 
-  while (current <= endDate!) {
-    await generateOne(new Date(current));
-    current.setUTCDate(current.getUTCDate() + 7);
+  while (currentMs <= targetEndMs) {
+    await generateOne(new Date(currentMs));
+    currentMs += 7 * 24 * 60 * 60 * 1000;
     count++;
   }
 

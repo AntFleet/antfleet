@@ -89,6 +89,29 @@ describe("api v1 rate-limit proxy", () => {
     expect(res?.headers.get("Strict-Transport-Security")).toContain("includeSubDomains");
   });
 
+  it("prefers single-hop edge client IP headers over spoofable x-forwarded-for", () => {
+    let res: ReturnType<typeof proxy> | null = null;
+
+    for (let i = 0; i < 61; i += 1) {
+      res = proxy(
+        makeReq("/api/v1/findings", {
+          headers: {
+            "x-real-ip": "198.51.100.20",
+            "x-forwarded-for": "203.0.113.10",
+          },
+        }),
+      );
+    }
+
+    expect(res?.status).toBe(429);
+    const spoofedOnly = proxy(
+      makeReq("/api/v1/findings", {
+        headers: { "x-forwarded-for": "203.0.113.10" },
+      }),
+    );
+    expect(spoofedOnly.status).not.toBe(429);
+  });
+
   it("does not rate-limit non-api-v1 paths", () => {
     let res: ReturnType<typeof proxy> | null = null;
 

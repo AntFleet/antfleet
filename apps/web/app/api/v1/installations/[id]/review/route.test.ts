@@ -134,7 +134,7 @@ function deps(overrides: Partial<ReviewEndpointDeps> = {}): ReviewEndpointDeps {
     loadChallenge: vi.fn(async () => challengeRow()),
     recoverMessageAddress: vi.fn(async () => WALLET),
     decideGate: vi.fn(async () => debitGate() as GateDecision),
-    debitForReview: vi.fn(async () => ({
+    debitForJob: vi.fn(async () => ({
       ok: true as const,
       debitedUsdc: "0.500000",
       newBalanceUsdc: "0.500000",
@@ -149,6 +149,8 @@ function deps(overrides: Partial<ReviewEndpointDeps> = {}): ReviewEndpointDeps {
     createReviewJob: vi.fn(async () => jobRow()),
     findJobByIdempotencyKey: vi.fn(async () => null),
     linkDebitToJob: vi.fn(async () => undefined),
+    markBillingJobFailed: vi.fn(async () => undefined),
+    markJobQueued: vi.fn(async () => true),
     scheduleWorker: vi.fn(),
     ...overrides,
   };
@@ -178,8 +180,12 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     expect(body["jobId"]).toBe(JOB_ID);
     expect(body["statusUrl"]).toBe(`/api/v1/installations/${ROW_ID}/review/${JOB_ID}`);
     expect(body["expectedDurationSec"]).toBe(180);
-    expect(d.debitForReview).toHaveBeenCalledTimes(1);
+    expect(d.debitForJob).toHaveBeenCalledTimes(1);
     expect(d.createReviewJob).toHaveBeenCalledTimes(1);
+    expect(d.createReviewJob).toHaveBeenCalledWith(
+      expect.objectContaining({ initialStatus: "billing_pending" }),
+    );
+    expect(d.markJobQueued).toHaveBeenCalledWith(JOB_ID);
     expect(d.scheduleWorker).toHaveBeenCalledWith(JOB_ID);
     expect(d.claimChallenge).toHaveBeenCalledTimes(1);
     expect(d.linkChallengeToReview).toHaveBeenCalledTimes(1);
@@ -211,7 +217,7 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("signature_mismatch");
-    expect(d.debitForReview).not.toHaveBeenCalled();
+    expect(d.debitForJob).not.toHaveBeenCalled();
     expect(d.createReviewJob).not.toHaveBeenCalled();
   });
 
@@ -239,8 +245,36 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     expect((body["error"] as { code: string }).code).toBe("insufficient_channel_balance");
     expect(body["required_usdc"]).toBe("0.50");
     expect(body["current_usdc"]).toBe("0.250000");
-    expect(d.debitForReview).not.toHaveBeenCalled();
+    expect(d.debitForJob).not.toHaveBeenCalled();
     expect(d.claimChallenge).not.toHaveBeenCalled();
+  });
+
+  it("marks the billing-pending job failed when debit loses the balance race", async () => {
+    const d = deps({
+      debitForJob: vi.fn(async () => ({
+        ok: false as const,
+        reason: "insufficient_at_debit" as const,
+      })),
+    });
+    const res = await handleReviewRequest(
+      req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR }),
+      ctx,
+      d,
+    );
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body["error"] as { code: string }).code).toBe("insufficient_channel_balance");
+    expect(d.createReviewJob).toHaveBeenCalledWith(
+      expect.objectContaining({ initialStatus: "billing_pending" }),
+    );
+    expect(d.markBillingJobFailed).toHaveBeenCalledWith(
+      JOB_ID,
+      "insufficient_channel_balance",
+      "channel balance dropped below review price before debit",
+      NOW,
+    );
+    expect(d.markJobQueued).not.toHaveBeenCalled();
+    expect(d.scheduleWorker).not.toHaveBeenCalled();
   });
 
   it("returns 401 when challenge_id is not found", async () => {
@@ -311,7 +345,7 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("challenge_already_used");
-    expect(d.debitForReview).not.toHaveBeenCalled();
+    expect(d.debitForJob).not.toHaveBeenCalled();
     expect(d.createReviewJob).not.toHaveBeenCalled();
     expect(d.scheduleWorker).not.toHaveBeenCalled();
   });
@@ -431,7 +465,7 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("pr_not_open");
-    expect(d.debitForReview).not.toHaveBeenCalled();
+    expect(d.debitForJob).not.toHaveBeenCalled();
     expect(d.createReviewJob).not.toHaveBeenCalled();
   });
 
@@ -489,7 +523,9 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
 
   it("returns existing job on idempotency_key match (no new debit)", async () => {
     const d = deps({
-      findJobByIdempotencyKey: vi.fn(async () => jobRow({ idempotencyKey: "my-key", status: "running" })),
+      findJobByIdempotencyKey: vi.fn(async () =>
+        jobRow({ idempotencyKey: "my-key", status: "running" }),
+      ),
     });
     const res = await handleReviewRequest(
       req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR, idempotency_key: "my-key" }),
@@ -501,7 +537,7 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     expect(body["jobId"]).toBe(JOB_ID);
     expect(body["status"]).toBe("running");
     // No new debit or job creation
-    expect(d.debitForReview).not.toHaveBeenCalled();
+    expect(d.debitForJob).not.toHaveBeenCalled();
     expect(d.createReviewJob).not.toHaveBeenCalled();
     expect(d.scheduleWorker).not.toHaveBeenCalled();
   });

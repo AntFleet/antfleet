@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
 import { outgoingPrs, type OutgoingPr } from "@/db/schema";
@@ -25,7 +25,6 @@ export type DisplayReceipt = {
   closedAtIso: string | null;
   receiptUrl: string | null;
 };
-
 
 export function toDisplayReceipt(row: PublicReceiptRow, now: Date): DisplayReceipt {
   return {
@@ -156,7 +155,9 @@ export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoRec
     .select()
     .from(outgoingPrs)
     .where(inArray(outgoingPrs.status, receiptStatuses))
-    .orderBy(sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) DESC NULLS LAST`)
+    .orderBy(
+      sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) DESC NULLS LAST`,
+    )
     .limit(limit)) as OutgoingPr[];
 
   const { receipts, lastResolvedAt } = mapReceiptEligibleRows(rows);

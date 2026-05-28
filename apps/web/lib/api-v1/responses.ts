@@ -41,12 +41,15 @@ export function jsonStats(body: unknown): NextResponse {
   return jsonOk(body, { cacheControl: NO_STORE });
 }
 
-export function optionsResponse(methods = "GET, OPTIONS"): NextResponse {
+export function optionsResponse(
+  methods = "GET, OPTIONS",
+  allowedHeaders = "Content-Type",
+): NextResponse {
   return new NextResponse(null, {
     status: 204,
     headers: {
       "Access-Control-Allow-Methods": methods,
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": allowedHeaders,
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Max-Age": "86400",
     },

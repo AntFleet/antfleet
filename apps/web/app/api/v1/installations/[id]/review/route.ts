@@ -24,7 +24,7 @@ import { db } from "@/db";
 import { jsonError, NO_STORE, optionsResponse } from "@/lib/api-v1/responses";
 import { getInstallationToken } from "@/lib/github-app";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
-import { debitForReview, decideGate } from "@/lib/paywall/gate";
+import { debitForJob, decideGate } from "@/lib/paywall/gate";
 import { getReviewPriceUsdc } from "@/lib/paywall/env";
 import {
   claimReviewChallenge,
@@ -43,6 +43,8 @@ import {
   createReviewJob,
   findJobByIdempotencyKey,
   linkDebitPaymentToJob,
+  markBillingJobFailed,
+  markJobQueued,
   type ReviewJobRow,
 } from "@/lib/review-job-queries";
 import { processReviewJob } from "@/lib/review-job-worker";
@@ -102,7 +104,7 @@ export type ReviewEndpointDeps = {
   loadChallenge: (challengeId: string) => Promise<ReviewChallengeRow | null>;
   recoverMessageAddress: (args: { message: string; signature: `0x${string}` }) => Promise<string>;
   decideGate: typeof decideGate;
-  debitForReview: typeof debitForReview;
+  debitForJob: typeof debitForJob;
   claimChallenge: (args: { challengeId: string; usedAt: Date }) => Promise<boolean>;
   linkChallengeToReview: (args: { challengeId: string; reviewId: string }) => Promise<void>;
   getInstallationToken: typeof getInstallationToken;
@@ -110,8 +112,18 @@ export type ReviewEndpointDeps = {
   getPriceUsdc: () => string;
   now: () => Date;
   createReviewJob: (args: Parameters<typeof createReviewJob>[1]) => Promise<ReviewJobRow>;
-  findJobByIdempotencyKey: (installationId: string, idempotencyKey: string) => Promise<ReviewJobRow | null>;
+  findJobByIdempotencyKey: (
+    installationId: string,
+    idempotencyKey: string,
+  ) => Promise<ReviewJobRow | null>;
   linkDebitToJob: (jobId: string, debitPaymentId: string) => Promise<void>;
+  markBillingJobFailed: (
+    jobId: string,
+    failureMode: string,
+    failureMessage: string,
+    now: Date,
+  ) => Promise<void>;
+  markJobQueued: (jobId: string) => Promise<boolean>;
   scheduleWorker: (jobId: string) => void;
 };
 
@@ -120,7 +132,7 @@ const DEFAULT_DEPS: ReviewEndpointDeps = {
   loadChallenge: (id) => loadReviewChallenge(db, id),
   recoverMessageAddress: viemRecoverMessageAddress,
   decideGate,
-  debitForReview,
+  debitForJob,
   claimChallenge: (args) => claimReviewChallenge(db, args),
   linkChallengeToReview: (args) => linkReviewChallengeToReview(db, args),
   getInstallationToken,
@@ -131,6 +143,9 @@ const DEFAULT_DEPS: ReviewEndpointDeps = {
   findJobByIdempotencyKey: (installationId, idempotencyKey) =>
     findJobByIdempotencyKey(db, installationId, idempotencyKey),
   linkDebitToJob: (jobId, debitPaymentId) => linkDebitPaymentToJob(db, jobId, debitPaymentId),
+  markBillingJobFailed: (jobId, failureMode, failureMessage, now) =>
+    markBillingJobFailed(db, jobId, failureMode, failureMessage, now),
+  markJobQueued: (jobId) => markJobQueued(db, jobId),
   scheduleWorker: (jobId) => {
     after(async () => {
       try {
@@ -164,9 +179,14 @@ export async function handleReviewRequest(
 
     // 410 Gone for legacy sync callers
     if (url.searchParams.get("legacy") === "true") {
-      return jsonError(410, "sync_mode_removed", "Synchronous /api/v1/installations/{id}/review was removed in the async-default contract. POST now returns 202 + jobId; poll GET /api/v1/installations/{id}/review/{jobId} for status. AntFleet/aeon-skills users: update to ≥v2.0.", {
-        migrationDoc: "https://www.antfleet.dev/changelog",
-      });
+      return jsonError(
+        410,
+        "sync_mode_removed",
+        "Synchronous /api/v1/installations/{id}/review was removed in the async-default contract. POST now returns 202 + jobId; poll GET /api/v1/installations/{id}/review/{jobId} for status. AntFleet/aeon-skills users: update to ≥v2.0.",
+        {
+          migrationDoc: "https://www.antfleet.dev/changelog",
+        },
+      );
     }
 
     if (url.searchParams.get("force") === "true") {
@@ -286,9 +306,10 @@ export async function handleReviewRequest(
     }
 
     // Gate decision against the (github_installation_id, repo) channel.
-    const gate = await deps.decideGate(
-      { installationId: install.installationId, repo: target.repo },
-    );
+    const gate = await deps.decideGate({
+      installationId: install.installationId,
+      repo: target.repo,
+    });
     if (gate.kind === "not_installed") {
       return jsonError(
         409,
@@ -349,9 +370,9 @@ export async function handleReviewRequest(
       );
     }
 
-    // Create the job row FIRST (no debit link yet). If debit fails
-    // afterward, we mark the job failed. If job creation fails, no
-    // channel mutation has occurred — no orphaned payments.
+    // Create the job in a non-runnable billing state first. The safety-net
+    // cron only picks up status='queued', so a racy or failed debit cannot
+    // later run as an unpaid orphan.
     const job = await deps.createReviewJob({
       installationId: install.id,
       walletAddress: install.walletAddress,
@@ -361,17 +382,23 @@ export async function handleReviewRequest(
       sha: target.sha,
       idempotencyKey: body.idempotency_key ?? null,
       debitPaymentId: null,
+      initialStatus: "billing_pending",
     });
 
     // Debit channel (only for gate.kind === "debit").
     // bypass (legacy partner): no debit — job proceeds with debitPaymentId=NULL.
     if (gate.kind === "debit") {
-      const debit = await deps.debitForReview(db, {
+      const debit = await deps.debitForJob(db, {
         decision: gate,
-        reviewId: job.jobId,
         logContext: { id, surface: "api-async" },
       });
       if (!debit.ok) {
+        await deps.markBillingJobFailed(
+          job.jobId,
+          "insufficient_channel_balance",
+          "channel balance dropped below review price before debit",
+          now,
+        );
         return jsonError(
           402,
           "insufficient_channel_balance",
@@ -389,6 +416,11 @@ export async function handleReviewRequest(
       }
     } else if (gate.kind === "bypass") {
       logInfo("review_endpoint.bypass_legacy_partner", { id, jobId: job.jobId });
+    }
+
+    const queued = await deps.markJobQueued(job.jobId);
+    if (!queued) {
+      throw new Error("review job left billing state before queue transition");
     }
 
     // Audit-link challenge to the job (best-effort)

@@ -277,9 +277,9 @@ describe("handleClaim", () => {
     // let session A complete steps 2→3→4 before B even runs step 2 — which
     // is the idempotent path, not the race we want to test.
     let reachedStep2 = 0;
-    let releaseStep2: () => void = () => {};
+    const releaseStep2Ref: { current: () => void } = { current: () => {} };
     const step2Gate = new Promise<void>((resolve) => {
-      releaseStep2 = resolve;
+      releaseStep2Ref.current = resolve;
     });
 
     class RacingSession {
@@ -296,7 +296,7 @@ describe("handleClaim", () => {
         if (step === 1) return [{ value: 0 }];
         if (step === 2) {
           reachedStep2 += 1;
-          if (reachedStep2 === 2) releaseStep2();
+          if (reachedStep2 === 2) releaseStep2Ref.current();
           await step2Gate;
           return verifiedClaim === null ? [] : [verifiedClaim];
         }
@@ -330,7 +330,7 @@ describe("handleClaim", () => {
       handleClaim(makeReq(body()), deps(sessionB as unknown as FakeDb)),
     ]);
 
-    const statuses = [resA.status, resB.status].sort();
+    const statuses = [resA.status, resB.status].toSorted();
     expect(statuses).toEqual([200, 409]);
     expect(insertCount).toBe(1);
     expect(sessionA.inserts.length + sessionB.inserts.length).toBe(1);

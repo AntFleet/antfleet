@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { TweetIntent } from "@/components/TweetIntent";
 import { db } from "@/db/index";
 import { findingStatus, reviews } from "@/db/schema";
@@ -159,7 +159,9 @@ function FindingCard({ label, finding }: { label: string; finding: ProviderFindi
       <p className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-4">
         {label}
       </p>
-      <h2 className="text-sm leading-snug text-[var(--color-ink)]">{redactSecrets(finding.title)}</h2>
+      <h2 className="text-sm leading-snug text-[var(--color-ink)]">
+        {redactSecrets(finding.title)}
+      </h2>
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Badge>{finding.severity}</Badge>
         <Badge>{finding.category}</Badge>

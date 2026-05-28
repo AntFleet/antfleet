@@ -16,7 +16,11 @@ import {
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { runReviewWorker } from "@/lib/review-worker";
-import { refundJobChannelDebit, isRefundableFailureMode, safeFailureMessage } from "@/lib/paywall/refund";
+import {
+  refundJobChannelDebit,
+  isRefundableFailureMode,
+  safeFailureMessage,
+} from "@/lib/paywall/refund";
 import { Octokit } from "@octokit/rest";
 
 export type JobWorkerOutcome =
@@ -108,10 +112,9 @@ async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
   try {
     installationToken = await getInstallationToken(installationIdNum);
   } catch (err) {
-    throw Object.assign(
-      new Error(`GitHub auth failed: ${messageOf(err)}`),
-      { failureModeTag: "provider_error" },
-    );
+    throw Object.assign(new Error(`GitHub auth failed: ${messageOf(err)}`), {
+      failureModeTag: "provider_error",
+    });
   }
 
   const octokit = new Octokit({ auth: installationToken });
@@ -132,10 +135,9 @@ async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
       // GitHub 404 = PR doesn't exist (user_input); 5xx = GitHub outage (provider_error)
       const httpStatus = (err as { status?: number })?.status;
       const mode = httpStatus !== undefined && httpStatus < 500 ? "user_input" : "provider_error";
-      throw Object.assign(
-        new Error(`Failed to resolve PR: ${messageOf(err)}`),
-        { failureModeTag: mode },
-      );
+      throw Object.assign(new Error(`Failed to resolve PR: ${messageOf(err)}`), {
+        failureModeTag: mode,
+      });
     }
   }
 
@@ -167,20 +169,32 @@ async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
   const outcome = await runReviewWorker(enqueued.reviewId, "api");
 
   if (outcome.kind === "failed") {
-    throw Object.assign(
-      new Error(outcome.error),
-      { failureModeTag: "provider_error" },
-    );
+    throw Object.assign(new Error(outcome.error), { failureModeTag: "provider_error" });
+  }
+  if (outcome.kind === "retried") {
+    throw Object.assign(new Error(outcome.error), { failureModeTag: "provider_error" });
   }
 
   // Load the completed review data for the job result
   const { loadReviewForResponse } = await import("@/lib/paywall/queries");
   const payload = await loadReviewForResponse(db, enqueued.reviewId);
+  if (payload === null) {
+    throw Object.assign(new Error(`review ${enqueued.reviewId} not found after worker run`), {
+      failureModeTag: "internal",
+    });
+  }
+  if (payload.processingStatus !== "done") {
+    throw Object.assign(
+      new Error(
+        `review ${enqueued.reviewId} ended ${payload.processingStatus} after worker outcome ${outcome.kind}`,
+      ),
+      { failureModeTag: "internal" },
+    );
+  }
 
   return {
-    reviewId: enqueued.reviewId,
-    cached: !enqueued.isNew,
     ...payload,
+    cached: !enqueued.isNew,
   };
 }
 
@@ -215,9 +229,12 @@ function classifyError(err: unknown): string {
   ) {
     return "provider_error";
   }
-  if (message.includes("not found") || message.includes("not open") || message.includes("invalid")) {
+  if (
+    message.includes("not found") ||
+    message.includes("not open") ||
+    message.includes("invalid")
+  ) {
     return "user_input";
   }
   return "internal";
 }
-

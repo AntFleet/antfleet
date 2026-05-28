@@ -182,6 +182,30 @@ export async function recordDrawdown(
   return row.id;
 }
 
+export async function recordJobDrawdown(
+  q: Queryable,
+  args: {
+    channelId: string;
+    amountUsdc: string;
+    fromAddress: string;
+  },
+): Promise<string> {
+  const result = await q.execute(sql`
+    INSERT INTO payments (channel_id, type, chain_id, from_address, amount_usdc)
+    VALUES (
+      ${args.channelId},
+      'drawdown',
+      8453,
+      ${args.fromAddress.toLowerCase()},
+      ${args.amountUsdc}
+    )
+    RETURNING id
+  `);
+  const row = firstRow<{ id: string }>(result);
+  if (row === null) throw new Error("job drawdown insert returned no row");
+  return row.id;
+}
+
 // Shared debit-and-record helper used by both the GitHub webhook handler
 // and the on-demand /api/v1/installations/{id}/review endpoint. Wraps the
 // quantize → debitChannel (atomic CAS) → recordDrawdown sequence with the
@@ -235,6 +259,43 @@ export async function debitForReview(
     logError("paywall.gate.drawdown_record_failed", {
       ...args.logContext,
       reviewId: args.reviewId,
+      channelId: args.decision.channelId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return {
+    ok: true,
+    debitedUsdc: priceUsdc,
+    newBalanceUsdc: debited.newBalanceUsdc,
+    drawdownId,
+  };
+}
+
+export async function debitForJob(
+  q: Queryable,
+  args: {
+    decision: Extract<GateDecision, { kind: "debit" }>;
+    logContext?: Record<string, unknown>;
+  },
+): Promise<DebitForReviewResult> {
+  const priceUsdc = quantizeUsdc(args.decision.priceUsdc);
+  const debited = await debitChannel(q, {
+    channelId: args.decision.channelId,
+    priceUsdc,
+  });
+  if (debited === null) {
+    return { ok: false, reason: "insufficient_at_debit" };
+  }
+  let drawdownId: string | null = null;
+  try {
+    drawdownId = await recordJobDrawdown(q, {
+      channelId: args.decision.channelId,
+      amountUsdc: priceUsdc,
+      fromAddress: args.decision.walletAddress,
+    });
+  } catch (err) {
+    logError("paywall.gate.job_drawdown_record_failed", {
+      ...args.logContext,
       channelId: args.decision.channelId,
       message: err instanceof Error ? err.message : String(err),
     });

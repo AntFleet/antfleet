@@ -7,7 +7,6 @@ import { writePostDraft } from "./post-drafts";
 import {
   detectAbsorbedInline,
   realAbsorbedInlineDeps,
-  type AbsorbedInlineDeps,
   type AbsorbedInlineResult,
 } from "./absorbed-inline";
 

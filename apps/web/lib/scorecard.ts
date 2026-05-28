@@ -142,12 +142,7 @@ export async function computeScorecardForWeek(weekEndingDate: Date): Promise<Sco
           .where(inArray(findingStatus.reviewId, reviewIds))
       : [];
 
-  const payload = aggregatePayload(
-    reviewRows,
-    findingRows,
-    weekStart,
-    weekEndingDate,
-  );
+  const payload = aggregatePayload(reviewRows, findingRows, weekStart, weekEndingDate);
 
   // Compute rolling 4-week averages
   const rolling = await computeRolling4Week(weekEndingDate);
@@ -389,14 +384,16 @@ function parsePerProvider(providerResponses: unknown): PerProviderEntry[] {
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
+  const sorted = values.toSorted((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? round(sorted[mid], 2) : round((sorted[mid - 1] + sorted[mid]) / 2, 2);
+  return sorted.length % 2 !== 0
+    ? round(sorted[mid], 2)
+    : round((sorted[mid - 1] + sorted[mid]) / 2, 2);
 }
 
 function topN(map: Map<string, number>, n: number): Array<{ category: string; count: number }> {
   return [...map.entries()]
-    .sort((a, b) => b[1] - a[1])
+    .toSorted((a, b) => b[1] - a[1])
     .slice(0, n)
     .map(([category, count]) => ({ category, count }));
 }

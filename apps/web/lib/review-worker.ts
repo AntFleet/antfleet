@@ -383,11 +383,12 @@ async function processClaimedRow(
     }
   }
 
-  // Comment posting + lifecycle persistence. A failure here MUST bubble
-  // so the cron retries — but we want to avoid double-posting on retry.
-  // postPRComment is not idempotent (GitHub creates a new comment per
-  // call), so we accept that a 500 between post and setReviewComment
-  // could leak one orphan comment. Tradeoff documented in §11.3.
+  // Lifecycle persistence + comment posting. Finding lifecycle rows are
+  // written BEFORE the GitHub comment so a DB failure cannot leave the
+  // public comment as the only record of agreed findings. setReviewComment
+  // still follows the GitHub post because it needs the remote id/url; a
+  // failure there bubbles so the review is not marked done without the
+  // durable comment pointer.
   // Pull the paywall settlement footer when this review was paid for via
   // an agent channel. Returns null for legacy_partner / pre-paywall rows;
   // formatPRComment omits the footer entirely in that case.
@@ -411,6 +412,14 @@ async function processClaimedRow(
       : {}),
     clickApplyEnabled,
   });
+  const findingIds = await deps.recordFindingStatuses(
+    reviewId,
+    bundle.agreed.map((f) => ({
+      title: f.title,
+      severity: f.severity,
+      category: f.category,
+    })),
+  );
   const posted = await deps.postPRComment({
     installationId: row.installationId,
     owner: row.owner,
@@ -426,157 +435,137 @@ async function processClaimedRow(
     patchesIncluded: patchOutcome?.byIndex.size ?? 0,
   });
 
-  try {
-    await deps.setReviewComment({
-      reviewId,
-      commentId: posted.id,
-      commentUrl: posted.htmlUrl,
-    });
-    const findingIds = await deps.recordFindingStatuses(
-      reviewId,
-      bundle.agreed.map((f) => ({
-        title: f.title,
-        severity: f.severity,
-        category: f.category,
-      })),
-    );
-    logInfo("lifecycle.recorded", {
-      reviewId,
-      findingIds,
-      commentId: posted.id,
-    });
-    // Patch Agent v1.5 — persist per-finding patch decisions AFTER the
-    // finding_status rows exist (recordPatchDecisions is an UPDATE). A
-    // throw here is logged but never blocks comment success; the
-    // suggestion block is already on the PR even if the DB write fails.
-    if (patchOutcome !== null && patchOutcome.decisions.length > 0) {
-      try {
-        await deps.recordPatchDecisions(
-          patchOutcome.decisions.map((d) => ({
-            findingId: d.findingId,
-            suggestedPatch: d.patch,
-            patchModelId: d.modelId,
-            patchSkipReason: d.skipReason,
-            proposedAt: deps.now(),
-            candidates: d.candidates,
-            selector: d.selector,
-          })),
-        );
-        // Persist the aggregate patch-lane cost (observability only —
-        // the drawdown column is untouched). v1 writes 0 because the
-        // provider modules don't yet surface per-call token spend; the
-        // write lands so /receipts and the wallet aggregator can fold
-        // it in once the provider layer exposes cost. Drawdown invariant
-        // 3: this is the ONLY cost write in the click-apply path; no new
-        // payments / drawdown rows touched by v1.6.
-        await deps.setReviewPatchCost(reviewId, patchOutcome.costPatchUsd);
+  await deps.setReviewComment({
+    reviewId,
+    commentId: posted.id,
+    commentUrl: posted.htmlUrl,
+  });
+  logInfo("lifecycle.recorded", {
+    reviewId,
+    findingIds,
+    commentId: posted.id,
+  });
+  // Patch Agent v1.5 — persist per-finding patch decisions AFTER the
+  // finding_status rows exist (recordPatchDecisions is an UPDATE). A
+  // throw here is logged but never blocks comment success; the
+  // suggestion block is already on the PR even if the DB write fails.
+  if (patchOutcome !== null && patchOutcome.decisions.length > 0) {
+    try {
+      await deps.recordPatchDecisions(
+        patchOutcome.decisions.map((d) => ({
+          findingId: d.findingId,
+          suggestedPatch: d.patch,
+          patchModelId: d.modelId,
+          patchSkipReason: d.skipReason,
+          proposedAt: deps.now(),
+          candidates: d.candidates,
+          selector: d.selector,
+        })),
+      );
+      // Persist the aggregate patch-lane cost (observability only —
+      // the drawdown column is untouched). v1 writes 0 because the
+      // provider modules don't yet surface per-call token spend; the
+      // write lands so /receipts and the wallet aggregator can fold
+      // it in once the provider layer exposes cost. Drawdown invariant
+      // 3: this is the ONLY cost write in the click-apply path; no new
+      // payments / drawdown rows touched by v1.6.
+      await deps.setReviewPatchCost(reviewId, patchOutcome.costPatchUsd);
 
-        // Patch Agent v1.6 — click-apply lane runs BEFORE the patch_proposed
-        // events fire so the events can carry the review_comment_id/url for
-        // the v2.0 conversion metric. Each post + persist is independent;
-        // a failure on one finding does not block the others, and a failure
-        // of this whole block does not block the v1.5 issue comment (already
-        // posted above) or the v1.5 patch_proposed events (which follow).
-        // Forward-only: rows that already have patch_review_comment_id set
-        // are skipped via the UPDATE predicate inside recordPatchReviewComment.
-        //
-        // Failure mode the audit asked us to document (≈ v1.5 §11.3): if
-        // postPatchReviewComment succeeds but recordPatchReviewComment
-        // throws, we leak one orphan GitHub review comment. The DB row
-        // stays NULL so a worker retry on this review row would re-post;
-        // but a new push creates a new review row, so the orphan does not
-        // accumulate beyond one comment per failure. Acceptable per
-        // non-break invariant 2; the issue comment is the contract path.
-        const reviewCommentByFindingId = new Map<string, { id: number; url: string }>();
-        if (clickApplyEnabled) {
-          for (const [findingIndex, patch] of patchOutcome.byIndex.entries()) {
-            const finding = bundle.agreed[findingIndex];
-            if (finding === undefined) continue;
-            const ev = finding.evidence[0];
-            if (ev === undefined || ev.startLine === null) continue;
-            // Operator decision Q2 LOCKED: multi-line evidence falls back
-            // to the v1.5 issue-comment <details> path (more brittle than
-            // useful via GitHub's start_line review comments).
-            const isSingleLine = ev.endLine === null || ev.endLine === ev.startLine;
-            if (!isSingleLine) continue;
-            const findingId = makeFindingId(reviewId, findingIndex);
-            try {
-              const reviewCommentPost = await deps.postPatchReviewComment({
-                installationId: row.installationId,
-                owner: row.owner,
-                repo: row.repo,
-                pullNumber: row.prNumber,
-                commitId: row.commitSha,
-                path: ev.path,
-                line: ev.startLine,
-                patch,
-                bodyPrefix: `**${finding.title}** · proposed patch (model: \`${patch.modelId}\`)`,
-              });
-              if (reviewCommentPost === null) continue;
-              await deps.recordPatchReviewComment({
-                findingId,
-                reviewCommentId: reviewCommentPost.id,
-                reviewCommentUrl: reviewCommentPost.url,
-                proposedAt: deps.now(),
-              });
-              reviewCommentByFindingId.set(findingId, {
-                id: reviewCommentPost.id,
-                url: reviewCommentPost.url,
-              });
-              logInfo("patch_review_comment.posted", {
-                reviewId,
-                findingId,
-                commentId: reviewCommentPost.id,
-                commentUrl: reviewCommentPost.url,
-              });
-            } catch (reviewCommentErr) {
-              logError("patch_review_comment.post_or_persist_failed", {
-                reviewId,
-                findingId,
-                message: messageOf(reviewCommentErr),
-              });
-            }
+      // Patch Agent v1.6 — click-apply lane runs BEFORE the patch_proposed
+      // events fire so the events can carry the review_comment_id/url for
+      // the v2.0 conversion metric. Each post + persist is independent;
+      // a failure on one finding does not block the others, and a failure
+      // of this whole block does not block the v1.5 issue comment (already
+      // posted above) or the v1.5 patch_proposed events (which follow).
+      // Forward-only: rows that already have patch_review_comment_id set
+      // are skipped via the UPDATE predicate inside recordPatchReviewComment.
+      //
+      // Failure mode the audit asked us to document (≈ v1.5 §11.3): if
+      // postPatchReviewComment succeeds but recordPatchReviewComment
+      // throws, we leak one orphan GitHub review comment. The DB row
+      // stays NULL so a worker retry on this review row would re-post;
+      // but a new push creates a new review row, so the orphan does not
+      // accumulate beyond one comment per failure. Acceptable per
+      // non-break invariant 2; the issue comment is the contract path.
+      const reviewCommentByFindingId = new Map<string, { id: number; url: string }>();
+      if (clickApplyEnabled) {
+        for (const [findingIndex, patch] of patchOutcome.byIndex.entries()) {
+          const finding = bundle.agreed[findingIndex];
+          if (finding === undefined) continue;
+          const ev = finding.evidence[0];
+          if (ev === undefined || ev.startLine === null) continue;
+          // Operator decision Q2 LOCKED: multi-line evidence falls back
+          // to the v1.5 issue-comment <details> path (more brittle than
+          // useful via GitHub's start_line review comments).
+          const isSingleLine = ev.endLine === null || ev.endLine === ev.startLine;
+          if (!isSingleLine) continue;
+          const findingId = makeFindingId(reviewId, findingIndex);
+          try {
+            const reviewCommentPost = await deps.postPatchReviewComment({
+              installationId: row.installationId,
+              owner: row.owner,
+              repo: row.repo,
+              pullNumber: row.prNumber,
+              commitId: row.commitSha,
+              path: ev.path,
+              line: ev.startLine,
+              patch,
+              bodyPrefix: `**${finding.title}** · proposed patch (model: \`${patch.modelId}\`)`,
+            });
+            if (reviewCommentPost === null) continue;
+            await deps.recordPatchReviewComment({
+              findingId,
+              reviewCommentId: reviewCommentPost.id,
+              reviewCommentUrl: reviewCommentPost.url,
+              proposedAt: deps.now(),
+            });
+            reviewCommentByFindingId.set(findingId, {
+              id: reviewCommentPost.id,
+              url: reviewCommentPost.url,
+            });
+            logInfo("patch_review_comment.posted", {
+              reviewId,
+              findingId,
+              commentId: reviewCommentPost.id,
+              commentUrl: reviewCommentPost.url,
+            });
+          } catch (reviewCommentErr) {
+            logError("patch_review_comment.post_or_persist_failed", {
+              reviewId,
+              findingId,
+              message: messageOf(reviewCommentErr),
+            });
           }
         }
+      }
 
-        // Fire one onboarder event per shipped patch. Self-gated on
-        // ONBOARDER_ENABLED; the call is fire-and-forget at the worker
-        // level — its own catch logs without bubbling. v1.6 plumbs the
-        // review-comment id/url into tool_output when click-apply succeeded
-        // for that finding (else null, matching pre-v1.6 shape).
-        for (const d of patchOutcome.decisions) {
-          if (d.patch === null || d.modelId === null) continue;
-          const linkedComment = reviewCommentByFindingId.get(d.findingId);
-          await deps.recordPatchProposedEvent({
-            installationId: row.installationId,
-            owner: row.owner,
-            repo: row.repo,
-            reviewId,
-            findingId: d.findingId,
-            modelId: d.modelId,
-            suggestedPatch: d.patch,
-            reviewCommentId: linkedComment?.id ?? null,
-            reviewCommentUrl: linkedComment?.url ?? null,
-          });
-        }
-      } catch (patchPersistErr) {
-        logError("patch_agent.persist_failed", {
+      // Fire one onboarder event per shipped patch. Self-gated on
+      // ONBOARDER_ENABLED; the call is fire-and-forget at the worker
+      // level — its own catch logs without bubbling. v1.6 plumbs the
+      // review-comment id/url into tool_output when click-apply succeeded
+      // for that finding (else null, matching pre-v1.6 shape).
+      for (const d of patchOutcome.decisions) {
+        if (d.patch === null || d.modelId === null) continue;
+        const linkedComment = reviewCommentByFindingId.get(d.findingId);
+        await deps.recordPatchProposedEvent({
+          installationId: row.installationId,
+          owner: row.owner,
+          repo: row.repo,
           reviewId,
-          message: messageOf(patchPersistErr),
+          findingId: d.findingId,
+          modelId: d.modelId,
+          suggestedPatch: d.patch,
+          reviewCommentId: linkedComment?.id ?? null,
+          reviewCommentUrl: linkedComment?.url ?? null,
         });
       }
+    } catch (patchPersistErr) {
+      logError("patch_agent.persist_failed", {
+        reviewId,
+        message: messageOf(patchPersistErr),
+      });
     }
-  } catch (lifecycleErr) {
-    // The comment is posted; the row is recoverable on next sweep tick.
-    // Log loudly and let the worker continue — the review itself is
-    // 'done', losing the lifecycle row would only mean Sweeper can't
-    // reconcile closure for these findings.
-    logError("lifecycle.persist_failed", {
-      reviewId,
-      message: messageOf(lifecycleErr),
-    });
   }
-
   // installationToken is consumed implicitly through getChangedFiles /
   // postPRComment via the GitHub App auth path; the explicit fetch above
   // surfaces install-token failures early (before LLM calls). Suppress

@@ -16,11 +16,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dotenv from "dotenv";
 
-import { outgoingPrs, type OutgoingPr } from "../db/schema";
-import {
-  detectAbsorbedInline,
-  realAbsorbedInlineDeps,
-} from "../lib/absorbed-inline";
+import { outgoingPrs } from "../db/schema";
+import { detectAbsorbedInline, realAbsorbedInlineDeps } from "../lib/absorbed-inline";
 
 const selfDir = dirname(fileURLToPath(import.meta.url));
 // override: true is required when the parent shell pre-sets these env vars to
@@ -38,15 +35,6 @@ if (!url) {
 const dryRun = !process.argv.includes("--apply");
 const sql = neon(url);
 const db = drizzle(sql);
-
-type BackfillRow = {
-  id: string;
-  upstreamOwner: string;
-  upstreamRepo: string;
-  upstreamPrNumber: number;
-  openedAt: Date;
-  branchOnFork: string;
-};
 
 type BackfillResult = {
   id: string;
@@ -72,11 +60,13 @@ async function main() {
       branchOnFork: outgoingPrs.branchOnFork,
     })
     .from(outgoingPrs)
-    .where(and(
-      eq(outgoingPrs.status, "closed"),
-      isNull(outgoingPrs.closureSha),
-      isNull(outgoingPrs.closureMethod),
-    ));
+    .where(
+      and(
+        eq(outgoingPrs.status, "closed"),
+        isNull(outgoingPrs.closureSha),
+        isNull(outgoingPrs.closureMethod),
+      ),
+    );
 
   console.log(`Found ${rows.length} unprocessed closed rows.`);
   if (rows.length === 0) {
@@ -179,9 +169,7 @@ async function main() {
       const expected = "bab1e4b";
       const actual = r.closureSha?.slice(0, 7) ?? "(none)";
       const pass = actual === expected;
-      console.log(
-        `PR #5: expected ${expected}, got ${actual} — ${pass ? "PASS" : "FAIL"}`,
-      );
+      console.log(`PR #5: expected ${expected}, got ${actual} — ${pass ? "PASS" : "FAIL"}`);
       if (!pass) {
         console.error("REFERENCE VALIDATION FAILED for PR #5. Halting.");
         process.exit(1);
@@ -191,9 +179,7 @@ async function main() {
       const expected = "7329b8a";
       const actual = r.closureSha?.slice(0, 7) ?? "(none)";
       const pass = actual === expected;
-      console.log(
-        `PR #8: expected ${expected}, got ${actual} — ${pass ? "PASS" : "FAIL"}`,
-      );
+      console.log(`PR #8: expected ${expected}, got ${actual} — ${pass ? "PASS" : "FAIL"}`);
       if (!pass) {
         console.error("REFERENCE VALIDATION FAILED for PR #8. Halting.");
         process.exit(1);

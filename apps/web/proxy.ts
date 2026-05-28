@@ -58,7 +58,7 @@ function maybeRateLimitApiV1(req: NextRequest): NextResponse | null {
     return null;
   }
 
-  const ip = firstForwardedIp(req);
+  const ip = clientIp(req);
   if (ip === null) {
     if (!warnedMissingForwardedFor) {
       warnedMissingForwardedFor = true;
@@ -91,7 +91,14 @@ function maybeRateLimitApiV1(req: NextRequest): NextResponse | null {
   );
 }
 
-function firstForwardedIp(req: NextRequest): string | null {
+function clientIp(req: NextRequest): string | null {
+  // Prefer single-hop headers supplied by the deployment edge over
+  // X-Forwarded-For, which may contain a caller-controlled leftmost value
+  // in local/proxy chains.
+  for (const headerName of ["x-real-ip", "cf-connecting-ip", "x-vercel-forwarded-for"]) {
+    const directIp = req.headers.get(headerName)?.trim();
+    if (directIp !== undefined && directIp.length > 0) return directIp;
+  }
   const header = req.headers.get("x-forwarded-for");
   const ip = header?.split(",")[0]?.trim();
   return ip === undefined || ip.length === 0 ? null : ip;

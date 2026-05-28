@@ -138,6 +138,31 @@ describe("runReviewWorker", () => {
     expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
   });
 
+  it("does not post or mark done when finding lifecycle persistence fails", async () => {
+    const deps = mkDeps({
+      recordFindingStatuses: vi.fn().mockRejectedValue(new Error("db 503")),
+    });
+    const outcome = await runReviewWorker("rev-1", "webhook", deps);
+    expect(outcome.kind).toBe("retried");
+    expect(deps.recordFindingStatuses).toHaveBeenCalledTimes(1);
+    expect(deps.postPRComment).not.toHaveBeenCalled();
+    expect(deps.setReviewComment).not.toHaveBeenCalled();
+    expect(deps.markReviewSucceeded).not.toHaveBeenCalled();
+    expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mark done when the posted comment pointer fails to persist", async () => {
+    const deps = mkDeps({
+      setReviewComment: vi.fn().mockRejectedValue(new Error("db 503")),
+    });
+    const outcome = await runReviewWorker("rev-1", "webhook", deps);
+    expect(outcome.kind).toBe("retried");
+    expect(deps.recordFindingStatuses).toHaveBeenCalledTimes(1);
+    expect(deps.postPRComment).toHaveBeenCalledTimes(1);
+    expect(deps.markReviewSucceeded).not.toHaveBeenCalled();
+    expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
+  });
+
   it("cron source may claim from pending, pending_retry, and in_progress", async () => {
     const deps = mkDeps({
       loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow({ processingStatus: "pending_retry" })),

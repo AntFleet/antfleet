@@ -29,6 +29,8 @@ export type ReviewJobRow = {
   expiresAt: Date;
 };
 
+export type ReviewJobInitialStatus = "billing_pending" | "queued";
+
 const JOB_SELECT = sql`
   job_id AS "jobId",
   installation_id AS "installationId",
@@ -61,10 +63,12 @@ export async function createReviewJob(
     sha: string | null;
     idempotencyKey: string | null;
     debitPaymentId: string | null;
+    initialStatus?: ReviewJobInitialStatus;
   },
 ): Promise<ReviewJobRow> {
   const jobId = nanoid(21);
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const status = args.initialStatus ?? "queued";
   const result = await q.execute(sql`
     INSERT INTO review_jobs (
       job_id, installation_id, wallet_address, repo_owner, repo_name,
@@ -72,7 +76,7 @@ export async function createReviewJob(
     ) VALUES (
       ${jobId}, ${args.installationId}, ${args.walletAddress.toLowerCase()},
       ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
-      ${args.idempotencyKey}, 'queued', ${args.debitPaymentId}, ${expiresAt}
+      ${args.idempotencyKey}, ${status}, ${args.debitPaymentId}, ${expiresAt}
     )
     RETURNING ${JOB_SELECT}
   `);
@@ -81,10 +85,32 @@ export async function createReviewJob(
   return normalizeRow(row);
 }
 
-export async function getReviewJob(
+export async function markJobQueued(q: Queryable, jobId: string): Promise<boolean> {
+  const result = await q.execute(sql`
+    UPDATE review_jobs
+    SET status = 'queued'
+    WHERE job_id = ${jobId} AND status = 'billing_pending'
+    RETURNING job_id
+  `);
+  return firstRow<{ job_id: string }>(result) !== null;
+}
+
+export async function markBillingJobFailed(
   q: Queryable,
   jobId: string,
-): Promise<ReviewJobRow | null> {
+  failureMode: string,
+  failureMessage: string,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET status = 'failed', failure_mode = ${failureMode},
+        failure_message = ${failureMessage}, completed_at = ${now}
+    WHERE job_id = ${jobId} AND status = 'billing_pending'
+  `);
+}
+
+export async function getReviewJob(q: Queryable, jobId: string): Promise<ReviewJobRow | null> {
   const result = await q.execute(sql`
     SELECT ${JOB_SELECT}
     FROM review_jobs
@@ -113,11 +139,7 @@ export async function findJobByIdempotencyKey(
 
 // State-machine transition: queued → running. Returns false if the row
 // is not in 'queued' (lost claim race or already running).
-export async function markJobRunning(
-  q: Queryable,
-  jobId: string,
-  now: Date,
-): Promise<boolean> {
+export async function markJobRunning(q: Queryable, jobId: string, now: Date): Promise<boolean> {
   const result = await q.execute(sql`
     UPDATE review_jobs
     SET status = 'running', started_at = ${now}
@@ -159,10 +181,7 @@ export async function markJobFailed(
 
 // Safety-net cron: find queued jobs older than threshold (orphan from
 // waitUntil not firing). Returns job_ids for re-trigger.
-export async function findStaleQueuedJobs(
-  q: Queryable,
-  olderThan: Date,
-): Promise<ReviewJobRow[]> {
+export async function findStaleQueuedJobs(q: Queryable, olderThan: Date): Promise<ReviewJobRow[]> {
   const result = await q.execute(sql`
     SELECT ${JOB_SELECT}
     FROM review_jobs
@@ -215,10 +234,7 @@ export async function linkRefundToJob(
 }
 
 // Purge result JSON for expired jobs (storage cleanup).
-export async function purgeExpiredJobResults(
-  q: Queryable,
-  now: Date,
-): Promise<number> {
+export async function purgeExpiredJobResults(q: Queryable, now: Date): Promise<number> {
   const result = await q.execute(sql`
     UPDATE review_jobs
     SET result = NULL

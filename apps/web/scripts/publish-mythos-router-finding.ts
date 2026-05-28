@@ -41,7 +41,7 @@ repository root. Sensitive files placed in subdirectories (e.g. \`apps/api/.env\
 \`packages/foo/.npmrc\`, \`services/web/Dockerfile\`) will not match and are
 misclassified as safe, bypassing block/confirmation guards.
 
-**Fix:** Use non-anchored prefix-boundary patterns, e.g. \`/(?:^|\\/)\.env(?:\\.|$)/i\` instead
+**Fix:** Use non-anchored prefix-boundary patterns, e.g. \`/(?:^|/)\\.env(?:\\.|$)/i\` instead
 of \`/^\\.env/i\`. *(src/security-policy.ts:16-27)*
 
 ---
@@ -94,7 +94,8 @@ const finding: NewAgentFinding = {
   agentName: "mythos-router",
   repoFullName: "thewaltero/mythos-router",
   benchRepoName: "bench-mythos-router",
-  title: "Security policy subdirectory bypass + 4 additional findings across provider and budget layers",
+  title:
+    "Security policy subdirectory bypass + 4 additional findings across provider and budget layers",
   severity: "high",
   summary: SUMMARY_MD,
   evidence: EVIDENCE_MD,

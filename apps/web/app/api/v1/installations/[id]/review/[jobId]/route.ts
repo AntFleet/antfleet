@@ -1,6 +1,8 @@
 // GET /api/v1/installations/{id}/review/{jobId} — poll for async review status.
 //
 // Wallet-binding auth: the caller must be the same wallet that created the job.
+// The challenge id and signature are sent in headers so wallet proofs do not
+// leak through URL logs, browser history, or intermediary query capture.
 // Returns 404 on both "job not found" and "wallet mismatch" to prevent
 // enumeration via timing or response differentiation.
 
@@ -55,7 +57,10 @@ export async function GET(
 }
 
 export function OPTIONS() {
-  return optionsResponse();
+  return optionsResponse(
+    "GET, OPTIONS",
+    "Content-Type, X-AntFleet-Challenge-Id, X-AntFleet-Signature",
+  );
 }
 
 export async function handlePollRequest(
@@ -65,16 +70,15 @@ export async function handlePollRequest(
 ) {
   try {
     const { id, jobId } = await ctx.params;
-    const url = new URL(req.url);
-    const challengeId = url.searchParams.get("challenge_id");
-    const signature = url.searchParams.get("signature");
+    const challengeId = req.headers.get("x-antfleet-challenge-id");
+    const signature = req.headers.get("x-antfleet-signature");
 
     const parsed = querySchema.safeParse({ challenge_id: challengeId, signature });
     if (!parsed.success) {
       return jsonError(400, "invalid_input", parsed.error.issues[0]?.message ?? "bad request");
     }
 
-    // Authenticate: same EIP-191 flow as POST, but via query params for GET
+    // Authenticate: same EIP-191 flow as POST, but via headers for GET.
     const install = await deps.loadInstallation(id);
     if (install === null || install.walletAddress === null) {
       return jsonError(404, "not_found", "job not found");
