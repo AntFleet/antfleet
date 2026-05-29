@@ -69,26 +69,14 @@ const JUDGE_TOOL_SCHEMA = {
 };
 
 export type AbsorbedInlineDeps = {
-  getPrDiff: (args: {
-    owner: string;
-    repo: string;
-    pullNumber: number;
-  }) => Promise<string>;
+  getPrDiff: (args: { owner: string; repo: string; pullNumber: number }) => Promise<string>;
   listRecentCommits: (args: {
     owner: string;
     repo: string;
     since: string; // ISO 8601
   }) => Promise<Array<{ sha: string; message: string; date: string }>>;
-  getCommitDiff: (args: {
-    owner: string;
-    repo: string;
-    sha: string;
-  }) => Promise<string>;
-  getCommitFiles: (args: {
-    owner: string;
-    repo: string;
-    sha: string;
-  }) => Promise<string[]>;
+  getCommitDiff: (args: { owner: string; repo: string; sha: string }) => Promise<string>;
+  getCommitFiles: (args: { owner: string; repo: string; sha: string }) => Promise<string[]>;
   judgeEquivalence: (args: {
     prTitle: string;
     prDiff: string;
@@ -309,7 +297,6 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
 
   return {
     getPrDiff: async ({ owner, repo, pullNumber }) => {
-
       const resp = await octokit.rest.pulls.get({
         owner,
         repo,
@@ -322,7 +309,6 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
     },
 
     listRecentCommits: async ({ owner, repo, since }) => {
-
       const resp = await octokit.rest.repos.listCommits({
         owner,
         repo,
@@ -337,7 +323,6 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
     },
 
     getCommitDiff: async ({ owner, repo, sha }) => {
-
       const resp = await octokit.rest.repos.getCommit({
         owner,
         repo,
@@ -348,7 +333,6 @@ export function realAbsorbedInlineDeps(): AbsorbedInlineDeps {
     },
 
     getCommitFiles: async ({ owner, repo, sha }) => {
-
       const resp = await octokit.rest.repos.getCommit({
         owner,
         repo,

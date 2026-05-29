@@ -91,7 +91,5 @@ Full table + methodology: ${pageUrl}`,
 Scorecard archive: antfleet.dev/scorecard`,
   ];
 
-  return tweets
-    .map((t, i) => `--- tweet ${i + 1} of 5 ---\n${t}`)
-    .join("\n\n");
+  return tweets.map((t, i) => `--- tweet ${i + 1} of 5 ---\n${t}`).join("\n\n");
 }

@@ -27,31 +27,37 @@ export default async function Image(): Promise<ImageResponse> {
   }
 
   return new ImageResponse(
-    (
+    <div
+      style={{
+        width: 1200,
+        height: 630,
+        background: BG,
+        color: INK,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: SANS,
+      }}
+    >
+      <div style={{ display: "flex", fontSize: 72, fontWeight: 600, marginBottom: 24 }}>
+        AntFleet AI Scorecard
+      </div>
       <div
         style={{
-          width: 1200,
-          height: 630,
-          background: BG,
-          color: INK,
           display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: SANS,
+          fontFamily: MONO,
+          fontSize: 28,
+          color: INK_MUTED,
+          marginBottom: 48,
         }}
       >
-        <div style={{ display: "flex", fontSize: 72, fontWeight: 600, marginBottom: 24 }}>
-          AntFleet AI Scorecard
-        </div>
-        <div style={{ display: "flex", fontFamily: MONO, fontSize: 28, color: INK_MUTED, marginBottom: 48 }}>
-          {`Weekly provider comparison${cumulativeReviews > 0 ? ` · ${cumulativeReviews} reviews · ${cumulativeFindings} findings` : ""}`}
-        </div>
-        <div style={{ display: "flex", fontFamily: MONO, fontSize: 24, color: INK_MUTED }}>
-          antfleet.dev/scorecard
-        </div>
+        {`Weekly provider comparison${cumulativeReviews > 0 ? ` · ${cumulativeReviews} reviews · ${cumulativeFindings} findings` : ""}`}
       </div>
-    ),
+      <div style={{ display: "flex", fontFamily: MONO, fontSize: 24, color: INK_MUTED }}>
+        antfleet.dev/scorecard
+      </div>
+    </div>,
     { width: 1200, height: 630 },
   );
 }

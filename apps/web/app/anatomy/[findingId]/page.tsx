@@ -148,9 +148,7 @@ function Hero({ bundle, now }: { bundle: BundleType; now: Date }) {
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <Badge>{bundle.severity}</Badge>
           <Badge>{bundle.category}</Badge>
-          {bundle.closureSha !== null && (
-            <Badge>closed in {shortenSha(bundle.closureSha)}</Badge>
-          )}
+          {bundle.closureSha !== null && <Badge>closed in {shortenSha(bundle.closureSha)}</Badge>}
         </div>
         <div className="mt-6 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>repo {shortenRepoHash(bundle.repoHash)}</span>
@@ -170,13 +168,7 @@ function Hero({ bundle, now }: { bundle: BundleType; now: Date }) {
   );
 }
 
-function VulnerableCode({
-  bundle,
-  hunks,
-}: {
-  bundle: BundleType;
-  hunks: HunksType;
-}) {
+function VulnerableCode({ bundle, hunks }: { bundle: BundleType; hunks: HunksType }) {
   return (
     <section>
       <ContentWrap>
@@ -189,10 +181,7 @@ function VulnerableCode({
           </p>
         )}
         {hunks?.vulnerable ? (
-          <CodeHunk
-            content={hunks.vulnerable.content}
-            startLineNumber={bundle.source.lineStart}
-          />
+          <CodeHunk content={hunks.vulnerable.content} startLineNumber={bundle.source.lineStart} />
         ) : (
           <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] p-5">
             <p className="text-sm text-[var(--color-ink-muted)]">
@@ -303,7 +292,8 @@ function Agreement({ bundle }: { bundle: BundleType }) {
             {shaShort !== null && (
               <>
                 {" "}
-                Closed in <code className="font-mono text-xs text-[var(--color-ink)]">{shaShort}</code>.
+                Closed in{" "}
+                <code className="font-mono text-xs text-[var(--color-ink)]">{shaShort}</code>.
               </>
             )}
           </p>
@@ -313,13 +303,7 @@ function Agreement({ bundle }: { bundle: BundleType }) {
   );
 }
 
-function FixCode({
-  bundle,
-  hunks,
-}: {
-  bundle: BundleType;
-  hunks: HunksType;
-}) {
+function FixCode({ bundle, hunks }: { bundle: BundleType; hunks: HunksType }) {
   return (
     <section>
       <ContentWrap>
@@ -327,10 +311,7 @@ function FixCode({
           The fix
         </h2>
         {hunks?.fix ? (
-          <CodeHunk
-            content={hunks.fix.content}
-            startLineNumber={bundle.source.lineStart}
-          />
+          <CodeHunk content={hunks.fix.content} startLineNumber={bundle.source.lineStart} />
         ) : (
           <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] p-5">
             <p className="text-sm text-[var(--color-ink-muted)]">
@@ -361,9 +342,7 @@ function ClosureMetadata({ bundle, now }: { bundle: BundleType; now: Date }) {
           Closure
         </h2>
         <div className="flex flex-col gap-3 font-mono text-xs text-[var(--color-ink-muted)]">
-          {bundle.closedAt !== null && (
-            <p>Closed {formatRelativeTime(now, bundle.closedAt)}</p>
-          )}
+          {bundle.closedAt !== null && <p>Closed {formatRelativeTime(now, bundle.closedAt)}</p>}
           {bundle.closureSha !== null && (
             <p>
               SHA: <span className="text-[var(--color-ink)]">{bundle.closureSha}</span>

@@ -3,10 +3,7 @@ import { db } from "@/db/index";
 import { reviews } from "@/db/schema";
 import { shortenReviewId } from "@/lib/short-id";
 
-export type DisagreementCategory =
-  | "solo_anthropic"
-  | "solo_openai"
-  | "mismatched_classification";
+export type DisagreementCategory = "solo_anthropic" | "solo_openai" | "mismatched_classification";
 
 export type ProviderFinding = {
   provider: string;
@@ -132,10 +129,12 @@ export function classifyDisagreements(
   return rows;
 }
 
-export async function loadDisagreementsPage(args: {
-  limit: number;
-  before?: Date;
-}): Promise<{ rows: DisagreementRow[]; hasMore: boolean; totalCount: number; lastUpdatedAt: Date | null }> {
+export async function loadDisagreementsPage(args: { limit: number; before?: Date }): Promise<{
+  rows: DisagreementRow[];
+  hasMore: boolean;
+  totalCount: number;
+  lastUpdatedAt: Date | null;
+}> {
   const allPublicReviews = await loadPublicReviewSources();
   const allRows = flattenDisagreements(allPublicReviews);
   const lastUpdatedAt = allRows.reduce<Date | null>(
@@ -194,10 +193,7 @@ export async function loadDisagreementDetail(id: string): Promise<DisagreementRo
 export function redactSecrets(text: string): string {
   return text
     .replace(/AKIA[0-9A-Z]{16}/g, "[REDACTED]")
-    .replace(
-      /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
-      "[REDACTED]",
-    )
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED]")
     .replace(
       /\b(key|token|secret|password|api_key)(\s*[:=]\s*["']?)([A-Za-z0-9+/_=-]{20,})(["']?)/gi,
       "$1$2[REDACTED]$4",
@@ -346,7 +342,8 @@ function parseProviderFindings(providerResponses: unknown): ProviderFindings | n
     if (typeof name !== "string" || name.length === 0) continue;
 
     const output = providerEntry["output"];
-    const rawFindings = isRecord(output) && Array.isArray(output["findings"]) ? output["findings"] : [];
+    const rawFindings =
+      isRecord(output) && Array.isArray(output["findings"]) ? output["findings"] : [];
     const findings: IndexedFinding[] = [];
     for (let index = 0; index < rawFindings.length; index += 1) {
       const parsed = parseFinding(name, rawFindings[index], index);
@@ -358,7 +355,11 @@ function parseProviderFindings(providerResponses: unknown): ProviderFindings | n
   return providerFindings;
 }
 
-function parseFinding(provider: string, value: unknown, originalIndex: number): IndexedFinding | null {
+function parseFinding(
+  provider: string,
+  value: unknown,
+  originalIndex: number,
+): IndexedFinding | null {
   if (!isRecord(value)) return null;
   return {
     provider,
@@ -412,7 +413,10 @@ function selectComparisonProviders(providerFindings: ProviderFindings): [string,
 }
 
 function sameClassification(a: ProviderFinding, b: ProviderFinding): boolean {
-  return normalize(a.severity) === normalize(b.severity) && normalize(a.category) === normalize(b.category);
+  return (
+    normalize(a.severity) === normalize(b.severity) &&
+    normalize(a.category) === normalize(b.category)
+  );
 }
 
 function normalize(value: string): string {
@@ -462,7 +466,10 @@ function stripIndex(finding: IndexedFinding): ProviderFinding {
   };
 }
 
-function findIndexedFinding(candidates: IndexedFinding[], target: ProviderFinding): IndexedFinding | null {
+function findIndexedFinding(
+  candidates: IndexedFinding[],
+  target: ProviderFinding,
+): IndexedFinding | null {
   return (
     candidates.find(
       (candidate) =>
@@ -492,7 +499,10 @@ function findCounterpartFinding(
   return null;
 }
 
-async function loadPublicReviewSources(args?: { before?: Date; limit?: number }): Promise<ReviewSource[]> {
+async function loadPublicReviewSources(args?: {
+  before?: Date;
+  limit?: number;
+}): Promise<ReviewSource[]> {
   const where =
     args?.before === undefined
       ? and(eq(reviews.publicReceipt, true), sql`${reviews.providerResponses} IS NOT NULL`)
@@ -532,7 +542,9 @@ function flattenDisagreements(reviewsToClassify: ReviewSource[]): DisagreementRo
   );
 }
 
-function parseDisagreementId(id: string): { reviewIdShort: string; provider: string; findingIndex: number } | null {
+function parseDisagreementId(
+  id: string,
+): { reviewIdShort: string; provider: string; findingIndex: number } | null {
   // Review short IDs are always 8 hex chars (UUID prefix). Provider names may
   // contain hyphens (e.g., "google-ai"), so we anchor on the known prefix
   // length and the trailing -\d+ to extract the provider segment.
@@ -541,7 +553,8 @@ function parseDisagreementId(id: string): { reviewIdShort: string; provider: str
   const reviewIdShort = match[1];
   const provider = match[2];
   const findingIndexText = match[3];
-  if (reviewIdShort === undefined || provider === undefined || findingIndexText === undefined) return null;
+  if (reviewIdShort === undefined || provider === undefined || findingIndexText === undefined)
+    return null;
   return {
     reviewIdShort,
     provider,

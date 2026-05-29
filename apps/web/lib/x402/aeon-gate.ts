@@ -55,9 +55,9 @@ export function mintAeonContextToken(args: {
   return `${signed}:${hmac}`;
 }
 
-function parseToken(token: string):
-  | { kid: string; sessionId: string; timestamp: number; hmac: string }
-  | null {
+function parseToken(
+  token: string,
+): { kid: string; sessionId: string; timestamp: number; hmac: string } | null {
   const parts = token.split(":");
   if (parts.length !== 4) return null;
   const [kid, sessionId, timestampRaw, hmac] = parts;

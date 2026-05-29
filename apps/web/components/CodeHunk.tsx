@@ -33,7 +33,9 @@ export function CodeHunk({ content, startLineNumber = 1, isDiff = false }: CodeH
               <span className="select-none w-12 shrink-0 text-right pr-3 text-[var(--color-ink-subtle)] border-r border-[var(--color-line)] py-px px-1">
                 {lineNum}
               </span>
-              <span className="whitespace-pre pl-3 py-px text-[var(--color-ink-muted)]">{line}</span>
+              <span className="whitespace-pre pl-3 py-px text-[var(--color-ink-muted)]">
+                {line}
+              </span>
             </div>
           );
         })}

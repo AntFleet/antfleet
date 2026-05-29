@@ -29,10 +29,7 @@ if (PROD_PATTERNS.some((p) => host.includes(p))) {
   process.exit(1);
 }
 
-const sqlFile = readFileSync(
-  join(selfDir, "../db/migrations/0024_review_jobs.sql"),
-  "utf-8",
-);
+const sqlFile = readFileSync(join(selfDir, "../db/migrations/0024_review_jobs.sql"), "utf-8");
 
 const dryRun = !process.argv.includes("--apply");
 

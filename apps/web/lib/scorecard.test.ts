@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  aggregatePayload,
-  parseWeekEndingDate,
-  weekEndingSunday,
-} from "./scorecard";
+import { aggregatePayload, parseWeekEndingDate, weekEndingSunday } from "./scorecard";
 
 // ---------------------------------------------------------------------------
 // Date helpers

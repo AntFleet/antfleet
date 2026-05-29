@@ -1,5 +1,9 @@
 import { ImageResponse } from "next/og";
-import { loadDisagreementDetail, redactSecrets, type DisagreementCategory } from "@/lib/disagreements";
+import {
+  loadDisagreementDetail,
+  redactSecrets,
+  type DisagreementCategory,
+} from "@/lib/disagreements";
 import { shortenRepoHash } from "@/lib/short-id";
 
 export const runtime = "nodejs";

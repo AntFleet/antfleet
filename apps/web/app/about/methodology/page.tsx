@@ -20,9 +20,9 @@ export default function DisagreementMethodologyPage() {
           </h1>
           <p className="mt-8 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
             Every PR AntFleet reviews is read by two frontier models independently. The unanimous
-            gate posts only findings both agree on. Everything else &mdash; solo flags from one model,
-            severity mismatches, classification conflicts &mdash; is filtered out. This page explains
-            how we classify and surface those filtered findings.
+            gate posts only findings both agree on. Everything else &mdash; solo flags from one
+            model, severity mismatches, classification conflicts &mdash; is filtered out. This page
+            explains how we classify and surface those filtered findings.
           </p>
         </ContentWrap>
       </section>
@@ -67,8 +67,8 @@ export default function DisagreementMethodologyPage() {
       <SectionDivider />
       <MethodologySection title="AI Scorecard methodology">
         <p>
-          Every week, AntFleet publishes a scorecard comparing the two frontier models that
-          power the unanimous gate. Scorecard data is computed from the same{" "}
+          Every week, AntFleet publishes a scorecard comparing the two frontier models that power
+          the unanimous gate. Scorecard data is computed from the same{" "}
           <code className="font-mono text-xs text-[var(--color-ink)]">
             reviews.provider_responses
           </code>{" "}
@@ -88,8 +88,8 @@ export default function DisagreementMethodologyPage() {
         <p>
           <strong className="text-[var(--color-ink)]">Immutability:</strong> once a weekly snapshot
           is published, it never changes &mdash; even if underlying reviews are backfilled, opt-in
-          status changes, or finding_status rows are updated. Credibility requires stable
-          historical numbers.
+          status changes, or finding_status rows are updated. Credibility requires stable historical
+          numbers.
         </p>
         <p>
           <strong className="text-[var(--color-ink)]">Small-N caveat:</strong> with the current
@@ -105,8 +105,7 @@ export default function DisagreementMethodologyPage() {
           <code className="font-mono text-xs text-[var(--color-ink)]">cost_estimated_usd</code>.
         </p>
         <p>
-          <strong className="text-[var(--color-ink)]">Reproducibility:</strong> the aggregator
-          at{" "}
+          <strong className="text-[var(--color-ink)]">Reproducibility:</strong> the aggregator at{" "}
           <code className="font-mono text-xs text-[var(--color-ink)]">
             apps/web/lib/scorecard.ts
           </code>{" "}

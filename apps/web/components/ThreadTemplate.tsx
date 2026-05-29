@@ -31,16 +31,10 @@ function buildThread(bundle: AnatomyBundle, pageUrl: string): string[] {
   );
 
   const opusReasoning = bundle.reasoning.anthropic?.reasoning ?? "Output unavailable";
-  const tweet3 = truncate(
-    `What Opus saw:\n\n"${redactSecrets(opusReasoning)}"`,
-    280,
-  );
+  const tweet3 = truncate(`What Opus saw:\n\n"${redactSecrets(opusReasoning)}"`, 280);
 
   const gptReasoning = bundle.reasoning.openai?.reasoning ?? "Output unavailable";
-  const tweet4 = truncate(
-    `What GPT-5 saw:\n\n"${redactSecrets(gptReasoning)}"`,
-    280,
-  );
+  const tweet4 = truncate(`What GPT-5 saw:\n\n"${redactSecrets(gptReasoning)}"`, 280);
 
   const tweet5 =
     "Both flagged the same line range. AntFleet's unanimous gate fired \u2014 the finding posted on the PR.";
@@ -53,10 +47,7 @@ function buildThread(bundle: AnatomyBundle, pageUrl: string): string[] {
   const tweet7 =
     "AntFleet reviews every PR with two frontier models. Only unanimous findings post.";
 
-  const tweet8 = truncate(
-    `Full anatomy + reasoning + diffs:\n${pageUrl}`,
-    280,
-  );
+  const tweet8 = truncate(`Full anatomy + reasoning + diffs:\n${pageUrl}`, 280);
 
   return [tweet1, tweet2, tweet3, tweet4, tweet5, tweet6, tweet7, tweet8];
 }
@@ -66,11 +57,16 @@ export function ThreadTemplate({ bundle, pageUrl }: ThreadTemplateProps) {
   const tweets = buildThread(bundle, pageUrl);
 
   const handleCopy = useCallback(() => {
-    const full = tweets.map((t, i) => `--- tweet ${i + 1} of ${tweets.length} ---\n${t}`).join("\n\n");
-    navigator.clipboard.writeText(full).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
+    const full = tweets
+      .map((t, i) => `--- tweet ${i + 1} of ${tweets.length} ---\n${t}`)
+      .join("\n\n");
+    navigator.clipboard
+      .writeText(full)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch(() => {});
   }, [tweets]);
 
   return (

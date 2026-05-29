@@ -283,7 +283,9 @@ function Header({
         </div>
         {(() => {
           const repos = Array.from(
-            new Set(detail.findings.map((f) => f.repoFullName).filter((r): r is string => r !== null)),
+            new Set(
+              detail.findings.map((f) => f.repoFullName).filter((r): r is string => r !== null),
+            ),
           );
           if (repos.length === 0) return null;
           return (

@@ -32,7 +32,10 @@ function finding(overrides: FixtureFinding = {}): Required<FixtureFinding> {
   };
 }
 
-function providerResponses(args: { anthropic?: FixtureFinding[]; openai?: FixtureFinding[] }): unknown {
+function providerResponses(args: {
+  anthropic?: FixtureFinding[];
+  openai?: FixtureFinding[];
+}): unknown {
   return {
     perProvider: [
       {
@@ -51,7 +54,10 @@ function providerResponses(args: { anthropic?: FixtureFinding[]; openai?: Fixtur
   };
 }
 
-function classify(providerResponsesValue: unknown, agreementDecision: unknown = {}): DisagreementRow[] {
+function classify(
+  providerResponsesValue: unknown,
+  agreementDecision: unknown = {},
+): DisagreementRow[] {
   return classifyDisagreements(
     providerResponsesValue,
     agreementDecision,

@@ -3,11 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { logError, logInfo, logWarn } from "@/lib/log";
 import { insertScorecardSnapshot } from "@/db/queries";
-import {
-  computeScorecardForWeek,
-  weekEndingSunday,
-  GENERATOR_VERSION,
-} from "@/lib/scorecard";
+import { computeScorecardForWeek, weekEndingSunday, GENERATOR_VERSION } from "@/lib/scorecard";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;

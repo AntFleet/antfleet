@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  shortenRepoHash,
-  shortenReviewId,
-  shortenSha,
-} from "./short-id";
+import { shortenRepoHash, shortenReviewId, shortenSha } from "./short-id";
 
 describe("shortenSha", () => {
   it("returns the git-standard 7-character short SHA", () => {
@@ -25,9 +21,7 @@ describe("shortenReviewId", () => {
 describe("shortenRepoHash", () => {
   it("returns the first 8 characters of a SHA-256 repo hash", () => {
     expect(
-      shortenRepoHash(
-        "a3f2c4b1d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5",
-      ),
+      shortenRepoHash("a3f2c4b1d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5"),
     ).toBe("a3f2c4b1");
   });
 });

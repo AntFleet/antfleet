@@ -77,7 +77,8 @@ export default async function ScorecardIndexPage({
         <ContentWrap>
           {rows.length === 0 ? (
             <p className="text-sm text-[var(--color-ink-muted)]">
-              No scorecards published yet. The first snapshot will appear after the weekly cron fires.
+              No scorecards published yet. The first snapshot will appear after the weekly cron
+              fires.
             </p>
           ) : (
             <div className="flex flex-col gap-0">
@@ -112,9 +113,7 @@ function ScorecardRow({ payload, date }: { payload: ScorecardPayload; date: stri
       className="flex items-center justify-between gap-4 py-4 border-b border-[var(--color-line)] hover:bg-[var(--color-bg-elevated)] transition-colors px-2 -mx-2 rounded"
     >
       <div>
-        <span className="font-mono text-sm text-[var(--color-ink)]">
-          Week of {payload.weekEnd}
-        </span>
+        <span className="font-mono text-sm text-[var(--color-ink)]">Week of {payload.weekEnd}</span>
       </div>
       <div className="flex items-center gap-6 text-xs font-mono text-[var(--color-ink-muted)]">
         <span>{payload.sample.reviewsAnalyzed} reviews</span>

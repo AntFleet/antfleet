@@ -23,11 +23,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function ScorecardWeekPage({
-  params,
-}: {
-  params: Promise<RouteParams>;
-}) {
+export default async function ScorecardWeekPage({ params }: { params: Promise<RouteParams> }) {
   const { "yyyy-mm-dd": dateStr } = await params;
   if (parseWeekEndingDate(dateStr) === null) notFound();
 
@@ -63,8 +59,8 @@ export default async function ScorecardWeekPage({
             Week of {p.weekEnd}
           </h1>
           <p className="mt-4 text-sm text-[var(--color-ink-muted)]">
-            {p.sample.reviewsAnalyzed} reviews analyzed &middot;{" "}
-            {p.sample.findingsPosted} findings posted
+            {p.sample.reviewsAnalyzed} reviews analyzed &middot; {p.sample.findingsPosted} findings
+            posted
           </p>
           <p className="mt-2 text-xs font-mono text-[var(--color-ink-subtle)]">
             {p.weekStart} &rarr; {p.weekEnd} &middot; public-receipt reviews only
@@ -237,8 +233,7 @@ function CategoryList({ categories }: { categories: Array<{ category: string; co
     <ul className="flex flex-col gap-1.5">
       {categories.map((c) => (
         <li key={c.category} className="text-sm font-mono text-[var(--color-ink-muted)]">
-          {c.category}{" "}
-          <span className="text-[var(--color-ink-subtle)]">({c.count})</span>
+          {c.category} <span className="text-[var(--color-ink-subtle)]">({c.count})</span>
         </li>
       ))}
     </ul>

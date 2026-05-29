@@ -57,19 +57,16 @@ export default async function DigestListingPage() {
           </h1>
 
           <p className="mt-6 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-            Each digest covers one week of AntFleet activity — reviews run, findings agreed, receipts
-            closed, and the top closures by severity. Click any week to see the full breakdown.
+            Each digest covers one week of AntFleet activity — reviews run, findings agreed,
+            receipts closed, and the top closures by severity. Click any week to see the full
+            breakdown.
           </p>
         </ContentWrap>
       </section>
 
       <SectionDivider />
 
-      {weeks.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <WeeksList weeks={weeks} />
-      )}
+      {weeks.length === 0 ? <EmptyState /> : <WeeksList weeks={weeks} />}
     </>
   );
 }
@@ -114,9 +111,7 @@ function WeekRow({ week }: { week: DigestWeekRow }) {
       className="group -mx-3 flex flex-col gap-3 rounded-md px-3 py-5 transition-colors hover:bg-[var(--color-bg-elevated)] sm:flex-row sm:items-start sm:gap-6"
     >
       <div className="flex flex-wrap items-center gap-2 sm:w-36 sm:shrink-0">
-        <span className="font-mono text-xs text-[var(--color-ink)]">
-          Week of {label}
-        </span>
+        <span className="font-mono text-xs text-[var(--color-ink)]">Week of {label}</span>
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm leading-snug text-[var(--color-ink)] underline-offset-2 group-hover:underline">

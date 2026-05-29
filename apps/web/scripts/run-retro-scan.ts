@@ -86,22 +86,58 @@ function parseArgs(): CliArgs {
 // ─── file filtering (mirrors github-files.ts constants) ───────────────────────
 
 const REVIEW_EXTENSIONS = new Set([
-  ".cjs", ".go", ".js", ".json", ".jsx", ".md", ".mdx", ".mjs",
-  ".py", ".rs", ".sh", ".sol", ".toml", ".ts", ".tsx", ".yaml", ".yml",
+  ".cjs",
+  ".go",
+  ".js",
+  ".json",
+  ".jsx",
+  ".md",
+  ".mdx",
+  ".mjs",
+  ".py",
+  ".rs",
+  ".sh",
+  ".sol",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".yaml",
+  ".yml",
 ]);
 
 const REVIEW_BLOCKLIST_BASENAMES = new Set([
-  "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb",
-  "Cargo.lock", "go.sum", "Gemfile.lock", "composer.lock",
-  "LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING",
-  ".gitignore", ".npmignore", ".prettierignore",
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "yarn.lock",
+  "bun.lockb",
+  "Cargo.lock",
+  "go.sum",
+  "Gemfile.lock",
+  "composer.lock",
+  "LICENSE",
+  "LICENSE.md",
+  "LICENSE.txt",
+  "COPYING",
+  ".gitignore",
+  ".npmignore",
+  ".prettierignore",
 ]);
 
 const REVIEW_BLOCKLIST_SUFFIXES = [
-  "/node_modules/", "/dist/", "/build/", "/coverage/",
-  "/.next/", "/.vercel/", "/out/",
-  ".gen.ts", ".generated.ts", ".generated.js", ".min.js", ".min.css",
-  ".pb.go", ".pb.ts",
+  "/node_modules/",
+  "/dist/",
+  "/build/",
+  "/coverage/",
+  "/.next/",
+  "/.vercel/",
+  "/out/",
+  ".gen.ts",
+  ".generated.ts",
+  ".generated.js",
+  ".min.js",
+  ".min.css",
+  ".pb.go",
+  ".pb.ts",
 ];
 
 const MAX_FILE_BYTES = 80 * 1024;

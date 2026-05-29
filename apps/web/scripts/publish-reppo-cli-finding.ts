@@ -63,7 +63,8 @@ const finding: NewAgentFinding = {
   agentName: "Reppo",
   repoFullName: "Reppo-Labs/reppo-cli",
   benchRepoName: "bench-reppo-cli",
-  title: "README auth table misrepresents register-agent credential requirements (2 docs-gap findings)",
+  title:
+    "README auth table misrepresents register-agent credential requirements (2 docs-gap findings)",
   severity: "medium",
   summary: SUMMARY_MD,
   evidence: EVIDENCE_MD,

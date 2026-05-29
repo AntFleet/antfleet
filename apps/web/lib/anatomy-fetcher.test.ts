@@ -89,7 +89,8 @@ describe("fetchHunkPair", () => {
   });
 
   it("redacts secrets in returned content", async () => {
-    const secretContent = "line1\nline2\nline3\nline4\nconst key = 'AKIAIOSFODNN7EXAMPLE1'\nline6\nline7\nline8";
+    const secretContent =
+      "line1\nline2\nline3\nline4\nconst key = 'AKIAIOSFODNN7EXAMPLE1'\nline6\nline7\nline8";
     const octokit = makeOctokit({ aaa111: secretContent, bbb222: secretContent });
     const factory = vi.fn().mockResolvedValue(octokit);
 

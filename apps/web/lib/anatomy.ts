@@ -41,9 +41,7 @@ export type AnatomyBundle = {
   };
 };
 
-export async function loadAnatomyBundle(
-  findingId: string,
-): Promise<AnatomyBundle | null> {
+export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundle | null> {
   const rows = await db
     .select({
       findingId: findingStatus.findingId,

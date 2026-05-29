@@ -17,9 +17,7 @@ export default async function ImpactPage() {
   const crossRepo = await loadCrossRepoReceipts(100);
   const now = new Date();
 
-  const uniqueRepos = new Set(
-    crossRepo.recent.map((r) => `${r.upstreamOwner}/${r.upstreamRepo}`),
-  );
+  const uniqueRepos = new Set(crossRepo.recent.map((r) => `${r.upstreamOwner}/${r.upstreamRepo}`));
 
   return (
     <>
@@ -34,9 +32,9 @@ export default async function ImpactPage() {
           </h1>
 
           <p className="mt-6 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-            Every row below is a pull request merged on a repo AntFleet doesn&apos;t own. The upstream
-            maintainer reviewed the fix independently and accepted it. This is the highest-trust receipt
-            class — a third party confirmed the bug was real.
+            Every row below is a pull request merged on a repo AntFleet doesn&apos;t own. The
+            upstream maintainer reviewed the fix independently and accepted it. This is the
+            highest-trust receipt class — a third party confirmed the bug was real.
           </p>
 
           {crossRepo.total > 0 && (
@@ -170,8 +168,8 @@ function EmptyState() {
         <div className="rounded-md border border-dashed border-[var(--color-line-strong)] p-8 text-center">
           <p className="text-sm text-[var(--color-ink)] mb-2">No upstream fixes yet.</p>
           <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed max-w-md mx-auto">
-            When AntFleet finds a bug on a repo it doesn&apos;t own and the maintainer merges the fix,
-            it appears here.
+            When AntFleet finds a bug on a repo it doesn&apos;t own and the maintainer merges the
+            fix, it appears here.
           </p>
         </div>
       </ContentWrap>

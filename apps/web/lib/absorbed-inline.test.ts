@@ -73,9 +73,11 @@ describe("detectAbsorbedInline", () => {
 
   it("returns absorbed=false when no candidates have overlapping files", async () => {
     const deps = makeDeps({
-      listRecentCommits: vi.fn().mockResolvedValue([
-        { sha: "abc123", message: "update readme", date: "2026-05-19T00:00:00Z" },
-      ]),
+      listRecentCommits: vi
+        .fn()
+        .mockResolvedValue([
+          { sha: "abc123", message: "update readme", date: "2026-05-19T00:00:00Z" },
+        ]),
       getCommitFiles: vi.fn().mockResolvedValue(["README.md"]),
     });
     const result = await detectAbsorbedInline(PR_BASE, deps);
@@ -90,9 +92,11 @@ describe("detectAbsorbedInline", () => {
       reasoning: "Same fix applied inline",
     });
     const deps = makeDeps({
-      listRecentCommits: vi.fn().mockResolvedValue([
-        { sha: "bab1e4b123", message: "add check: schema", date: "2026-05-19T00:00:00Z" },
-      ]),
+      listRecentCommits: vi
+        .fn()
+        .mockResolvedValue([
+          { sha: "bab1e4b123", message: "add check: schema", date: "2026-05-19T00:00:00Z" },
+        ]),
       getCommitFiles: vi.fn().mockResolvedValue(["skills/on-chain-monitor/SKILL.md"]),
       getCommitDiff: vi.fn().mockResolvedValue(MATCHING_COMMIT_DIFF),
       judgeEquivalence: judge,
@@ -108,9 +112,11 @@ describe("detectAbsorbedInline", () => {
 
   it("returns absorbed=false when judge says equivalent but confidence is below threshold", async () => {
     const deps = makeDeps({
-      listRecentCommits: vi.fn().mockResolvedValue([
-        { sha: "lowconf", message: "maybe related", date: "2026-05-19T00:00:00Z" },
-      ]),
+      listRecentCommits: vi
+        .fn()
+        .mockResolvedValue([
+          { sha: "lowconf", message: "maybe related", date: "2026-05-19T00:00:00Z" },
+        ]),
       getCommitFiles: vi.fn().mockResolvedValue(["skills/on-chain-monitor/SKILL.md"]),
       getCommitDiff: vi.fn().mockResolvedValue(MATCHING_COMMIT_DIFF),
       judgeEquivalence: vi.fn().mockResolvedValue({

@@ -140,9 +140,7 @@ describe("migration 0028 static shape", () => {
     expect(statements.join("\n")).toContain(
       "DROP CONSTRAINT IF EXISTS review_jobs_x402_settlement_status_check",
     );
-    expect(statements.filter((s) => /^ALTER TABLE review_jobs/i.test(s)).length).toBeGreaterThan(
-      0,
-    );
+    expect(statements.filter((s) => /^ALTER TABLE review_jobs/i.test(s)).length).toBeGreaterThan(0);
   });
 });
 
@@ -206,10 +204,14 @@ describeWithDocker("migration 0028 real Postgres apply", () => {
           ORDER BY column_name
         `,
       );
-      expect(Object.fromEntries(columnRows.map(([name, type, nullable, defaultValue]) => [
-        name,
-        { type, nullable, defaultValue },
-      ]))).toMatchObject({
+      expect(
+        Object.fromEntries(
+          columnRows.map(([name, type, nullable, defaultValue]) => [
+            name,
+            { type, nullable, defaultValue },
+          ]),
+        ),
+      ).toMatchObject({
         caller_wallet: { type: "text", nullable: "YES", defaultValue: "" },
         payment_rail: { type: "text", nullable: "NO", defaultValue: "'channel'::text" },
         x402_payment_payload: { type: "jsonb", nullable: "YES", defaultValue: "" },
@@ -228,10 +230,9 @@ describeWithDocker("migration 0028 real Postgres apply", () => {
           ORDER BY c.conname
         `,
       );
-      const constraints = Object.fromEntries(constraintRows.map(([name, definition]) => [
-        name,
-        definition,
-      ]));
+      const constraints = Object.fromEntries(
+        constraintRows.map(([name, definition]) => [name, definition]),
+      );
       expect(constraints["review_jobs_payment_rail_check"]).toContain("'x402'::text");
       expect(constraints["review_jobs_x402_settlement_status_check"]).toContain(
         "'settlement_failed'::text",

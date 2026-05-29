@@ -31,8 +31,24 @@ export async function fetchHunkPair(
   try {
     const octokit = await octokitFactory(args.installationId);
     const [vulnerable, fix] = await Promise.allSettled([
-      fetchFileSlice(octokit, args.owner, args.repo, args.file, args.prSha, args.lineStart, args.lineEnd),
-      fetchFileSlice(octokit, args.owner, args.repo, args.file, args.closureSha, args.lineStart, args.lineEnd),
+      fetchFileSlice(
+        octokit,
+        args.owner,
+        args.repo,
+        args.file,
+        args.prSha,
+        args.lineStart,
+        args.lineEnd,
+      ),
+      fetchFileSlice(
+        octokit,
+        args.owner,
+        args.repo,
+        args.file,
+        args.closureSha,
+        args.lineStart,
+        args.lineEnd,
+      ),
     ]);
 
     return {

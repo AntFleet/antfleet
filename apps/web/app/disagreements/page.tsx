@@ -94,11 +94,11 @@ function DisagreementsHero({ totalCount }: { totalCount: number }) {
         </div>
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-          Every PR AntFleet reviews is read by two frontier models in parallel. Only the
-          findings both agree on get posted. The findings they don&apos;t agree on &mdash; solo flags,
-          conflicting severity calls, classification mismatches &mdash; sit in our database, normally
-          invisible. They&apos;re here. We don&apos;t know which side is right; the unanimous gate
-          didn&apos;t fire. Decide for yourself.
+          Every PR AntFleet reviews is read by two frontier models in parallel. Only the findings
+          both agree on get posted. The findings they don&apos;t agree on &mdash; solo flags,
+          conflicting severity calls, classification mismatches &mdash; sit in our database,
+          normally invisible. They&apos;re here. We don&apos;t know which side is right; the
+          unanimous gate didn&apos;t fire. Decide for yourself.
         </p>
         <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
           See how AntFleet classifies reviewer conflicts in the{" "}

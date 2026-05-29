@@ -30,9 +30,7 @@ export default async function Image({
     if (bundle === null) return image(notFoundCard("anatomy"));
 
     const shaLabel =
-      bundle.closureSha !== null
-        ? `closed in ${shortenSha(bundle.closureSha)}`
-        : "open";
+      bundle.closureSha !== null ? `closed in ${shortenSha(bundle.closureSha)}` : "open";
 
     return image(
       <div style={cardStyle}>
