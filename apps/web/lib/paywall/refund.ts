@@ -15,7 +15,12 @@ type Queryable = Pick<typeof db, "execute">;
 
 // Allow-list of failure modes that trigger a refund. Explicit so new
 // failure modes default to non-refundable (safe for the operator).
-const REFUNDABLE_FAILURE_MODES = new Set(["provider_error", "timeout", "internal"]);
+const REFUNDABLE_FAILURE_MODES = new Set([
+  "provider_error",
+  "timeout",
+  "internal",
+  "cost_cap_exceeded",
+]);
 
 export function isRefundableFailureMode(failureMode: string): boolean {
   return REFUNDABLE_FAILURE_MODES.has(failureMode);
@@ -26,6 +31,7 @@ const SAFE_FAILURE_MESSAGES: Record<string, string> = {
   provider_error: "The review provider returned an error. Your channel has been refunded.",
   timeout: "The review timed out. Your channel has been refunded.",
   internal: "An internal error occurred. Your channel has been refunded.",
+  cost_cap_exceeded: "The review exceeded the inference cost cap. Your channel has been refunded.",
   user_input: "The review could not proceed due to invalid input.",
   validation: "Validation failed for the requested review.",
 };

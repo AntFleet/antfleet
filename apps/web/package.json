@@ -10,6 +10,7 @@
     "start": "next start",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "x402:smoke": "tsx scripts/x402-live-smoke.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push"
@@ -20,6 +21,9 @@
     "@neondatabase/serverless": "^0.10.4",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
+    "@x402/core": "2.13.0",
+    "@x402/evm": "2.13.0",
+    "@x402/express": "2.13.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.36.4",
     "nanoid": "^3.3.12",

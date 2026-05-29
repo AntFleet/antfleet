@@ -541,6 +541,15 @@ export const reviewJobs = pgTable(
     result: jsonb("result"),
     debitPaymentId: uuid("debit_payment_id").references(() => payments.id),
     refundPaymentId: uuid("refund_payment_id").references(() => payments.id),
+    callerWallet: text("caller_wallet"),
+    paymentRail: text("payment_rail").notNull().default("channel"),
+    x402PayTo: text("x402_pay_to"),
+    x402PaymentPayload: jsonb("x402_payment_payload"),
+    x402ValidAfter: timestamp("x402_valid_after", { withTimezone: true }),
+    x402ValidBefore: timestamp("x402_valid_before", { withTimezone: true }),
+    x402ReviewId: text("x402_review_id"),
+    x402SettlementStatus: text("x402_settlement_status"),
+    x402SettlementResponse: jsonb("x402_settlement_response"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -549,6 +558,16 @@ export const reviewJobs = pgTable(
   (t) => [
     index("review_jobs_status_started_idx").on(t.status, t.startedAt),
     index("review_jobs_installation_idx").on(t.installationId, t.createdAt),
+    unique("idx_review_jobs_rail_installation_idempotency_unique").on(
+      t.paymentRail,
+      t.installationId,
+      t.idempotencyKey,
+    ),
+    index("idx_review_jobs_caller_wallet").on(t.callerWallet),
+    index("idx_review_jobs_payment_rail_created").on(t.paymentRail, t.createdAt),
+    index("idx_review_jobs_x402_pay_to").on(t.x402PayTo),
+    index("idx_review_jobs_x402_review_id").on(t.x402ReviewId),
+    index("idx_review_jobs_x402_settlement_status").on(t.x402SettlementStatus),
   ],
 );
 

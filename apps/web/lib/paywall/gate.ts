@@ -8,7 +8,7 @@
 //   bypass        → legacy_partner row. Skip balance check, proceed to
 //                   enqueue.
 //   insufficient  → paywall row with balance < REVIEW_PRICE_USDC. Caller
-//                   should post the x402 invoice comment and skip enqueue.
+//                   should post the prepaid-channel top-up invoice and skip enqueue.
 //   debit         → balance ≥ price. Caller calls debitChannel() before
 //                   enqueueing; debitChannel is an atomic CAS so concurrent
 //                   webhooks for the same channel cannot overdraw.

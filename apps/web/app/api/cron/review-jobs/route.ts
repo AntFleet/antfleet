@@ -17,10 +17,14 @@ import {
   findStaleQueuedJobs,
   findStuckRunningJobs,
   markJobFailed,
+  markX402JobFailedWithResultAndSettlement,
   purgeExpiredJobResults,
+  type ReviewJobRow,
+  type X402SettlementStatus,
 } from "@/lib/review-job-queries";
 import { processReviewJob } from "@/lib/review-job-worker";
 import { refundJobChannelDebit } from "@/lib/paywall/refund";
+import { x402FailureMessage, x402FailureResultPayload } from "@/lib/x402/review-job-result";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -80,22 +84,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const stuck = await findStuckRunningJobs(db, stuckThreshold);
     for (const job of stuck) {
       try {
-        await markJobFailed(db, job.jobId, "timeout", "review exceeded 10-minute timeout", now);
+        await timeoutStuckReviewJob(job, now);
         stuckTimedOut++;
         logInfo("review_jobs_cron.stuck_timed_out", {
           jobId: job.jobId,
           startedAt: job.startedAt?.toISOString(),
         });
-        // Trigger refund for timeout
-        try {
-          await refundJobChannelDebit(db, job.jobId);
-          logInfo("review_jobs_cron.stuck_refunded", { jobId: job.jobId });
-        } catch (refundErr) {
-          logError("review_jobs_cron.stuck_refund_failed", {
-            jobId: job.jobId,
-            message: messageOf(refundErr),
-          });
-        }
       } catch (err) {
         logError("review_jobs_cron.stuck_timeout_failed", {
           jobId: job.jobId,
@@ -118,4 +112,39 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const result = { orphansRetriggered, stuckTimedOut, expiredPurged, elapsedMs };
   logInfo("review_jobs_cron.complete", result);
   return NextResponse.json(result);
+}
+
+export async function timeoutStuckReviewJob(job: ReviewJobRow, now: Date): Promise<void> {
+  if (job.paymentRail === "x402") {
+    const settlementStatus = terminalX402SettlementStatus(job.x402SettlementStatus);
+    await markX402JobFailedWithResultAndSettlement(
+      db,
+      job.jobId,
+      "timeout",
+      x402FailureMessage("timeout", settlementStatus),
+      x402FailureResultPayload(job, settlementStatus),
+      settlementStatus,
+      settlementStatus === "not_settled" ? null : job.x402SettlementResponse,
+      now,
+    );
+    return;
+  }
+
+  await markJobFailed(db, job.jobId, "timeout", "review exceeded 10-minute timeout", now);
+  try {
+    await refundJobChannelDebit(db, job.jobId);
+    logInfo("review_jobs_cron.stuck_refunded", { jobId: job.jobId });
+  } catch (refundErr) {
+    logError("review_jobs_cron.stuck_refund_failed", {
+      jobId: job.jobId,
+      message: messageOf(refundErr),
+    });
+  }
+}
+
+function terminalX402SettlementStatus(
+  current: X402SettlementStatus | null | undefined,
+): X402SettlementStatus {
+  if (current === "settled" || current === "settlement_failed") return current;
+  return "not_settled";
 }

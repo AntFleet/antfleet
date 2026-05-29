@@ -1,8 +1,8 @@
 # AntFleet
 
 Two-model GitHub PR code review with per-review USDC settlement on Base.
-Pay-per-review via a wallet-bound x402 channel — no subscription, no email,
-no dashboard. AI agents can sign up and pay autonomously.
+x402 pay-per-review for public repos, prepaid wallet-bound channels for
+installed/private repos — no subscription, no email, no dashboard.
 
 ## Service summary
 
@@ -11,21 +11,53 @@ no dashboard. AI agents can sign up and pay autonomously.
 - Closed findings get a SHA-pinned closure receipt comment, posted by the
   Sweeper cron.
 - Public receipts at https://www.antfleet.dev/receipts.
-- One USDC drawdown per review (price below); on insufficient balance the
-  webhook posts an x402 invoice comment on the PR instead of running.
+- Public repos can be reviewed with one x402 payment authorization per call.
+- Installed/private repos can use a prepaid wallet-bound channel with one
+  internal USDC drawdown per review.
 
-## Wallet-bound paywall
+## x402 pay-per-review
 
 - Chain: Base mainnet (chainId 8453)
 - Token: USDC at 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (6 decimals)
 - Price per review: 0.50 USDC (override via REVIEW_PRICE_USDC env var)
+- Endpoint: POST /api/v1/review/x402
+- Status: GET /api/v1/review/x402/{jobId}
+- First request without PAYMENT-SIGNATURE returns HTTP 402 with payment
+  requirements. Repeat with PAYMENT-SIGNATURE to enqueue the review.
+- Payment settles to the same operator wallet used by prepaid channel deposits.
+
+## Default public-repo agent flow
+
+Base URL: https://www.antfleet.dev
+
+1. POST /api/v1/review/x402
+   headers:
+     content-type: application/json
+     X-Aeon-Context: {signed aeon context}
+   body: {"target": {"repo": "owner/name", "pr": 123}}
+   → returns HTTP 402 with x402Version, accepts[], and PAYMENT-REQUIRED header
+
+2. Sign the x402 USDC authorization from the paying wallet.
+
+3. Repeat POST /api/v1/review/x402 with:
+   headers:
+     content-type: application/json
+     X-Aeon-Context: {signed aeon context}
+     PAYMENT-SIGNATURE: {base64 payment payload}
+   body: {"target": {"repo": "owner/name", "pr": 123}}
+   → returns jobId, statusUrl, status: queued, expectedDurationSec
+
+4. Poll GET /api/v1/review/x402/{jobId} until complete or failed.
+   A complete response includes findings and the review receipt URL.
+
+## Prepaid channel flow for installed/private repos
+
 - Minimum deposit: 5.00 USDC (override via MIN_DEPOSIT_USDC env var)
-- Deposit address: GET /.well-known/antfleet.json → endpoints.deposit_address
+- Deposit address: GET /.well-known/antfleet.json → deposit_address
 
-## Agent signup flow
-
-Walk a single state machine — every response carries a `next_step` block
-the agent reads to drive forward. Base URL: https://www.antfleet.dev
+Walk the install state machine when the repo is private or should be reviewed
+continuously by the GitHub App. Every response carries a `next_step` block the
+agent reads to drive forward.
 
 1. POST /api/v1/installations
    body: {"wallet_address": "0x..."}
@@ -62,8 +94,8 @@ current next_step. Call this if you lose track or want a fresh nudge.
 ## Insufficient balance
 
 If your channel balance drops below the price, the next PR webhook posts
-an x402 invoice comment on the PR instead of running. The comment contains
-the canonical x402 v1 accepts JSON. Top up your channel; the next PR runs.
+a prepaid-channel top-up invoice comment on the PR instead of running. Top up
+your channel; the next PR runs.
 
 ## Wallet reputation
 
@@ -74,5 +106,5 @@ balance for any bound wallet.
 ## Manifest
 
 GET /.well-known/antfleet.json returns the machine-readable surface:
-service name, version, chain, payment token, prices, endpoint URLs, and
-the GitHub App install URL.
+service name, version, chain, payment token, prices, endpoint URLs, x402 review
+URLs, and the GitHub App install URL.

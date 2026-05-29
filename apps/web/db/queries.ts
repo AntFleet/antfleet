@@ -1082,6 +1082,88 @@ export async function loadPublicReceiptDetail(
   return rows[0] ?? null;
 }
 
+export type PublicReviewReceiptRow = {
+  reviewId: string;
+  repoHash: string;
+  owner: string | null;
+  repo: string | null;
+  prNumber: number;
+  commitSha: string;
+  createdAt: Date;
+  processingStatus: string;
+  processingError: string | null;
+  timingMs: number;
+  costEstimatedUsd: string;
+  agreementDecision: unknown;
+  jobId: string | null;
+  paymentRail: string | null;
+  jobStatus: string | null;
+  failureMode: string | null;
+  failureMessage: string | null;
+  x402PayTo: string | null;
+  callerWallet: string | null;
+  settlementStatus: string | null;
+  findings: Array<{
+    findingId: string;
+    findingIndex: number;
+    severity: string;
+    category: string;
+    title: string;
+  }>;
+};
+
+export async function loadPublicReviewReceipt(
+  reviewId: string,
+): Promise<PublicReviewReceiptRow | null> {
+  const result = await db.execute(sql`
+    SELECT
+      r.review_id AS "reviewId",
+      r.repo_hash AS "repoHash",
+      r.owner,
+      r.repo,
+      r.pr_number AS "prNumber",
+      r.commit_sha AS "commitSha",
+      r.created_at AS "createdAt",
+      r.processing_status AS "processingStatus",
+      r.processing_error AS "processingError",
+      r.timing_ms AS "timingMs",
+      r.cost_estimated_usd::text AS "costEstimatedUsd",
+      r.agreement_decision AS "agreementDecision",
+      j.job_id AS "jobId",
+      j.payment_rail AS "paymentRail",
+      j.status AS "jobStatus",
+      j.failure_mode AS "failureMode",
+      j.failure_message AS "failureMessage",
+      j.x402_pay_to AS "x402PayTo",
+      j.caller_wallet AS "callerWallet",
+      j.x402_settlement_status AS "settlementStatus",
+      COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'findingId', fs.finding_id,
+            'findingIndex', fs.finding_index,
+            'severity', fs.severity,
+            'category', fs.category,
+            'title', fs.title
+          )
+          ORDER BY fs.finding_index
+        ) FILTER (WHERE fs.finding_id IS NOT NULL),
+        '[]'::jsonb
+      ) AS "findings"
+    FROM reviews r
+    LEFT JOIN finding_status fs ON fs.review_id = r.review_id
+    JOIN review_jobs j ON j.x402_review_id = r.review_id AND j.payment_rail = 'x402'
+    WHERE r.review_id = ${reviewId}
+      AND r.public_receipt = true
+    GROUP BY r.review_id, j.job_id
+    LIMIT 1
+  `);
+  const rows = Array.isArray(result)
+    ? (result as PublicReviewReceiptRow[])
+    : (((result as unknown) as { rows?: PublicReviewReceiptRow[] }).rows ?? []);
+  return rows[0] ?? null;
+}
+
 // Phase-2 P2-G — /activity page. Aggregate counters are repo-blind
 // (privacy-safe by construction — just integers across all installs),
 // recent events stream respects the public_receipt opt-in gate (only

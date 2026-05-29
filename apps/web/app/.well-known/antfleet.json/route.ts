@@ -24,7 +24,7 @@ export async function GET(): Promise<Response> {
     service: "antfleet",
     version: 1,
     description:
-      "Two-model GitHub PR code review with per-review USDC settlement on Base. Wallet-bound x402 paywall — no subscription, no email, no dashboard. Agent-callable signup.",
+      "Two-model GitHub PR code review with per-review USDC settlement on Base. x402 pay-per-review for public repos; prepaid wallet-bound channels for installed/private repos.",
     chain_id: BASE_CHAIN_ID,
     payment_token: {
       address: USDC_BASE_ADDRESS,
@@ -40,6 +40,8 @@ export async function GET(): Promise<Response> {
       bind_wallet: `${base}/api/v1/installations/{id}/bind`,
       submit_deposit: `${base}/api/v1/installations/{id}/deposit`,
       get_installation: `${base}/api/v1/installations/{id}`,
+      review_x402: `${base}/api/v1/review/x402`,
+      get_x402_review: `${base}/api/v1/review/x402/{jobId}`,
       llms_txt: `${base}/llms.txt`,
       manifest: `${base}/.well-known/antfleet.json`,
     },

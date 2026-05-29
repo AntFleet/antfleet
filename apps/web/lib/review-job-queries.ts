@@ -23,11 +23,22 @@ export type ReviewJobRow = {
   result: unknown;
   debitPaymentId: string | null;
   refundPaymentId: string | null;
+  callerWallet?: string | null;
+  paymentRail?: "channel" | "x402";
+  x402PayTo?: string | null;
+  x402PaymentPayload?: unknown;
+  x402ValidAfter?: Date | null;
+  x402ValidBefore?: Date | null;
+  x402ReviewId?: string | null;
+  x402SettlementStatus?: X402SettlementStatus | null;
+  x402SettlementResponse?: unknown;
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
   expiresAt: Date;
 };
+
+export type X402SettlementStatus = "pending" | "settled" | "not_settled" | "settlement_failed";
 
 export type ReviewJobInitialStatus = "billing_pending" | "queued";
 
@@ -46,6 +57,15 @@ const JOB_SELECT = sql`
   result,
   debit_payment_id AS "debitPaymentId",
   refund_payment_id AS "refundPaymentId",
+  caller_wallet AS "callerWallet",
+  payment_rail AS "paymentRail",
+  x402_pay_to AS "x402PayTo",
+  x402_payment_payload AS "x402PaymentPayload",
+  x402_valid_after AS "x402ValidAfter",
+  x402_valid_before AS "x402ValidBefore",
+  x402_review_id AS "x402ReviewId",
+  x402_settlement_status AS "x402SettlementStatus",
+  x402_settlement_response AS "x402SettlementResponse",
   created_at AS "createdAt",
   started_at AS "startedAt",
   completed_at AS "completedAt",
@@ -82,6 +102,48 @@ export async function createReviewJob(
   `);
   const row = firstRow<ReviewJobRow>(result);
   if (row === null) throw new Error("createReviewJob: insert returned no row");
+  return normalizeRow(row);
+}
+
+export async function createX402ReviewJob(
+  q: Queryable,
+  args: {
+    callerWallet: string;
+    repoOwner: string;
+    repoName: string;
+    prNumber: number;
+    sha: string;
+    idempotencyKey: string;
+    x402PayTo: string;
+    authorizationState: unknown;
+  },
+): Promise<ReviewJobRow> {
+  const jobId = nanoid(21);
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const window = readAuthorizationDates(args.authorizationState);
+  const result = await q.execute(sql`
+    INSERT INTO review_jobs (
+      job_id, installation_id, wallet_address, repo_owner, repo_name,
+      pr_number, sha, idempotency_key, status, expires_at,
+      caller_wallet, payment_rail, x402_pay_to, x402_payment_payload,
+      x402_valid_after, x402_valid_before, x402_settlement_status
+    ) VALUES (
+      ${jobId}, 'x402', ${args.callerWallet.toLowerCase()},
+      ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
+      ${args.idempotencyKey}, 'queued', ${expiresAt},
+      ${args.callerWallet.toLowerCase()}, 'x402', ${args.x402PayTo},
+      ${JSON.stringify(args.authorizationState)}::jsonb,
+      ${window.validAfter}, ${window.validBefore}, 'pending'
+    )
+    ON CONFLICT (payment_rail, installation_id, idempotency_key) DO NOTHING
+    RETURNING ${JOB_SELECT}
+  `);
+  const row = firstRow<ReviewJobRow>(result);
+  if (row === null) {
+    const existing = await findX402JobByIdempotencyKey(q, args.idempotencyKey);
+    if (existing !== null) return existing;
+    throw new Error("createX402ReviewJob: insert returned no row");
+  }
   return normalizeRow(row);
 }
 
@@ -137,6 +199,21 @@ export async function findJobByIdempotencyKey(
   return row === null ? null : normalizeRow(row);
 }
 
+export async function findX402JobByIdempotencyKey(
+  q: Queryable,
+  idempotencyKey: string,
+): Promise<ReviewJobRow | null> {
+  const result = await q.execute(sql`
+    SELECT ${JOB_SELECT}
+    FROM review_jobs
+    WHERE payment_rail = 'x402'
+      AND idempotency_key = ${idempotencyKey}
+    LIMIT 1
+  `);
+  const row = firstRow<ReviewJobRow>(result);
+  return row === null ? null : normalizeRow(row);
+}
+
 // State-machine transition: queued → running. Returns false if the row
 // is not in 'queued' (lost claim race or already running).
 export async function markJobRunning(q: Queryable, jobId: string, now: Date): Promise<boolean> {
@@ -163,6 +240,26 @@ export async function markJobComplete(
   `);
 }
 
+export async function markX402JobCompleteSettled(
+  q: Queryable,
+  jobId: string,
+  jobResult: unknown,
+  settlementResponse: unknown,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET status = 'complete',
+        result = ${JSON.stringify(jobResult)}::jsonb,
+        completed_at = ${now},
+        x402_settlement_status = 'settled',
+        x402_settlement_response = ${JSON.stringify(settlementResponse)}::jsonb
+    WHERE job_id = ${jobId}
+      AND status = 'running'
+      AND payment_rail = 'x402'
+  `);
+}
+
 // State-machine transition: running → failed.
 export async function markJobFailed(
   q: Queryable,
@@ -174,8 +271,114 @@ export async function markJobFailed(
   await q.execute(sql`
     UPDATE review_jobs
     SET status = 'failed', failure_mode = ${failureMode},
-        failure_message = ${failureMessage}, completed_at = ${now}
+        failure_message = ${failureMessage}, result = NULL, completed_at = ${now}
     WHERE job_id = ${jobId} AND status = 'running'
+  `);
+}
+
+// State-machine transition: running -> failed, preserving a public result payload
+// for rails where the receipt URL is still part of the failure contract.
+export async function markJobFailedWithResult(
+  q: Queryable,
+  jobId: string,
+  failureMode: string,
+  failureMessage: string,
+  jobResult: unknown,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET status = 'failed', failure_mode = ${failureMode},
+        failure_message = ${failureMessage}, result = ${JSON.stringify(jobResult)}::jsonb,
+        completed_at = ${now}
+    WHERE job_id = ${jobId} AND status = 'running'
+  `);
+}
+
+export async function markX402JobFailedWithResultAndSettlement(
+  q: Queryable,
+  jobId: string,
+  failureMode: string,
+  failureMessage: string,
+  jobResult: unknown,
+  settlementStatus: X402SettlementStatus,
+  settlementResponse: unknown,
+  now: Date,
+): Promise<void> {
+  const settlementResponseJson =
+    settlementResponse === null ? null : JSON.stringify(settlementResponse);
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET status = 'failed',
+        failure_mode = ${failureMode},
+        failure_message = ${failureMessage},
+        result = ${JSON.stringify(jobResult)}::jsonb,
+        completed_at = ${now},
+        x402_settlement_status = CASE
+          WHEN x402_settlement_status IN ('settled', 'settlement_failed') THEN x402_settlement_status
+          ELSE ${settlementStatus}
+        END,
+        x402_settlement_response = CASE
+          WHEN x402_settlement_status IN ('settled', 'settlement_failed') THEN x402_settlement_response
+          ELSE ${settlementResponseJson}::jsonb
+        END
+    WHERE job_id = ${jobId}
+      AND status = 'running'
+      AND payment_rail = 'x402'
+  `);
+}
+
+export async function markX402JobReviewLinked(
+  q: Queryable,
+  jobId: string,
+  reviewId: string,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET x402_review_id = ${reviewId}
+    WHERE job_id = ${jobId} AND payment_rail = 'x402'
+  `);
+}
+
+export async function markX402SettlementSettled(
+  q: Queryable,
+  jobId: string,
+  settlementResponse: unknown,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET x402_settlement_status = 'settled',
+        x402_settlement_response = ${JSON.stringify(settlementResponse)}::jsonb
+    WHERE job_id = ${jobId} AND payment_rail = 'x402'
+  `);
+}
+
+export async function markX402SettlementNotSettled(
+  q: Queryable,
+  jobId: string,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET x402_settlement_status = 'not_settled',
+        x402_settlement_response = NULL
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'x402'
+      AND (x402_settlement_status IS NULL OR x402_settlement_status = 'pending')
+  `);
+}
+
+export async function markX402SettlementFailed(
+  q: Queryable,
+  jobId: string,
+  settlementResponse: unknown,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET x402_settlement_status = 'settlement_failed',
+        x402_settlement_response = ${JSON.stringify(settlementResponse)}::jsonb
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'x402'
+      AND x402_settlement_status IS DISTINCT FROM 'settled'
   `);
 }
 
@@ -247,10 +450,26 @@ export async function purgeExpiredJobResults(q: Queryable, now: Date): Promise<n
 function normalizeRow(row: ReviewJobRow): ReviewJobRow {
   return {
     ...row,
+    x402ValidAfter: row.x402ValidAfter ? parseDate(row.x402ValidAfter) : null,
+    x402ValidBefore: row.x402ValidBefore ? parseDate(row.x402ValidBefore) : null,
     createdAt: parseDate(row.createdAt),
     startedAt: row.startedAt ? parseDate(row.startedAt) : null,
     completedAt: row.completedAt ? parseDate(row.completedAt) : null,
     expiresAt: parseDate(row.expiresAt),
+  };
+}
+
+function readAuthorizationDates(value: unknown): { validAfter: Date; validBefore: Date } {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("createX402ReviewJob: authorizationState must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record["validAfter"] !== "string" || typeof record["validBefore"] !== "string") {
+    throw new Error("createX402ReviewJob: authorizationState window missing");
+  }
+  return {
+    validAfter: new Date(record["validAfter"]),
+    validBefore: new Date(record["validBefore"]),
   };
 }
 

@@ -373,45 +373,44 @@ function AgentSignup({
     depositAddress === null
       ? "# DEPOSIT ADDRESS: not yet configured — see /.well-known/antfleet.json before sending"
       : `# DEPOSIT ADDRESS: ${depositAddress}`;
-  const prompt = `# AntFleet agent signup loop
-# Chain: Base mainnet (8453)  |  Token: USDC  |  Price: ${reviewPrice}  |  Min deposit: ${minDeposit}
+  const prompt = `# AntFleet x402 pay-per-review loop
+# Chain: Base mainnet (8453)  |  Token: USDC  |  Price: ${reviewPrice}
+# Public repos: use x402 per-call payment. No install row, wallet bind, or prepaid channel.
+
+# 1. Request payment requirements for an open public PR
+curl -i -sX POST ${baseUrl}/api/v1/review/x402 \\
+  -H 'content-type: application/json' \\
+  -H 'X-Aeon-Context: {signed aeon context}' \\
+  -d '{"target":{"repo":"owner/name","pr":123}}'
+# → 402 + PAYMENT-REQUIRED header + accepts[].payTo
+
+# 2. Sign the x402 USDC authorization from the paying wallet
+#    and repeat the same request with PAYMENT-SIGNATURE
+curl -sX POST ${baseUrl}/api/v1/review/x402 \\
+  -H 'content-type: application/json' \\
+  -H 'X-Aeon-Context: {signed aeon context}' \\
+  -H 'PAYMENT-SIGNATURE: {base64 payment payload}' \\
+  -d '{"target":{"repo":"owner/name","pr":123}}'
+# → { jobId, statusUrl, status: "queued", expectedDurationSec }
+
+# 3. Poll until terminal state
+curl -s ${baseUrl}/api/v1/review/x402/{jobId}
+# → complete + findings + review receipt URL
+
+# Prepaid channel path for installed/private repos
+# Min deposit: ${minDeposit} USDC  |  Drawdown: ${reviewPrice} per review
 ${depositLine}
-
-# 1. Create installation row + binding challenge
-curl -sX POST ${baseUrl}/api/v1/installations \\
-  -H 'content-type: application/json' \\
-  -d '{"wallet_address":"0x..."}'
-# → { installation_id, binding_challenge, next_step: { ... } }
-
-# 2. Sign binding_challenge with EIP-191 (personal_sign)
-#    and POST the signature
-curl -sX POST ${baseUrl}/api/v1/installations/{id}/bind \\
-  -H 'content-type: application/json' \\
-  -d '{"signature":"0x..."}'
-
-# 3. Send >= ${minDeposit} USDC on Base from the bound wallet
-#    to the deposit address, then POST the tx hash
-curl -sX POST ${baseUrl}/api/v1/installations/{id}/deposit \\
-  -H 'content-type: application/json' \\
-  -d '{"tx_hash":"0x..."}'
-
-# 4. Install the GitHub App on the repo you want reviewed
-#    (state param echoes back via the post-install redirect)
-open 'https://github.com/apps/antfleet/installations/new?state={installation_id}'
-
-# 5. Open a PR. Reviews draw down ${reviewPrice} per review.
-#    Channel below price → x402 invoice comment on the PR;
-#    top up and the next PR runs.`;
+# See ${baseUrl}/.well-known/antfleet.json for install/deposit endpoints.`;
 
   return (
     <section>
       <ContentWrap>
         <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-6">
-          Agent signup prompt
+          Agent x402 prompt
         </h2>
         <p className="text-sm leading-relaxed text-[var(--color-ink-muted)] max-w-xl mb-6">
-          Paste this into an autonomous agent. It walks the paywall state machine end-to-end —
-          create installation, bind wallet, fund channel, install the App — without any other docs.
+          Paste this into an autonomous agent. Public repos use x402 pay-per-review by default;
+          installed or private repos use the prepaid channel path.
           Machine-readable manifest at{" "}
           <a
             href="/.well-known/antfleet.json"
