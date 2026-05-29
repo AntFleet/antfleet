@@ -16,7 +16,6 @@ import {
   getReviewJob,
   markJobComplete,
   markJobFailed,
-  markJobFailedWithResult,
   markJobRunning,
   markX402JobReviewLinked,
   markX402JobCompleteSettled,
@@ -40,7 +39,12 @@ import {
   type SettlementResult,
 } from "@/lib/x402/facilitator";
 import { loadX402Config } from "@/lib/x402/env";
-import { x402FailureMessage, x402FailureResultPayload } from "@/lib/x402/review-job-result";
+import { X402_MAX_TIMEOUT_SECONDS } from "@/lib/x402/env";
+import {
+  X402_SETTLED_FAILURE_MODES,
+  x402FailureMessage,
+  x402FailureResultPayload,
+} from "@/lib/x402/review-job-result";
 import {
   refundJobChannelDebit,
   isRefundableFailureMode,
@@ -102,7 +106,13 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
     let outcomeFailureMode = failureMode;
     let outcomeFailureMessage = publicMessage;
     if (job.paymentRail === "x402") {
-      const x402Failure = await handleX402JobFailure({ job, jobId, err, failureMode, publicMessage });
+      const x402Failure = await handleX402JobFailure({
+        job,
+        jobId,
+        err,
+        failureMode,
+        publicMessage,
+      });
       outcomeFailureMode = x402Failure.failureMode;
       outcomeFailureMessage = x402Failure.failureMessage;
     } else if (isRefundableFailureMode(failureMode)) {
@@ -306,7 +316,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
     });
     await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
   } else {
-    const bundle = await reviewPR({ files, owner, repo, prNumber });
+    const bundle = await withX402WallClockTimeout(reviewPR({ files, owner, repo, prNumber }));
     const price = Number(getReviewPriceUsdc());
     if (Number.isFinite(price) && bundle.estimatedCostUsd > price * 3) {
       await updateReview(enqueued.reviewId, {
@@ -365,7 +375,10 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
   return reviewResultPayload(payload, false);
 }
 
-function reviewResultPayload(payload: Record<string, unknown>, cached: boolean): Record<string, unknown> {
+function reviewResultPayload(
+  payload: Record<string, unknown>,
+  cached: boolean,
+): Record<string, unknown> {
   const reviewId = String(payload["reviewId"]);
   return {
     ...payload,
@@ -398,7 +411,7 @@ function readRequiredAuthorization(job: ReviewJobRow): X402AuthorizationState {
 }
 
 function shouldSettleX402Failure(failureMode: string): boolean {
-  return failureMode === "user_input" || failureMode === "validation";
+  return X402_SETTLED_FAILURE_MODES.has(failureMode);
 }
 
 async function handleX402JobFailure(args: {
@@ -480,6 +493,39 @@ function tagX402SettlementFailure(err: unknown): Error & { x402SettlementFailure
 
 function isX402SettlementFailure(err: unknown): boolean {
   return Boolean((err as { x402SettlementFailure?: boolean })?.x402SettlementFailure);
+}
+
+class WallClockTimeoutError extends Error {
+  constructor(timeoutSeconds: number) {
+    super(`reviewPR exceeded ${timeoutSeconds}s wall-clock timeout`);
+    this.name = "WallClockTimeoutError";
+    Object.assign(this, { failureModeTag: "timeout" });
+  }
+}
+
+async function withX402WallClockTimeout<T>(work: Promise<T>): Promise<T> {
+  const timeoutSeconds = readX402TimeoutSeconds();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new WallClockTimeoutError(timeoutSeconds)),
+          timeoutSeconds * 1000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function readX402TimeoutSeconds(): number {
+  const raw = process.env["X402_MAX_TIMEOUT_SECONDS"];
+  if (raw === undefined || raw.trim() === "") return X402_MAX_TIMEOUT_SECONDS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : X402_MAX_TIMEOUT_SECONDS;
 }
 
 async function resolveInstallationId(installationRowId: string): Promise<number> {

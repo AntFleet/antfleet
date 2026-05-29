@@ -26,6 +26,14 @@ const facilitatorMocks = vi.hoisted(() => ({
   settlePayment: vi.fn(),
 }));
 
+const publicFilesMocks = vi.hoisted(() => ({
+  getPublicChangedFiles: vi.fn(),
+}));
+
+const reviewPipelineMocks = vi.hoisted(() => ({
+  reviewPR: vi.fn(),
+}));
+
 const paywallQueryMocks = vi.hoisted(() => ({
   loadReviewForResponse: vi.fn(),
 }));
@@ -34,8 +42,8 @@ vi.mock("@/db", () => ({ db: {} }));
 vi.mock("@/lib/review-job-queries", () => queryMocks);
 vi.mock("@/db/queries", () => dbQueryMocks);
 vi.mock("@/lib/paywall/queries", () => paywallQueryMocks);
-vi.mock("@/lib/github-files-public", () => ({ getPublicChangedFiles: vi.fn() }));
-vi.mock("@/lib/review-pipeline", () => ({ reviewPR: vi.fn() }));
+vi.mock("@/lib/github-files-public", () => publicFilesMocks);
+vi.mock("@/lib/review-pipeline", () => reviewPipelineMocks);
 vi.mock("@/lib/paywall/env", () => ({ getReviewPriceUsdc: () => "0.5" }));
 vi.mock("@/lib/github-app", () => ({ getInstallationToken: vi.fn() }));
 vi.mock("@/lib/repo-visibility", () => ({ isPublicRepo: vi.fn() }));
@@ -52,6 +60,7 @@ vi.mock("@/lib/paywall/refund", () => ({
   safeFailureMessage: (mode: string) => `safe:${mode}`,
 }));
 vi.mock("@/lib/x402/env", () => ({
+  X402_MAX_TIMEOUT_SECONDS: 600,
   loadX402Config: () => ({ treasury: "0x000000000000000000000000000000000000dEaD" }),
 }));
 vi.mock("@/lib/x402/facilitator", async (importOriginal) => {
@@ -109,6 +118,20 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     queryMocks.markJobRunning.mockResolvedValue(true);
     dbQueryMocks.hashRepo.mockReturnValue("repo-hash");
     dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: false });
+    publicFilesMocks.getPublicChangedFiles.mockResolvedValue([
+      { filename: "src/index.ts", patch: "@@ -1 +1 @@" },
+    ]);
+    reviewPipelineMocks.reviewPR.mockResolvedValue({
+      estimatedCostUsd: 0.25,
+      modelIds: { a: "model-a" },
+      perProvider: {},
+      agreementMode: "unanimous",
+      agreed: [],
+      disagreements: [],
+      degraded: false,
+      degradedReason: null,
+      totalMs: 100,
+    });
     paywallQueryMocks.loadReviewForResponse.mockResolvedValue({
       reviewId: "review-1",
       processingStatus: "done",
@@ -175,14 +198,12 @@ describe("processReviewJob x402 settlement lifecycle", () => {
   });
 
   it("does not downgrade a job that was already settled before a terminal update failed", async () => {
-    queryMocks.getReviewJob
-      .mockResolvedValueOnce(x402Job)
-      .mockResolvedValueOnce({
-        ...x402Job,
-        x402ReviewId: "review-1",
-        x402SettlementStatus: "settled",
-        x402SettlementResponse: { transaction: "0xsettled" },
-      });
+    queryMocks.getReviewJob.mockResolvedValueOnce(x402Job).mockResolvedValueOnce({
+      ...x402Job,
+      x402ReviewId: "review-1",
+      x402SettlementStatus: "settled",
+      x402SettlementResponse: { transaction: "0xsettled" },
+    });
     queryMocks.markX402JobCompleteSettled.mockRejectedValue(new Error("db write failed"));
 
     const { processReviewJob } = await import("./review-job-worker");
@@ -201,5 +222,83 @@ describe("processReviewJob x402 settlement lifecycle", () => {
       { transaction: "0xsettled" },
       expect.any(Date),
     );
+  });
+
+  it("does not settle when x402 review cost exceeds the cap", async () => {
+    queryMocks.getReviewJob
+      .mockResolvedValueOnce(x402Job)
+      .mockResolvedValueOnce({ ...x402Job, x402ReviewId: "review-1" });
+    dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: true });
+    reviewPipelineMocks.reviewPR.mockResolvedValue({
+      estimatedCostUsd: 1.51,
+      modelIds: { a: "model-a" },
+      perProvider: {},
+      agreementMode: "unanimous",
+      agreed: [],
+      disagreements: [],
+      degraded: false,
+      degradedReason: null,
+      totalMs: 100,
+    });
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("job-x402");
+
+    expect(outcome).toMatchObject({
+      kind: "failed",
+      jobId: "job-x402",
+      failureMode: "cost_cap_exceeded",
+    });
+    expect(facilitatorMocks.settlePayment).not.toHaveBeenCalled();
+    expect(queryMocks.markX402SettlementNotSettled).toHaveBeenCalledWith({}, "job-x402");
+    expect(queryMocks.markX402JobFailedWithResultAndSettlement).toHaveBeenCalledWith(
+      {},
+      "job-x402",
+      "cost_cap_exceeded",
+      "The review exceeded the inference cost cap. The x402 payment was not settled.",
+      expect.objectContaining({
+        paid_via: "x402",
+        reviewId: "review-1",
+        settlement_status: "not_settled",
+      }),
+      "not_settled",
+      null,
+      expect.any(Date),
+    );
+  });
+
+  it("fails x402 reviews with timeout and skips settlement when reviewPR exceeds wall-clock limit", async () => {
+    vi.useFakeTimers();
+    const oldTimeout = process.env["X402_MAX_TIMEOUT_SECONDS"];
+    process.env["X402_MAX_TIMEOUT_SECONDS"] = "1";
+    try {
+      queryMocks.getReviewJob
+        .mockResolvedValueOnce(x402Job)
+        .mockResolvedValueOnce({ ...x402Job, x402ReviewId: "review-1" });
+      dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: true });
+      reviewPipelineMocks.reviewPR.mockReturnValue(new Promise(() => {}));
+
+      const { processReviewJob } = await import("./review-job-worker");
+      const pending = processReviewJob("job-x402");
+      await vi.advanceTimersByTimeAsync(1000);
+      const outcome = await pending;
+
+      expect(outcome).toMatchObject({ kind: "failed", failureMode: "timeout" });
+      expect(facilitatorMocks.settlePayment).not.toHaveBeenCalled();
+      expect(queryMocks.markX402JobFailedWithResultAndSettlement).toHaveBeenCalledWith(
+        {},
+        "job-x402",
+        "timeout",
+        "The review timed out. The x402 payment was not settled.",
+        expect.objectContaining({ settlement_status: "not_settled" }),
+        "not_settled",
+        null,
+        expect.any(Date),
+      );
+    } finally {
+      vi.useRealTimers();
+      if (oldTimeout === undefined) delete process.env["X402_MAX_TIMEOUT_SECONDS"];
+      else process.env["X402_MAX_TIMEOUT_SECONDS"] = oldTimeout;
+    }
   });
 });

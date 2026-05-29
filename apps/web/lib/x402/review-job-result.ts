@@ -4,10 +4,21 @@ const X402_FAILURE_MESSAGES: Record<string, string> = {
   provider_error: "The review provider returned an error. The x402 payment was not settled.",
   timeout: "The review timed out. The x402 payment was not settled.",
   internal: "An internal error occurred. The x402 payment was not settled.",
-  cost_cap_exceeded: "The review exceeded the inference cost cap. The x402 payment was not settled.",
+  cost_cap_exceeded:
+    "The review exceeded the inference cost cap. The x402 payment was not settled.",
   user_input: "The review could not proceed due to invalid input.",
   validation: "Validation failed for the requested review.",
 };
+
+export const X402_NOT_SETTLED_FAILURE_MODES = new Set([
+  "provider_error",
+  "timeout",
+  "internal",
+  "cost_cap_exceeded",
+  "expired",
+]);
+
+export const X402_SETTLED_FAILURE_MODES = new Set(["user_input", "validation"]);
 
 export function x402FailureMessage(
   failureMode: string,

@@ -30,4 +30,13 @@ describe("loadX402Config", () => {
       }),
     ).toThrow(/Base USDC pair/);
   });
+
+  it("validates the optional x402 wall-clock timeout override", () => {
+    expect(() =>
+      loadX402Config({
+        ...baseEnv,
+        X402_MAX_TIMEOUT_SECONDS: "0",
+      }),
+    ).toThrow(/X402_MAX_TIMEOUT_SECONDS/);
+  });
 });

@@ -353,10 +353,7 @@ export async function markX402SettlementSettled(
   `);
 }
 
-export async function markX402SettlementNotSettled(
-  q: Queryable,
-  jobId: string,
-): Promise<void> {
+export async function markX402SettlementNotSettled(q: Queryable, jobId: string): Promise<void> {
   await q.execute(sql`
     UPDATE review_jobs
     SET x402_settlement_status = 'not_settled',
@@ -380,6 +377,28 @@ export async function markX402SettlementFailed(
       AND payment_rail = 'x402'
       AND x402_settlement_status IS DISTINCT FROM 'settled'
   `);
+}
+
+export async function markX402JobExpired(
+  q: Queryable,
+  jobId: string,
+  now: Date,
+): Promise<ReviewJobRow | null> {
+  const result = await q.execute(sql`
+    UPDATE review_jobs
+    SET status = 'expired',
+        completed_at = ${now},
+        x402_settlement_status = 'not_settled',
+        x402_settlement_response = NULL
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'x402'
+      AND status IN ('queued', 'running')
+      AND x402_valid_before IS NOT NULL
+      AND x402_valid_before <= ${now}
+    RETURNING ${JOB_SELECT}
+  `);
+  const row = firstRow<ReviewJobRow>(result);
+  return row === null ? null : normalizeRow(row);
 }
 
 // Safety-net cron: find queued jobs older than threshold (orphan from

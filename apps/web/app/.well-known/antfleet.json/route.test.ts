@@ -27,12 +27,18 @@ describe("GET /.well-known/antfleet.json", () => {
     expect(body["price_per_review_usdc"]).toBe("0.50");
     expect(body["min_deposit_usdc"]).toBe("5.00");
     expect(body["deposit_address"]).toBe("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    const endpoints = body["endpoints"] as Record<string, string>;
+    const endpoints = body["endpoints"] as Record<string, unknown>;
     expect(endpoints["create_installation"]).toBe("https://www.antfleet.dev/api/v1/installations");
     expect(endpoints["bind_wallet"]).toContain("/bind");
     expect(endpoints["submit_deposit"]).toContain("/deposit");
-    expect(endpoints["review_x402"]).toBe("https://www.antfleet.dev/api/v1/review/x402");
-    expect(endpoints["get_x402_review"]).toBe("https://www.antfleet.dev/api/v1/review/x402/{jobId}");
+    expect(endpoints["review_x402"]).toMatchObject({
+      url: "https://www.antfleet.dev/api/v1/review/x402",
+      access_scope: "aeon-ecosystem-callers-only-v1",
+    });
+    expect(endpoints["get_x402_review"]).toMatchObject({
+      url: "https://www.antfleet.dev/api/v1/review/x402/{jobId}",
+      access_scope: "aeon-ecosystem-callers-only-v1",
+    });
     const token = body["payment_token"] as Record<string, unknown>;
     expect(token["symbol"]).toBe("USDC");
     expect(token["decimals"]).toBe(6);

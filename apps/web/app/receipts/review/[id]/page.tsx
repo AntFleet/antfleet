@@ -26,6 +26,7 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
   const { id } = await params;
   const row = await loadPublicReviewReceipt(id);
   if (row === null) notFound();
+  const isX402 = row.paymentRail === "x402";
 
   return (
     <>
@@ -41,7 +42,7 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
             <Badge>{row.paymentRail ?? "channel"}</Badge>
             <Badge>{row.jobStatus ?? row.processingStatus}</Badge>
             {row.failureMode !== null && <Badge>{row.failureMode}</Badge>}
-            <Badge>{settlementLabel(row)}</Badge>
+            {isX402 && <Badge>{settlementLabel(row)}</Badge>}
           </div>
           <div className="mt-6 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1">
             <span>SHA {shortenSha(row.commitSha)}</span>
@@ -66,7 +67,7 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
           </h2>
           {row.findings.length === 0 ? (
             <p className="text-sm text-[var(--color-ink-muted)]">
-              {row.failureMode === null ? "No findings - clean review." : row.failureMessage}
+              {row.failureMode === null ? "No findings — clean review." : failureNotice(row)}
             </p>
           ) : (
             <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] divide-y divide-[var(--color-line)]">
@@ -96,21 +97,32 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
       <section className="pb-20">
         <ContentWrap>
           <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-5">
-            Settlement
+            {isX402 ? "Settlement" : "Payment"}
           </h2>
           <dl className="grid grid-cols-1 gap-3 text-sm text-[var(--color-ink-muted)] sm:grid-cols-[160px_1fr]">
-            <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
-              Status
-            </dt>
-            <dd>{settlementLabel(row)}</dd>
-            <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
-              Wallet
-            </dt>
-            <dd className="font-mono break-all">{row.callerWallet ?? "channel installation"}</dd>
-            <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
-              Pay to
-            </dt>
-            <dd className="font-mono break-all">{row.x402PayTo ?? "channel treasury"}</dd>
+            {isX402 ? (
+              <>
+                <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
+                  Status
+                </dt>
+                <dd>{settlementLabel(row)}</dd>
+                <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
+                  Wallet
+                </dt>
+                <dd className="font-mono break-all">{row.callerWallet ?? "unknown"}</dd>
+                <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
+                  Pay to
+                </dt>
+                <dd className="font-mono break-all">{row.x402PayTo ?? "unknown"}</dd>
+              </>
+            ) : (
+              <>
+                <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
+                  Rail
+                </dt>
+                <dd>channel</dd>
+              </>
+            )}
           </dl>
         </ContentWrap>
       </section>
@@ -141,4 +153,12 @@ function repoLabel(row: { owner: string | null; repo: string | null; repoHash: s
 
 function settlementLabel(row: { settlementStatus: string | null }): string {
   return row.settlementStatus ?? "pending";
+}
+
+function failureNotice(row: {
+  failureMessage: string | null;
+  settlementStatus: string | null;
+}): string {
+  if (row.settlementStatus === "not_settled") return "Payment not settled";
+  return row.failureMessage ?? "Payment not settled";
 }

@@ -7,7 +7,11 @@ import {
   getPublicBaseUrl,
   getReviewPriceUsdc,
 } from "@/lib/paywall/env";
-import { formatRelativeTime, loadCrossRepoReceipts, type CrossRepoReceiptRow } from "@/lib/receipts";
+import {
+  formatRelativeTime,
+  loadCrossRepoReceipts,
+  type CrossRepoReceiptRow,
+} from "@/lib/receipts";
 
 // Sprint 4 — homepage now queries weekly_features for the receipt-of-the-week
 // card. Skip static pre-render so the build doesn't query the prod DB before
@@ -409,9 +413,9 @@ ${depositLine}
           Agent x402 prompt
         </h2>
         <p className="text-sm leading-relaxed text-[var(--color-ink-muted)] max-w-xl mb-6">
-          Paste this into an autonomous agent. Public repos use x402 pay-per-review by default;
-          installed or private repos use the prepaid channel path.
-          Machine-readable manifest at{" "}
+          Paste this into an autonomous agent. Public repos use x402 pay-per-review by default (v1
+          restricted to aeon-ecosystem callers; broader access planned for v2); installed or private
+          repos use the prepaid channel path. Machine-readable manifest at{" "}
           <a
             href="/.well-known/antfleet.json"
             className="text-[var(--color-ink)] underline underline-offset-2 hover:opacity-80"

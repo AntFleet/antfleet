@@ -5,7 +5,7 @@ export const X402_SEPOLIA_NETWORK = "eip155:84532";
 export const X402_MAINNET_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 export const X402_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 export const X402_MAINNET_FACILITATOR = "https://api.cdp.coinbase.com/platform/v2/x402";
-export const X402_SEPOLIA_FACILITATOR = "https://www.x402.org/facilitator";
+export const X402_SEPOLIA_FACILITATOR = "https://x402.org/facilitator";
 export const X402_MAX_TIMEOUT_SECONDS = 600;
 export const X402_AUTHORIZATION_MAX_SECONDS = 900;
 export const X402_FUTURE_SKEW_SECONDS = 30;
@@ -31,6 +31,8 @@ export class X402ConfigError extends Error {
 }
 
 type EnvMap = Record<string, string | undefined>;
+
+const probedFacilitators = new Set<string>();
 
 export function loadX402Config(env: EnvMap = process.env): X402Config {
   const network = requireEnv(env, "X402_NETWORK");
@@ -80,6 +82,8 @@ export function loadX402Config(env: EnvMap = process.env): X402Config {
       "CDP_API_KEY_ID and CDP_API_KEY_SECRET are required for Base mainnet x402",
     );
   }
+  validateTimeoutOverride(env);
+  maybeProbeFacilitator(env, facilitator);
 
   return {
     network,
@@ -120,7 +124,10 @@ function normalizeUrl(value: string, name: string): string {
 
 function checksumAddress(value: string, name: string): string {
   if (!isAddress(value, { strict: true })) {
-    throw new X402ConfigError(`${name.toLowerCase()}_invalid`, `${name} must be EIP-55 checksummed`);
+    throw new X402ConfigError(
+      `${name.toLowerCase()}_invalid`,
+      `${name} must be EIP-55 checksummed`,
+    );
   }
   return getAddress(value);
 }
@@ -130,4 +137,39 @@ function usdcToBaseUnits(value: string): string {
   if (whole === undefined) throw new X402ConfigError("x402_price_invalid", "invalid price");
   const padded = (frac + "000000").slice(0, 6);
   return (BigInt(whole) * 1_000_000n + BigInt(padded || "0")).toString();
+}
+
+function validateTimeoutOverride(env: EnvMap): void {
+  const raw = env["X402_MAX_TIMEOUT_SECONDS"];
+  if (raw === undefined || raw.trim() === "") return;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new X402ConfigError(
+      "x402_max_timeout_seconds_invalid",
+      "X402_MAX_TIMEOUT_SECONDS must be a positive integer number of seconds",
+    );
+  }
+}
+
+function maybeProbeFacilitator(env: EnvMap, url: string): void {
+  if (env !== process.env || process.env["NODE_ENV"] === "test") return;
+  if (probedFacilitators.has(url)) return;
+  probedFacilitators.add(url);
+  void probeFacilitator(url);
+}
+
+async function probeFacilitator(url: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const ac = new AbortController();
+    timer = setTimeout(() => ac.abort(), 5000);
+    const res = await fetch(url, { method: "HEAD", signal: ac.signal });
+    if (!res.ok && res.status !== 405) {
+      console.warn(`[x402] Facilitator probe returned ${res.status} for ${url}`);
+    }
+  } catch (err) {
+    console.warn(`[x402] Facilitator probe failed for ${url}: ${err}`);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

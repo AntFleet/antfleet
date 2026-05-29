@@ -55,8 +55,8 @@ export async function findRecentRepoShaJob(
       AND lower(repo_name) = ${args.repo.toLowerCase()}
       AND lower(sha) = ${args.sha.toLowerCase()}
       AND created_at >= ${windowStart}
-      AND status IN ('queued', 'running', 'complete', 'failed')
-    ORDER BY created_at ASC
+      AND status IN ('queued', 'running', 'complete')
+    ORDER BY created_at DESC
     LIMIT 1
   `);
   const row = firstRow<ReviewJobRow>(result);

@@ -23,4 +23,5 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm test
+      - run: pnpm --dir apps/web exec tsx scripts/x402-live-smoke.ts --mode verify --skip-on-missing-creds
       - run: pnpm build

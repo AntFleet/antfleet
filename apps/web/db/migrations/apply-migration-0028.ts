@@ -15,45 +15,38 @@ const selfDir = dirname(selfPath);
 dotenv.config({ path: join(selfDir, "../../.env.local") });
 
 const sqlFile = readFileSync(join(selfDir, "0028_review_jobs_x402.sql"), "utf-8");
-const dryRun = !process.argv.includes("--apply");
-
-if (dryRun) {
-  console.log("\n--- DRY RUN (pass --apply to execute) ---\n");
-  console.log(sqlFile);
-  process.exit(0);
-}
-
-const url = process.env["DATABASE_URL"];
-if (!url) {
-  console.error("DATABASE_URL not set");
-  process.exit(1);
-}
-
-const host = url.replace(/^postgresql:\/\/[^@]+@([^/?]+).*/, "$1");
-console.log("Target host:", host);
 
 const PROD_PATTERNS = ["neon-fulvous-zebra", "solitary-dew-96858656"];
-if (PROD_PATTERNS.some((p) => host.includes(p))) {
-  console.error("REFUSING to run against prod-looking host:", host);
-  process.exit(1);
-}
 
-const sql = neon(url);
+type SqlRow = Record<string, unknown>;
+type MigrationSql = {
+  (statement: string): Promise<SqlRow[]>;
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+};
 
-async function main() {
-  console.log("Applying migration 0028_review_jobs_x402...");
-  const statements = sqlFile
+export function migration0028Statements(sqlText = sqlFile): string[] {
+  return sqlText
     .split("\n")
     .filter((line) => !line.trimStart().startsWith("--"))
     .join("\n")
     .split(";")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  for (const stmt of statements) {
+}
+
+export async function applyMigration0028(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
+  for (const stmt of migration0028Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
     await sql(stmt);
   }
+}
 
+export async function verifyMigration0028(sql: MigrationSql): Promise<{
+  columns: string[];
+  indexes: string[];
+  hasSettlementConstraint: boolean;
+  hasFailureModeConstraint: boolean;
+}> {
   const columns = await sql`
     SELECT column_name
     FROM information_schema.columns
@@ -98,23 +91,66 @@ async function main() {
     ORDER BY indexname
   `;
 
-  console.log("Columns present:", columns.map((r) => r.column_name).join(", "));
-  console.log("Indexes present:", indexes.map((r) => r.indexname).join(", "));
+  return {
+    columns: columns.map((r) => String(r["column_name"])),
+    indexes: indexes.map((r) => String(r["indexname"])),
+    hasSettlementConstraint: settlementConstraints.length === 1,
+    hasFailureModeConstraint: missingFailureModeConstraint.length > 0,
+  };
+}
+
+async function main() {
+  const dryRun = !process.argv.includes("--apply");
+  if (dryRun) {
+    console.log("\n--- DRY RUN (pass --apply to execute) ---\n");
+    console.log(sqlFile);
+    return;
+  }
+
+  const url = process.env["DATABASE_URL"];
+  if (!url) {
+    console.error("DATABASE_URL not set");
+    process.exitCode = 1;
+    return;
+  }
+
+  const host = url.replace(/^postgresql:\/\/[^@]+@([^/?]+).*/, "$1");
+  console.log("Target host:", host);
+  if (PROD_PATTERNS.some((p) => host.includes(p))) {
+    console.error("REFUSING to run against prod-looking host:", host);
+    process.exitCode = 1;
+    return;
+  }
+
+  const sql = neon(url) as MigrationSql;
+  console.log("Applying migration 0028_review_jobs_x402...");
+  await applyMigration0028(sql);
+  const verification = await verifyMigration0028(sql);
+
+  console.log("Columns present:", verification.columns.join(", "));
+  console.log("Indexes present:", verification.indexes.join(", "));
   console.log(
     "review_jobs_x402_settlement_status_check present:",
-    settlementConstraints.length === 1 ? "yes" : "no",
+    verification.hasSettlementConstraint ? "yes" : "no",
   );
   console.log(
     "review_jobs_failure_mode_check absent:",
-    missingFailureModeConstraint.length === 0 ? "yes" : "no",
+    !verification.hasFailureModeConstraint ? "yes" : "no",
   );
-  if (columns.length !== 9 || indexes.length !== 6 || settlementConstraints.length !== 1) {
+  if (
+    verification.columns.length !== 9 ||
+    verification.indexes.length !== 6 ||
+    !verification.hasSettlementConstraint ||
+    verification.hasFailureModeConstraint
+  ) {
     throw new Error("Migration 0028 post-apply verification failed");
   }
   console.log("Migration 0028 applied successfully.");
 }
 
-main().catch((err) => {
-  console.error("Migration failed:", err);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error("Migration failed:", err);
+    process.exit(1);
+  });
+}

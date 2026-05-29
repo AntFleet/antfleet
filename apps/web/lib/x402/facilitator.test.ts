@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { isPaymentRequiredV2 } from "@x402/core/schemas";
 import {
   buildPaymentRequired,
+  extractClaimedSigner,
   makeAuthorizationState,
   settlePayment,
   verifyPayment,
@@ -59,7 +60,9 @@ describe("x402 facilitator wrapper", () => {
         validBefore: Math.floor(now.getTime() / 1000) + 600,
       },
     };
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ isValid: true }), { status: 200 }));
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ isValid: true }), { status: 200 }),
+    );
 
     const verified = await verifyPayment({
       paymentSignature: Buffer.from(JSON.stringify(payload)).toString("base64"),
@@ -71,8 +74,54 @@ describe("x402 facilitator wrapper", () => {
 
     expect(verified.callerWallet).toBe("0x0000000000000000000000000000000000000001");
     expect(makeAuthorizationState(verified).validBefore).toBe("2026-05-29T00:10:00.000Z");
-    expect(makeAuthorizationState(verified).resource).toBe("https://example.test/api/v1/review/x402");
+    expect(makeAuthorizationState(verified).resource).toBe(
+      "https://example.test/api/v1/review/x402",
+    );
     expect(fetchImpl).toHaveBeenCalledWith(`${X402_SEPOLIA_FACILITATOR}/verify`, expect.anything());
+  });
+
+  it("extracts only authorization.from for pre-verify signer attribution", () => {
+    const payload = {
+      signer: "0x0000000000000000000000000000000000000002",
+      authorization: {
+        from: "0x0000000000000000000000000000000000000001",
+      },
+    };
+
+    expect(extractClaimedSigner(Buffer.from(JSON.stringify(payload)).toString("base64"))).toBe(
+      "0x0000000000000000000000000000000000000001",
+    );
+  });
+
+  it("uses authorization.from instead of loose signer fields after verification", async () => {
+    const now = new Date("2026-05-29T00:00:00Z");
+    const payload = {
+      signer: "0x0000000000000000000000000000000000000002",
+      authorization: {
+        from: "0x0000000000000000000000000000000000000001",
+        validAfter: Math.floor(now.getTime() / 1000),
+        validBefore: Math.floor(now.getTime() / 1000) + 600,
+      },
+    };
+
+    const verified = await verifyPayment({
+      paymentSignature: Buffer.from(JSON.stringify(payload)).toString("base64"),
+      config,
+      resource: "https://example.test/api/v1/review/x402",
+      now,
+      fetchImpl: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              isValid: true,
+              signer: "0x0000000000000000000000000000000000000002",
+            }),
+            { status: 200 },
+          ),
+      ),
+    });
+
+    expect(verified.callerWallet).toBe("0x0000000000000000000000000000000000000001");
   });
 
   it("rejects authorization windows over 900 seconds", async () => {
@@ -91,7 +140,9 @@ describe("x402 facilitator wrapper", () => {
         config,
         resource: "https://example.test/api/v1/review/x402",
         now,
-        fetchImpl: vi.fn(async () => new Response(JSON.stringify({ isValid: true }), { status: 200 })),
+        fetchImpl: vi.fn(
+          async () => new Response(JSON.stringify({ isValid: true }), { status: 200 }),
+        ),
       }),
     ).rejects.toMatchObject({
       code: "x402_authorization_window_too_long",
@@ -137,9 +188,12 @@ describe("x402 facilitator wrapper", () => {
         paymentRequirements: { amount: string };
       };
       observedAmount = request.paymentRequirements.amount;
-      return new Response(JSON.stringify({ success: true, transaction: "0xabc", network: "eip155:84532" }), {
-        status: 200,
-      });
+      return new Response(
+        JSON.stringify({ success: true, transaction: "0xabc", network: "eip155:84532" }),
+        {
+          status: 200,
+        },
+      );
     });
 
     const result = await settlePayment({
@@ -171,10 +225,11 @@ describe("x402 facilitator wrapper", () => {
         config,
         authorization,
         now: new Date("2026-05-29T00:05:00Z"),
-        fetchImpl: vi.fn(async () =>
-          new Response(JSON.stringify({ success: false, errorReason: "insufficient_funds" }), {
-            status: 200,
-          }),
+        fetchImpl: vi.fn(
+          async () =>
+            new Response(JSON.stringify({ success: false, errorReason: "insufficient_funds" }), {
+              status: 200,
+            }),
         ),
       }),
     ).rejects.toMatchObject({

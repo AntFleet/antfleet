@@ -101,7 +101,11 @@ export async function verifyPayment(args: {
 
   const callerWallet = extractCallerWallet(body) ?? extractCallerWallet(payload);
   if (callerWallet === null) {
-    throw new X402PaymentError(400, "x402_signer_missing", "verified payment did not include signer");
+    throw new X402PaymentError(
+      400,
+      "x402_signer_missing",
+      "verified payment did not include signer",
+    );
   }
 
   const window = extractAuthorizationWindow(payload, body);
@@ -138,7 +142,8 @@ export async function settlePayment(args: {
     body: JSON.stringify({
       x402Version: 2,
       paymentPayload: args.authorization.paymentPayload,
-      paymentRequirements: buildPaymentRequired(args.config, args.authorization.resource).accepts[0],
+      paymentRequirements: buildPaymentRequired(args.config, args.authorization.resource)
+        .accepts[0],
     }),
   });
   const body = await readJsonBody(resp);
@@ -148,9 +153,13 @@ export async function settlePayment(args: {
 
   return {
     settled: true,
-    paymentResponseHeader: Buffer.from(JSON.stringify(body)).toString("base64"),
+    paymentResponseHeader: paymentResponseHeader(body),
     response: body,
   };
+}
+
+export function paymentResponseHeader(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64");
 }
 
 export function makeAuthorizationState(payment: VerifiedPayment): X402AuthorizationState {
@@ -163,6 +172,22 @@ export function makeAuthorizationState(payment: VerifiedPayment): X402Authorizat
     resource: payment.resource,
     verifyResponse: payment.facilitatorResponse,
   };
+}
+
+/**
+ * Extract the claimed signer address from a PAYMENT-SIGNATURE header without
+ * cryptographic verification. This is only for pre-verify rate-limit and
+ * idempotency lookups; verifyPayment remains the authority before enqueue.
+ */
+export function extractClaimedSigner(headerValue: string | null): `0x${string}` | null {
+  if (headerValue === null || headerValue.trim() === "") return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(headerValue, "base64").toString("utf8")) as unknown;
+    const from = readAuthorizationFrom(decoded);
+    return from === null ? null : (from.toLowerCase() as `0x${string}`);
+  } catch {
+    return null;
+  }
 }
 
 export function readAuthorizationState(value: unknown): X402AuthorizationState | null {
@@ -241,9 +266,15 @@ function extractAuthorizationWindow(
 }
 
 function extractCallerWallet(value: unknown): string | null {
-  const keys = ["from", "payer", "payerAddress", "account", "signer", "walletAddress"];
-  const found = findStringField(value, keys);
-  return found !== null && /^0x[a-fA-F0-9]{40}$/.test(found) ? found : null;
+  return readAuthorizationFrom(value);
+}
+
+function readAuthorizationFrom(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const authorization = (value as Record<string, unknown>)["authorization"];
+  if (typeof authorization !== "object" || authorization === null) return null;
+  const from = (authorization as Record<string, unknown>)["from"];
+  return typeof from === "string" && /^0x[a-fA-F0-9]{40}$/.test(from) ? from : null;
 }
 
 function findNumberishField(value: unknown, key: string): number | null {
@@ -254,20 +285,6 @@ function findNumberishField(value: unknown, key: string): number | null {
   if (typeof direct === "string" && /^\d+$/.test(direct)) return Number(direct);
   for (const child of Object.values(record)) {
     const nested = findNumberishField(child, key);
-    if (nested !== null) return nested;
-  }
-  return null;
-}
-
-function findStringField(value: unknown, keys: string[]): string | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  for (const key of keys) {
-    const direct = record[key];
-    if (typeof direct === "string") return direct;
-  }
-  for (const child of Object.values(record)) {
-    const nested = findStringField(child, keys);
     if (nested !== null) return nested;
   }
   return null;

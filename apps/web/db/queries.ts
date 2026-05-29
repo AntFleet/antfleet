@@ -1152,15 +1152,25 @@ export async function loadPublicReviewReceipt(
       ) AS "findings"
     FROM reviews r
     LEFT JOIN finding_status fs ON fs.review_id = r.review_id
-    JOIN review_jobs j ON j.x402_review_id = r.review_id AND j.payment_rail = 'x402'
+    LEFT JOIN review_jobs j ON (
+      j.x402_review_id = r.review_id
+      OR (
+        j.x402_review_id IS NULL
+        AND lower(j.repo_owner) = lower(COALESCE(r.owner, ''))
+        AND lower(j.repo_name) = lower(COALESCE(r.repo, ''))
+        AND j.pr_number = r.pr_number
+        AND lower(j.sha) = lower(r.commit_sha)
+      )
+    )
     WHERE r.review_id = ${reviewId}
       AND r.public_receipt = true
     GROUP BY r.review_id, j.job_id
+    ORDER BY j.created_at DESC NULLS LAST
     LIMIT 1
   `);
   const rows = Array.isArray(result)
     ? (result as PublicReviewReceiptRow[])
-    : (((result as unknown) as { rows?: PublicReviewReceiptRow[] }).rows ?? []);
+    : ((result as unknown as { rows?: PublicReviewReceiptRow[] }).rows ?? []);
   return rows[0] ?? null;
 }
 
@@ -2053,13 +2063,16 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
           sql`lower(${outgoingPrs.upstreamRepo}) = ${first.agentName.toLowerCase()}`,
         ),
       )
-      .orderBy(sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) DESC NULLS LAST`),
+      .orderBy(
+        sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) DESC NULLS LAST`,
+      ),
   ]);
 
   const crossRepoMerges: AgentCrossRepoMerge[] = mergedOutgoingRows
     .filter((r) => {
       if (r.status === "merged") return r.mergedAt !== null && r.mergeSha !== null;
-      if (r.status === "closed_absorbed") return r.closureDetectedAt !== null && r.closureSha !== null;
+      if (r.status === "closed_absorbed")
+        return r.closureDetectedAt !== null && r.closureSha !== null;
       return false;
     })
     .map((r) => {
@@ -2608,9 +2621,7 @@ export async function loadScorecardIndex(args: {
 }): Promise<{ rows: ScorecardSnapshotRow[]; hasMore: boolean }> {
   const fetchLimit = args.limit + 1;
   const conditions =
-    args.before !== undefined
-      ? lt(scorecardSnapshots.yyyyMmDd, args.before)
-      : undefined;
+    args.before !== undefined ? lt(scorecardSnapshots.yyyyMmDd, args.before) : undefined;
 
   const rows = await db
     .select()

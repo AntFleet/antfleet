@@ -22,6 +22,9 @@ installed/private repos — no subscription, no email, no dashboard.
 - Price per review: 0.50 USDC (override via REVIEW_PRICE_USDC env var)
 - Endpoint: POST /api/v1/review/x402
 - Status: GET /api/v1/review/x402/{jobId}
+- Access in v1 is restricted to aeon-ecosystem callers (requires
+  `X-Aeon-Context` header); broader public access planned for v2.
+  Non-aeon callers will receive HTTP 403.
 - First request without PAYMENT-SIGNATURE returns HTTP 402 with payment
   requirements. Repeat with PAYMENT-SIGNATURE to enqueue the review.
 - Payment settles to the same operator wallet used by prepaid channel deposits.

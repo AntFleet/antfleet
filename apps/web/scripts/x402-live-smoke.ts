@@ -62,6 +62,7 @@ type Cli = {
   useRepoTestWallet: boolean;
   allowMainnetSettle: boolean;
   trafficCount: number;
+  skipOnMissingCreds: boolean;
 };
 
 type LiveContext = {
@@ -85,7 +86,9 @@ async function main() {
     (cli.mode === "settle" || cli.mode === "worker-e2e") &&
     !cli.allowMainnetSettle
   ) {
-    throw new Error("mainnet settlement is blocked; pass --allow-mainnet-settle only for launch rehearsal");
+    throw new Error(
+      "mainnet settlement is blocked; pass --allow-mainnet-settle only for launch rehearsal",
+    );
   }
 
   if (cli.mode === "traffic") {
@@ -110,9 +113,25 @@ async function main() {
 
   const paymentRequired = buildPaymentRequiredForSmoke(ctx.config, cli.resource);
   const paymentPayload = await ctx.httpClient.createPaymentPayload(paymentRequired as never);
-  const verifyBody = await callFacilitator(ctx.config, "verify", paymentPayload, paymentRequired.accepts[0]);
+  const verifyBody = await callFacilitator(
+    ctx.config,
+    "verify",
+    paymentPayload,
+    paymentRequired.accepts[0],
+  );
   if (!isVerifyValid(verifyBody.body)) {
-    console.log(JSON.stringify({ stage: "verify", ok: false, httpStatus: verifyBody.status, body: summarizeFacilitatorBody(verifyBody.body) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          stage: "verify",
+          ok: false,
+          httpStatus: verifyBody.status,
+          body: summarizeFacilitatorBody(verifyBody.body),
+        },
+        null,
+        2,
+      ),
+    );
     process.exitCode = 1;
     return;
   }
@@ -138,7 +157,12 @@ async function main() {
   }
 
   const before = await readBalances(ctx);
-  const settleBody = await callFacilitator(ctx.config, "settle", paymentPayload, paymentRequired.accepts[0]);
+  const settleBody = await callFacilitator(
+    ctx.config,
+    "settle",
+    paymentPayload,
+    paymentRequired.accepts[0],
+  );
   const txHash = extractSettlementTx(settleBody.body);
   if (txHash !== null) {
     await ctx.publicClient.waitForTransactionReceipt({ hash: txHash });
@@ -173,13 +197,15 @@ async function main() {
 function parseCli(args: string[]): Cli {
   const cli: Cli = {
     mode: "verify",
-    amountUsdc: process.env["X402_SMOKE_AMOUNT_USDC"] ?? process.env["X402_REVIEW_PRICE_USDC"] ?? "0.01",
+    amountUsdc:
+      process.env["X402_SMOKE_AMOUNT_USDC"] ?? process.env["X402_REVIEW_PRICE_USDC"] ?? "0.01",
     resource: process.env["X402_SMOKE_RESOURCE"] ?? DEFAULT_RESOURCE,
     repo: process.env["X402_SMOKE_REPO"] ?? "antfleet/x402-fixture",
     pr: Number(process.env["X402_SMOKE_PR"] ?? "1"),
     useRepoTestWallet: process.env["X402_SMOKE_PRIVATE_KEY"] === undefined,
     allowMainnetSettle: false,
     trafficCount: 20,
+    skipOnMissingCreds: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -199,6 +225,7 @@ function parseCli(args: string[]): Cli {
     else if (arg === "--private-key-env") cli.useRepoTestWallet = false;
     else if (arg === "--repo-test-wallet") cli.useRepoTestWallet = true;
     else if (arg === "--allow-mainnet-settle") cli.allowMainnetSettle = true;
+    else if (arg === "--skip-on-missing-creds") cli.skipOnMissingCreds = true;
     else if (arg === "--help") {
       printHelp();
       process.exit(0);
@@ -213,6 +240,10 @@ function parseCli(args: string[]): Cli {
   if (!Number.isInteger(cli.pr) || cli.pr <= 0) throw new Error("--pr must be a positive integer");
   if (!Number.isInteger(cli.trafficCount) || cli.trafficCount <= 0) {
     throw new Error("--traffic-count must be a positive integer");
+  }
+  if (cli.skipOnMissingCreds && process.env["X402_SMOKE_PRIVATE_KEY"] === undefined) {
+    console.log("Skipping x402 live smoke: X402_SMOKE_PRIVATE_KEY is not set.");
+    process.exit(0);
   }
   return cli;
 }
@@ -246,13 +277,16 @@ Modes:
 
 Private key:
   Uses X402_SMOKE_PRIVATE_KEY when set. Otherwise --repo-test-wallet reads the repo test wallet.
+  --skip-on-missing-creds exits 0 when X402_SMOKE_PRIVATE_KEY is missing.
 `);
 }
 
 function configFor(cli: Cli): X402Config {
   const envConfig = tryLoadEnvConfig();
   const network = envConfig?.network ?? X402_SEPOLIA_NETWORK;
-  const usdcAsset = envConfig?.usdcAsset ?? (network === X402_MAINNET_NETWORK ? X402_MAINNET_USDC : X402_SEPOLIA_USDC);
+  const usdcAsset =
+    envConfig?.usdcAsset ??
+    (network === X402_MAINNET_NETWORK ? X402_MAINNET_USDC : X402_SEPOLIA_USDC);
   const facilitator =
     envConfig?.facilitator ??
     (network === X402_MAINNET_NETWORK
@@ -285,8 +319,8 @@ function makeLiveContext(cli: Cli, config: X402Config): LiveContext {
   const chain = config.network === X402_MAINNET_NETWORK ? base : baseSepolia;
   const rpcUrl =
     config.network === X402_MAINNET_NETWORK
-      ? process.env["BASE_MAINNET_RPC_URL"] ?? "https://mainnet.base.org"
-      : process.env["BASE_SEPOLIA_RPC_URL"] ?? "https://sepolia.base.org";
+      ? (process.env["BASE_MAINNET_RPC_URL"] ?? "https://mainnet.base.org")
+      : (process.env["BASE_SEPOLIA_RPC_URL"] ?? "https://sepolia.base.org");
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as PublicClient;
   const coreClient = new x402Client();
   registerExactEvmScheme(coreClient, {
@@ -306,7 +340,10 @@ function loadPrivateKey(cli: Cli): Hex {
     return key as Hex;
   }
 
-  const source = readFileSync(join(process.cwd(), "app/api/v1/installations/eip191-roundtrip.test.ts"), "utf8");
+  const source = readFileSync(
+    join(process.cwd(), "app/api/v1/installations/eip191-roundtrip.test.ts"),
+    "utf8",
+  );
   const key = [...source.matchAll(/"(0x[0-9a-fA-F]{64})"/g)][0]?.[1];
   if (key === undefined) throw new Error("repo test wallet private key not found");
   return key as Hex;
@@ -330,7 +367,10 @@ function buildPaymentRequiredForSmoke(config: X402Config, resource: string) {
         amount: config.priceBaseUnits,
         payTo: config.treasury,
         maxTimeoutSeconds: 600,
-        extra: config.network === X402_MAINNET_NETWORK ? { name: "USD Coin", version: "2" } : { name: "USDC", version: "2" },
+        extra:
+          config.network === X402_MAINNET_NETWORK
+            ? { name: "USD Coin", version: "2" }
+            : { name: "USDC", version: "2" },
       },
     ],
     error: "PAYMENT-REQUIRED",
@@ -342,7 +382,8 @@ async function runWorkerE2E(cli: Cli, ctx: LiveContext) {
   const target = await resolvePrTarget(cli);
   const paymentRequired = buildPaymentRequiredForSmoke(ctx.config, cli.resource);
   const paymentPayload = await ctx.httpClient.createPaymentPayload(paymentRequired as never);
-  const paymentSignature = ctx.httpClient.encodePaymentSignatureHeader(paymentPayload)["PAYMENT-SIGNATURE"];
+  const paymentSignature =
+    ctx.httpClient.encodePaymentSignatureHeader(paymentPayload)["PAYMENT-SIGNATURE"];
   if (paymentSignature === undefined) throw new Error("payment signature was not created");
   const payment = await verifyPayment({
     paymentSignature,
@@ -458,10 +499,20 @@ async function readBalances(ctx: LiveContext) {
   const usdc = getAddress(ctx.config.usdcAsset);
   const [payerEthRaw, payerUsdcRaw, payToUsdcRaw, payerCode] = await Promise.all([
     ctx.publicClient.getBalance({ address: ctx.account.address }),
-    ctx.publicClient.readContract({ address: usdc, abi: erc20Abi, functionName: "balanceOf", args: [ctx.account.address] }),
+    ctx.publicClient.readContract({
+      address: usdc,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [ctx.account.address],
+    }),
     ctx.config.treasury === ZERO_ADDRESS
       ? Promise.resolve(0n)
-      : ctx.publicClient.readContract({ address: usdc, abi: erc20Abi, functionName: "balanceOf", args: [getAddress(ctx.config.treasury)] }),
+      : ctx.publicClient.readContract({
+          address: usdc,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [getAddress(ctx.config.treasury)],
+        }),
     ctx.publicClient.getCode({ address: ctx.account.address }),
   ]);
   return {
@@ -488,7 +539,7 @@ async function runRouteSmoke(cli: Cli, ctx: LiveContext) {
       },
       body: JSON.stringify({ target: { repo: cli.repo, pr: cli.pr } }),
     });
-    const res = await handleX402ReviewRequest(req, routeDeps(ctx.config, cli, verifyPayment));
+    const res = await handleX402ReviewRequest(req, routeDeps(ctx.config, verifyPayment));
     console.log(
       JSON.stringify(
         {
@@ -512,7 +563,7 @@ async function runTraffic(cli: Cli, config: X402Config) {
   process.env["X402_REQUIRE_AEON_CONTEXT"] = "false";
   try {
     const { handleX402ReviewRequest } = await import("@/app/api/v1/review/x402/route");
-    const deps = routeDeps(config, cli, async () => {
+    const deps = routeDeps(config, async () => {
       throw new X402PaymentError(402, "x402_verify_failed", "x402 payment verification failed");
     });
     const statuses = new Map<string, number>();
@@ -553,24 +604,23 @@ async function runTraffic(cli: Cli, config: X402Config) {
   }
 }
 
-function routeDeps(
-  config: X402Config,
-  cli: Cli,
-  verify: X402RouteDeps["verifyPayment"],
-): X402RouteDeps {
-  const now = () => new Date();
+const smokeNow = () => new Date();
+
+function routeDeps(config: X402Config, verify: X402RouteDeps["verifyPayment"]): X402RouteDeps {
   return {
-    now,
+    now: smokeNow,
     loadConfig: () => config,
     verifyPayment: verify,
-    createJob: async (args) => fakeJob(args, cli),
+    createJob: async (args) => fakeJob(args),
     findJobByIdempotencyKey: async () => null,
     findRecentRepoShaJob: async () => null,
     checkWalletRateLimit: async () => ({ ok: true, limit: 100 }),
     makeOctokit: () => ({
       rest: {
         pulls: {
-          get: async () => ({ data: { state: "open", head: { sha: "abcdef1234567890abcdef1234567890abcdef12" } } }),
+          get: async () => ({
+            data: { state: "open", head: { sha: "abcdef1234567890abcdef1234567890abcdef12" } },
+          }),
         },
         repos: {
           listPullRequestsAssociatedWithCommit: async () => ({ data: [] }),
@@ -581,7 +631,7 @@ function routeDeps(
   };
 }
 
-function fakeJob(args: Parameters<X402RouteDeps["createJob"]>[0], cli: Cli): ReviewJobRow {
+function fakeJob(args: Parameters<X402RouteDeps["createJob"]>[0]): ReviewJobRow {
   const now = new Date();
   const authorizationState = readSmokeAuthorizationState(args.authorizationState);
   return {
@@ -633,7 +683,8 @@ async function runMainnetDry(config: X402Config) {
   };
   const headers: Record<string, string> = {};
   if (mainnetConfig.cdpApiKeyId !== null) headers["x-cdp-api-key-id"] = mainnetConfig.cdpApiKeyId;
-  if (mainnetConfig.cdpApiKeySecret !== null) headers["x-cdp-api-key-secret"] = mainnetConfig.cdpApiKeySecret;
+  if (mainnetConfig.cdpApiKeySecret !== null)
+    headers["x-cdp-api-key-secret"] = mainnetConfig.cdpApiKeySecret;
   const resp = await fetch(`${mainnetConfig.facilitator}/supported`, { headers });
   console.log(
     JSON.stringify(
@@ -677,11 +728,21 @@ function summarizeFacilitatorBody(value: unknown): unknown {
 }
 
 function isVerifyValid(value: unknown): boolean {
-  return typeof value === "object" && value !== null && ((value as Record<string, unknown>)["isValid"] === true || (value as Record<string, unknown>)["valid"] === true || (value as Record<string, unknown>)["success"] === true);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ((value as Record<string, unknown>)["isValid"] === true ||
+      (value as Record<string, unknown>)["valid"] === true ||
+      (value as Record<string, unknown>)["success"] === true)
+  );
 }
 
 function isSettlementSuccessful(value: unknown): boolean {
-  return typeof value === "object" && value !== null && (value as Record<string, unknown>)["success"] === true;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>)["success"] === true
+  );
 }
 
 function extractSettlementTx(value: unknown): Hex | null {

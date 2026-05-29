@@ -40,8 +40,14 @@ export async function GET(): Promise<Response> {
       bind_wallet: `${base}/api/v1/installations/{id}/bind`,
       submit_deposit: `${base}/api/v1/installations/{id}/deposit`,
       get_installation: `${base}/api/v1/installations/{id}`,
-      review_x402: `${base}/api/v1/review/x402`,
-      get_x402_review: `${base}/api/v1/review/x402/{jobId}`,
+      review_x402: {
+        url: `${base}/api/v1/review/x402`,
+        access_scope: "aeon-ecosystem-callers-only-v1",
+      },
+      get_x402_review: {
+        url: `${base}/api/v1/review/x402/{jobId}`,
+        access_scope: "aeon-ecosystem-callers-only-v1",
+      },
       llms_txt: `${base}/llms.txt`,
       manifest: `${base}/.well-known/antfleet.json`,
     },

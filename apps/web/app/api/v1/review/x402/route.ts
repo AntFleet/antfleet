@@ -15,6 +15,7 @@ import { processReviewJob } from "@/lib/review-job-worker";
 import { requireAeonContext } from "@/lib/x402/aeon-gate";
 import {
   buildPaymentRequired,
+  extractClaimedSigner,
   PAYMENT_REQUIRED_HEADER,
   PAYMENT_RESPONSE_HEADER,
   makeAuthorizationState,
@@ -38,7 +39,10 @@ const bodySchema = z
       .object({
         repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/, "repo must be owner/name"),
         pr: z.number().int().positive().optional(),
-        sha: z.string().regex(/^[0-9a-f]{7,64}$/i, "sha must be a hex commit identifier").optional(),
+        sha: z
+          .string()
+          .regex(/^[0-9a-f]{7,64}$/i, "sha must be a hex commit identifier")
+          .optional(),
       })
       .refine((v) => v.pr !== undefined || v.sha !== undefined, {
         message: "target.pr or target.sha is required",
@@ -131,11 +135,7 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
       config = deps.loadConfig();
     } catch (err) {
       if (isX402ConfigError(err) && err.code === "antfleet_x402_treasury_missing") {
-        return jsonError(
-          500,
-          "treasury_unconfigured",
-          "x402 treasury address not configured",
-        );
+        return jsonError(500, "treasury_unconfigured", "x402 treasury address not configured");
       }
       if (isX402ConfigError(err)) return jsonError(500, err.code, err.message);
       throw err;
@@ -152,7 +152,9 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
           "Access-Control-Expose-Headers": X402_EXPOSE_HEADERS,
           "Cache-Control": NO_STORE,
           "Content-Type": "application/json; charset=utf-8",
-          [PAYMENT_REQUIRED_HEADER]: Buffer.from(JSON.stringify(paymentRequired)).toString("base64"),
+          [PAYMENT_REQUIRED_HEADER]: Buffer.from(JSON.stringify(paymentRequired)).toString(
+            "base64",
+          ),
         },
       });
     }
@@ -161,6 +163,47 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
     if (!parsed.success) {
       return jsonError(400, "invalid_input", parsed.error.issues[0]?.message ?? "bad request");
     }
+
+    const target = await resolveTarget(parsed.data, deps.makeOctokit());
+    if (target.kind === "error") return jsonError(target.status, target.code, target.message);
+
+    const cooldownHit = await deps.findRecentRepoShaJob({
+      owner: target.owner,
+      repo: target.repo,
+      sha: target.sha,
+      now,
+    });
+    if (cooldownHit !== null) return jobResponse(cooldownHit, statusForExisting(cooldownHit));
+
+    const claimedSigner = extractClaimedSigner(paymentSignature);
+    if (claimedSigner === null) {
+      return jsonError(402, "x402_signer_missing", "payment payload did not include signer");
+    }
+
+    const rate = await deps.checkWalletRateLimit({
+      callerWallet: claimedSigner,
+      now,
+    });
+    if (!rate.ok) {
+      const res = jsonError(
+        429,
+        "rate_limited_wallet",
+        `Rate limit exceeded: ${rate.limit} reviews per wallet per hour`,
+        { retry_after_seconds: rate.retryAfterSeconds },
+      );
+      res.headers.set("Retry-After", String(rate.retryAfterSeconds));
+      return res;
+    }
+
+    const idempotencyKey = buildX402IdempotencyKey({
+      callerWallet: claimedSigner,
+      owner: target.owner,
+      repo: target.repo,
+      prNumber: target.prNumber,
+      sha: target.sha,
+    });
+    const existing = await deps.findJobByIdempotencyKey(idempotencyKey);
+    if (existing !== null) return jobResponse(existing, statusForExisting(existing));
 
     let payment: VerifiedPayment;
     try {
@@ -176,40 +219,6 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
       }
       throw err;
     }
-
-    const target = await resolveTarget(parsed.data, deps.makeOctokit());
-    if (target.kind === "error") return jsonError(target.status, target.code, target.message);
-
-    const cooldownHit = await deps.findRecentRepoShaJob({
-      owner: target.owner,
-      repo: target.repo,
-      sha: target.sha,
-      now,
-    });
-    if (cooldownHit !== null) return jobResponse(cooldownHit, statusForExisting(cooldownHit));
-
-    const rate = await deps.checkWalletRateLimit({
-      callerWallet: payment.callerWallet,
-      now,
-    });
-    if (!rate.ok) {
-      return jsonError(
-        429,
-        "rate_limited_wallet",
-        `Rate limit exceeded: ${rate.limit} reviews per wallet per hour`,
-        { retry_after_seconds: rate.retryAfterSeconds },
-      );
-    }
-
-    const idempotencyKey = buildX402IdempotencyKey({
-      callerWallet: payment.callerWallet,
-      owner: target.owner,
-      repo: target.repo,
-      prNumber: target.prNumber,
-      sha: target.sha,
-    });
-    const existing = await deps.findJobByIdempotencyKey(idempotencyKey);
-    if (existing !== null) return jobResponse(existing, statusForExisting(existing));
 
     const job = await deps.createJob({
       callerWallet: payment.callerWallet,
@@ -300,7 +309,11 @@ async function resolveTarget(body: ParsedBody, octokit: X402Octokit): Promise<Re
   }
 }
 
-function githubTargetError(err: unknown, fallbackCode: string, fallbackMessage: string): ResolvedTarget {
+function githubTargetError(
+  err: unknown,
+  fallbackCode: string,
+  fallbackMessage: string,
+): ResolvedTarget {
   const status = (err as { status?: number })?.status;
   if (status === 403 || status === 404) {
     return {

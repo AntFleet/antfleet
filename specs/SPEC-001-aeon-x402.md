@@ -1,7 +1,22 @@
 # SPEC-001 — Aeon x402 pull-mode review skill
 
-**Version:** 0.4 (2026-05-29, round-3 narrow audit closing — documentation-only)
+**Version:** 0.6 (2026-05-29, v0.5 audit partials closure)
 **Depends on:** AntFleet async review API (POST `/api/v1/installations/{id}/review`, schema head 0027); aeon-skills pack v2.0; `antfleet[bot]` GitHub App at https://github.com/apps/antfleet; Coinbase CDP x402 facilitator (mainnet); x402.org reference facilitator (testnet)
+
+**Change log v0.6:**
+- P1.2 closure: AC-6 cross-wallet cooldown test now uses two distinct wallet addresses; the cross-wallet semantic is actually exercised.
+- P1.5 closure: Migration 0028 test now applies against real Postgres via `@testcontainers/postgresql`, with Docker-unavailable environments reporting the real apply case as skipped instead of passing a fake catalog.
+- Part B closure: `pr-review-antfleet-x402/run.mjs` now asserts server-advertised `maxTimeoutSeconds <= 600s` before signing authorizations. Documents that server-side is primary defense; client-side `authorizationWindowSeconds` is a no-op against `@x402/evm@2.13.0`. Future hardening: hand-roll EIP-3009 signing.
+
+**Change log v0.5:**
+- Align FR-A2's illustrative 402 payload with `@x402/core` v2: top-level `resource` object, `accepts[].amount`, and `accepts[].extra`.
+- Align FR-A4 facilitator URLs with Coinbase's current network-support documentation: CDP mainnet at `https://api.cdp.coinbase.com/platform/v2/x402`; x402.org testnet at `https://x402.org/facilitator`.
+- Clarify FR-C3's v1 gate implementation is a top-of-handler `requireAeonContext()` call, removable by `X402_REQUIRE_AEON_CONTEXT=false`, not a Next.js middleware.
+- Clarify FR-D1 enforcement order: cooldown/rate-limit/idempotency checks precede facilitator verification when a payment payload is present.
+- Clarify FR-E2 review-level receipts are rail-agnostic, with x402 settlement fields omitted for channel-rail display.
+- Expand FR-E3 and § 5.3 to enumerate the actual migration 0028 x402 authorization, review-linkage, and settlement columns.
+- Document the lazy poll-time `expired` transition and the review-level receipt query's newest-job tie-breaker.
+- Document that `antfleet/aeon-skills` must bump its pack-local `skills-pack.json` when adding `pr-review-antfleet-x402`.
 
 **Change log v0.1:**
 - Initial draft following partnership agreement with aeon (founder: aaronjmars, 2026-05-29).
@@ -319,17 +334,25 @@ x402 v2 protocol:
    ```json
    {
      "x402Version": 2,
+     "resource": {
+       "url": "https://www.antfleet.dev/api/v1/review/x402",
+       "description": "AntFleet two-model-consensus PR review (Opus 4.7 + GPT-5)",
+       "mimeType": "application/json",
+       "serviceName": "AntFleet PR Review",
+       "tags": ["pr-review", "antfleet"]
+     },
      "accepts": [
        {
          "scheme": "exact",
          "network": "${X402_NETWORK}",
          "asset": "${X402_USDC_ASSET}",
-         "maxAmountRequired": "500000",
+         "amount": "500000",
          "payTo": "${ANTFLEET_X402_TREASURY}",
-         "resource": "https://www.antfleet.dev/api/v1/review/x402",
-         "description": "AntFleet two-model-consensus PR review (Opus 4.7 + GPT-5)",
-         "mimeType": "application/json",
-         "maxTimeoutSeconds": 600
+         "maxTimeoutSeconds": 600,
+         "extra": {
+           "name": "USD Coin",
+           "version": "2"
+         }
        }
      ],
      "error": "PAYMENT-REQUIRED"
@@ -339,6 +362,12 @@ x402 v2 protocol:
    environment variables at request time per FR-A4 (network/asset) and
    FR-A4b (treasury). Production mainnet defaults are pinned in FR-A4;
    staging substitutes Sepolia values per FR-A4.
+   The 402 payload shape mirrors `@x402/core` v2 schema, which is the
+   normative reference for what x402 v2 facilitators expect. The
+   AntFleet implementation uses `buildPaymentRequired()` in
+   `apps/web/lib/x402/facilitator.ts` to construct the payload; the
+   spec example here is illustrative — the implementation is the
+   source of truth.
 2. Subsequent request with
    `PAYMENT-SIGNATURE: <base64-encoded payment payload>` header is
    verified by the configured x402 v2 facilitator (OQ-5). On
@@ -374,7 +403,7 @@ and asset:
 |---|---|---|---|
 | `X402_NETWORK` | yes | `eip155:8453` (Base mainnet) | `eip155:84532` (Base Sepolia) |
 | `X402_USDC_ASSET` | yes | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (Circle USDC on Base mainnet) | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Circle USDC on Base Sepolia) |
-| `X402_FACILITATOR` | yes | `https://facilitator.cdp.coinbase.com` (CDP managed facilitator; requires `CDP_API_KEY_ID` + `CDP_API_KEY_SECRET`) | `https://facilitator.x402.org` (x402.org reference facilitator; testnet-only) |
+| `X402_FACILITATOR` | yes | `https://api.cdp.coinbase.com/platform/v2/x402` (CDP managed facilitator; requires `CDP_API_KEY_ID` + `CDP_API_KEY_SECRET`) | `https://x402.org/facilitator` (x402.org reference facilitator; testnet-only) |
 
 **Invariants enforced at startup:**
 
@@ -512,11 +541,11 @@ plus `review_jobs.failure_mode` per the existing channel-rail schema:
 | `failed` | `cost_cap_exceeded` | Post-run accounting: total inference spend exceeded 3× `REVIEW_PRICE_USDC` | no | no |
 | `expired` | (null) | Job aged out without reaching a terminal state | no | no |
 
-This matches the existing channel-rail behavior in
-`apps/web/lib/paywall/refund.ts`. The `cost_cap_exceeded` failure_mode
-is NEW in this spec and is added to both rails' refund-eligible list
-(see FR-D3 for x402-rail semantics; the channel-rail equivalent is a
-non-breaking addition documented in the migration 0028 commentary).
+This mirrors the existing channel-rail terminal taxonomy where possible
+without adding x402-only concepts to channel refund logic.
+`cost_cap_exceeded` is an x402-only v1 failure mode and is handled by
+the x402 settlement decision layer, not by
+`apps/web/lib/paywall/refund.ts`.
 
 **Channel-rail-only failure_mode values.** The production channel rail
 writes additional `failure_mode` values not used by the x402 rail —
@@ -753,6 +782,14 @@ This is a load-bearing architecture invariant. Any implementation that
 couples gate logic into the review pipeline, the skill runner, or the
 receipt rendering is non-compliant and MUST be refactored.
 
+In v1 the gate is implemented as a top-of-handler function call
+(`requireAeonContext()` in `apps/web/app/api/v1/review/x402/route.ts`)
+rather than a Next.js middleware. This satisfies the spirit of FR-C3:
+the env flag `X402_REQUIRE_AEON_CONTEXT=false` removes the gate without
+code changes in handlers, pipeline, worker, or receipt rendering. v2
+may migrate to `apps/web/middleware.ts` if multiple x402 endpoints share
+the same gate.
+
 ### Part D — Abuse infra v1
 
 **FR-D1. Per-wallet rate limit.**
@@ -774,6 +811,14 @@ The 429 response does NOT consume payment (the request is rejected
 before x402 verification). "Successful" excludes 402/403/429 responses
 and excludes terminal states that do not settle (`provider_error`,
 `timeout`, `internal`, `cost_cap_exceeded`).
+
+When a `PAYMENT-SIGNATURE` header is present, the endpoint resolves the
+target, checks per-repo cooldown, extracts the claimed
+`authorization.from` signer from the unverified payment payload for
+rate-limit/idempotency lookup, then runs facilitator verification only
+if those preflight checks pass. The claimed signer is not trusted for
+enqueue; the verified payload remains authoritative before any new job
+is created.
 
 The 10/hour number is a starting position; OQ-2 captures the operator
 decision to keep or revise.
@@ -875,7 +920,8 @@ The review-level receipt page MUST include:
 - Repo, PR (resolved), SHA
 - Payment rail (`channel` or `x402`)
 - Job status (`complete`, `failed`/`failure_mode`, etc.)
-- Settlement status (settled / not settled / pending)
+- Settlement status (settled / not settled / pending) for x402 jobs;
+  channel-rail receipts omit x402-specific settlement fields.
 - All findings (or explicit "no findings" notice)
 - Link to each per-finding receipt (existing URL) for findings that
   meet the public-disclosure criteria
@@ -886,6 +932,12 @@ behavior. New page is additive.
 The receipt URL returned to x402 callers in the job's terminal-state
 payload is the review-level URL (`antfleet.dev/receipts/review/{review_id}`),
 not a finding-level URL.
+
+The review-level receipt query is rail-agnostic. x402 jobs link by
+`review_jobs.x402_review_id`; channel jobs link by the shared
+repo/pr/sha tuple because the shared `review_jobs` table has no generic
+`review_id` column. If more than one job matches a public review, the
+newest job metadata wins for display.
 
 The `paid_via` field added to the receipt JSON shape is OPTIONAL and
 additive. External consumers (Aeon dashboard, Aaron's tooling, any
@@ -906,6 +958,17 @@ The next migration (0028) adds to `review_jobs`:
 - `x402_pay_to text` — nullable; populated for x402 jobs with the
   advertised treasury address from FR-A4b so settlement is pinned to
   the original 402 response.
+- `x402_payment_payload jsonb` — persisted verified payment payload and
+  authorization state for deferred settlement.
+- `x402_valid_after timestamptz` — EIP-3009 authorization start time.
+- `x402_valid_before timestamptz` — EIP-3009 authorization expiry;
+  queued/running x402 jobs transition to `expired` when polled after
+  this time.
+- `x402_review_id text` — review-level receipt linkage for x402 jobs.
+- `x402_settlement_status text` — nullable settlement lifecycle value:
+  `pending`, `settled`, `not_settled`, or `settlement_failed`.
+- `x402_settlement_response jsonb` — facilitator settle response,
+  persisted so terminal poll responses can rebuild `PAYMENT-RESPONSE`.
 - `idempotency_key text` — already present; for x402 jobs, computed
   per FR-A7.
 
@@ -966,13 +1029,13 @@ NOT required (intentional difference from v2 channel skill):
 ```sql
 -- Migration 0028: x402-rail support for review_jobs
 --
--- Adds the three columns x402 jobs need (caller_wallet, payment_rail,
--- and x402_pay_to) plus indexes for lookup/listing. Does NOT add a
--- CHECK constraint on failure_mode; the production channel rail writes
--- additional literals (e.g. 'insufficient_channel_balance') that are
--- gated at the application layer via apps/web/lib/paywall/refund.ts.
--- Adding a DB-level CHECK would couple every future failure_mode
--- addition to a schema migration, which is operationally undesirable.
+-- Adds the columns x402 jobs need (caller wallet, rail metadata, deferred
+-- payment authorization, review linkage, and settlement status) plus indexes
+-- for lookup/listing. Does NOT add a CHECK constraint on failure_mode; the
+-- production channel rail writes additional literals (e.g.
+-- 'insufficient_channel_balance') that are gated at the application layer.
+-- Adding a DB-level CHECK would couple every future failure_mode addition to
+-- a schema migration, which is operationally undesirable.
 
 ALTER TABLE review_jobs
   DROP CONSTRAINT IF EXISTS review_jobs_payment_rail_check;
@@ -980,13 +1043,29 @@ ALTER TABLE review_jobs
 ALTER TABLE review_jobs
   ADD COLUMN IF NOT EXISTS caller_wallet text,
   ADD COLUMN IF NOT EXISTS payment_rail text NOT NULL DEFAULT 'channel',
-  ADD COLUMN IF NOT EXISTS x402_pay_to text;
+  ADD COLUMN IF NOT EXISTS x402_pay_to text,
+  ADD COLUMN IF NOT EXISTS x402_payment_payload jsonb,
+  ADD COLUMN IF NOT EXISTS x402_valid_after timestamptz,
+  ADD COLUMN IF NOT EXISTS x402_valid_before timestamptz,
+  ADD COLUMN IF NOT EXISTS x402_review_id text,
+  ADD COLUMN IF NOT EXISTS x402_settlement_status text,
+  ADD COLUMN IF NOT EXISTS x402_settlement_response jsonb;
 
 UPDATE review_jobs SET payment_rail = 'channel' WHERE payment_rail IS NULL;
 
 ALTER TABLE review_jobs
   ADD CONSTRAINT review_jobs_payment_rail_check
   CHECK (payment_rail IN ('channel','x402'));
+
+ALTER TABLE review_jobs
+  DROP CONSTRAINT IF EXISTS review_jobs_x402_settlement_status_check;
+
+ALTER TABLE review_jobs
+  ADD CONSTRAINT review_jobs_x402_settlement_status_check
+  CHECK (
+    x402_settlement_status IS NULL
+    OR x402_settlement_status IN ('pending','settled','not_settled','settlement_failed')
+  );
 
 CREATE INDEX IF NOT EXISTS idx_review_jobs_caller_wallet
   ON review_jobs (caller_wallet)
@@ -998,11 +1077,19 @@ CREATE INDEX IF NOT EXISTS idx_review_jobs_payment_rail_created
 CREATE INDEX IF NOT EXISTS idx_review_jobs_x402_pay_to
   ON review_jobs (x402_pay_to)
   WHERE x402_pay_to IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_review_jobs_x402_review_id
+  ON review_jobs (x402_review_id)
+  WHERE x402_review_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_review_jobs_x402_settlement_status
+  ON review_jobs (x402_settlement_status)
+  WHERE payment_rail = 'x402';
 ```
 
 Apply via the existing `apply-migration-0028.ts --apply` flow (per
-project memory: migrations need manual apply, columns are `text` not
-`jsonb`).
+project memory: migrations need manual apply; x402 authorization and
+settlement payload columns are `jsonb`).
 
 ### 5.4 Registry PR contract
 
@@ -1024,6 +1111,13 @@ project memory: migrations need manual apply, columns are `text` not
    ]
 }
 ```
+
+The `antfleet/aeon-skills` source repo also bumps its pack-local
+`skills-pack.json` from version `2.0` to `2.1` and adds a
+`pr-review-antfleet-x402` skill entry alongside `pr-review-antfleet`.
+Adapt the exact object shape to the repository's current schema, but
+the new slug, path, category `review`, and non-default-enabled posture
+are required.
 
 ### 5.5. Test infrastructure dependencies
 
