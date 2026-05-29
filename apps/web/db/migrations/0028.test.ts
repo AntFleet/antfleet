@@ -208,7 +208,10 @@ describeWithDocker("migration 0028 real Postgres apply", () => {
         Object.fromEntries(
           columnRows.map(([name, type, nullable, defaultValue]) => [
             name,
-            { type, nullable, defaultValue },
+            // psql -A omits the trailing tab when the last COALESCE result is
+            // empty, so destructuring may leave defaultValue undefined; normalize
+            // to "" so the matcher comparison is consistent across psql versions.
+            { type, nullable, defaultValue: defaultValue ?? "" },
           ]),
         ),
       ).toMatchObject({
