@@ -140,6 +140,8 @@ type RunOneProposalArgs = {
 async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchProposal> {
   // Step 1: precheck — if the finding has no in-hunk evidence, skip the API
   // call entirely. Saves tokens + latency on every "file-level" finding.
+  // No call → no token spend → usage: null (the cost layer reads null as $0
+  // for this provider/finding pair, which is correct: nothing was billed).
   const evidence = args.finding.evidence[0];
   if (evidence === undefined) {
     return {
@@ -149,6 +151,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       modelId: null,
       skipReason: "outside_diff_hunk",
       rationale: null,
+      usage: null,
     };
   }
   const normalized = normalizePath(evidence.path);
@@ -161,6 +164,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       modelId: null,
       skipReason: "outside_diff_hunk",
       rationale: null,
+      usage: null,
     };
   }
 
@@ -172,6 +176,9 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       args.timeoutMs,
     );
   } catch {
+    // A throw/timeout means the call may have burned tokens upstream, but we
+    // never received the usage block — record null (cost-unknown) rather than
+    // fabricate a number. The reconciliation cron can backfill via heuristic.
     return {
       providerName: args.provider.name,
       findingId: args.findingId,
@@ -179,10 +186,13 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       modelId: null,
       skipReason: "generation_error",
       rationale: null,
+      usage: null,
     };
   }
 
-  // Step 3: post-call validation.
+  // Step 3: post-call validation. The call completed, so carry its real
+  // token usage through regardless of whether the patch ultimately ships —
+  // a declined or oversize patch still cost tokens to produce.
   if (raw.patch === null) {
     return {
       providerName: args.provider.name,
@@ -191,6 +201,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       modelId: raw.modelId,
       skipReason: null,
       rationale: raw.rationale,
+      usage: raw.usage ?? null,
     };
   }
   if (countAddedLines(raw.patch) > PATCH_SIZE_LINE_CAP) {
@@ -201,6 +212,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       modelId: raw.modelId,
       skipReason: "size_cap",
       rationale: raw.rationale,
+      usage: raw.usage ?? null,
     };
   }
   return {
@@ -210,6 +222,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
     modelId: raw.modelId,
     skipReason: null,
     rationale: raw.rationale,
+    usage: raw.usage ?? null,
   };
 }
 

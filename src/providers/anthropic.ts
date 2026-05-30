@@ -12,6 +12,7 @@ import {
   PatchSuggestionResult,
   ReviewOutput,
   RevalidateOutput,
+  TokenUsage,
   fixPlanOutputSchema,
   patchSuggestionOutputSchema,
   reviewOutputSchema,
@@ -38,7 +39,7 @@ export const anthropicProvider: Provider = {
     return `anthropic ready (default model: ${DEFAULT_MODEL})`;
   },
   async review(_root: string, prompt: string, model: string | null): Promise<ReviewOutput> {
-    const json = await callAnthropic({
+    const { json } = await callAnthropic({
       prompt,
       model: model ?? DEFAULT_MODEL,
       toolName: "submit_review",
@@ -60,7 +61,7 @@ export const anthropicProvider: Provider = {
     model: string | null,
   ): Promise<PatchSuggestionResult> {
     const resolvedModel = model ?? DEFAULT_MODEL;
-    const json = await callAnthropic({
+    const { json, usage } = await callAnthropic({
       prompt,
       model: resolvedModel,
       toolName: "submit_patch_suggestion",
@@ -69,12 +70,12 @@ export const anthropicProvider: Provider = {
         "Submit a single-file unified-diff patch that fixes the given finding, " +
         "or return patch=null if no clean fix fits within 20 changed lines.",
     });
-    return { ...patchSuggestionOutputSchema.parse(json), modelId: resolvedModel };
+    return { ...patchSuggestionOutputSchema.parse(json), modelId: resolvedModel, usage };
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; applying patches is a separate
     // concern (Patch Bot lives downstream and is not wired in this surface).
-    const json = await callAnthropic({
+    const { json } = await callAnthropic({
       prompt,
       model: model ?? DEFAULT_MODEL,
       toolName: "submit_fix_plan",
@@ -85,7 +86,7 @@ export const anthropicProvider: Provider = {
     return fixPlanOutputSchema.parse(json);
   },
   async revalidate(_root: string, prompt: string, model: string | null): Promise<RevalidateOutput> {
-    const json = await callAnthropic({
+    const { json } = await callAnthropic({
       prompt,
       model: model ?? DEFAULT_MODEL,
       toolName: "submit_revalidate",
@@ -113,7 +114,9 @@ type CallOptions = {
 // boundary-blip doesn't fail the whole review.
 const ANTHROPIC_CLIENT_OPTS = { timeout: 240_000, maxRetries: 3 } as const;
 
-async function callAnthropic(opts: CallOptions): Promise<unknown> {
+type AnthropicCallResult = { json: unknown; usage: TokenUsage | null };
+
+async function callAnthropic(opts: CallOptions): Promise<AnthropicCallResult> {
   const apiKey = requireApiKey();
   const client = new Anthropic({ apiKey, ...ANTHROPIC_CLIENT_OPTS });
   const response = await client.messages.create({
@@ -130,7 +133,19 @@ async function callAnthropic(opts: CallOptions): Promise<unknown> {
     tool_choice: { type: "tool", name: opts.toolName },
     messages: [{ role: "user", content: opts.prompt }],
   });
-  return extractAnthropicToolOutput(response, opts.toolName);
+  return {
+    json: extractAnthropicToolOutput(response, opts.toolName),
+    usage: extractAnthropicUsage(response),
+  };
+}
+
+/** Pull token counts off a non-streaming Anthropic message. Null-safe so a
+ * response that somehow omits usage degrades to "cost unknown" rather than
+ * throwing on the patch-cost path. */
+export function extractAnthropicUsage(response: Anthropic.Messages.Message): TokenUsage | null {
+  const u = response.usage;
+  if (u === undefined || u === null) return null;
+  return { inputTokens: u.input_tokens, outputTokens: u.output_tokens };
 }
 
 /** Exposed for tests. Walks a recorded Anthropic response and pulls out the tool_use input. */

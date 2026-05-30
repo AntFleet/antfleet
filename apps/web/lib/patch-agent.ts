@@ -19,6 +19,11 @@ import { openaiProvider } from "@antfleet/cli/providers/openai";
 import { decidePatchOutcomes, type PatchDecision } from "@antfleet/cli/providers/patch-gate";
 import { makeFindingId } from "@/db/queries";
 import { generateReviewPatches, type PatchProposingProvider } from "./patch-generation";
+import {
+  estimatePatchCostUsd,
+  patchTokensByFinding,
+  type PerFindingTokenSplit,
+} from "./patch-cost";
 import { isPatchAgentEnabledForInstall } from "./patch-agent-env";
 import type { PatchForRender } from "./pr-comment";
 import type { ChangedFile } from "./github-files";
@@ -50,13 +55,17 @@ export type PatchAgentOutcome = {
   decisions: PatchDecision[];
   byIndex: Map<number, PatchForRender>;
   elapsedMs: number;
-  // Aggregate USD cost of the patch lane for this review. v1 reports 0
-  // because the provider modules don't yet expose per-call token spend;
-  // the column exists for forward compatibility so review-worker can
-  // persist a real value without a schema change. Tracked separately
-  // from review.estimatedCostUsd (which covers the reviewer fleet, not
-  // the patch lane).
+  // Aggregate USD cost of the patch lane for this review, summed from the
+  // real per-call token usage now threaded out of the provider SDKs. Persisted
+  // to reviews.cost_patch_usd (observability-only; drawdown unaffected).
+  // Tracked separately from review.estimatedCostUsd (the reviewer fleet's
+  // cost, not the patch lane).
   costPatchUsd: number;
+  // Per-finding token spend, split by provider (opus = anthropic, gpt5 =
+  // openai). Keyed by findingId. review-worker writes these onto the matching
+  // finding_status rows so eval-harness can attribute cost per finding. A
+  // finding whose providers made no billable call has both sides null.
+  tokensByFindingId: Map<string, PerFindingTokenSplit>;
 };
 
 export type RunPatchAgentArgs = {
@@ -90,7 +99,13 @@ export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgent
     : await isPatchAgentEnabledForInstall(args.installationId, args.repo);
   if (!enabled) return null;
   if (args.findings.length === 0) {
-    return { decisions: [], byIndex: new Map(), elapsedMs: 0, costPatchUsd: 0 };
+    return {
+      decisions: [],
+      byIndex: new Map(),
+      elapsedMs: 0,
+      costPatchUsd: 0,
+      tokensByFindingId: new Map(),
+    };
   }
 
   const providers = args.providers ?? DEFAULT_PATCH_PROVIDERS;
@@ -101,7 +116,13 @@ export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgent
   // calls before the gate returned `models_disagreed`.)
   const hasAnthropic = providers.some((p) => p.name === "anthropic");
   if (!hasAnthropic || providers.length < 2) {
-    return { decisions: [], byIndex: new Map(), elapsedMs: 0, costPatchUsd: 0 };
+    return {
+      decisions: [],
+      byIndex: new Map(),
+      elapsedMs: 0,
+      costPatchUsd: 0,
+      tokensByFindingId: new Map(),
+    };
   }
 
   const findingIds = args.findings.map((_f, index) => makeFindingId(args.reviewId, index));
@@ -124,5 +145,12 @@ export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgent
     }
   }
 
-  return { decisions, byIndex, elapsedMs: generation.elapsedMs, costPatchUsd: 0 };
+  return {
+    decisions,
+    byIndex,
+    elapsedMs: generation.elapsedMs,
+    // Real spend now that proposePatch threads SDK usage through the proposals.
+    costPatchUsd: estimatePatchCostUsd(generation.proposals),
+    tokensByFindingId: patchTokensByFinding(generation.proposals),
+  };
 }

@@ -28,6 +28,10 @@
     {
       "path": "/api/cron/scorecard-snapshot",
       "schedule": "0 0 * * 6"
+    },
+    {
+      "path": "/api/cron/patch-cost-reconcile",
+      "schedule": "0 2 * * 1"
     }
   ]
 }
