@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 // §10 (owner/repo is per-customer data; only repo_hash is public) is the
 // load-bearing fact on this page.
 
-const LAST_UPDATED = "2026-05-18";
+const LAST_UPDATED = "2026-05-30";
 
 export const metadata: Metadata = {
   title: "AntFleet · Data policy",
@@ -199,6 +199,33 @@ export default function PolicyPage() {
           GitHub live on <em>your</em> repo&apos;s event log — you control whether to delete those,
           and we can issue API calls on your behalf if you authorize it via the same email.
         </p>
+      </Section>
+
+      <Section title="Corrections and retractions">
+        <p>
+          AntFleet only posts a finding when two independent frontier models flag it. That gate is
+          deliberately strict, but it is not infallible — two models can share a blind spot about a
+          pattern that is safe in context. If you believe a finding about your repository is
+          incorrect, email{" "}
+          <PolicyLink href="mailto:privacy@antfleet.dev">privacy@antfleet.dev</PolicyLink> with:
+        </p>
+        <UnorderedList>
+          <li>
+            The finding URL (
+            <code className="font-mono text-xs">https://www.antfleet.dev/anatomy/…</code>)
+          </li>
+          <li>A brief explanation of why the finding is incorrect</li>
+          <li>Optional: a code reference showing the pattern is safe in context</li>
+        </UnorderedList>
+        <p>
+          We review retraction requests manually. If the finding does not survive that review, we
+          retract it: its anatomy and receipt pages are replaced with a retraction notice, the
+          JSON-LD structured data is removed, a <code className="font-mono text-xs">noindex</code>{" "}
+          tag is added, and the finding is dropped from the public receipts feed and the sitemap so
+          search engines stop surfacing it. The URLs stay live so existing links resolve to the
+          notice rather than a dead end.
+        </p>
+        <p>We aim to respond within 5 business days.</p>
       </Section>
 
       <Section title="Changes to this policy">

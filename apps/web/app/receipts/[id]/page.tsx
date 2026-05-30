@@ -22,6 +22,15 @@ export async function generateMetadata({
   if (row === null) {
     return { title: "AntFleet · Receipt not found" };
   }
+  // Retracted: deindex and strip the claim from the title/description so a
+  // stale SERP snippet can't keep advertising it (mirrors the anatomy page).
+  if (row.retractedAt !== null) {
+    return {
+      title: "AntFleet · Retracted finding",
+      description: "This finding has been retracted and is no longer a current AntFleet advisory.",
+      robots: { index: false, follow: false },
+    };
+  }
   return {
     title: `AntFleet · ${row.title}`,
     description: `${row.category} · ${row.severity} — closed in ${row.closureSha?.slice(0, 7) ?? "main"}`,
@@ -33,6 +42,12 @@ export default async function ReceiptDetailPage({ params }: { params: Promise<Ro
   const row = await loadPublicReceiptDetail(id);
   if (row === null) {
     notFound();
+  }
+  // Retracted findings keep their URL live (HTTP 200) but render only a
+  // retraction notice — no claim title, severity, body, or agent attribution
+  // (all of which are indexable). noindex is set in generateMetadata.
+  if (row.retractedAt !== null) {
+    return <RetractedReceiptNotice findingId={row.findingId} reason={row.retractionReason} />;
   }
   const detail = toDisplayReceiptDetail(row, new Date());
 
@@ -46,6 +61,52 @@ export default async function ReceiptDetailPage({ params }: { params: Promise<Ro
       <SectionDivider />
       <ReceiptLinks detail={detail} />
     </>
+  );
+}
+
+function RetractedReceiptNotice({
+  findingId,
+  reason,
+}: {
+  findingId: string;
+  reason: string | null;
+}) {
+  const body =
+    reason !== null && reason.length > 0
+      ? reason
+      : "The finding did not survive post-publication review.";
+  return (
+    <section className="py-20">
+      <ContentWrap>
+        <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
+          Receipt · {findingId}
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug">
+          This finding has been retracted
+        </h1>
+        <div className="mt-8 rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] p-6 max-w-xl">
+          <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">{body}</p>
+          <p className="mt-4 text-sm text-[var(--color-ink-muted)] leading-relaxed">
+            If you have questions, contact{" "}
+            <a
+              href="mailto:privacy@antfleet.dev"
+              className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity"
+            >
+              privacy@antfleet.dev
+            </a>
+            .
+          </p>
+        </div>
+        <div className="mt-10 font-mono text-xs">
+          <a
+            href="/receipts"
+            className="text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 transition-colors"
+          >
+            all receipts &rarr;
+          </a>
+        </div>
+      </ContentWrap>
+    </section>
   );
 }
 
