@@ -1,5 +1,5 @@
 import type { MetadataRoute } from "next";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db/index";
 import { findingStatus, reviews } from "@/db/schema";
 
@@ -18,6 +18,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         eq(reviews.publicReceipt, true),
         eq(findingStatus.status, "closed"),
         isNotNull(findingStatus.closureSha),
+        // Retracted findings must not be advertised to crawlers — their
+        // /anatomy and /receipts pages emit noindex, so keeping them in the
+        // sitemap would send Google a contradictory "crawl me" signal.
+        isNull(findingStatus.retractedAt),
       ),
     )
     .orderBy(desc(findingStatus.closureDetectedAt));

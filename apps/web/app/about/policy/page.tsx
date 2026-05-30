@@ -219,10 +219,11 @@ export default function PolicyPage() {
         </UnorderedList>
         <p>
           We review retraction requests manually. If the finding does not survive that review, we
-          retract it: the anatomy page is replaced with a retraction notice, the JSON-LD structured
-          data is removed, and a <code className="font-mono text-xs">noindex</code> tag is added so
-          search engines drop the page. The URL stays live so existing links resolve to the notice
-          rather than a dead end.
+          retract it: its anatomy and receipt pages are replaced with a retraction notice, the
+          JSON-LD structured data is removed, a <code className="font-mono text-xs">noindex</code>{" "}
+          tag is added, and the finding is dropped from the public receipts feed and the sitemap so
+          search engines stop surfacing it. The URLs stay live so existing links resolve to the
+          notice rather than a dead end.
         </p>
         <p>We aim to respond within 5 business days.</p>
       </Section>

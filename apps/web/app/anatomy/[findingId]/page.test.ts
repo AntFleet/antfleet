@@ -5,8 +5,19 @@ import type { AnatomyBundle } from "@/lib/anatomy";
 // without a DB. fetchHunkPair etc. are never reached by generateMetadata.
 vi.mock("@/lib/anatomy", () => ({ loadAnatomyBundle: vi.fn() }));
 
-import { generateMetadata } from "./page";
+import AnatomyPage, { generateMetadata } from "./page";
 import { loadAnatomyBundle } from "@/lib/anatomy";
+
+// Recursively search a returned React element tree for a
+// <script type="application/ld+json"> node. The JSON-LD block is a literal
+// JSX element in the non-retracted return, so it's findable without rendering.
+function hasJsonLd(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(hasJsonLd);
+  if (node === null || typeof node !== "object") return false;
+  const el = node as { type?: unknown; props?: Record<string, unknown> };
+  if (el.type === "script" && el.props?.["type"] === "application/ld+json") return true;
+  return hasJsonLd(el.props?.["children"]);
+}
 
 const baseBundle = (over: Partial<AnatomyBundle> = {}): AnatomyBundle => ({
   findingId: "abcd1234-0",
@@ -54,5 +65,21 @@ describe("anatomy generateMetadata", () => {
     expect(meta.robots).toEqual({ index: false, follow: false });
     expect(String(meta.title)).toContain("Retracted");
     expect(String(meta.title)).not.toContain("Example finding");
+  });
+});
+
+describe("anatomy page body — JSON-LD suppression", () => {
+  // baseBundle has source.owner="" and closureSha=null, so AnatomyPage skips
+  // the GitHub hunk fetch and renders purely from the bundle.
+  it("emits JSON-LD structured data for a normal finding", async () => {
+    mockLoad.mockResolvedValue(baseBundle());
+    const tree = await AnatomyPage({ params });
+    expect(hasJsonLd(tree)).toBe(true);
+  });
+
+  it("emits NO JSON-LD for a retracted finding (the SEO deindex path)", async () => {
+    mockLoad.mockResolvedValue(baseBundle({ retractedAt: new Date("2026-05-30") }));
+    const tree = await AnatomyPage({ params });
+    expect(hasJsonLd(tree)).toBe(false);
   });
 });

@@ -957,16 +957,29 @@ export async function loadPublicReceiptsPage(args: {
   // Gate condition is identical across all three queries — closed findings
   // attached to reviews flagged for public visibility. Inlined per-query
   // because the count and max queries need the join too.
+  // Retracted findings drop out of the public feed AND the headline count —
+  // the count must match the rows behind it, and a retracted finding's title
+  // must not keep appearing in the list (it stays live only as a notice on its
+  // own /anatomy + /receipts/{id} page).
   const recentConditions =
     args.before === undefined
-      ? and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true))
+      ? and(
+          eq(findingStatus.status, "closed"),
+          eq(reviews.publicReceipt, true),
+          isNull(findingStatus.retractedAt),
+        )
       : and(
           eq(findingStatus.status, "closed"),
           eq(reviews.publicReceipt, true),
+          isNull(findingStatus.retractedAt),
           lt(findingStatus.closureDetectedAt, args.before),
         );
 
-  const totalConditions = and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true));
+  const totalConditions = and(
+    eq(findingStatus.status, "closed"),
+    eq(reviews.publicReceipt, true),
+    isNull(findingStatus.retractedAt),
+  );
 
   const [countRows, fetchedRows, lastUpdatedRows] = await Promise.all([
     db
@@ -1090,6 +1103,11 @@ export type PublicReceiptDetailRow = PublicReceiptRow & {
   providerModelIds: unknown;
   providerResponses: unknown;
   agreementDecision: unknown;
+  // Retraction surface (migration 0030). Non-null retractedAt flips the
+  // /receipts/{id} page into a retraction notice (no claim text, noindex),
+  // mirroring the /anatomy page. Loaded (not filtered) so the URL stays live.
+  retractedAt: Date | null;
+  retractionReason: string | null;
 };
 
 export async function loadPublicReceiptDetail(
@@ -1105,6 +1123,8 @@ export async function loadPublicReceiptDetail(
       closureSha: findingStatus.closureSha,
       closureCommentUrl: findingStatus.closureCommentUrl,
       closedAt: findingStatus.closureDetectedAt,
+      retractedAt: findingStatus.retractedAt,
+      retractionReason: findingStatus.retractionReason,
       reviewId: reviews.reviewId,
       repoHash: reviews.repoHash,
       prNumber: reviews.prNumber,
