@@ -4,6 +4,13 @@
 // flag these correct patterns. By reusing reviewPR (not a reimplemented gate),
 // fixture behavior tracks real-review behavior exactly: if the live gate logic
 // changes, the fixtures inherit the change for free.
+//
+// COUPLING NOTE: "the gate fired" means the UNANIMOUS gate fired, which today
+// requires both providers in review-pipeline's 2-provider STACK to flag the
+// same finding (a single model having a bad day cannot fire a fixture alone).
+// If a third provider is ever added, `unanimous` requires all three, silently
+// raising the bar at which a fixture fires — revisit this suite's sensitivity
+// if the STACK size changes.
 
 import { reviewPR } from "./review-pipeline";
 import {

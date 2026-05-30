@@ -62,6 +62,24 @@ describe("handleRegressionFixtures", () => {
     expect(await res.json()).toMatchObject({ ran: 6, failed: 0, failures: [] });
   });
 
+  it("200s (not 500) when fixtures only DEGRADED — a provider outage is not drift", async () => {
+    const degradedResult: RegressionResult = {
+      ran: 6,
+      passed: 6,
+      failed: 0,
+      degraded: 2,
+      failures: [],
+      degradedFixtures: ["rust-nonnull-unchecked", "bash-curl-checksummed"],
+      details: [],
+    };
+    const res = await handleRegressionFixtures(
+      req(`Bearer ${SECRET}`),
+      deps({ run: vi.fn().mockResolvedValue(degradedResult) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ failed: 0, degraded: 2 });
+  });
+
   it("500s and lists the fired fixture when the gate drifts", async () => {
     const res = await handleRegressionFixtures(
       req(`Bearer ${SECRET}`),

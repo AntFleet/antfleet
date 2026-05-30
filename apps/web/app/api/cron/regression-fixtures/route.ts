@@ -9,15 +9,27 @@ export const runtime = "nodejs";
 
 // Each fixture is 2 LLM calls (one per provider); the suite runs in parallel,
 // so wall-clock is ~one review (the slowest provider call) rather than N
-// sequential reviews. 300s gives headroom over the provider client's 240s
-// per-call ceiling. Cost: ~2 calls x fixtures, once per week — a dozen calls
-// every seven days. Acceptable.
+// sequential reviews. Both provider clients now cap a single call at 240s
+// (Anthropic + OpenAI, matched), so the happy path sits well under 300s. Note
+// the worst case is still unbounded by 300s — 240s x maxRetries(3) per a flaky
+// provider can exceed the ceiling and Vercel will kill the function with a 500
+// (a non-drift timeout, distinguishable by the log event; see below). Cost:
+// ~2 calls x fixtures, once per week — a dozen calls every seven days.
 export const maxDuration = 300;
 
 // Drift detector: run the known-safe fixtures through the real two-model gate.
 // The gate must NEVER fire on them; if it does, a silent provider model update
-// has changed review behavior. Returns 500 on any fired fixture so Vercel's
-// cron-failure alerting pages us; 200 + JSON summary when all pass.
+// has changed review behavior.
+//
+// A 500 from this route has THREE distinct meanings, disambiguated by the log
+// (Vercel cron alerting pages on the 5xx status alone, so the status can't
+// carry the distinction — the log event does):
+//   - misconfigured  -> logError "cron.misconfigured"                (CRON_SECRET missing)
+//   - run crashed    -> logError "cron.regression_fixtures_failed"   (provider hung/threw)
+//   - DRIFT detected -> logError "regression_fixtures.unanimous_gate_fired" (the real signal)
+// Only the last is the alarm this suite exists to raise; the response body on
+// drift is JSON with `failures`, the other two are plain text. 200 + JSON
+// summary when all fixtures pass.
 export type RegressionDeps = {
   secret: string | undefined;
   run: () => Promise<RegressionResult>;
