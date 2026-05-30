@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { firstReviewSummaryPrompt, welcomePrompt } from "./onboarder";
+import { checkInPrompt, firstReviewSummaryPrompt, welcomePrompt } from "./onboarder";
 
 beforeEach(() => {
   process.env["OPTIN_HMAC_SECRET"] = "test-secret-for-onboarder";
@@ -24,6 +24,55 @@ describe("welcomePrompt", () => {
       meta: { description: null, language: null, topics: [] },
     });
     expect(out).toContain("public receipts are off by default");
+  });
+
+  it("includes the three concrete HIGH finding examples and the registry link", () => {
+    const out = welcomePrompt({
+      owner: "AntFleet",
+      repo: "antfleet",
+      meta: { description: null, language: null, topics: [] },
+    });
+    expect(out).toContain("What a finding looks like");
+    // One example per distinct category attractor.
+    expect(out).toContain("access-control: Allowlist bypass");
+    expect(out).toContain("input-validation: Daily spend cap silently bypassed");
+    expect(out).toContain("supply-chain: Installer piped an arbitrary URL to sh");
+    // Single, real, working registry link — the flagship findings have no
+    // per-finding anatomy page, so /receipts is the honest target.
+    expect(out).toContain("https://www.antfleet.dev/receipts");
+    expect(out).not.toContain("antfleet.dev/anatomy/bitterbot");
+  });
+
+  it("explains that silence is the correct outcome for most PRs", () => {
+    const out = welcomePrompt({
+      owner: "AntFleet",
+      repo: "antfleet",
+      meta: { description: null, language: null, topics: [] },
+    });
+    expect(out).toMatch(/Silence is the correct outcome for most PRs/u);
+  });
+});
+
+describe("checkInPrompt", () => {
+  const baseArgs = {
+    owner: "AntFleet",
+    repo: "antfleet",
+    daysElapsed: 7,
+    reviewCount: 3,
+    findingsAgreed: 0,
+    findingsClosed: 0,
+    reactionsObserved: 0,
+  };
+
+  it("injects the silence reassurance when no finding has fired", () => {
+    const out = checkInPrompt(baseArgs);
+    expect(out).toMatch(/If no finding has fired yet, that is expected/u);
+    expect(out).toContain("both frontier models independently agree");
+  });
+
+  it("omits the silence reassurance once a finding has been agreed", () => {
+    const out = checkInPrompt({ ...baseArgs, findingsAgreed: 2 });
+    expect(out).not.toMatch(/If no finding has fired yet/u);
   });
 });
 

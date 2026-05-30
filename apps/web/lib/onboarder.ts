@@ -183,13 +183,19 @@ Compose a welcome GitHub issue to open in this repo. Voice: direct, technical, n
 
 - Acknowledge the install in one sentence
 - Tell the maintainer what happens next: on the next PR opened, two independent frontier models (Claude Opus 4.7 and GPT-5) will review changed files in parallel; only findings both models flag get posted as a comment; typical latency is 30-90s for small PRs
+- Include a concrete "What a finding looks like" section so the maintainer can recognize a fired finding instead of reading silence as a broken webhook. Render these three real, public, HIGH-severity examples close to verbatim as a bullet list:
+  - HIGH · access-control: Allowlist bypass via unnormalized input — both reviewers flagged an inbound allowlist that compared a normalized list against unnormalized phone candidates, so a formatting variant slipped past the gate.
+  - HIGH · input-validation: Daily spend cap silently bypassed — both reviewers flagged an awk-based cap that fails open on a non-numeric API response, so the limit never triggers.
+  - HIGH · supply-chain: Installer piped an arbitrary URL to sh with no checksum — both reviewers flagged the unauthenticated curl|sh pattern that lets a compromised CDN run code on the host.
+  Immediately after the list, include this link exactly once, as its own line: "Browse the public registry → https://www.antfleet.dev/receipts"
+- After the examples, include this line close to verbatim: "If no finding fires on a PR, that means the two models did not reach unanimous agreement — not that the webhook is broken. Silence is the correct outcome for most PRs."
 - For AI agents specifically: point them at the agent signup loop at https://www.antfleet.dev/llms.txt and the machine-readable manifest at https://www.antfleet.dev/.well-known/antfleet.json. If the installer is a human partner, this paragraph can be one line; if it's an agent, surface those two URLs prominently.
 - Link to https://www.antfleet.dev/architecture for the full agent diagram
 - Mention that public receipts are off by default; the summary comment on the first PR review will include a one-click opt-in link, no email needed
 - Close with a short "feel free to close this issue when you're set up" line
-- 150-300 words total
+- 220-400 words total
 - No emoji
-- Use markdown headings sparingly (one or two at most)
+- Use markdown headings sparingly (two or three at most; the examples section may use its own heading)
 
 Return a structured tool call with the issue title and body. The title should be plain and recognizable — something like "AntFleet · welcome" — not clever.`;
 }
@@ -234,7 +240,7 @@ Compose a follow-up comment on the same PR that frames what happened. This is th
 Return a tool call with the comment body.`;
 }
 
-function checkInPrompt(args: {
+export function checkInPrompt(args: {
   owner: string;
   repo: string;
   daysElapsed: number;
@@ -243,6 +249,15 @@ function checkInPrompt(args: {
   findingsClosed: number;
   reactionsObserved: number;
 }): string {
+  // When the gate has produced nothing yet, a maintainer can misread the
+  // quiet as a broken integration. Inject an explicit "silence is expected"
+  // instruction so the check-in reassures rather than alarms. Only added
+  // when zero findings have been agreed — otherwise the numbers speak for
+  // themselves and the line would be noise.
+  const silenceLine =
+    args.findingsAgreed === 0
+      ? `- Because no finding has fired yet, include this reassurance close to verbatim: "If no finding has fired yet, that is expected — the unanimous gate only activates when both frontier models independently agree. It catches real issues, not theoretical ones, so most PRs produce no findings."\n`
+      : "";
   return `You are the AntFleet Onboarder. A partner install is ${args.daysElapsed} days old; time for the scheduled check-in.
 
   Repository: ${args.owner}/${args.repo}
@@ -258,7 +273,7 @@ Compose a check-in comment to post on the original welcome issue. Voice: direct,
 - If reviewCount is 0, gently flag that no PRs have been reviewed yet and ask if anything is blocking
 - If findingsAgreed is high but findingsClosed is 0, note that closure receipts will come once the relevant PRs merge
 - If reactionsObserved is non-zero, mention we're treating those as ground-truth signal
-- Ask one open question: whether anything has felt off in the first ${args.daysElapsed} days
+${silenceLine}- Ask one open question: whether anything has felt off in the first ${args.daysElapsed} days
 - Sign off "— Onboarder · agent@antfleet.dev"
 - 100-150 words total
 - No emoji
