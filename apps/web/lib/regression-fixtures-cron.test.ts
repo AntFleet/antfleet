@@ -20,6 +20,19 @@ const cleanReviewer: FixtureReviewer = async () => ({
   degradedReason: null,
 });
 
+// Module-scoped (not nested in a test) per unicorn/consistent-function-scoping:
+// these capture nothing from a parent scope.
+const firesOnFixtureA: FixtureReviewer = async (f) =>
+  f.id === "a"
+    ? { agreed: [{} as Finding], degraded: false, degradedReason: null }
+    : { agreed: [], degraded: false, degradedReason: null };
+
+const degradedReviewer: FixtureReviewer = async () => ({
+  agreed: [],
+  degraded: true,
+  degradedReason: "1/2 providers succeeded",
+});
+
 describe("REGRESSION_FIXTURES", () => {
   it("ships at least 5 fixtures with unique ids and real code + descriptions", () => {
     expect(REGRESSION_FIXTURES.length).toBeGreaterThanOrEqual(5);
@@ -46,23 +59,14 @@ describe("runRegressionFixtures", () => {
   });
 
   it("fails (and lists) the fixture whose unanimous gate fired", async () => {
-    const reviewer: FixtureReviewer = async (f) =>
-      f.id === "a"
-        ? { agreed: [{} as Finding], degraded: false, degradedReason: null }
-        : { agreed: [], degraded: false, degradedReason: null };
-    const res = await runRegressionFixtures(reviewer, [fx("a"), fx("b")]);
+    const res = await runRegressionFixtures(firesOnFixtureA, [fx("a"), fx("b")]);
     expect(res.failed).toBe(1);
     expect(res.failures).toEqual(["a"]);
     expect(res.passed).toBe(1);
   });
 
   it("treats a degraded review as inconclusive, not a failure", async () => {
-    const reviewer: FixtureReviewer = async () => ({
-      agreed: [],
-      degraded: true,
-      degradedReason: "1/2 providers succeeded",
-    });
-    const res = await runRegressionFixtures(reviewer, [fx("a")]);
+    const res = await runRegressionFixtures(degradedReviewer, [fx("a")]);
     expect(res.failed).toBe(0);
     expect(res.degraded).toBe(1);
     expect(res.degradedFixtures).toEqual(["a"]);
