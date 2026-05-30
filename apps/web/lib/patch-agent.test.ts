@@ -96,6 +96,47 @@ describe("runPatchAgent — happy path", () => {
     expect(patch?.modelId).toBe("claude-opus-4-7");
   });
 
+  it("computes a real cost and per-finding token split from provider usage", async () => {
+    const opusWithUsage: PatchProposingProvider = {
+      name: "anthropic",
+      async proposePatch() {
+        return {
+          patch: "@@ -10,1 +10,1 @@\n-old\n+new\n",
+          rationale: null,
+          modelId: "claude-opus-4-7",
+          usage: { inputTokens: 1000, outputTokens: 1000 },
+        };
+      },
+    };
+    const gptWithUsage: PatchProposingProvider = {
+      name: "openai",
+      async proposePatch() {
+        return {
+          patch: "@@ -10,1 +10,1 @@\n-old\n+other\n",
+          rationale: null,
+          modelId: "gpt-5",
+          usage: { inputTokens: 1000, outputTokens: 1000 },
+        };
+      },
+    };
+    const out = await runPatchAgent({
+      reviewId: "rev-1",
+      installationId: 12345,
+      repo: "test-repo",
+      findings: [stubFinding()],
+      changedFiles: [stubFile()],
+      providers: [opusWithUsage, gptWithUsage],
+      enabled: () => true,
+    });
+    // Opus 0.09 + GPT-5 0.035 = 0.125 (was hardcoded 0 before this change).
+    expect(out!.costPatchUsd).toBe(0.125);
+    const fid = out!.decisions[0]!.findingId;
+    expect(out!.tokensByFindingId.get(fid)).toEqual({
+      opus: { inputTokens: 1000, outputTokens: 1000 },
+      gpt5: { inputTokens: 1000, outputTokens: 1000 },
+    });
+  });
+
   it("omits the byIndex entry when the gate skips (one-sided)", async () => {
     const onlyOpus = opus;
     const decline: PatchProposingProvider = {
@@ -129,7 +170,13 @@ describe("runPatchAgent — degenerate paths", () => {
       providers: [opus, gpt],
       enabled: () => true,
     });
-    expect(out).toEqual({ decisions: [], byIndex: new Map(), elapsedMs: 0, costPatchUsd: 0 });
+    expect(out).toEqual({
+      decisions: [],
+      byIndex: new Map(),
+      elapsedMs: 0,
+      costPatchUsd: 0,
+      tokensByFindingId: new Map(),
+    });
   });
 
   it("short-circuits when anthropic is missing even if 2+ providers are present", async () => {

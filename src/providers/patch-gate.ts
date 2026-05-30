@@ -30,6 +30,16 @@ export type PatchSkipReason =
   | "disabled"
   | "size_cap";
 
+// Token spend for one provider call. Structurally re-declared (same shape
+// as types.ts TokenUsage) so patch-gate keeps zero deps on the web app /
+// types module. Null when the provider made no billable call (precheck
+// skip) or the SDK omitted usage. The patch-agent layer sums these into
+// reviews.cost_patch_usd and persists the per-finding split.
+export type ProviderPatchUsage = {
+  inputTokens: number;
+  outputTokens: number;
+};
+
 export type ProviderPatchProposal = {
   providerName: string;
   findingId: string;
@@ -41,6 +51,9 @@ export type ProviderPatchProposal = {
   modelId: string | null;
   skipReason: PatchSkipReason | null;
   rationale: string | null;
+  // Token spend for this (finding × provider) call. Null when no billable
+  // call was made (precheck skip) or the response omitted usage.
+  usage: ProviderPatchUsage | null;
 };
 
 export type PatchSelector =

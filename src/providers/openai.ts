@@ -12,6 +12,7 @@ import {
   PatchSuggestionResult,
   ReviewOutput,
   RevalidateOutput,
+  TokenUsage,
   fixPlanOutputSchema,
   patchSuggestionOutputSchema,
   reviewOutputSchema,
@@ -28,7 +29,7 @@ export const openaiProvider: Provider = {
     return `openai ready (default model: ${DEFAULT_MODEL})`;
   },
   async review(_root: string, prompt: string, model: string | null): Promise<ReviewOutput> {
-    const json = await callOpenAI({
+    const { json } = await callOpenAI({
       prompt,
       model: model ?? DEFAULT_MODEL,
       schemaName: "fleet_review",
@@ -47,17 +48,17 @@ export const openaiProvider: Provider = {
     model: string | null,
   ): Promise<PatchSuggestionResult> {
     const resolvedModel = model ?? DEFAULT_MODEL;
-    const json = await callOpenAI({
+    const { json, usage } = await callOpenAI({
       prompt,
       model: resolvedModel,
       schemaName: "fleet_patch_suggestion",
       schema: patchSuggestionJsonSchema,
     });
-    return { ...patchSuggestionOutputSchema.parse(json), modelId: resolvedModel };
+    return { ...patchSuggestionOutputSchema.parse(json), modelId: resolvedModel, usage };
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; no file mutation here.
-    const json = await callOpenAI({
+    const { json } = await callOpenAI({
       prompt,
       model: model ?? DEFAULT_MODEL,
       schemaName: "fleet_fix_plan",
@@ -66,7 +67,7 @@ export const openaiProvider: Provider = {
     return fixPlanOutputSchema.parse(json);
   },
   async revalidate(_root: string, prompt: string, model: string | null): Promise<RevalidateOutput> {
-    const json = await callOpenAI({
+    const { json } = await callOpenAI({
       prompt,
       model: model ?? DEFAULT_MODEL,
       schemaName: "fleet_revalidate",
@@ -83,7 +84,9 @@ type CallOptions = {
   schema: object;
 };
 
-async function callOpenAI(opts: CallOptions): Promise<unknown> {
+type OpenAICallResult = { json: unknown; usage: TokenUsage | null };
+
+async function callOpenAI(opts: CallOptions): Promise<OpenAICallResult> {
   const apiKey = requireApiKey();
   const client = new OpenAI({ apiKey });
   const response = await client.chat.completions.create({
@@ -100,7 +103,18 @@ async function callOpenAI(opts: CallOptions): Promise<unknown> {
       },
     },
   });
-  return extractOpenAIContent(response);
+  return { json: extractOpenAIContent(response), usage: extractOpenAIUsage(response) };
+}
+
+/** Pull token counts off a chat completion. OpenAI reports prompt_tokens /
+ * completion_tokens; map them to the provider-neutral TokenUsage shape. Null
+ * when the response omits usage so the patch-cost path degrades gracefully. */
+export function extractOpenAIUsage(
+  response: OpenAI.Chat.Completions.ChatCompletion,
+): TokenUsage | null {
+  const u = response.usage;
+  if (u === undefined || u === null) return null;
+  return { inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens };
 }
 
 /** Exposed for tests. Pulls the JSON content out of a recorded chat completion. */

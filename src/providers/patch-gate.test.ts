@@ -11,6 +11,7 @@ const anthropic = (overrides: Partial<ProviderPatchProposal> = {}): ProviderPatc
   modelId: "claude-opus-4-7",
   skipReason: null,
   rationale: null,
+  usage: null,
   ...overrides,
 });
 
@@ -21,6 +22,7 @@ const openai = (overrides: Partial<ProviderPatchProposal> = {}): ProviderPatchPr
   modelId: "gpt-5",
   skipReason: null,
   rationale: null,
+  usage: null,
   ...overrides,
 });
 
@@ -189,6 +191,7 @@ describe("decidePatchOutcomes — degenerate inputs", () => {
       modelId: null,
       skipReason: "outside_diff_hunk",
       rationale: null,
+      usage: null,
     };
     const out = decidePatchOutcomes([
       anthropic({ patch: PATCH_A }),

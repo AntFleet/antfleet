@@ -452,23 +452,35 @@ async function processClaimedRow(
   if (patchOutcome !== null && patchOutcome.decisions.length > 0) {
     try {
       await deps.recordPatchDecisions(
-        patchOutcome.decisions.map((d) => ({
-          findingId: d.findingId,
-          suggestedPatch: d.patch,
-          patchModelId: d.modelId,
-          patchSkipReason: d.skipReason,
-          proposedAt: deps.now(),
-          candidates: d.candidates,
-          selector: d.selector,
-        })),
+        patchOutcome.decisions.map((d) => {
+          // runPatchAgent always populates tokensByFindingId (every return
+          // path sets a Map); the `?.` only tolerates loosely-typed test mocks
+          // that omit the field. A missing split → all-null token columns.
+          const split = patchOutcome.tokensByFindingId?.get(d.findingId);
+          return {
+            findingId: d.findingId,
+            suggestedPatch: d.patch,
+            patchModelId: d.modelId,
+            patchSkipReason: d.skipReason,
+            proposedAt: deps.now(),
+            candidates: d.candidates,
+            selector: d.selector,
+            // Migration 0029 — per-finding token spend split by provider.
+            tokens: {
+              inputTokensOpus: split?.opus?.inputTokens ?? null,
+              outputTokensOpus: split?.opus?.outputTokens ?? null,
+              inputTokensGpt5: split?.gpt5?.inputTokens ?? null,
+              outputTokensGpt5: split?.gpt5?.outputTokens ?? null,
+            },
+          };
+        }),
       );
-      // Persist the aggregate patch-lane cost (observability only —
-      // the drawdown column is untouched). v1 writes 0 because the
-      // provider modules don't yet surface per-call token spend; the
-      // write lands so /receipts and the wallet aggregator can fold
-      // it in once the provider layer exposes cost. Drawdown invariant
-      // 3: this is the ONLY cost write in the click-apply path; no new
-      // payments / drawdown rows touched by v1.6.
+      // Persist the aggregate patch-lane cost (observability only — the
+      // drawdown column is untouched). Now a real figure: the provider SDK
+      // usage blocks are threaded through ProviderPatchProposal.usage and
+      // summed at token list rates in patch-cost.ts. Drawdown invariant 3:
+      // this is the ONLY cost write in the click-apply path; no new payments
+      // / drawdown rows touched.
       await deps.setReviewPatchCost(reviewId, patchOutcome.costPatchUsd);
 
       // Patch Agent v1.6 — click-apply lane runs BEFORE the patch_proposed

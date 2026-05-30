@@ -168,6 +168,17 @@ export const findingStatus = pgTable("finding_status", {
   suggestedPatchGpt5: text("suggested_patch_gpt5"),
   patchShipped: text("patch_shipped"),
   patchSelector: text("patch_selector"),
+  // Patch Agent cost instrumentation (migration 0029) — per-finding token
+  // spend for the two patch-proposal calls, split by provider. Captured from
+  // the SDK usage blocks and written by recordPatchDecisions alongside the
+  // patch candidates. Nullable: a finding whose providers made no billable
+  // call (precheck skip, generation error) leaves the relevant side NULL,
+  // which the reconciliation cron treats as "measure via heuristic". The
+  // aggregate USD cost lives on reviews.cost_patch_usd, not here.
+  inputTokensOpus: integer("input_tokens_opus"),
+  outputTokensOpus: integer("output_tokens_opus"),
+  inputTokensGpt5: integer("input_tokens_gpt5"),
+  outputTokensGpt5: integer("output_tokens_gpt5"),
 });
 
 export const maintainerReactions = pgTable(

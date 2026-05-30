@@ -417,6 +417,14 @@ export type RecordPatchDecisionInput = {
     | "no-opus-deterministic-skip"
     | "no-gpt5-deterministic-skip"
     | "no-candidates";
+  // Migration 0029 — per-finding patch-proposal token spend, split by
+  // provider. Null when that provider made no billable call for the finding.
+  tokens?: {
+    inputTokensOpus: number | null;
+    outputTokensOpus: number | null;
+    inputTokensGpt5: number | null;
+    outputTokensGpt5: number | null;
+  };
 };
 
 export async function recordPatchDecisions(
@@ -441,6 +449,16 @@ export async function recordPatchDecisions(
           suggestedPatchGpt5: i.candidates.gpt5,
           patchShipped: i.suggestedPatch,
           patchSelector: i.selector,
+          // Migration 0029 — per-finding token spend (null when absent so we
+          // never clobber an existing value with undefined on a partial input).
+          ...(i.tokens !== undefined
+            ? {
+                inputTokensOpus: i.tokens.inputTokensOpus,
+                outputTokensOpus: i.tokens.outputTokensOpus,
+                inputTokensGpt5: i.tokens.inputTokensGpt5,
+                outputTokensGpt5: i.tokens.outputTokensGpt5,
+              }
+            : {}),
         })
         .where(eq(findingStatus.findingId, i.findingId)),
     ),

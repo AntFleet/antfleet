@@ -376,11 +376,27 @@ export const patchSuggestionOutputSchema = z.object({
 
 export type PatchSuggestionOutput = z.infer<typeof patchSuggestionOutputSchema>;
 
+// Token spend for a single provider call. Captured from the SDK response's
+// usage block (Anthropic: input_tokens/output_tokens; OpenAI:
+// prompt_tokens/completion_tokens) and threaded out so the patch lane can
+// price the call. Null when the provider response omits usage (older SDKs
+// or a streaming path that doesn't aggregate). Observability-only — never
+// gates drawdown.
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+};
+
 // Provider-returned per-call payload that carries the resolved model id
 // alongside the schema-validated content. The provider modules know the
 // actual model used (default fallback when caller passes model: null);
 // downstream callers shouldn't have to re-derive it. Used by the
 // orchestrator + agreement gate to record the truthful patchModelId.
+// `usage` carries the call's token spend for patch-cost accounting. Optional
+// (and null-able): the real providers always populate it, but a mock or an
+// older SDK path may omit it, in which case the cost layer reads it as
+// "unknown" (priced at $0) rather than failing.
 export type PatchSuggestionResult = PatchSuggestionOutput & {
   modelId: string;
+  usage?: TokenUsage | null;
 };
