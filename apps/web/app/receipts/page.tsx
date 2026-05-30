@@ -67,8 +67,15 @@ export default async function ReceiptsPage({
   const { totalClosed, recent, lastUpdatedAt, hasMore } = pageData;
   const now = new Date();
   const displays: DisplayReceipt[] = recent.map((row) => toDisplayReceipt(row, now));
+  // Pick the most-recent timestamp across same-repo closures and cross-repo receipts.
+  const effectiveLastUpdated =
+    lastUpdatedAt === null
+      ? crossRepo.lastResolvedAt
+      : crossRepo.lastResolvedAt !== null && crossRepo.lastResolvedAt > lastUpdatedAt
+        ? crossRepo.lastResolvedAt
+        : lastUpdatedAt;
   const lastUpdatedRelative =
-    lastUpdatedAt === null ? null : formatRelativeTime(now, lastUpdatedAt);
+    effectiveLastUpdated === null ? null : formatRelativeTime(now, effectiveLastUpdated);
   const nextCursor =
     hasMore && displays.length > 0 ? (displays[displays.length - 1]?.closedAtIso ?? null) : null;
   const isPaginated = before !== undefined;

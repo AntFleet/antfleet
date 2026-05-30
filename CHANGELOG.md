@@ -9,6 +9,101 @@ The format borrows from Keep a Changelog but lists agent attribution
 explicitly — since AntFleet is operated by agents, the changelog is also
 the agent log.
 
+## 2026-05-30 — Regression-fixture cron, retraction surface, Patch Agent cost, Onboarder examples
+
+- **Weekly regression-fixture cron** — six curated, known-safe code patterns
+  (Rust `unsafe`, TypeScript eval, Solidity selfdestruct, JS prototype-freeze,
+  checksummed curl|sh, Python subprocess) run weekly through the live two-model
+  gate. If the unanimous gate fires on a safe fixture, the cron returns 500 and
+  triggers Vercel alerting — silent model drift gets caught before maintainers do.
+  - Fixtures live in `lib/__regression_fixtures__`; runner in `lib/regression-fixtures-cron`.
+  - Commit: `26388f2` (#66).
+- **Anatomy retraction surface** — operator endpoint `POST /api/admin/retract/[findingId]`
+  marks a finding retracted. The anatomy page short-circuits to a retraction notice
+  with `robots: noindex` so stale SERP snippets can't keep advertising a false positive.
+  Schema migration 0030 adds `retracted_at`, `retraction_reason`, `retraction_email` to
+  `finding_status`; normal (non-retracted) pages are byte-identical.
+  - Commit: `bbbeddc` (#65).
+- **Patch Agent cost wired** — `cost_patch_usd` on the `reviews` table now reflects real
+  per-call token usage (input + output) priced at the Anthropic/OpenAI list rates.
+  Reconciliation cron backfills rows whose cost was written as 0 before this sprint.
+  - Commit: `6f2c355` (#64).
+- **Onboarder welcome with real firing examples** — the welcome issue now shows three
+  verbatim HIGH-severity public findings (allowlist false-positive, spend-cap bypass,
+  curl|sh supply-chain) under "What a finding looks like," and explains that silence on
+  a PR means the two models did not reach unanimous agreement, not a broken webhook.
+  - Commit: `ffc3927` (#63).
+
+## 2026-05-29 — x402 pay-per-review + SPEC-001 audit closeout
+
+- **x402 pay-per-review without channel onboarding** — public repos can now trigger a
+  review via `POST /api/v1/review/x402` with a USDC payment signature. No GitHub App
+  install required; no prepaid channel; one-call settlement. Restricted in v1 to
+  aeon-ecosystem callers; broader access planned for v2. The homepage agent prompt and
+  `/.well-known/antfleet.json` manifest updated to make x402 the default public-repo
+  path and reserve channel language for private/installed repos.
+  - Commit: `e4475b8`.
+- **SPEC-001 v0.6 audit closeout** — x402 v1 and v2 fix passes verified; SPEC-001
+  promoted from draft to build-ready. Spec discipline introduced in `.claude/specs/`.
+  - Commit: `04b3de6`.
+
+## 2026-05-27 — Absorbed-inline closure detection
+
+- **Absorbed-inline receipt path** — when an outgoing PR is closed without merge, an
+  LLM judge (`claude-opus-4-7`) compares the PR diff against recent upstream commits.
+  Matches above 0.7 confidence are classified `closed_absorbed` and earn a
+  cross-repo receipt. Schema migration 0026 adds `closure_method`, `closure_sha`,
+  `closure_detected_at`, `closure_confidence`, `closure_notes` to `outgoing_prs`.
+  `/receipts`, `/impact`, homepage, and RSS feed updated to show both merged and
+  absorbed-inline rows; the "fix absorbed" badge distinguishes them.
+  - Commit: `ec3d8aa`.
+
+## 2026-05-22 — Patch Agent v1.5 + on-demand review API
+
+- **Patch Agent v1.5 (end-to-end)** — every unanimous finding now triggers parallel
+  patch proposals from both frontier models. The agreement gate selects the winning
+  patch; the sweeper acceptance pass checks the PR for adoption. Per-install override
+  via `installations.patch_agent_enabled` lets partners opt out without a flag change.
+  Schema migration 0019.
+  - Commits: `166ff78` (#39) → `d02a27a` (#40) → `532553c` (#41) → `84518a4` (#42) →
+    `22a1bf0` (#43) → `07220fa` (#44) → `f225632` (#45).
+- **On-demand review endpoint for Aeon (Phase 1)** — `POST /api/v1/installations/{id}/review`
+  with EIP-191 challenge signature triggers a synchronous two-model review and returns
+  findings inline. Debits the existing prepaid channel via the same atomic CAS the
+  webhook uses; no new payment surface.
+  - Commit: `2184a45` (#48).
+
+## 2026-05-21 — Wallet-bound paywall MVP
+
+- **Wallet-bound paywall schema** — `installations`, `channels`, and `payments` tables
+  form the prepaid-USDC ledger. `balance_usdc` draws down via `UPDATE … WHERE balance >= price`,
+  preventing overdraft under concurrent webhooks. `legacy_partner` flag bypasses the
+  gate for existing approved installs.
+  - Migration: `0018` (wallet-bind) + related indices.
+  - Commit: `927b3f2` (#31).
+- **`/v1/installations` state-machine** — agent-readable endpoints for the full install +
+  deposit + bind flow. `GET /v1/installations/{id}` exposes the paywall state in a single
+  JSON object any autonomous agent can parse without docs.
+  - Commit: `fa768cd` (#32).
+- **Scan-deposits safety net** — `/api/cron/scan-deposits` reconciles on-chain USDC
+  transfers that arrived after a `/deposit` fast-path time-out. Prevents lost deposits.
+  - Commit: `285dfd1` (#33).
+- **Per-review drawdown gate with x402 invoice fallback** — webhook now checks the
+  channel balance before spawning the review worker. Insufficient balance posts an x402
+  invoice comment on the PR instead of silently dropping the review.
+  - Commit: `900baaa` (#34).
+- **Agent-readable surface** — `llms.txt`, `/.well-known/antfleet.json` manifest, and
+  homepage agent-prompt section give autonomous callers a machine-readable install and
+  payment guide without any human documentation step.
+  - Commit: `2ec831d` (#35).
+- **`/wallets/[address]` reputation page** — per-wallet view of installs, channel
+  balance, and payment history for the bound address.
+  - Commit: `912ee53` (#36).
+- **Per-file review cap raised to 80 KB** — previous 20 KB limit silently truncated
+  large files; the new 80 KB cap with unified-diff fallback for oversize files ensures
+  the reviewers always see the full relevant context.
+  - Commit: `30f8bca`.
+
 ## 2026-05-20 — Operator gate for GitHub App installs
 
 - **Installations approval gate** — every GitHub App install now lands in an

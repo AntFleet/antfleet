@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 // marketing fluff). Comparisons to peer agents are positioning, not
 // affiliation.
 
-const LAST_UPDATED = "2026-05-17";
+const LAST_UPDATED = "2026-05-30";
 
 export const metadata: Metadata = {
   title: "AntFleet · Roadmap",
