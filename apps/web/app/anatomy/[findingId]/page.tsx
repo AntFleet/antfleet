@@ -30,6 +30,17 @@ export async function generateMetadata({
     return { title: "AntFleet \u00b7 Anatomy not found" };
   }
   const pageUrl = `${SITE_URL}/anatomy/${encodeURIComponent(bundle.findingId)}`;
+  // Retracted: tell crawlers to drop the page (the SEO deindex path) and strip
+  // the finding details from the title/description so a stale SERP snippet
+  // can't keep advertising the retracted claim.
+  if (bundle.retractedAt !== null) {
+    return {
+      title: "AntFleet \u00b7 Retracted finding",
+      description: "This finding has been retracted and is no longer a current AntFleet advisory.",
+      alternates: { canonical: pageUrl },
+      robots: { index: false, follow: false },
+    };
+  }
   return {
     title: `${bundle.severity} ${bundle.category}: ${truncate(bundle.title, 60)} \u2014 AntFleet anatomy`,
     description: `Both frontier models flagged this ${bundle.category} finding. Full reasoning, code samples, and fix diff.`,
@@ -52,6 +63,14 @@ export default async function AnatomyPage({ params }: { params: Promise<RoutePar
 
   const now = new Date();
   const pageUrl = `${SITE_URL}/anatomy/${encodeURIComponent(bundle.findingId)}`;
+
+  // Retracted findings keep their URL live (HTTP 200 — a 404 would break any
+  // external links) but render only a retraction notice: no JSON-LD (so the
+  // page produces no rich result), no GitHub code fetch, none of the original
+  // finding body. The noindex meta is set in generateMetadata.
+  if (bundle.retractedAt !== null) {
+    return <RetractedNotice bundle={bundle} now={now} />;
+  }
 
   const hunks =
     bundle.source.owner.length > 0 && bundle.closureSha !== null
@@ -134,6 +153,52 @@ function Badge({ children }: { children: React.ReactNode }) {
 
 type BundleType = NonNullable<Awaited<ReturnType<typeof loadAnatomyBundle>>>;
 type HunksType = Awaited<ReturnType<typeof fetchHunkPair>>;
+
+function RetractedNotice({ bundle, now }: { bundle: BundleType; now: Date }) {
+  // Absolute date — a retraction notice should read as a dated, durable
+  // correction, not a relative "3 days ago".
+  const retractedDate = (bundle.retractedAt ?? now).toISOString().slice(0, 10);
+  const reason =
+    bundle.retractionReason !== null && bundle.retractionReason.length > 0
+      ? bundle.retractionReason
+      : "The finding did not survive post-publication review.";
+  return (
+    <section className="py-20">
+      <ContentWrap>
+        <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
+          Anatomy &middot; {bundle.findingId}
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug">
+          This finding has been retracted
+        </h1>
+        <div className="mt-8 rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] p-6 max-w-xl">
+          <p className="text-sm text-[var(--color-ink-muted)] leading-relaxed">
+            AntFleet retracted this finding on{" "}
+            <span className="font-mono text-[var(--color-ink)]">{retractedDate}</span>. {reason}
+          </p>
+          <p className="mt-4 text-sm text-[var(--color-ink-muted)] leading-relaxed">
+            If you have questions, contact{" "}
+            <a
+              href="mailto:privacy@antfleet.dev"
+              className="underline underline-offset-2 text-[var(--color-ink)] hover:opacity-70 transition-opacity"
+            >
+              privacy@antfleet.dev
+            </a>
+            .
+          </p>
+        </div>
+        <div className="mt-10 font-mono text-xs">
+          <a
+            href="/receipts"
+            className="text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] underline underline-offset-2 transition-colors"
+          >
+            all receipts &rarr;
+          </a>
+        </div>
+      </ContentWrap>
+    </section>
+  );
+}
 
 function Hero({ bundle, now }: { bundle: BundleType; now: Date }) {
   return (

@@ -179,6 +179,16 @@ export const findingStatus = pgTable("finding_status", {
   outputTokensOpus: integer("output_tokens_opus"),
   inputTokensGpt5: integer("input_tokens_gpt5"),
   outputTokensGpt5: integer("output_tokens_gpt5"),
+  // Retraction surface (migration 0030). When the unanimous gate produces a
+  // false positive, the operator retracts the finding: the /anatomy page drops
+  // its JSON-LD + adds noindex and renders a retraction notice instead. All
+  // nullable — retractedAt IS NULL is the normal (non-retracted) state and
+  // renders exactly as before. retractionReason is shown on the notice when
+  // set; retractionEmail records the requestor (if a maintainer asked) for the
+  // audit trail and is never rendered publicly.
+  retractedAt: timestamp("retracted_at", { withTimezone: true }),
+  retractionReason: text("retraction_reason"),
+  retractionEmail: text("retraction_email"),
 });
 
 export const maintainerReactions = pgTable(

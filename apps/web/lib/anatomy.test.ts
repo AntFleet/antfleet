@@ -22,6 +22,8 @@ function makeRow(overrides: Record<string, unknown> = {}) {
     closureCommentUrl: "https://github.com/example/repo/pull/1#issuecomment-1",
     closedAt: new Date("2026-05-20"),
     createdAt: new Date("2026-05-19"),
+    retractedAt: null,
+    retractionReason: null,
     repoHash: "a1b2c3d4e5f6",
     prNumber: 42,
     commitSha: "def7890123456",
@@ -159,5 +161,24 @@ describe("loadAnatomyBundle", () => {
     expect(result!.source.owner).toBe("");
     expect(result!.source.repo).toBe("");
     expect(result!.source.installationId).toBe(0);
+  });
+
+  it("carries null retraction fields for a normal (non-retracted) finding", async () => {
+    mockDbReturns([makeRow()]);
+    const result = await loadAnatomyBundle("abcd1234-0");
+    expect(result!.retractedAt).toBeNull();
+    expect(result!.retractionReason).toBeNull();
+  });
+
+  it("surfaces retracted_at and reason for a retracted finding", async () => {
+    mockDbReturns([
+      makeRow({
+        retractedAt: new Date("2026-05-30"),
+        retractionReason: "Both models misread a hardened pattern as unsafe.",
+      }),
+    ]);
+    const result = await loadAnatomyBundle("abcd1234-0");
+    expect(result!.retractedAt).toEqual(new Date("2026-05-30"));
+    expect(result!.retractionReason).toBe("Both models misread a hardened pattern as unsafe.");
   });
 });

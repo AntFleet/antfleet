@@ -26,6 +26,10 @@ export type AnatomyBundle = {
   closureCommentUrl: string | null;
   closedAt: Date | null;
   createdAt: Date;
+  // Retraction surface (migration 0030). Non-null retractedAt flips the page
+  // into its retracted state: no JSON-LD, noindex, retraction notice body.
+  retractedAt: Date | null;
+  retractionReason: string | null;
   reasoning: {
     anthropic: ProviderReasoning | null;
     openai: ProviderReasoning | null;
@@ -54,6 +58,8 @@ export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundl
       closureCommentUrl: findingStatus.closureCommentUrl,
       closedAt: findingStatus.closureDetectedAt,
       createdAt: findingStatus.createdAt,
+      retractedAt: findingStatus.retractedAt,
+      retractionReason: findingStatus.retractionReason,
       repoHash: reviews.repoHash,
       prNumber: reviews.prNumber,
       commitSha: reviews.commitSha,
@@ -87,6 +93,8 @@ export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundl
     closureCommentUrl: row.closureCommentUrl,
     closedAt: row.closedAt,
     createdAt: row.createdAt,
+    retractedAt: row.retractedAt,
+    retractionReason: row.retractionReason,
     reasoning: {
       anthropic: extractProviderReasoning(row.providerResponses, "anthropic", evidence),
       openai: extractProviderReasoning(row.providerResponses, "openai", evidence),

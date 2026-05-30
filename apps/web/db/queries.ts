@@ -502,6 +502,30 @@ export async function setReviewPatchCost(reviewId: string, costPatchUsd: number)
     .where(eq(reviews.reviewId, reviewId));
 }
 
+// Retraction surface (migration 0030). Operator-driven: stamp retracted_at +
+// reason (+ requestor email when known) on a finding so its /anatomy page
+// flips to the retracted state. Idempotent on retracted_at IS NULL — a
+// re-retraction does not overwrite the original timestamp/reason, so the first
+// retraction is the durable one. Returns true when a (still-live) row was
+// retracted, false when the finding id is unknown OR already retracted; the
+// caller maps false to 404 so the operator notices a typo'd id.
+export async function retractFinding(
+  findingId: string,
+  reason: string,
+  requestorEmail: string | null,
+): Promise<boolean> {
+  const updated = await db
+    .update(findingStatus)
+    .set({
+      retractedAt: new Date(),
+      retractionReason: reason,
+      retractionEmail: requestorEmail,
+    })
+    .where(and(eq(findingStatus.findingId, findingId), isNull(findingStatus.retractedAt)))
+    .returning({ findingId: findingStatus.findingId });
+  return updated.length > 0;
+}
+
 // Patch Agent v1.5 — sweeper patch-acceptance work loader. Returns one row
 // per finding that has a proposed patch but no acceptance yet, joined to
 // the parent review so the sweep pass has install + repo context to read
