@@ -20,7 +20,10 @@ export const maxDuration = 60;
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const secret = process.env["CRON_SECRET"];
   if (secret === undefined || secret.length === 0) {
-    logError("cron.misconfigured", { reason: "CRON_SECRET missing", route: "patch-cost-reconcile" });
+    logError("cron.misconfigured", {
+      reason: "CRON_SECRET missing",
+      route: "patch-cost-reconcile",
+    });
     return new NextResponse("server misconfigured", { status: 500 });
   }
   const authHeader = req.headers.get("authorization");
