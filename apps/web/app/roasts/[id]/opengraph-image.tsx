@@ -137,7 +137,6 @@ const topBarStyle: React.CSSProperties = {
 
 const titleStyle: React.CSSProperties = {
   color: INK,
-  display: "-webkit-box",
   fontFamily: SANS,
   fontSize: 56,
   fontWeight: 600,
@@ -145,8 +144,7 @@ const titleStyle: React.CSSProperties = {
   maxWidth: 960,
   overflow: "hidden",
   textOverflow: "ellipsis",
-  WebkitBoxOrient: "vertical",
-  WebkitLineClamp: 3,
+  whiteSpace: "nowrap",
 };
 
 const footerStyle: React.CSSProperties = {

@@ -126,7 +126,6 @@ const topBarStyle: React.CSSProperties = {
 
 const titleStyle: React.CSSProperties = {
   color: INK,
-  display: "-webkit-box",
   fontFamily: SANS,
   fontSize: 56,
   fontWeight: 600,
@@ -134,15 +133,13 @@ const titleStyle: React.CSSProperties = {
   maxWidth: 900,
   overflow: "hidden",
   textOverflow: "ellipsis",
-  WebkitBoxOrient: "vertical",
-  WebkitLineClamp: 2,
+  whiteSpace: "nowrap",
 };
 
 const countStyle: React.CSSProperties = {
   color: INK,
   fontFamily: SANS,
   fontSize: 120,
-  fontVariantNumeric: "tabular-nums",
   fontWeight: 600,
   lineHeight: 0.95,
 };
