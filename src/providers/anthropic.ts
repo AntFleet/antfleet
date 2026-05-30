@@ -74,14 +74,14 @@ export const anthropicProvider: Provider = {
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; applying patches is a separate
-    // concern (Patch Bot lives downstream and is not wired in this surface).
+    // concern (Patch Agent lives downstream and is not wired in this surface).
     const { json } = await callAnthropic({
       prompt,
       model: model ?? DEFAULT_MODEL,
       toolName: "submit_fix_plan",
       schema: fixPlanJsonSchema,
       toolDescription:
-        "Submit a read-only fix plan. Do not modify files. Patch Bot will apply real fixes in a later week.",
+        "Submit a read-only fix plan. Do not modify files. Patch Agent will apply real fixes in a later week.",
     });
     return fixPlanOutputSchema.parse(json);
   },

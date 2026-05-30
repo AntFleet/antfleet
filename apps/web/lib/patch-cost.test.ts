@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
+import { ANTHROPIC_DEFAULT_MODEL } from "@antfleet/cli/providers/anthropic";
+import { OPENAI_DEFAULT_MODEL } from "@antfleet/cli/providers/openai";
 import {
   callCostUsd,
   estimatePatchCostUsd,
   patchTokensByFinding,
+  toPersistableCostUsd,
   PATCH_TOKEN_PRICING_USD_PER_MTOK,
 } from "./patch-cost";
 import type { ProviderPatchProposal } from "./patch-generation";
@@ -133,5 +136,43 @@ describe("patchTokensByFinding", () => {
       proposal({ findingId: "fid-1", providerName: "anthropic", usage: null }),
     ]);
     expect(map.get("fid-1")).toEqual({ opus: null, gpt5: null });
+  });
+});
+
+describe("toPersistableCostUsd (numeric(10,4) guard)", () => {
+  it("rounds a normal value to 4 dp", () => {
+    expect(toPersistableCostUsd(0.123456)).toBe(0.1235);
+  });
+
+  it("coerces NaN / Infinity / negative to 0 (would otherwise throw on the DB write)", () => {
+    expect(toPersistableCostUsd(NaN)).toBe(0);
+    expect(toPersistableCostUsd(Infinity)).toBe(0);
+    expect(toPersistableCostUsd(-1.5)).toBe(0);
+  });
+
+  it("clamps an over-range value to the column maximum", () => {
+    expect(toPersistableCostUsd(10_000_000)).toBe(999_999.9999);
+  });
+
+  it("flows through estimatePatchCostUsd so a malformed usage block can't throw the write", () => {
+    const bad = proposal({
+      providerName: "anthropic",
+      modelId: "claude-opus-4-7",
+      usage: { inputTokens: Number.NaN, outputTokens: 0 },
+    });
+    expect(estimatePatchCostUsd([bad])).toBe(0);
+  });
+});
+
+describe("pricing-table staleness forcing function", () => {
+  // These fail CI the moment the default model bumps without a matching
+  // pricing entry — converting silent mispricing-via-fallback into a loud
+  // signal that the VERIFY-BY rates need confirming for the new model.
+  it("prices the current default Anthropic model explicitly (no silent fallback)", () => {
+    expect(PATCH_TOKEN_PRICING_USD_PER_MTOK[ANTHROPIC_DEFAULT_MODEL]).toBeDefined();
+  });
+
+  it("prices the current default OpenAI model explicitly (no silent fallback)", () => {
+    expect(PATCH_TOKEN_PRICING_USD_PER_MTOK[OPENAI_DEFAULT_MODEL]).toBeDefined();
   });
 });

@@ -453,6 +453,9 @@ async function processClaimedRow(
     try {
       await deps.recordPatchDecisions(
         patchOutcome.decisions.map((d) => {
+          // runPatchAgent always populates tokensByFindingId (every return
+          // path sets a Map); the `?.` only tolerates loosely-typed test mocks
+          // that omit the field. A missing split → all-null token columns.
           const split = patchOutcome.tokensByFindingId?.get(d.findingId);
           return {
             findingId: d.findingId,

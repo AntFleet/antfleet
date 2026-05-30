@@ -20,7 +20,7 @@ type Rate = { input: number; output: number };
 //
 // VERIFY-BY DATE: 2026-05-30. Sources:
 //   - claude-opus-4-7: Anthropic API pricing — $15/MTok input, $75/MTok output.
-//   - gpt-5: OpenAI API pricing — ~$5/MTok input, $30/MTok output.
+//   - gpt-5: OpenAI API pricing — $5/MTok input, $30/MTok output.
 // These are list rates (no cache discount, no batch discount applied) so the
 // estimate is a conservative upper bound on real spend. Update both the rates
 // AND this date when provider pricing changes materially.
@@ -38,6 +38,25 @@ const PROVIDER_FALLBACK_RATE: Readonly<Record<string, Rate>> = {
 };
 
 const TOKENS_PER_MILLION = 1_000_000;
+
+// Upper bound of the numeric(10,4) column cost_patch_usd lands in. A value
+// above this — or non-finite, or negative — would make the `.toFixed(4)` DB
+// write throw (Postgres rejects "NaN" / out-of-range for numeric). Realistic
+// patch spend is cents, so this only fires if a provider SDK returns a
+// malformed usage block; clamping degrades to a safe persisted value rather
+// than failing the (observability-only) write.
+const MAX_NUMERIC_10_4 = 999_999.9999;
+
+/**
+ * Coerce a computed cost into something safely persistable to numeric(10,4):
+ * non-finite or negative → 0; over-range → the column max; otherwise rounded
+ * to 4 dp. Pure. Applied at every cost producer so no write path can throw on
+ * a malformed input.
+ */
+export function toPersistableCostUsd(n: number): number {
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(Math.round(n * 10_000) / 10_000, MAX_NUMERIC_10_4);
+}
 
 /**
  * USD cost of a single provider call. Pure. Returns 0 when usage is null
@@ -70,7 +89,7 @@ export function estimatePatchCostUsd(proposals: readonly ProviderPatchProposal[]
   for (const p of proposals) {
     sum += callCostUsd(p.providerName, p.modelId, p.usage);
   }
-  return Math.round(sum * 10_000) / 10_000;
+  return toPersistableCostUsd(sum);
 }
 
 export type PerFindingTokenSplit = {

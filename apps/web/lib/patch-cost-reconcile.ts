@@ -10,11 +10,31 @@
 // Scheduled Monday 02:00 UTC (low-traffic window) ahead of the regression
 // fixtures cron. Idempotent: once a review's cost is written non-zero it drops
 // out of the candidate set on the next run.
+//
+// PROVENANCE / ACCURACY: reconciled costs are CONSERVATIVE UPPER-BOUND
+// ESTIMATES, not measured spend. For an unmeasured finding the heuristic
+// charges a full call for BOTH providers, but the candidate set only proves
+// Opus ran (suggested_patch_opus IS NOT NULL) — GPT-5 may have errored or
+// precheck-skipped and never billed. So a backfilled review's cost can be
+// biased high. This is the right bias for an observability number against a
+// fixed review price (never understates), but a downstream consumer that
+// needs measured-only spend (e.g. eval-harness per-finding attribution) must
+// read the per-finding token columns directly, NOT this reconciled aggregate.
 
 import { and, gte, isNotNull, lt, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import { findingStatus, reviews } from "@/db/schema";
-import { callCostUsd } from "./patch-cost";
+import { callCostUsd, toPersistableCostUsd } from "./patch-cost";
+
+// Model ids used to price backfilled rows. Deliberately HARDCODED historical
+// pins, NOT bound to the live default model constant: this cron re-prices a
+// 30-day window of rows that already ran, so they must stay priced at the
+// model that was current when they ran (opus-4.7 / gpt-5) even after the live
+// default later moves to a newer model. When the default bumps, add the new
+// model's rate to PATCH_TOKEN_PRICING_USD_PER_MTOK (the live path picks it up
+// via each proposal's real modelId); do NOT edit these historical pins.
+const RECONCILE_OPUS_MODEL = "claude-opus-4-7";
+const RECONCILE_GPT5_MODEL = "gpt-5";
 
 // Heuristic fallback when a finding's token columns are all NULL (the row
 // predates instrumentation). Conservative per-call estimate for a single
@@ -54,14 +74,20 @@ export function reconcileReviewCostUsd(findings: readonly ReconcileFindingRow[])
         f.inputTokensGpt5 !== null || f.outputTokensGpt5 !== null
           ? { inputTokens: f.inputTokensGpt5 ?? 0, outputTokens: f.outputTokensGpt5 ?? 0 }
           : null;
-      sum += callCostUsd("anthropic", "claude-opus-4-7", opus);
-      sum += callCostUsd("openai", "gpt-5", gpt5);
+      sum += callCostUsd("anthropic", RECONCILE_OPUS_MODEL, opus);
+      sum += callCostUsd("openai", RECONCILE_GPT5_MODEL, gpt5);
     } else {
-      sum += callCostUsd("anthropic", "claude-opus-4-7", HEURISTIC_OPUS_USAGE);
-      sum += callCostUsd("openai", "gpt-5", HEURISTIC_GPT5_USAGE);
+      // Unmeasured row: charge a full call for BOTH providers. This is an
+      // UPPER BOUND — the candidate set proves Opus ran, but GPT-5 may have
+      // errored/precheck-skipped and never billed, in which case this
+      // overcounts the GPT-5 side. Accepted: the reconciled aggregate is an
+      // observability estimate biased to never understate spend (see the
+      // PROVENANCE note at the top of this file).
+      sum += callCostUsd("anthropic", RECONCILE_OPUS_MODEL, HEURISTIC_OPUS_USAGE);
+      sum += callCostUsd("openai", RECONCILE_GPT5_MODEL, HEURISTIC_GPT5_USAGE);
     }
   }
-  return Math.round(sum * 10_000) / 10_000;
+  return toPersistableCostUsd(sum);
 }
 
 export type ReconcileSummary = {
