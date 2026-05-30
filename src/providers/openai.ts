@@ -22,6 +22,15 @@ import {
 export const OPENAI_DEFAULT_MODEL = "gpt-5";
 const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL;
 
+// Per-request timeout + retry policy, matched to the Anthropic client
+// (ANTHROPIC_CLIENT_OPTS). The OpenAI SDK default is a 600s timeout with 2
+// retries — far over the 300s Vercel function ceiling the review crons run
+// under, so a single hung call could blow the whole budget. Cap at 240s (the
+// same ceiling Anthropic uses) with 3 retries so both providers fail in a
+// bounded, symmetric window. Applies to every review, not just the regression
+// cron that surfaced the mismatch.
+const OPENAI_CLIENT_OPTS = { timeout: 240_000, maxRetries: 3 } as const;
+
 export const openaiProvider: Provider = {
   name: "openai",
   async check(): Promise<string> {
@@ -88,7 +97,7 @@ type OpenAICallResult = { json: unknown; usage: TokenUsage | null };
 
 async function callOpenAI(opts: CallOptions): Promise<OpenAICallResult> {
   const apiKey = requireApiKey();
-  const client = new OpenAI({ apiKey });
+  const client = new OpenAI({ apiKey, ...OPENAI_CLIENT_OPTS });
   const response = await client.chat.completions.create({
     model: opts.model,
     messages: [{ role: "user", content: opts.prompt }],
