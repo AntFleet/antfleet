@@ -74,6 +74,13 @@ describe("checkInPrompt", () => {
     const out = checkInPrompt({ ...baseArgs, findingsAgreed: 2 });
     expect(out).not.toMatch(/If no finding has fired yet/u);
   });
+
+  it("omits the silence reassurance at the boundary of exactly one agreed finding", () => {
+    // Locks the strict `=== 0` contract: a future refactor to `< threshold`
+    // would silently re-enable the line at 1 and this test would catch it.
+    const out = checkInPrompt({ ...baseArgs, findingsAgreed: 1 });
+    expect(out).not.toMatch(/If no finding has fired yet/u);
+  });
 });
 
 describe("firstReviewSummaryPrompt", () => {

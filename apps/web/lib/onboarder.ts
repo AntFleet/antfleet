@@ -46,7 +46,7 @@ const WELCOME_SCHEMA = {
     issue_body: {
       type: "string",
       description:
-        "GitHub issue body in markdown. 150-300 words. Acknowledge the install, explain what Reviewer does on the next PR, mention the two-model unanimous gate, link to https://www.antfleet.dev/architecture, invite the maintainer to close the issue when ready.",
+        "GitHub issue body in markdown, roughly 200-350 words of prose plus the fixed examples block. Acknowledge the install, explain what Reviewer does on the next PR, include a 'What a finding looks like' section with the three provided HIGH-severity examples verbatim and the https://www.antfleet.dev/receipts registry link, mention the two-model unanimous gate, explain that silence means no unanimous agreement (not a broken webhook), link to https://www.antfleet.dev/architecture, invite the maintainer to close the issue when ready.",
     },
   },
   required: ["issue_title", "issue_body"],
@@ -183,17 +183,17 @@ Compose a welcome GitHub issue to open in this repo. Voice: direct, technical, n
 
 - Acknowledge the install in one sentence
 - Tell the maintainer what happens next: on the next PR opened, two independent frontier models (Claude Opus 4.7 and GPT-5) will review changed files in parallel; only findings both models flag get posted as a comment; typical latency is 30-90s for small PRs
-- Include a concrete "What a finding looks like" section so the maintainer can recognize a fired finding instead of reading silence as a broken webhook. Render these three real, public, HIGH-severity examples close to verbatim as a bullet list:
+- Include a concrete "What a finding looks like" section so the maintainer can recognize a fired finding instead of reading silence as a broken webhook. Render these three real, public, HIGH-severity examples as a bullet list. Reproduce each bullet's "HIGH · <category>: <title>" prefix VERBATIM (do not paraphrase the category or title); the explanatory clause after the em dash may be lightly trimmed for length:
   - HIGH · access-control: Allowlist bypass via unnormalized input — both reviewers flagged an inbound allowlist that compared a normalized list against unnormalized phone candidates, so a formatting variant slipped past the gate.
   - HIGH · input-validation: Daily spend cap silently bypassed — both reviewers flagged an awk-based cap that fails open on a non-numeric API response, so the limit never triggers.
   - HIGH · supply-chain: Installer piped an arbitrary URL to sh with no checksum — both reviewers flagged the unauthenticated curl|sh pattern that lets a compromised CDN run code on the host.
   Immediately after the list, include this link exactly once, as its own line: "Browse the public registry → https://www.antfleet.dev/receipts"
-- After the examples, include this line close to verbatim: "If no finding fires on a PR, that means the two models did not reach unanimous agreement — not that the webhook is broken. Silence is the correct outcome for most PRs."
+- After the examples, include this sentence VERBATIM: "If no finding fires on a PR, that means the two models did not reach unanimous agreement — not that the webhook is broken. Silence is the correct outcome for most PRs."
 - For AI agents specifically: point them at the agent signup loop at https://www.antfleet.dev/llms.txt and the machine-readable manifest at https://www.antfleet.dev/.well-known/antfleet.json. If the installer is a human partner, this paragraph can be one line; if it's an agent, surface those two URLs prominently.
 - Link to https://www.antfleet.dev/architecture for the full agent diagram
 - Mention that public receipts are off by default; the summary comment on the first PR review will include a one-click opt-in link, no email needed
 - Close with a short "feel free to close this issue when you're set up" line
-- 220-400 words total
+- Keep the connective prose to roughly 200-350 words. This budget EXCLUDES the three fixed example bullets, the registry link line, and the verbatim silence sentence — render those in full regardless of length; never drop or compress an example to hit a word count
 - No emoji
 - Use markdown headings sparingly (two or three at most; the examples section may use its own heading)
 
