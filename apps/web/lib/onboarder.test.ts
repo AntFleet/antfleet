@@ -34,7 +34,7 @@ describe("welcomePrompt", () => {
     });
     expect(out).toContain("What a finding looks like");
     // One example per distinct category attractor.
-    expect(out).toContain("access-control: Allowlist bypass");
+    expect(out).toContain("access-control: Allowlist mis-blocks legitimate senders");
     expect(out).toContain("input-validation: Daily spend cap silently bypassed");
     expect(out).toContain("supply-chain: Installer piped an arbitrary URL to sh");
     // Single, real, working registry link — the flagship findings have no
