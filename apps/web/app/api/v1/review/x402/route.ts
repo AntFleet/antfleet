@@ -352,10 +352,11 @@ function statusForExisting(job: ReviewJobRow): 200 | 202 {
 }
 
 function jobResponse(job: ReviewJobRow, status: 200 | 202): NextResponse {
+  const key = job.idempotencyKey === null ? "" : `?key=${encodeURIComponent(job.idempotencyKey)}`;
   return NextResponse.json(
     {
       jobId: job.jobId,
-      statusUrl: `/api/v1/review/x402/${job.jobId}`,
+      statusUrl: `/api/v1/review/x402/${job.jobId}${key}`,
       status: job.status,
       expectedDurationSec: 180,
     },

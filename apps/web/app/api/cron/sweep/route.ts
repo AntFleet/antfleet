@@ -1,7 +1,7 @@
-import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
+import { requireCronAuth } from "@/lib/cron-auth";
+import { logError, logInfo, messageOf } from "@/lib/log";
 import { runDailyOnboarderCheckIns } from "@/lib/onboarder";
 import { runOutgoingPrsPoll } from "@/lib/outgoing-prs";
 import { runSweep } from "@/lib/sweep";
@@ -17,23 +17,11 @@ export const runtime = "nodejs";
 export const maxDuration = 180;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  const secret = process.env["CRON_SECRET"];
-  if (secret === undefined || secret.length === 0) {
-    logError("cron.misconfigured", { reason: "CRON_SECRET missing" });
-    return new NextResponse("server misconfigured", { status: 500 });
-  }
-  const authHeader = req.headers.get("authorization");
-  // Vercel's cron invocation sets Authorization: Bearer <CRON_SECRET>.
-  // Constant-time compare to deny a length / prefix oracle to anything that
-  // can reach this route before Vercel's edge rate-limit (defense in depth).
-  const expected = `Bearer ${secret}`;
-  const provided = authHeader ?? "";
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    logWarn("cron.unauthorized", { hasAuth: authHeader !== null });
-    return new NextResponse("unauthorized", { status: 401 });
-  }
+  const auth = requireCronAuth(req, {
+    missingEvent: "cron.misconfigured",
+    unauthorizedEvent: "cron.unauthorized",
+  });
+  if (auth !== null) return auth;
 
   const t0 = Date.now();
   try {

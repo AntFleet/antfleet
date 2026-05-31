@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildLiveDeps,
   scanDepositsWithDeps,
   type ChannelRow,
   type ScanDepositsDeps,
@@ -201,4 +202,82 @@ describe("scanDepositsWithDeps", () => {
       toBlock: 5_086_768n, // currentBlock - 3 + 1
     });
   });
+
+  it("uses the partial tx_hash conflict predicate in the live credit path", async () => {
+    const statements: unknown[] = [];
+    const fakeDb = {
+      execute: vi.fn(async (statement: unknown) => {
+        statements.push(statement);
+        return statements.length === 1 ? [{ id: "payment-id" }] : [];
+      }),
+    };
+    const deps = buildLiveDeps(
+      fakeDb as never,
+      { getBlockNumber: vi.fn(), getLogs: vi.fn() } as never,
+      "0xdddddddddddddddddddddddddddddddddddddddd",
+    );
+
+    await deps.creditDeposit({
+      channelId: CHANNEL_A,
+      txHash: "0xabc",
+      fromAddress: WALLET_A,
+      amountUsdc: "5.000000",
+      blockNumber: 1_000,
+    });
+
+    expect(sqlText(statements[0])).toContain(
+      "ON CONFLICT (chain_id, tx_hash) WHERE tx_hash IS NOT NULL DO NOTHING",
+    );
+  });
+
+  it("does not guess when a wallet has multiple eligible installations", async () => {
+    const fakeDb = {
+      execute: vi.fn(async () => [
+        { installationId: "install-a", channelId: "channel-a", walletAddress: WALLET_A },
+        { installationId: "install-b", channelId: "channel-b", walletAddress: WALLET_A },
+      ]),
+    };
+    const deps = buildLiveDeps(
+      fakeDb as never,
+      { getBlockNumber: vi.fn(), getLogs: vi.fn() } as never,
+      "0xdddddddddddddddddddddddddddddddddddddddd",
+    );
+
+    await expect(deps.loadChannelByWallet(WALLET_A)).resolves.toBeNull();
+
+    expect(fakeDb.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates the channel for a single eligible first-deposit installation", async () => {
+    const statements: unknown[] = [];
+    const fakeDb = {
+      execute: vi
+        .fn()
+        .mockImplementationOnce(async (statement: unknown) => {
+          statements.push(statement);
+          return [{ installationId: "install-a", channelId: null, walletAddress: WALLET_A }];
+        })
+        .mockImplementationOnce(async (statement: unknown) => {
+          statements.push(statement);
+          return [{ id: "created-channel", walletAddress: WALLET_A }];
+        }),
+    };
+    const deps = buildLiveDeps(
+      fakeDb as never,
+      { getBlockNumber: vi.fn(), getLogs: vi.fn() } as never,
+      "0xdddddddddddddddddddddddddddddddddddddddd",
+    );
+
+    await expect(deps.loadChannelByWallet(WALLET_A)).resolves.toEqual({
+      id: "created-channel",
+      walletAddress: WALLET_A,
+    });
+    expect(sqlText(statements[1])).toContain("INSERT INTO channels");
+    expect(sqlText(statements[1])).toContain("ON CONFLICT (installation_id)");
+  });
 });
+
+function sqlText(statement: unknown): string {
+  const chunks = (statement as { queryChunks?: Array<{ value?: unknown }> }).queryChunks ?? [];
+  return chunks.map((chunk) => (Array.isArray(chunk.value) ? chunk.value.join("") : "")).join("");
+}

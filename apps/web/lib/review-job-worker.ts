@@ -316,7 +316,9 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
     });
     await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
   } else {
-    const bundle = await withX402WallClockTimeout(reviewPR({ files, owner, repo, prNumber }));
+    const bundle = await withX402WallClockTimeout((signal) =>
+      reviewPR({ files, owner, repo, prNumber, signal }),
+    );
     const price = Number(getReviewPriceUsdc());
     if (Number.isFinite(price) && bundle.estimatedCostUsd > price * 3) {
       await updateReview(enqueued.reviewId, {
@@ -503,19 +505,27 @@ class WallClockTimeoutError extends Error {
   }
 }
 
-async function withX402WallClockTimeout<T>(work: Promise<T>): Promise<T> {
+async function withX402WallClockTimeout<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const timeoutSeconds = readX402TimeoutSeconds();
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: WallClockTimeoutError | undefined;
+  const work = start(controller.signal);
+  work.catch(() => undefined);
   try {
     return await Promise.race([
       work,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new WallClockTimeoutError(timeoutSeconds)),
-          timeoutSeconds * 1000,
-        );
+        timer = setTimeout(() => {
+          timeoutError = new WallClockTimeoutError(timeoutSeconds);
+          controller.abort(timeoutError);
+          reject(timeoutError);
+        }, timeoutSeconds * 1000);
       }),
     ]);
+  } catch (err) {
+    if (timeoutError !== undefined && controller.signal.aborted) throw timeoutError;
+    throw err;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

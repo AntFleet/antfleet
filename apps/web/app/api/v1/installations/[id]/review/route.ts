@@ -45,6 +45,7 @@ import {
   linkDebitPaymentToJob,
   markBillingJobFailed,
   markJobQueued,
+  type CreateReviewJobResult,
   type ReviewJobRow,
 } from "@/lib/review-job-queries";
 import { processReviewJob } from "@/lib/review-job-worker";
@@ -111,7 +112,7 @@ export type ReviewEndpointDeps = {
   makeOctokit: (token: string) => ReviewOctokit;
   getPriceUsdc: () => string;
   now: () => Date;
-  createReviewJob: (args: Parameters<typeof createReviewJob>[1]) => Promise<ReviewJobRow>;
+  createReviewJob: (args: Parameters<typeof createReviewJob>[1]) => Promise<CreateReviewJobResult>;
   findJobByIdempotencyKey: (
     installationId: string,
     idempotencyKey: string,
@@ -337,22 +338,7 @@ export async function handleReviewRequest(
     if (body.idempotency_key) {
       const existing = await deps.findJobByIdempotencyKey(install.id, body.idempotency_key);
       if (existing !== null) {
-        return NextResponse.json(
-          {
-            jobId: existing.jobId,
-            statusUrl: `/api/v1/installations/${id}/review/${existing.jobId}`,
-            status: existing.status,
-            expectedDurationSec: 180,
-          },
-          {
-            status: 200,
-            headers: {
-              "Access-Control-Allow-Origin": "*",
-              "Cache-Control": NO_STORE,
-              "Content-Type": "application/json; charset=utf-8",
-            },
-          },
-        );
+        return reviewJobResponse(id, existing, 200);
       }
     }
 
@@ -373,7 +359,7 @@ export async function handleReviewRequest(
     // Create the job in a non-runnable billing state first. The safety-net
     // cron only picks up status='queued', so a racy or failed debit cannot
     // later run as an unpaid orphan.
-    const job = await deps.createReviewJob({
+    const createdJob = await deps.createReviewJob({
       installationId: install.id,
       walletAddress: install.walletAddress,
       repoOwner: target.owner,
@@ -384,6 +370,15 @@ export async function handleReviewRequest(
       debitPaymentId: null,
       initialStatus: "billing_pending",
     });
+    const job = createdJob.row;
+    if (!createdJob.created) {
+      logInfo("review_endpoint.idempotency_race_reused", {
+        id,
+        jobId: job.jobId,
+        idempotencyKey: body.idempotency_key ?? null,
+      });
+      return reviewJobResponse(id, job, 200);
+    }
 
     // Debit channel (only for gate.kind === "debit").
     // bypass (legacy partner): no debit — job proceeds with debitPaymentId=NULL.
@@ -445,27 +440,32 @@ export async function handleReviewRequest(
     deps.scheduleWorker(job.jobId);
 
     // Return 202 immediately
-    return NextResponse.json(
-      {
-        jobId: job.jobId,
-        statusUrl: `/api/v1/installations/${id}/review/${job.jobId}`,
-        expectedDurationSec: 180,
-      },
-      {
-        status: 202,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Cache-Control": NO_STORE,
-          "Content-Type": "application/json; charset=utf-8",
-        },
-      },
-    );
+    return reviewJobResponse(id, job, 202);
   } catch (err) {
     logError("review_endpoint.internal", {
       message: err instanceof Error ? err.message : String(err),
     });
     return jsonError(500, "internal", "internal error");
   }
+}
+
+function reviewJobResponse(id: string, job: ReviewJobRow, status: 200 | 202): NextResponse {
+  return NextResponse.json(
+    {
+      jobId: job.jobId,
+      statusUrl: `/api/v1/installations/${id}/review/${job.jobId}`,
+      status: job.status,
+      expectedDurationSec: 180,
+    },
+    {
+      status,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": NO_STORE,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    },
+  );
 }
 
 type ResolvedTarget =

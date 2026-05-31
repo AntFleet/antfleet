@@ -1,28 +1,19 @@
-import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { AUTONOMOPOLY_AGENT } from "@/lib/agent-registry";
+import { requireCronAuth } from "@/lib/cron-auth";
 import { backfillIdentityDrift } from "@/lib/identity-drift";
-import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
+import { logError, logInfo, messageOf } from "@/lib/log";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  const secret = process.env["CRON_SECRET"];
-  if (secret === undefined || secret.length === 0) {
-    logError("drift_cron.misconfigured", { reason: "CRON_SECRET missing" });
-    return new NextResponse("server misconfigured", { status: 500 });
-  }
-  const authHeader = req.headers.get("authorization");
-  const expected = `Bearer ${secret}`;
-  const provided = authHeader ?? "";
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    logWarn("drift_cron.unauthorized", { hasAuth: authHeader !== null });
-    return new NextResponse("unauthorized", { status: 401 });
-  }
+  const auth = requireCronAuth(req, {
+    missingEvent: "drift_cron.misconfigured",
+    unauthorizedEvent: "drift_cron.unauthorized",
+  });
+  if (auth !== null) return auth;
 
   const t0 = Date.now();
   try {

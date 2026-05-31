@@ -183,6 +183,41 @@
       "when": 1779350000000,
       "tag": "0025_scorecard_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1779360000000,
+      "tag": "0026_outgoing_prs_closure_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1779370000000,
+      "tag": "0027_review_jobs_billing_pending",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1779380000000,
+      "tag": "0028_review_jobs_x402",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1779390000000,
+      "tag": "0029_patch_cost_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1779400000000,
+      "tag": "0030_finding_retraction",
+      "breakpoints": true
     }
   ]
 }

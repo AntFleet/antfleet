@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { FleetError, assertDefined } from "../errors.js";
-import type { Provider } from "../provider.js";
+import type { Provider, ProviderCallOptions } from "../provider.js";
 import {
   fixPlanJsonSchema,
   patchSuggestionJsonSchema,
@@ -38,13 +38,19 @@ export const anthropicProvider: Provider = {
     requireApiKey();
     return `anthropic ready (default model: ${DEFAULT_MODEL})`;
   },
-  async review(_root: string, prompt: string, model: string | null): Promise<ReviewOutput> {
+  async review(
+    _root: string,
+    prompt: string,
+    model: string | null,
+    options?: ProviderCallOptions,
+  ): Promise<ReviewOutput> {
     const { json } = await callAnthropic({
       prompt,
       model: model ?? DEFAULT_MODEL,
       toolName: "submit_review",
       schema: reviewJsonSchema,
       toolDescription: "Submit the structured review of the feature slice.",
+      signal: options?.signal ?? null,
     });
     return reviewOutputSchema.parse(tolerateReviewShape(json));
   },
@@ -103,6 +109,7 @@ type CallOptions = {
   toolName: string;
   toolDescription: string;
   schema: object;
+  signal?: AbortSignal | null;
 };
 
 // Per-request timeout and retry policy. PR #7 (2026-05-17) observed an
@@ -119,20 +126,23 @@ type AnthropicCallResult = { json: unknown; usage: TokenUsage | null };
 async function callAnthropic(opts: CallOptions): Promise<AnthropicCallResult> {
   const apiKey = requireApiKey();
   const client = new Anthropic({ apiKey, ...ANTHROPIC_CLIENT_OPTS });
-  const response = await client.messages.create({
-    model: opts.model,
-    max_tokens: MAX_TOKENS,
-    tools: [
-      {
-        name: opts.toolName,
-        description: opts.toolDescription,
-        // Anthropic typings expect `Tool.InputSchema`; the underlying JSON schema works as-is.
-        input_schema: opts.schema as Anthropic.Messages.Tool["input_schema"],
-      },
-    ],
-    tool_choice: { type: "tool", name: opts.toolName },
-    messages: [{ role: "user", content: opts.prompt }],
-  });
+  const response = await client.messages.create(
+    {
+      model: opts.model,
+      max_tokens: MAX_TOKENS,
+      tools: [
+        {
+          name: opts.toolName,
+          description: opts.toolDescription,
+          // Anthropic typings expect `Tool.InputSchema`; the underlying JSON schema works as-is.
+          input_schema: opts.schema as Anthropic.Messages.Tool["input_schema"],
+        },
+      ],
+      tool_choice: { type: "tool", name: opts.toolName },
+      messages: [{ role: "user", content: opts.prompt }],
+    },
+    opts.signal === null || opts.signal === undefined ? undefined : { signal: opts.signal },
+  );
   return {
     json: extractAnthropicToolOutput(response, opts.toolName),
     usage: extractAnthropicUsage(response),

@@ -1,7 +1,7 @@
-import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
+import { requireCronAuth } from "@/lib/cron-auth";
+import { logError, logInfo, messageOf } from "@/lib/log";
 import { runPrelaunchOnce } from "@/lib/prelaunch-dispatcher";
 
 export const runtime = "nodejs";
@@ -12,20 +12,11 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  const secret = process.env["CRON_SECRET"];
-  if (secret === undefined || secret.length === 0) {
-    logError("run_prelaunch_cron.misconfigured", { reason: "CRON_SECRET missing" });
-    return new NextResponse("server misconfigured", { status: 500 });
-  }
-  const authHeader = req.headers.get("authorization");
-  const expected = `Bearer ${secret}`;
-  const provided = authHeader ?? "";
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    logWarn("run_prelaunch_cron.unauthorized", { hasAuth: authHeader !== null });
-    return new NextResponse("unauthorized", { status: 401 });
-  }
+  const auth = requireCronAuth(req, {
+    missingEvent: "run_prelaunch_cron.misconfigured",
+    unauthorizedEvent: "run_prelaunch_cron.unauthorized",
+  });
+  if (auth !== null) return auth;
 
   const t0 = Date.now();
   try {

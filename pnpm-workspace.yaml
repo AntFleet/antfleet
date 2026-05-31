@@ -1,6 +1,10 @@
 packages:
   - "apps/*"
 
+overrides:
+  postcss: 8.5.15
+  ws: 8.20.1
+
 allowBuilds:
   cpu-features: false
   esbuild: true

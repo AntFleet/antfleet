@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { FleetError, assertDefined, messageOf } from "../errors.js";
-import type { Provider } from "../provider.js";
+import type { Provider, ProviderCallOptions } from "../provider.js";
 import {
   fixPlanJsonSchema,
   patchSuggestionJsonSchema,
@@ -37,12 +37,18 @@ export const openaiProvider: Provider = {
     requireApiKey();
     return `openai ready (default model: ${DEFAULT_MODEL})`;
   },
-  async review(_root: string, prompt: string, model: string | null): Promise<ReviewOutput> {
+  async review(
+    _root: string,
+    prompt: string,
+    model: string | null,
+    options?: ProviderCallOptions,
+  ): Promise<ReviewOutput> {
     const { json } = await callOpenAI({
       prompt,
       model: model ?? DEFAULT_MODEL,
       schemaName: "fleet_review",
       schema: reviewJsonSchema,
+      signal: options?.signal ?? null,
     });
     return reviewOutputSchema.parse(json);
   },
@@ -91,6 +97,7 @@ type CallOptions = {
   model: string;
   schemaName: string;
   schema: object;
+  signal?: AbortSignal | null;
 };
 
 type OpenAICallResult = { json: unknown; usage: TokenUsage | null };
@@ -98,20 +105,23 @@ type OpenAICallResult = { json: unknown; usage: TokenUsage | null };
 async function callOpenAI(opts: CallOptions): Promise<OpenAICallResult> {
   const apiKey = requireApiKey();
   const client = new OpenAI({ apiKey, ...OPENAI_CLIENT_OPTS });
-  const response = await client.chat.completions.create({
-    model: opts.model,
-    messages: [{ role: "user", content: opts.prompt }],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: opts.schemaName,
-        // OpenAI's strict structured outputs reject some JSON schema features (e.g. anyOf without
-        // a discriminator) but accept the inherited reviewJsonSchema shape used by codex.
-        schema: opts.schema as Record<string, unknown>,
-        strict: true,
+  const response = await client.chat.completions.create(
+    {
+      model: opts.model,
+      messages: [{ role: "user", content: opts.prompt }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: opts.schemaName,
+          // OpenAI's strict structured outputs reject some JSON schema features (e.g. anyOf without
+          // a discriminator) but accept the inherited reviewJsonSchema shape used by codex.
+          schema: opts.schema as Record<string, unknown>,
+          strict: true,
+        },
       },
     },
-  });
+    opts.signal === null || opts.signal === undefined ? undefined : { signal: opts.signal },
+  );
   return { json: extractOpenAIContent(response), usage: extractOpenAIUsage(response) };
 }
 

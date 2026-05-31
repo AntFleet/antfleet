@@ -114,7 +114,7 @@ describe("findingsAgree", () => {
     expect(findingsAgree(a, b)).toBe(false);
   });
 
-  it("treats null line ranges as covering the whole file", () => {
+  it("does not treat null line ranges as covering the whole file", () => {
     const a = makeFinding({
       evidence: [
         { path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null },
@@ -123,6 +123,32 @@ describe("findingsAgree", () => {
     const b = makeFinding({
       evidence: [
         { path: "src/handler.ts", startLine: 100, endLine: 200, symbol: null, quote: null },
+      ],
+    });
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("agrees on null line ranges when both providers name the same symbol", () => {
+    const a = makeFinding({
+      evidence: [
+        {
+          path: "src/handler.ts",
+          startLine: null,
+          endLine: null,
+          symbol: "handleRequest",
+          quote: null,
+        },
+      ],
+    });
+    const b = makeFinding({
+      evidence: [
+        {
+          path: "src/handler.ts",
+          startLine: 100,
+          endLine: 200,
+          symbol: "handleRequest",
+          quote: null,
+        },
       ],
     });
     expect(findingsAgree(a, b)).toBe(true);

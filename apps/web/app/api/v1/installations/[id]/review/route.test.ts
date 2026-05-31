@@ -146,7 +146,7 @@ function deps(overrides: Partial<ReviewEndpointDeps> = {}): ReviewEndpointDeps {
     makeOctokit: vi.fn(() => octokitStub({ prSha: SHA })),
     getPriceUsdc: () => "0.50",
     now: () => NOW,
-    createReviewJob: vi.fn(async () => jobRow()),
+    createReviewJob: vi.fn(async () => ({ row: jobRow(), created: true })),
     findJobByIdempotencyKey: vi.fn(async () => null),
     linkDebitToJob: vi.fn(async () => undefined),
     markBillingJobFailed: vi.fn(async () => undefined),
@@ -539,6 +539,29 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     // No new debit or job creation
     expect(d.debitForJob).not.toHaveBeenCalled();
     expect(d.createReviewJob).not.toHaveBeenCalled();
+    expect(d.scheduleWorker).not.toHaveBeenCalled();
+  });
+
+  it("reuses the idempotent job when create loses the insert race", async () => {
+    const d = deps({
+      createReviewJob: vi.fn(async () => ({
+        row: jobRow({ idempotencyKey: "my-key", status: "queued" }),
+        created: false,
+      })),
+    });
+    const res = await handleReviewRequest(
+      req({ challenge_id: CHALLENGE_ID, signature: SIG, pr_number: PR, idempotency_key: "my-key" }),
+      ctx,
+      d,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body["jobId"]).toBe(JOB_ID);
+    expect(body["status"]).toBe("queued");
+    expect(d.claimChallenge).toHaveBeenCalledTimes(1);
+    expect(d.debitForJob).not.toHaveBeenCalled();
+    expect(d.markJobQueued).not.toHaveBeenCalled();
     expect(d.scheduleWorker).not.toHaveBeenCalled();
   });
 });

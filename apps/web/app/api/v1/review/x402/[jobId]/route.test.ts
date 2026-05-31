@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { handleX402PollRequest, type X402PollDeps } from "./route";
 import type { ReviewJobRow } from "@/lib/review-job-queries";
@@ -47,11 +48,14 @@ function deps(overrides: Partial<X402PollDeps> = {}): X402PollDeps {
 }
 
 const ctx = { params: Promise.resolve({ jobId: "job-x402" }) };
+const req = (key = "key") =>
+  new NextRequest(`http://test.local/api/v1/review/x402/job-x402?key=${key}`);
 
 describe("GET /api/v1/review/x402/{jobId}", () => {
   it("attaches PAYMENT-RESPONSE on terminal settled responses", async () => {
     const settlement = { success: true, transaction: "0xsettled" };
     const res = await handleX402PollRequest(
+      req(),
       ctx,
       deps({
         getReviewJob: vi.fn(async () =>
@@ -73,7 +77,7 @@ describe("GET /api/v1/review/x402/{jobId}", () => {
   });
 
   it("does not attach PAYMENT-RESPONSE before settlement", async () => {
-    const res = await handleX402PollRequest(ctx, deps());
+    const res = await handleX402PollRequest(req(), ctx, deps());
 
     expect(res.status).toBe(200);
     expect(res.headers.get("PAYMENT-RESPONSE")).toBeNull();
@@ -88,6 +92,7 @@ describe("GET /api/v1/review/x402/{jobId}", () => {
     });
     const markExpired = vi.fn(async () => expired);
     const res = await handleX402PollRequest(
+      req(),
       ctx,
       deps({
         getReviewJob: vi.fn(async () =>
@@ -104,5 +109,16 @@ describe("GET /api/v1/review/x402/{jobId}", () => {
     });
     expect(markExpired).toHaveBeenCalledWith("job-x402", NOW);
     expect(res.headers.get("PAYMENT-RESPONSE")).toBeNull();
+  });
+
+  it("hides x402 jobs when the poll key is missing or wrong", async () => {
+    const missing = new NextRequest("http://test.local/api/v1/review/x402/job-x402");
+    const wrong = req("wrong");
+
+    await expect(handleX402PollRequest(missing, ctx, deps())).resolves.toHaveProperty(
+      "status",
+      404,
+    );
+    await expect(handleX402PollRequest(wrong, ctx, deps())).resolves.toHaveProperty("status", 404);
   });
 });

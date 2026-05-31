@@ -109,4 +109,17 @@ describe("POST /api/v1/installations/{id}/review/challenge", () => {
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_eligible");
   });
+
+  it("returns 404 not_eligible when the wallet is bound but the installation is not active", async () => {
+    const d = deps({
+      loadInstallation: vi.fn(async () =>
+        row({ status: "awaiting_deposit", walletBoundAt: new Date("2026-05-20T00:00:00.000Z") }),
+      ),
+    });
+    const res = await handleIssueReviewChallenge(req, ctx, d);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("not_eligible");
+    expect(d.insertChallenge).not.toHaveBeenCalled();
+  });
 });

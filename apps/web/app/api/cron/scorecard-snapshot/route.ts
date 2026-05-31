@@ -1,28 +1,19 @@
-import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { logError, logInfo, logWarn } from "@/lib/log";
 import { insertScorecardSnapshot } from "@/db/queries";
+import { requireCronAuth } from "@/lib/cron-auth";
+import { logError, logInfo } from "@/lib/log";
 import { computeScorecardForWeek, weekEndingSunday, GENERATOR_VERSION } from "@/lib/scorecard";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  const secret = process.env["CRON_SECRET"];
-  if (secret === undefined || secret.length === 0) {
-    logError("cron.misconfigured", { reason: "CRON_SECRET missing" });
-    return new NextResponse("server misconfigured", { status: 500 });
-  }
-  const authHeader = req.headers.get("authorization");
-  const expected = `Bearer ${secret}`;
-  const provided = authHeader ?? "";
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    logWarn("cron.unauthorized", { hasAuth: authHeader !== null });
-    return new NextResponse("unauthorized", { status: 401 });
-  }
+  const auth = requireCronAuth(req, {
+    missingEvent: "cron.misconfigured",
+    unauthorizedEvent: "cron.unauthorized",
+  });
+  if (auth !== null) return auth;
 
   const t0 = Date.now();
   try {

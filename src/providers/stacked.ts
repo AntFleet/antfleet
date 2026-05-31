@@ -1,4 +1,4 @@
-import type { Provider } from "../provider.js";
+import type { Provider, ProviderCallOptions } from "../provider.js";
 import { FleetError, assertDefined } from "../errors.js";
 import type { FixPlanOutput, ReviewOutput, RevalidateOutput } from "../types.js";
 import { AgreementMode, ProviderReview, mergeFindings } from "./agreement.js";
@@ -40,9 +40,14 @@ export function stackedProvider(opts: StackedOptions): Provider {
       }
       return parts.join(" | ");
     },
-    async review(root: string, prompt: string, model: string | null): Promise<ReviewOutput> {
+    async review(
+      root: string,
+      prompt: string,
+      model: string | null,
+      options?: ProviderCallOptions,
+    ): Promise<ReviewOutput> {
       const settled = await Promise.allSettled(
-        opts.providers.map((p) => p.review(root, prompt, model)),
+        opts.providers.map((p) => p.review(root, prompt, model, options)),
       );
       const perProvider: ProviderReview[] = [];
       const failureNotes: string[] = [];

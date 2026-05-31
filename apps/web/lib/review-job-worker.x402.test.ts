@@ -276,7 +276,11 @@ describe("processReviewJob x402 settlement lifecycle", () => {
         .mockResolvedValueOnce(x402Job)
         .mockResolvedValueOnce({ ...x402Job, x402ReviewId: "review-1" });
       dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: true });
-      reviewPipelineMocks.reviewPR.mockReturnValue(new Promise(() => {}));
+      let signal: AbortSignal | undefined;
+      reviewPipelineMocks.reviewPR.mockImplementation((args: { signal?: AbortSignal }) => {
+        signal = args.signal;
+        return new Promise(() => {});
+      });
 
       const { processReviewJob } = await import("./review-job-worker");
       const pending = processReviewJob("job-x402");
@@ -284,6 +288,7 @@ describe("processReviewJob x402 settlement lifecycle", () => {
       const outcome = await pending;
 
       expect(outcome).toMatchObject({ kind: "failed", failureMode: "timeout" });
+      expect(signal?.aborted).toBe(true);
       expect(facilitatorMocks.settlePayment).not.toHaveBeenCalled();
       expect(queryMocks.markX402JobFailedWithResultAndSettlement).toHaveBeenCalledWith(
         {},

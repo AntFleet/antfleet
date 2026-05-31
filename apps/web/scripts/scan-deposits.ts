@@ -2,18 +2,19 @@
 // channel within seconds when an agent POSTs its tx hash; this cron exists
 // for the case where an agent sends USDC but never calls /deposit (eg the
 // agent crashed between sending and POSTing, or it doesn't know to POST at
-// all). Both paths converge on `creditChannelFromDeposit`, which enforces
-// idempotency via the partial unique index on payments(chain_id, tx_hash) —
-// so observing the same Transfer twice is harmless.
+// all). This path mirrors `creditChannelFromDeposit`'s idempotency contract:
+// the partial unique index on payments(chain_id, tx_hash) makes observing the
+// same Transfer twice harmless.
 //
 // Algorithm:
 //   1. Read last scanned block from cron_cursors.
 //   2. Get current block; compute toBlock = current - CONFIRMATION_DEPTH + 1.
 //   3. eth_getLogs for USDC Transfer events with `to` = depositAddress, in
 //      [fromBlock, toBlock], chunked at 2000 blocks (Base RPC limit).
-//   4. For each log, look up the channel by `wallet_address = log.from`. If
-//      found, INSERT into payments ON CONFLICT DO NOTHING + bump the
-//      channel balance.
+//   4. For each log, look up the unique eligible install/channel for
+//      `wallet_address = log.from`. Ambiguous wallets are skipped rather than
+//      guessed; the agent can still credit a specific installation via
+//      POST /deposit.
 //   5. Advance the cursor to chunkTo after each chunk so partial progress
 //      survives RPC failures mid-tick.
 
@@ -32,7 +33,7 @@ import {
 } from "viem";
 import { base } from "viem/chains";
 import { channels, cronCursors, payments } from "../db/schema";
-import { logError, logInfo, messageOf } from "../lib/log";
+import { logError, logInfo, logWarn, messageOf } from "../lib/log";
 import {
   BASE_CHAIN_ID,
   DEPOSIT_MIN_CONFIRMATIONS,
@@ -73,6 +74,11 @@ export type TransferLog = {
 };
 
 export type ChannelRow = { id: string; walletAddress: string };
+type ChannelCandidate = {
+  installationId: string;
+  channelId: string | null;
+  walletAddress: string;
+};
 
 export type ScanDepositsResult = {
   scanned: number;
@@ -246,18 +252,41 @@ async function writeCursor(db: Db, key: string, value: bigint): Promise<void> {
 }
 
 async function loadChannelByWallet(db: Db, walletAddress: string): Promise<ChannelRow | null> {
-  // Most recently created channel for the wallet — agent flow is
-  // one-wallet-per-installation so this is unambiguous. The unique constraint
-  // is on channels(installation_id), not (wallet_address), to keep the
-  // wallet-reputation page able to aggregate across installations.
+  // A wallet can legitimately own multiple installation channels. The
+  // cron does not know which install an unlabelled on-chain transfer was
+  // meant to fund, so it only auto-credits when exactly one bound install is
+  // eligible. Multi-install wallets must use the /deposit endpoint, which is
+  // installation-scoped.
   const result = await db.execute(sql`
-    SELECT id, wallet_address AS "walletAddress"
-    FROM channels
-    WHERE wallet_address = ${walletAddress}
-    ORDER BY created_at DESC
-    LIMIT 1
+    SELECT
+      i.id AS "installationId",
+      c.id AS "channelId",
+      i.wallet_address AS "walletAddress"
+    FROM installations i
+    LEFT JOIN channels c ON c.installation_id = i.id
+    WHERE i.wallet_address = ${walletAddress}
+      AND i.wallet_bound_at IS NOT NULL
+      AND i.status IN ('awaiting_deposit', 'active')
+    ORDER BY i.created_at DESC
+    LIMIT 2
   `);
-  return firstRow<ChannelRow>(result);
+  const candidates = rowsOf<ChannelCandidate>(result);
+  if (candidates.length > 1) {
+    logWarn("scan_deposits.ambiguous_wallet", { walletAddress, eligibleInstallations: "2+" });
+    return null;
+  }
+  const candidate = candidates[0];
+  if (candidate === undefined) return null;
+  if (candidate.channelId !== null) {
+    return { id: candidate.channelId, walletAddress: candidate.walletAddress };
+  }
+  const created = await db.execute(sql`
+    INSERT INTO channels (installation_id, wallet_address)
+    VALUES (${candidate.installationId}, ${candidate.walletAddress})
+    ON CONFLICT (installation_id) DO UPDATE SET wallet_address = EXCLUDED.wallet_address
+    RETURNING id, wallet_address AS "walletAddress"
+  `);
+  return firstRow<ChannelRow>(created);
 }
 
 async function creditDeposit(
@@ -281,7 +310,7 @@ async function creditDeposit(
       ${args.amountUsdc},
       ${args.blockNumber}
     )
-    ON CONFLICT (chain_id, tx_hash) DO NOTHING
+    ON CONFLICT (chain_id, tx_hash) WHERE tx_hash IS NOT NULL DO NOTHING
     RETURNING id
   `);
   const inserted = firstRow<{ id: string }>(insertResult);
@@ -292,6 +321,14 @@ async function creditDeposit(
       balance_usdc = balance_usdc + ${args.amountUsdc}::numeric,
       last_deposit_tx_hash = ${args.txHash}
     WHERE id = ${args.channelId}
+  `);
+  await db.execute(sql`
+    UPDATE installations i
+    SET status = 'active'
+    FROM channels c
+    WHERE c.id = ${args.channelId}
+      AND i.id = c.installation_id
+      AND i.status IN ('awaiting_deposit', 'active')
   `);
   return true;
 }
@@ -308,12 +345,17 @@ function minBigInt(a: bigint, b: bigint): bigint {
 }
 
 function firstRow<T>(result: unknown): T | null {
+  const rows = rowsOf<T>(result);
+  return rows[0] ?? null;
+}
+
+function rowsOf<T>(result: unknown): T[] {
   const rows = Array.isArray(result)
     ? result
     : Array.isArray((result as { rows?: unknown[] }).rows)
       ? (result as { rows: unknown[] }).rows
       : [];
-  return (rows[0] as T | undefined) ?? null;
+  return rows as T[];
 }
 
 function isDirectCliInvocation(): boolean {

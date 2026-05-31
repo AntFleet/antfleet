@@ -41,6 +41,7 @@ export type ReviewJobRow = {
 export type X402SettlementStatus = "pending" | "settled" | "not_settled" | "settlement_failed";
 
 export type ReviewJobInitialStatus = "billing_pending" | "queued";
+export type CreateReviewJobResult = { row: ReviewJobRow; created: boolean };
 
 const JOB_SELECT = sql`
   job_id AS "jobId",
@@ -85,24 +86,32 @@ export async function createReviewJob(
     debitPaymentId: string | null;
     initialStatus?: ReviewJobInitialStatus;
   },
-): Promise<ReviewJobRow> {
+): Promise<CreateReviewJobResult> {
   const jobId = nanoid(21);
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const status = args.initialStatus ?? "queued";
   const result = await q.execute(sql`
     INSERT INTO review_jobs (
       job_id, installation_id, wallet_address, repo_owner, repo_name,
-      pr_number, sha, idempotency_key, status, debit_payment_id, expires_at
+      pr_number, sha, idempotency_key, status, debit_payment_id, expires_at,
+      payment_rail
     ) VALUES (
       ${jobId}, ${args.installationId}, ${args.walletAddress.toLowerCase()},
       ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
-      ${args.idempotencyKey}, ${status}, ${args.debitPaymentId}, ${expiresAt}
+      ${args.idempotencyKey}, ${status}, ${args.debitPaymentId}, ${expiresAt},
+      'channel'
     )
+    ON CONFLICT (payment_rail, installation_id, idempotency_key) DO NOTHING
     RETURNING ${JOB_SELECT}
   `);
   const row = firstRow<ReviewJobRow>(result);
-  if (row === null) throw new Error("createReviewJob: insert returned no row");
-  return normalizeRow(row);
+  if (row !== null) return { row: normalizeRow(row), created: true };
+  if (args.idempotencyKey === null) {
+    throw new Error("createReviewJob: insert returned no row without idempotency key");
+  }
+  const existing = await findJobByIdempotencyKey(q, args.installationId, args.idempotencyKey);
+  if (existing !== null) return { row: existing, created: false };
+  throw new Error("createReviewJob: idempotency conflict returned no existing row");
 }
 
 export async function createX402ReviewJob(

@@ -84,8 +84,11 @@ export async function handleIssueReviewChallenge(
       logWarn("paywall.review_challenge.rejected", { reason: "no_wallet", id });
       return jsonError(404, "not_eligible", "installation is not eligible for review challenges");
     }
-    if (row.status !== PAYWALL_STATUS.active && row.walletBoundAt === null) {
-      logWarn("paywall.review_challenge.rejected", { reason: "wallet_not_bound", id });
+    if (row.status !== PAYWALL_STATUS.active || row.walletBoundAt === null) {
+      logWarn("paywall.review_challenge.rejected", {
+        reason: row.walletBoundAt === null ? "wallet_not_bound" : "not_active",
+        id,
+      });
       return jsonError(404, "not_eligible", "installation is not eligible for review challenges");
     }
     const issuedAt = deps.now();

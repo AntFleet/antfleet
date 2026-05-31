@@ -25,7 +25,12 @@ import { stackedProvider } from "./providers/stacked.js";
 export type Provider = {
   name: string;
   check(root: string): Promise<string>;
-  review(root: string, prompt: string, model: string | null): Promise<ReviewOutput>;
+  review(
+    root: string,
+    prompt: string,
+    model: string | null,
+    options?: ProviderCallOptions,
+  ): Promise<ReviewOutput>;
   fix(root: string, prompt: string, model: string | null): Promise<FixPlanOutput>;
   revalidate(root: string, prompt: string, model: string | null): Promise<RevalidateOutput>;
   // Patch Agent v1.5 — optional per-finding patch call. Providers that
@@ -40,6 +45,10 @@ export type Provider = {
     prompt: string,
     model: string | null,
   ) => Promise<PatchSuggestionResult>;
+};
+
+export type ProviderCallOptions = {
+  signal?: AbortSignal | null;
 };
 
 export function providerByName(name: string): Provider {

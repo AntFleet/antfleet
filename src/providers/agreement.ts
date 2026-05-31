@@ -142,7 +142,7 @@ function evidenceOverlaps(a: Finding["evidence"], b: Finding["evidence"]): boole
       if (normalizePath(ea.path) !== normalizePath(eb.path)) {
         continue;
       }
-      if (lineRangesOverlap(ea.startLine, ea.endLine, eb.startLine, eb.endLine)) {
+      if (evidenceEntriesOverlap(ea, eb)) {
         return true;
       }
     }
@@ -160,17 +160,22 @@ function lineRangesOverlap(
   bStart: number | null,
   bEnd: number | null,
 ): boolean {
-  if (aStart === null && aEnd === null) {
-    return true;
-  }
-  if (bStart === null && bEnd === null) {
-    return true;
-  }
+  if ((aStart === null && aEnd === null) || (bStart === null && bEnd === null)) return false;
   const aS = aStart ?? aEnd ?? 0;
   const aE = aEnd ?? aStart ?? 0;
   const bS = bStart ?? bEnd ?? 0;
   const bE = bEnd ?? bStart ?? 0;
   return aS <= bE && bS <= aE;
+}
+
+function evidenceEntriesOverlap(
+  a: Finding["evidence"][number],
+  b: Finding["evidence"][number],
+): boolean {
+  if (lineRangesOverlap(a.startLine, a.endLine, b.startLine, b.endLine)) return true;
+  if (a.symbol !== null && b.symbol !== null && a.symbol === b.symbol) return true;
+  if (a.quote !== null && b.quote !== null && a.quote === b.quote) return true;
+  return false;
 }
 
 function pickRepresentative(findings: Finding[]): Finding {

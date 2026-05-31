@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createX402ReviewJob } from "./review-job-queries";
+import { createReviewJob, createX402ReviewJob } from "./review-job-queries";
 
 const authorizationState = {
   validAfter: "2026-05-29T00:00:00.000Z",
@@ -57,5 +57,45 @@ describe("createX402ReviewJob", () => {
     expect(row.jobId).toBe("job-existing");
     expect(row.createdAt).toBeInstanceOf(Date);
     expect(row.x402ValidAfter).toBeInstanceOf(Date);
+  });
+});
+
+describe("createReviewJob", () => {
+  it("returns the existing channel job when insert loses an idempotency race", async () => {
+    const existingChannelRow = {
+      ...existingRow,
+      jobId: "job-channel-existing",
+      installationId: "install-1",
+      walletAddress: "0x0000000000000000000000000000000000000002",
+      paymentRail: "channel" as const,
+      callerWallet: null,
+      x402PayTo: null,
+      x402PaymentPayload: null,
+      x402ValidAfter: null,
+      x402ValidBefore: null,
+      x402ReviewId: null,
+      x402SettlementStatus: null,
+      x402SettlementResponse: null,
+    };
+    const q = {
+      execute: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([existingChannelRow]),
+    };
+
+    const result = await createReviewJob(q, {
+      installationId: "install-1",
+      walletAddress: "0x0000000000000000000000000000000000000002",
+      repoOwner: "antfleet",
+      repoName: "fixture",
+      prNumber: 1,
+      sha: "abc1234",
+      idempotencyKey: "key",
+      debitPaymentId: null,
+      initialStatus: "billing_pending",
+    });
+
+    expect(q.execute).toHaveBeenCalledTimes(2);
+    expect(result.created).toBe(false);
+    expect(result.row.jobId).toBe("job-channel-existing");
+    expect(result.row.paymentRail).toBe("channel");
   });
 });

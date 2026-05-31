@@ -56,6 +56,7 @@ export async function reviewPR(args: {
   repo: string;
   prNumber: number;
   mode?: AgreementMode;
+  signal?: AbortSignal;
 }): Promise<ReviewBundle> {
   const mode: AgreementMode = args.mode ?? "unanimous";
   const prompt = buildSpikePrompt({
@@ -70,7 +71,7 @@ export async function reviewPR(args: {
   const tasks = STACK.map(async ({ name, modelId, provider }): Promise<PerProviderResult> => {
     const start = Date.now();
     try {
-      const output = await provider.review(".", prompt, null);
+      const output = await provider.review(".", prompt, null, { signal: args.signal ?? null });
       return { name, modelId, output, error: null, ms: Date.now() - start };
     } catch (err) {
       const message = messageOf(err);

@@ -21,8 +21,7 @@ const DEFAULT_DEPS: X402PollDeps = {
 };
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ jobId: string }> }) {
-  void req;
-  return handleX402PollRequest(ctx, DEFAULT_DEPS);
+  return handleX402PollRequest(req, ctx, DEFAULT_DEPS);
 }
 
 export function OPTIONS() {
@@ -30,6 +29,7 @@ export function OPTIONS() {
 }
 
 export async function handleX402PollRequest(
+  req: NextRequest,
   ctx: { params: Promise<{ jobId: string }> },
   deps: X402PollDeps,
 ) {
@@ -37,6 +37,9 @@ export async function handleX402PollRequest(
     const { jobId } = await ctx.params;
     const loaded = await deps.getReviewJob(jobId);
     if (loaded === null || loaded.paymentRail !== "x402") {
+      return jsonError(404, "not_found", "job not found");
+    }
+    if (!hasPollKey(req, loaded)) {
       return jsonError(404, "not_found", "job not found");
     }
     const now = deps.now();
@@ -73,6 +76,13 @@ export async function handleX402PollRequest(
     });
     return jsonError(500, "internal", "internal error");
   }
+}
+
+function hasPollKey(req: NextRequest, job: ReviewJobRow): boolean {
+  if (job.idempotencyKey === null) return false;
+  const url = new URL(req.url);
+  const key = url.searchParams.get("key") ?? req.headers.get("x-antfleet-idempotency-key");
+  return key === job.idempotencyKey;
 }
 
 function isExpiredInFlight(job: ReviewJobRow, now: Date): boolean {
