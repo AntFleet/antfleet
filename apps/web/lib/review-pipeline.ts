@@ -11,6 +11,7 @@ import type {
   ReviewOutput,
 } from "./review-types";
 import type { ChangedFile } from "./github-files";
+import { triagePR, TRIAGE_COST_USD, type TriageResult } from "./triage-provider";
 import { messageOf } from "./log";
 
 // Per-provider outcome of one review. `error` is non-null when the API call
@@ -40,6 +41,12 @@ export type ReviewBundle = {
   // but agreed is held at [].
   degraded: boolean;
   degradedReason: string | null;
+  // Triage Agent pre-pass result. Non-null only in 'unanimous' mode (the
+  // production path), where a cheap Haiku call decides whether the PR is
+  // worth the frontier stack. Null when triage was bypassed (any/majority
+  // test/manual modes). When triage decides to skip, the frontier providers
+  // never run and `agreed`/`perProvider` are empty.
+  triage: TriageResult | null;
 };
 
 // The v1 stack — locked in §6 of AGENTS.md. Same providers + model ids the
@@ -59,6 +66,50 @@ export async function reviewPR(args: {
   signal?: AbortSignal;
 }): Promise<ReviewBundle> {
   const mode: AgreementMode = args.mode ?? "unanimous";
+  const t0 = Date.now();
+
+  // Triage: cheap Haiku pre-check before the expensive frontier stack.
+  // Only runs in unanimous mode (the production path). Fails open on error
+  // (triagePR returns worthEscalating: true with a non-null `error`), so a
+  // triage failure can never drop a review.
+  let triage: TriageResult | null = null;
+  if (mode === "unanimous") {
+    triage = await triagePR({ files: args.files, signal: args.signal ?? null });
+    // Deterministic safety floor on the triage SUCCESS path. triagePR's input
+    // is fully attacker-controlled (a PR author owns every changed file's
+    // path + contents), so a confidently-wrong or prompt-injected
+    // `worthEscalating: false` would silently drop a real review without ever
+    // hitting the fail-open catch. We therefore only honour a triage skip when
+    // EVERY changed file is pure documentation; anything else — source code,
+    // CI workflows (.yml), manifests/configs (.json/.toml), data — escalates
+    // regardless of what triage said. Driving this off a docs-only allowlist
+    // (rather than a code-only denylist) is fail-safe: a workflow- or
+    // manifest-only PR, both real attack vectors, cannot be skipped on
+    // attacker-influenced output, and any future reviewable extension defaults
+    // to "review", never "skip".
+    if (!triage.worthEscalating && !triageMaySkip(args.files)) {
+      triage = {
+        ...triage,
+        worthEscalating: true,
+        reason: `${triage.reason} (overridden: non-docs files present, escalating)`,
+      };
+    }
+    if (!triage.worthEscalating) {
+      return {
+        perProvider: [],
+        modelIds: {},
+        agreed: [],
+        disagreements: [],
+        totalMs: Date.now() - t0,
+        estimatedCostUsd: 0,
+        agreementMode: mode,
+        degraded: false,
+        degradedReason: null,
+        triage,
+      };
+    }
+  }
+
   const prompt = buildSpikePrompt({
     projectName: `github:${args.owner}/${args.repo}`,
     projectRoot: ".",
@@ -67,7 +118,6 @@ export async function reviewPR(args: {
     files: args.files.map((f) => ({ path: f.filename, contents: f.contents })),
   });
 
-  const t0 = Date.now();
   const tasks = STACK.map(async ({ name, modelId, provider }): Promise<PerProviderResult> => {
     const start = Date.now();
     try {
@@ -96,16 +146,21 @@ export async function reviewPR(args: {
 
   const modelIds = Object.fromEntries(STACK.map((p) => [p.name, p.modelId]));
 
+  // Only charge the triage call when it actually ran (unanimous + escalated).
+  // In any/majority modes triage is null and no Haiku call was made.
+  const triageCost = triage !== null ? TRIAGE_COST_USD : 0;
+
   return {
     perProvider,
     modelIds,
     agreed: merged.agreed,
     disagreements: merged.disagreements,
     totalMs,
-    estimatedCostUsd: estimateRunCost(STACK.map((p) => p.name)),
+    estimatedCostUsd: estimateRunCost(STACK.map((p) => p.name)) + triageCost,
     agreementMode: mode,
     degraded,
     degradedReason,
+    triage,
   };
 }
 
@@ -117,4 +172,26 @@ function requiredVotersFor(mode: AgreementMode, stackSize: number): number {
   if (mode === "any") return 1;
   if (mode === "majority") return Math.floor(stackSize / 2) + 1;
   return stackSize; // unanimous
+}
+
+// The ONLY extensions triage is allowed to skip. Pure documentation only —
+// everything else in the reviewable set (source code, .yml workflows,
+// .json/.toml manifests, data) must reach the frontier stack even when triage
+// votes to skip. This is the deterministic backstop behind the triage skip
+// decision: it keys off the filename extension (which comes from the GitHub PR
+// file list), not the LLM's answer or the attacker-controlled file contents.
+// Allowlist-by-skippable is fail-safe — any extension not listed here forces a
+// review, so the dangerous direction (silently skipping a risky file) is
+// impossible without an explicit entry.
+const TRIAGE_SKIPPABLE_EXTENSIONS = new Set([".md", ".mdx"]);
+
+// True only when EVERY changed file is pure documentation, i.e. triage's skip
+// vote may be honoured. An empty extension or any non-docs file makes this
+// false → escalate.
+function triageMaySkip(files: ChangedFile[]): boolean {
+  return files.every((f) => {
+    const dot = f.filename.lastIndexOf(".");
+    if (dot < 0) return false;
+    return TRIAGE_SKIPPABLE_EXTENSIONS.has(f.filename.slice(dot).toLowerCase());
+  });
 }
