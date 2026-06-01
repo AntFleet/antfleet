@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeActivityWindow, summarizeRoastFindings } from "./queries";
+import {
+  isMissingPatchRationaleColumnError,
+  normalizeActivityWindow,
+  summarizeRoastFindings,
+} from "./queries";
 
 const NOW = new Date("2026-05-19T12:00:00.000Z");
 
@@ -73,5 +77,25 @@ describe("summarizeRoastFindings", () => {
       findingCount: 1,
       highestSeverity: null,
     });
+  });
+});
+
+describe("isMissingPatchRationaleColumnError", () => {
+  it("matches undefined-column errors for the additive rationale columns", () => {
+    expect(
+      isMissingPatchRationaleColumnError({
+        code: "42703",
+        message: 'column "patch_rationale_gpt5" of relation "finding_status" does not exist',
+      }),
+    ).toBe(true);
+  });
+
+  it("does not hide unrelated undefined-column errors", () => {
+    expect(
+      isMissingPatchRationaleColumnError({
+        code: "42703",
+        message: 'column "suggested_patch_gpt5" of relation "finding_status" does not exist',
+      }),
+    ).toBe(false);
   });
 });

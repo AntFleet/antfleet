@@ -76,7 +76,7 @@ export type PatchDecision = {
   candidates: { opus: string | null; gpt5: string | null };
   // Provider-side explanation returned by proposePatch. This is operator
   // observability only: rendered comments still show only shipped patches.
-  rationales: { opus: string | null; gpt5: string | null };
+  rationales?: { opus: string | null; gpt5: string | null };
   selector: PatchSelector;
 };
 

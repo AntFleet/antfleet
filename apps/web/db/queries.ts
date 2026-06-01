@@ -435,37 +435,54 @@ export async function recordPatchDecisions(
   // Drizzle has no native batched UPDATE; run them in parallel. The
   // cardinality is bounded by findings-per-review (low single digits
   // in practice).
-  await Promise.all(
-    inputs.map((i) =>
-      db
-        .update(findingStatus)
-        .set({
-          // Existing writes — UNCHANGED (backward compat for sweeper + click-apply reads)
-          suggestedPatch: i.suggestedPatch,
-          patchModelId: i.patchModelId,
-          patchSkipReason: i.patchSkipReason,
-          patchProposedAt: i.proposedAt,
-          // Eval Phase 0 — new writes
-          suggestedPatchOpus: i.candidates.opus,
-          suggestedPatchGpt5: i.candidates.gpt5,
-          patchShipped: i.suggestedPatch,
-          patchSelector: i.selector,
-          patchRationaleOpus: i.rationales?.opus ?? null,
-          patchRationaleGpt5: i.rationales?.gpt5 ?? null,
-          // Migration 0029 — per-finding token spend (null when absent so we
-          // never clobber an existing value with undefined on a partial input).
-          ...(i.tokens !== undefined
-            ? {
-                inputTokensOpus: i.tokens.inputTokensOpus,
-                outputTokensOpus: i.tokens.outputTokensOpus,
-                inputTokensGpt5: i.tokens.inputTokensGpt5,
-                outputTokensGpt5: i.tokens.outputTokensGpt5,
-              }
-            : {}),
-        })
-        .where(eq(findingStatus.findingId, i.findingId)),
-    ),
-  );
+  await Promise.all(inputs.map((i) => recordOnePatchDecision(i)));
+}
+
+async function recordOnePatchDecision(i: RecordPatchDecisionInput): Promise<void> {
+  await db
+    .update(findingStatus)
+    .set({
+      // Existing writes — UNCHANGED (backward compat for sweeper + click-apply reads)
+      suggestedPatch: i.suggestedPatch,
+      patchModelId: i.patchModelId,
+      patchSkipReason: i.patchSkipReason,
+      patchProposedAt: i.proposedAt,
+      // Eval Phase 0 — new writes
+      suggestedPatchOpus: i.candidates.opus,
+      suggestedPatchGpt5: i.candidates.gpt5,
+      patchShipped: i.suggestedPatch,
+      patchSelector: i.selector,
+      // Migration 0029 — per-finding token spend (null when absent so we
+      // never clobber an existing value with undefined on a partial input).
+      ...(i.tokens !== undefined
+        ? {
+            inputTokensOpus: i.tokens.inputTokensOpus,
+            outputTokensOpus: i.tokens.outputTokensOpus,
+            inputTokensGpt5: i.tokens.inputTokensGpt5,
+            outputTokensGpt5: i.tokens.outputTokensGpt5,
+          }
+        : {}),
+    })
+    .where(eq(findingStatus.findingId, i.findingId));
+
+  try {
+    await db
+      .update(findingStatus)
+      .set({
+        patchRationaleOpus: i.rationales?.opus ?? null,
+        patchRationaleGpt5: i.rationales?.gpt5 ?? null,
+      })
+      .where(eq(findingStatus.findingId, i.findingId));
+  } catch (err) {
+    if (!isMissingPatchRationaleColumnError(err)) throw err;
+  }
+}
+
+export function isMissingPatchRationaleColumnError(err: unknown): boolean {
+  const maybe = err as { code?: unknown; message?: unknown };
+  if (maybe.code !== "42703") return false;
+  const message = typeof maybe.message === "string" ? maybe.message : "";
+  return message.includes("patch_rationale_opus") || message.includes("patch_rationale_gpt5");
 }
 
 // Patch Agent v1.6 — persist the PR review-comment artifact id/url after

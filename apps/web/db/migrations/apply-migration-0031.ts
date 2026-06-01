@@ -52,6 +52,14 @@ export async function verifyMigration0031(sql: MigrationSql): Promise<{ columns:
   return { columns: columns.map((r) => String(r["column_name"])) };
 }
 
+export function databaseHostForLog(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "(unparseable DATABASE_URL)";
+  }
+}
+
 async function main() {
   const dryRun = !process.argv.includes("--apply");
   if (dryRun) {
@@ -67,7 +75,7 @@ async function main() {
     return;
   }
 
-  const host = url.replace(/^postgresql:\/\/[^@]+@([^/?]+).*/, "$1");
+  const host = databaseHostForLog(url);
   console.log("Target host:", host);
   if (PROD_PATTERNS.some((p) => host.includes(p))) {
     console.error("REFUSING to run against prod-looking host:", host);
