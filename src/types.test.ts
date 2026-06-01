@@ -36,7 +36,9 @@ describe("reviewOutputSchema new fields", () => {
   });
 
   it("preserves an explicit upstreamOrigin object", () => {
-    const f = parseOne(rawFinding({ upstreamOrigin: { package: "left-pad", reason: "off-by-one" } }));
+    const f = parseOne(
+      rawFinding({ upstreamOrigin: { package: "left-pad", reason: "off-by-one" } }),
+    );
     expect(f?.upstreamOrigin).toEqual({ package: "left-pad", reason: "off-by-one" });
   });
 });
