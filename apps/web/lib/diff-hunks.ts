@@ -74,6 +74,26 @@ export function rangeFallsInsideHunk(
 }
 
 /**
+ * Returns true iff the inclusive range [startLine, endLine] overlaps at least
+ * one hunk. This is looser than rangeFallsInsideHunk and is used only for
+ * deciding whether Patch Agent should spend a provider call on a finding whose
+ * reviewer evidence may cite a broader block/function than the changed lines.
+ */
+export function rangeOverlapsHunk(
+  ranges: readonly HunkRange[],
+  startLine: number | null,
+  endLine: number | null,
+): boolean {
+  if (startLine === null || startLine <= 0) return false;
+  const lo = startLine;
+  const hi = endLine === null || endLine < startLine ? startLine : endLine;
+  for (const range of ranges) {
+    if (lo <= range.end && hi >= range.start) return true;
+  }
+  return false;
+}
+
+/**
  * Count the added/changed lines in a proposed patch. Used for the 20-line
  * size cap. Counts lines that start with "+" in the patch body but excludes
  * the "+++ b/path" file header. Lines that are pure deletions ("-") and

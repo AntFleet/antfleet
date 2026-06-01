@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { countAddedLines, parseHunkRanges, rangeFallsInsideHunk } from "./diff-hunks";
+import {
+  countAddedLines,
+  parseHunkRanges,
+  rangeFallsInsideHunk,
+  rangeOverlapsHunk,
+} from "./diff-hunks";
 
 describe("parseHunkRanges", () => {
   it("returns [] for null patch (binary file path)", () => {
@@ -89,6 +94,44 @@ describe("rangeFallsInsideHunk", () => {
     // Defensive: GitHub occasionally returns inverted ranges in odd
     // edge cases. Fall back to startLine as the anchor.
     expect(rangeFallsInsideHunk(hunks, 15, 12)).toBe(true);
+  });
+});
+
+describe("rangeOverlapsHunk", () => {
+  const hunks = [
+    { start: 10, end: 20 },
+    { start: 50, end: 55 },
+  ];
+
+  it("accepts a range fully inside a hunk", () => {
+    expect(rangeOverlapsHunk(hunks, 12, 18)).toBe(true);
+    expect(rangeOverlapsHunk(hunks, 50, 55)).toBe(true);
+  });
+
+  it("accepts a range that partially overlaps a hunk", () => {
+    expect(rangeOverlapsHunk(hunks, 5, 10)).toBe(true);
+    expect(rangeOverlapsHunk(hunks, 18, 25)).toBe(true);
+  });
+
+  it("accepts a hunk fully inside a broader finding range", () => {
+    expect(rangeOverlapsHunk(hunks, 1, 100)).toBe(true);
+    expect(rangeOverlapsHunk(hunks, 45, 60)).toBe(true);
+  });
+
+  it("rejects a range in the same file but disjoint from every hunk", () => {
+    expect(rangeOverlapsHunk(hunks, 1, 9)).toBe(false);
+    expect(rangeOverlapsHunk(hunks, 21, 49)).toBe(false);
+    expect(rangeOverlapsHunk(hunks, 56, 60)).toBe(false);
+  });
+
+  it("rejects null startLine (file-level finding with no line anchor)", () => {
+    expect(rangeOverlapsHunk(hunks, null, null)).toBe(false);
+    expect(rangeOverlapsHunk(hunks, null, 15)).toBe(false);
+  });
+
+  it("treats endLine < startLine as a single-line finding", () => {
+    expect(rangeOverlapsHunk(hunks, 15, 12)).toBe(true);
+    expect(rangeOverlapsHunk(hunks, 25, 12)).toBe(false);
   });
 });
 

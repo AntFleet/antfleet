@@ -18,6 +18,7 @@ import {
   countAddedLines,
   parseHunkRanges,
   rangeFallsInsideHunk,
+  rangeOverlapsHunk,
   type HunkRange,
 } from "./diff-hunks";
 import type { PatchSuggestionResult } from "@antfleet/cli/types";
@@ -156,7 +157,7 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
   }
   const normalized = normalizePath(evidence.path);
   const hunks = args.hunksByPath.get(normalized) ?? [];
-  if (!rangeFallsInsideHunk(hunks, evidence.startLine, evidence.endLine)) {
+  if (!rangeOverlapsHunk(hunks, evidence.startLine, evidence.endLine)) {
     return {
       providerName: args.provider.name,
       findingId: args.findingId,
@@ -204,13 +205,36 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       usage: raw.usage ?? null,
     };
   }
-  if (countAddedLines(raw.patch) > PATCH_SIZE_LINE_CAP) {
+  const addedLines = countAddedLines(raw.patch);
+  if (addedLines === 0) {
+    return {
+      providerName: args.provider.name,
+      findingId: args.findingId,
+      patch: null,
+      modelId: raw.modelId,
+      skipReason: "outside_diff_hunk",
+      rationale: raw.rationale,
+      usage: raw.usage ?? null,
+    };
+  }
+  if (addedLines > PATCH_SIZE_LINE_CAP) {
     return {
       providerName: args.provider.name,
       findingId: args.findingId,
       patch: null,
       modelId: raw.modelId,
       skipReason: "size_cap",
+      rationale: raw.rationale,
+      usage: raw.usage ?? null,
+    };
+  }
+  if (!patchFallsInsideHunks(raw.patch, hunks, normalized, evidence.startLine, evidence.endLine)) {
+    return {
+      providerName: args.provider.name,
+      findingId: args.findingId,
+      patch: null,
+      modelId: raw.modelId,
+      skipReason: "outside_diff_hunk",
       rationale: raw.rationale,
       usage: raw.usage ?? null,
     };
@@ -224,6 +248,51 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
     rationale: raw.rationale,
     usage: raw.usage ?? null,
   };
+}
+
+function patchFallsInsideHunks(
+  patch: string,
+  hunks: readonly HunkRange[],
+  expectedPath: string,
+  evidenceStartLine: number | null,
+  evidenceEndLine: number | null,
+): boolean {
+  if (!patchTargetsExpectedPath(patch, expectedPath)) return false;
+  const patchHunks = parseHunkRanges(patch);
+  if (patchHunks.length !== 1) return false;
+  const [patchHunk] = patchHunks;
+  if (patchHunk === undefined) return false;
+  return (
+    rangeFallsInsideHunk(hunks, patchHunk.start, patchHunk.end) &&
+    rangeOverlapsHunk(
+      [{ start: patchHunk.start, end: patchHunk.end }],
+      evidenceStartLine,
+      evidenceEndLine,
+    )
+  );
+}
+
+function patchTargetsExpectedPath(patch: string, expectedPath: string): boolean {
+  const paths = parsePatchNewPaths(patch);
+  if (paths.length === 0) return true;
+  return paths.length === 1 && paths[0] === expectedPath;
+}
+
+function parsePatchNewPaths(patch: string): string[] {
+  const paths: string[] = [];
+  for (const line of patch.split("\n")) {
+    if (!line.startsWith("+++ ")) continue;
+    const rawPath = line.slice(4);
+    const tabIndex = rawPath.indexOf("\t");
+    const path = tabIndex === -1 ? rawPath : rawPath.slice(0, tabIndex);
+    paths.push(normalizeDiffPath(path.trim()));
+  }
+  return paths;
+}
+
+function normalizeDiffPath(path: string): string {
+  if (path === "/dev/null") return path;
+  return normalizePath(path.replace(/^[ab]\//u, ""));
 }
 
 function buildHunkIndex(files: readonly ChangedFile[]): Map<string, HunkRange[]> {

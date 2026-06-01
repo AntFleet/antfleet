@@ -57,6 +57,22 @@ const buildProvider = (
   },
 });
 
+const buildCountingPatchProviders = () => {
+  const calls: string[] = [];
+  const providers: PatchProposingProvider[] = ["anthropic", "openai"].map((name) => ({
+    name,
+    async proposePatch() {
+      calls.push(name);
+      return {
+        patch: "@@ -12,1 +12,1 @@\n-old\n+new\n",
+        rationale: null,
+        modelId: `${name}-test-model`,
+      };
+    },
+  }));
+  return { calls, providers };
+};
+
 const baseArgs = (
   overrides: Partial<GenerateReviewPatchesArgs> = {},
 ): GenerateReviewPatchesArgs => ({
@@ -110,7 +126,9 @@ describe("generateReviewPatches — fan-out", () => {
 
 describe("generateReviewPatches — diff-hunk filter", () => {
   it("emits outside_diff_hunk when evidence.startLine is null (file-level finding)", async () => {
+    let called = false;
     const provider = buildProvider("anthropic", async () => {
+      called = true;
       throw new Error("should not reach provider");
     });
     const finding = stubFinding({
@@ -121,10 +139,13 @@ describe("generateReviewPatches — diff-hunk filter", () => {
     );
     expect(result.proposals[0]?.patch).toBeNull();
     expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(called).toBe(false);
   });
 
   it("emits outside_diff_hunk when evidence path is missing from PR diff", async () => {
+    let called = false;
     const provider = buildProvider("anthropic", async () => {
+      called = true;
       throw new Error("should not reach provider");
     });
     const finding = stubFinding({
@@ -134,10 +155,13 @@ describe("generateReviewPatches — diff-hunk filter", () => {
       baseArgs({ findings: [finding], providers: [provider] }),
     );
     expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(called).toBe(false);
   });
 
-  it("emits outside_diff_hunk when evidence range lies outside the hunk", async () => {
+  it("emits outside_diff_hunk when evidence range is in the same file but disjoint from the hunk", async () => {
+    let called = false;
     const provider = buildProvider("anthropic", async () => {
+      called = true;
       throw new Error("should not reach provider");
     });
     const finding = stubFinding({
@@ -148,20 +172,136 @@ describe("generateReviewPatches — diff-hunk filter", () => {
       baseArgs({ findings: [finding], providers: [provider] }),
     );
     expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(called).toBe(false);
   });
 
-  it("reaches the provider when evidence lies inside a hunk", async () => {
-    let called = false;
-    const provider: PatchProposingProvider = {
-      name: "anthropic",
-      async proposePatch() {
-        called = true;
-        return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null, modelId: "stub-model" };
-      },
-    };
+  it("reaches both providers when evidence is fully contained in a hunk", async () => {
+    const { calls, providers } = buildCountingPatchProviders();
+    const result = await generateReviewPatches(baseArgs({ providers }));
+    expect(calls.toSorted()).toEqual(["anthropic", "openai"]);
+    expect(result.proposals).toHaveLength(2);
+    expect(result.proposals.every((p) => p.patch?.includes("+new"))).toBe(true);
+  });
+
+  it("reaches both providers when evidence partially overlaps a hunk", async () => {
+    const { calls, providers } = buildCountingPatchProviders();
+    const finding = stubFinding({
+      // Hunk in stubFile covers lines 1..15; 12..20 overlaps at 12..15.
+      evidence: [{ path: "src/foo.ts", startLine: 12, endLine: 20, symbol: null, quote: null }],
+    });
+    const result = await generateReviewPatches(
+      baseArgs({ findings: [finding], providers }),
+    );
+    expect(calls.toSorted()).toEqual(["anthropic", "openai"]);
+    expect(result.proposals).toHaveLength(2);
+    expect(result.proposals.every((p) => p.patch?.includes("+new"))).toBe(true);
+  });
+
+  it("reaches both providers when a hunk is inside a broader evidence range", async () => {
+    const { calls, providers } = buildCountingPatchProviders();
+    const finding = stubFinding({
+      // Hunk in stubFile covers lines 1..15; 1..50 cites a broader block.
+      evidence: [{ path: "src/foo.ts", startLine: 1, endLine: 50, symbol: null, quote: null }],
+    });
+    const result = await generateReviewPatches(
+      baseArgs({ findings: [finding], providers }),
+    );
+    expect(calls.toSorted()).toEqual(["anthropic", "openai"]);
+    expect(result.proposals).toHaveLength(2);
+    expect(result.proposals.every((p) => p.patch?.includes("+new"))).toBe(true);
+  });
+
+  it("rejects a provider patch whose hunk falls outside the PR diff hunk", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      // Evidence overlaps the PR hunk, but this returned patch targets
+      // lines outside stubFile's 1..15 hunk and must not ship.
+      patch: "@@ -80,1 +80,1 @@\n-old\n+new\n",
+      rationale: "bad target",
+    }));
+    const finding = stubFinding({
+      evidence: [{ path: "src/foo.ts", startLine: 1, endLine: 50, symbol: null, quote: null }],
+    });
+    const result = await generateReviewPatches(
+      baseArgs({ findings: [finding], providers: [provider] }),
+    );
+    expect(result.proposals[0]?.patch).toBeNull();
+    expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(result.proposals[0]?.rationale).toBe("bad target");
+  });
+
+  it("rejects a returned multi-hunk patch even when each hunk is inside the PR diff", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      patch: "@@ -10,1 +10,1 @@\n-old\n+new\n@@ -12,1 +12,1 @@\n-old2\n+new2\n",
+      rationale: "two targets",
+    }));
     const result = await generateReviewPatches(baseArgs({ providers: [provider] }));
-    expect(called).toBe(true);
+    expect(result.proposals[0]?.patch).toBeNull();
+    expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(result.proposals[0]?.rationale).toBe("two targets");
+  });
+
+  it("rejects a returned patch whose file header targets a different path", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      patch: "--- a/src/other.ts\n+++ b/src/other.ts\n@@ -10,1 +10,1 @@\n-old\n+new\n",
+      rationale: "wrong file",
+    }));
+    const result = await generateReviewPatches(baseArgs({ providers: [provider] }));
+    expect(result.proposals[0]?.patch).toBeNull();
+    expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(result.proposals[0]?.rationale).toBe("wrong file");
+  });
+
+  it("accepts a returned patch whose file header targets the evidence path", async () => {
+    const patch = "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-old\n+new\n";
+    const provider = buildProvider("anthropic", async () => ({
+      patch,
+      rationale: null,
+    }));
+    const result = await generateReviewPatches(baseArgs({ providers: [provider] }));
+    expect(result.proposals[0]?.patch).toBe(patch);
+    expect(result.proposals[0]?.skipReason).toBeNull();
+  });
+
+  it("rejects a returned patch hunk that does not overlap the evidence range", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      patch: "@@ -14,1 +14,1 @@\n-old\n+new\n",
+      rationale: "anchor drift",
+    }));
+    const finding = stubFinding({
+      evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10, symbol: null, quote: null }],
+    });
+    const result = await generateReviewPatches(
+      baseArgs({ findings: [finding], providers: [provider] }),
+    );
+    expect(result.proposals[0]?.patch).toBeNull();
+    expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(result.proposals[0]?.rationale).toBe("anchor drift");
+  });
+
+  it("accepts a returned patch hunk inside a broader evidence range", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      patch: "@@ -14,1 +14,1 @@\n-old\n+new\n",
+      rationale: null,
+    }));
+    const finding = stubFinding({
+      evidence: [{ path: "src/foo.ts", startLine: 1, endLine: 50, symbol: null, quote: null }],
+    });
+    const result = await generateReviewPatches(
+      baseArgs({ findings: [finding], providers: [provider] }),
+    );
     expect(result.proposals[0]?.patch).toContain("+new");
+    expect(result.proposals[0]?.skipReason).toBeNull();
+  });
+
+  it("rejects a returned patch with no new-side replacement lines", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      patch: "@@ -10,1 +10,1 @@\n old\n",
+      rationale: "empty",
+    }));
+    const result = await generateReviewPatches(baseArgs({ providers: [provider] }));
+    expect(result.proposals[0]?.patch).toBeNull();
+    expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
+    expect(result.proposals[0]?.rationale).toBe("empty");
   });
 });
 
@@ -187,7 +327,14 @@ describe("generateReviewPatches — size cap", () => {
       patch: cappedPatch,
       rationale: null,
     }));
-    const result = await generateReviewPatches(baseArgs({ providers: [provider] }));
+    const result = await generateReviewPatches(
+      baseArgs({
+        changedFiles: [
+          stubFile({ patch: "@@ -1,40 +1,40 @@\n context\n+added\n" }),
+        ],
+        providers: [provider],
+      }),
+    );
     expect(result.proposals[0]?.patch).toBe(cappedPatch);
     expect(result.proposals[0]?.skipReason).toBeNull();
   });
