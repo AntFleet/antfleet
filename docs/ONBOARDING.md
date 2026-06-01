@@ -62,6 +62,8 @@ GitHub App installed:
    know what to expect before you have to ask.
 
 No config file. No CI yaml. No dashboards to babysit (yet — v1.5).
+AntFleet reviews target one self-contained change per PR — smaller, focused PRs consistently
+produce sharper findings (see [Google's small-CL guidance](https://google.github.io/eng-practices/review/developer/small-cls.html)).
 
 ## What it costs you during Phase 2
 

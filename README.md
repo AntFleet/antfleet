@@ -134,6 +134,11 @@ overlapping evidence. Silence on a PR means "no unanimous finding,"
 not "no findings at all" — per-provider outputs persist to
 `reviews.provider_responses` for analysis but never post.
 
+AntFleet reviews target one self-contained change per PR. Submitting
+focused, single-purpose PRs produces sharper findings — see
+[Google's small-CL guidance](https://google.github.io/eng-practices/review/developer/small-cls.html)
+for the rationale.
+
 ## Repository layout
 
 ```text
