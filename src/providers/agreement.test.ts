@@ -33,6 +33,8 @@ function makeFinding(overrides: FindingOverrides = {}): Finding {
     whyTestsDoNotAlreadyCoverThis: "no test",
     suggestedRegressionTest: null,
     minimumFixScope: "narrow",
+    requiresPolicyReview: false,
+    upstreamOrigin: null,
     ...overrides,
   };
 }

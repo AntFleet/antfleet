@@ -30,9 +30,8 @@ async function main() {
   const notes =
     notesCandidate !== undefined && !notesCandidate.startsWith("--") ? notesCandidate : undefined;
   const patchAgentEnabled = !process.argv.includes("--no-patch-agent");
-  const { listInstallRows, setInstallPatchAgentEnabled, setInstallStatus } = await import(
-    "../db/queries"
-  );
+  const { listInstallRows, setInstallPatchAgentEnabled, setInstallStatus } =
+    await import("../db/queries");
 
   const pre = (await listInstallRows()).find(
     (r) => r.installationId === installationId && r.repo === repo,

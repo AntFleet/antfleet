@@ -321,19 +321,59 @@ export type RunRecord = z.infer<typeof runRecordSchema>;
 
 export const reviewOutputSchema = z.object({
   findings: z.array(
-    z.object({
-      title: z.string(),
-      category: z.enum(findingCategories),
-      severity: z.enum(["critical", "high", "medium", "low"]),
-      confidence: z.enum(["high", "medium", "low"]),
-      evidence: z.array(evidenceRefSchema),
-      reasoning: z.string(),
-      reproduction: z.string().nullable(),
-      recommendation: z.string(),
-      whyTestsDoNotAlreadyCoverThis: z.string(),
-      suggestedRegressionTest: z.string().nullable(),
-      minimumFixScope: z.string(),
-    }),
+    z
+      .object({
+        title: z.string(),
+        category: z.enum(findingCategories),
+        severity: z.enum(["critical", "high", "medium", "low"]),
+        confidence: z.enum(["high", "medium", "low"]),
+        evidence: z.array(evidenceRefSchema),
+        reasoning: z.string(),
+        reproduction: z.string().nullable(),
+        recommendation: z.string(),
+        whyTestsDoNotAlreadyCoverThis: z.string(),
+        suggestedRegressionTest: z.string().nullable(),
+        minimumFixScope: z.string(),
+        // Set when severity hinges on whether the flagged behavior is intentional
+        // design (a documented limit, a granted escape hatch) rather than a bug.
+        // Signals the model could not tell a bug from a feature, so the finding
+        // must not enter the two-model gate as a blocking critical/high defect —
+        // the severity cap below ENFORCES that in code (the prompt also asks the
+        // model to cap, but we don't rely on model compliance). Optional + default
+        // false keeps pre-flag stored findings parsing unchanged.
+        requiresPolicyReview: z.boolean().optional().default(false),
+        // Set when a finding's root cause lives in an external dependency (npm
+        // package, imported contract, upstream SDK) rather than the reviewed
+        // files — the fix path is an upstream PR. Null when the bug is in the
+        // reviewed code. Optional + default null keeps existing findings valid.
+        // Currently collected for analysis only: it rides along in the
+        // agreement_decision JSONB but no consumer reads it yet (the live
+        // upstream-PR workflow is operator-seeded via outgoing_prs). When a
+        // consumer is built, note that the agreement gate's pickRepresentative
+        // keeps ONE clustered finding and discards the other model's
+        // package/reason — a merge policy will be needed at that point.
+        upstreamOrigin: z
+          .object({ package: z.string(), reason: z.string() })
+          .nullable()
+          .optional()
+          .default(null),
+      })
+      // Enforce the policy-review severity cap at the single parse chokepoint
+      // every provider shares (anthropic.ts / openai.ts / provider.ts each call
+      // reviewOutputSchema.parse). A model that flags requiresPolicyReview but
+      // forgets to lower severity would otherwise post a false critical/high
+      // through the blocking gate — exactly the false positive the flag exists
+      // to prevent. Clamp is symmetric across providers, so it does not perturb
+      // the gate's deterministic clustering. Output shape (and the Finding type)
+      // is unchanged: severity stays the same enum.
+      .transform((finding) => ({
+        ...finding,
+        severity:
+          finding.requiresPolicyReview &&
+          (finding.severity === "critical" || finding.severity === "high")
+            ? ("medium" as const)
+            : finding.severity,
+      })),
   ),
   inspected: z.object({
     files: z.array(z.string()),
