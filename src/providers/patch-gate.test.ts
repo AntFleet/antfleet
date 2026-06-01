@@ -38,10 +38,17 @@ describe("decidePatchOutcomes — the four spec cases", () => {
   });
 
   it("only anthropic proposes → models_disagreed (findings-only)", () => {
-    const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: null })]);
+    const out = decidePatchOutcomes([
+      anthropic({ patch: PATCH_A, rationale: "fixes the branch" }),
+      openai({ patch: null, rationale: "no in-hunk safe fix" }),
+    ]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
+    expect(out[0]?.rationales).toEqual({
+      opus: "fixes the branch",
+      gpt5: "no in-hunk safe fix",
+    });
     expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
   });
 

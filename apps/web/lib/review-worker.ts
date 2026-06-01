@@ -464,6 +464,7 @@ async function processClaimedRow(
             patchSkipReason: d.skipReason,
             proposedAt: deps.now(),
             candidates: d.candidates,
+            rationales: d.rationales ?? { opus: null, gpt5: null },
             selector: d.selector,
             // Migration 0029 — per-finding token spend split by provider.
             tokens: {

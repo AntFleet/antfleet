@@ -347,6 +347,12 @@ describe("runReviewWorker", () => {
       });
       await runReviewWorker("rev-1", "webhook", deps);
       expect(calls).toEqual(["recordFindingStatuses", "recordPatchDecisions"]);
+      expect(deps.recordPatchDecisions).toHaveBeenCalledWith([
+        expect.objectContaining({
+          findingId: "rev-1-0",
+          rationales: { opus: null, gpt5: null },
+        }),
+      ]);
     });
 
     it("does not call recordPatchDecisions when runPatchAgent returns null (flag off)", async () => {

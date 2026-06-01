@@ -13,7 +13,7 @@ const stubFinding = (overrides: Partial<Finding> = {}): Finding => ({
   category: "bug",
   severity: "high",
   confidence: "high",
-  evidence: [{ path: "src/foo.ts", startLine: 5, endLine: 5, symbol: null, quote: null }],
+  evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10, symbol: null, quote: null }],
   reasoning: "x",
   reproduction: null,
   recommendation: "y",
@@ -156,6 +156,7 @@ describe("runPatchAgent — happy path", () => {
     });
     expect(out!.byIndex.size).toBe(0);
     expect(out!.decisions[0]?.skipReason).toBe("models_disagreed");
+    expect(out!.decisions[0]?.rationales).toEqual({ opus: null, gpt5: null });
   });
 });
 

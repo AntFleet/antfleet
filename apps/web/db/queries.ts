@@ -412,6 +412,7 @@ export type RecordPatchDecisionInput = {
   proposedAt: Date;
   // Eval Phase 0 — dual-candidate persistence.
   candidates: { opus: string | null; gpt5: string | null };
+  rationales?: { opus: string | null; gpt5: string | null };
   selector:
     | "deterministic-opus"
     | "no-opus-deterministic-skip"
@@ -449,6 +450,8 @@ export async function recordPatchDecisions(
           suggestedPatchGpt5: i.candidates.gpt5,
           patchShipped: i.suggestedPatch,
           patchSelector: i.selector,
+          patchRationaleOpus: i.rationales?.opus ?? null,
+          patchRationaleGpt5: i.rationales?.gpt5 ?? null,
           // Migration 0029 — per-finding token spend (null when absent so we
           // never clobber an existing value with undefined on a partial input).
           ...(i.tokens !== undefined

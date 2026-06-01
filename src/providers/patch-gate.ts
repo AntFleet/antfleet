@@ -74,6 +74,9 @@ export type PatchDecision = {
   // Eval Phase 0 — dual-candidate persistence. These fields are additive;
   // existing callers that only read patch/modelId/skipReason are unaffected.
   candidates: { opus: string | null; gpt5: string | null };
+  // Provider-side explanation returned by proposePatch. This is operator
+  // observability only: rendered comments still show only shipped patches.
+  rationales: { opus: string | null; gpt5: string | null };
   selector: PatchSelector;
 };
 
@@ -112,6 +115,10 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     opus: anthropicProposal?.patch ?? null,
     gpt5: openaiProposal?.patch ?? null,
   };
+  const rationales = {
+    opus: anthropicProposal?.rationale ?? null,
+    gpt5: openaiProposal?.rationale ?? null,
+  };
 
   // Happy path: every provider in the group proposed a patch. Ship the
   // anthropic one. Tolerant of additional providers (future stack growth)
@@ -131,6 +138,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       modelId: anthropic.modelId ?? WINNING_PROVIDER,
       skipReason: null,
       candidates,
+      rationales,
       selector: "deterministic-opus",
     };
   }
@@ -148,6 +156,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       modelId: null,
       skipReason: "models_disagreed",
       candidates,
+      rationales,
       selector,
     };
   }
@@ -162,6 +171,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     modelId: null,
     skipReason: reason,
     candidates,
+    rationales,
     selector: "no-candidates",
   };
 }

@@ -179,6 +179,11 @@ export const findingStatus = pgTable("finding_status", {
   outputTokensOpus: integer("output_tokens_opus"),
   inputTokensGpt5: integer("input_tokens_gpt5"),
   outputTokensGpt5: integer("output_tokens_gpt5"),
+  // Patch Agent observability (migration 0031). Provider rationale is
+  // debug/operator data only; public comments continue to render patches,
+  // not decline explanations.
+  patchRationaleOpus: text("patch_rationale_opus"),
+  patchRationaleGpt5: text("patch_rationale_gpt5"),
   // Retraction surface (migration 0030). When the unanimous gate produces a
   // false positive, the operator retracts the finding: the /anatomy page drops
   // its JSON-LD + adds noindex and renders a retraction notice instead. All
