@@ -106,6 +106,7 @@ export async function generateReviewPatches(
     );
   }
   const hunksByPath = buildHunkIndex(args.changedFiles);
+  const changedPaths = new Set(args.changedFiles.map((f) => normalizePath(f.filename)));
 
   const calls: Array<Promise<ProviderPatchProposal>> = [];
   for (const [index, finding] of args.findings.entries()) {
@@ -118,6 +119,7 @@ export async function generateReviewPatches(
           finding,
           findingId,
           hunksByPath,
+          changedPaths,
           model: args.model ?? null,
           timeoutMs,
         }),
@@ -134,6 +136,7 @@ type RunOneProposalArgs = {
   finding: Finding;
   findingId: string;
   hunksByPath: Map<string, HunkRange[]>;
+  changedPaths: ReadonlySet<string>;
   model: string | null;
   timeoutMs: number;
 };
@@ -157,7 +160,8 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
   }
   const normalized = normalizePath(evidence.path);
   const hunks = args.hunksByPath.get(normalized) ?? [];
-  if (!rangeOverlapsHunk(hunks, evidence.startLine, evidence.endLine)) {
+  const evidenceOverlapsHunk = rangeOverlapsHunk(hunks, evidence.startLine, evidence.endLine);
+  if (!evidenceOverlapsHunk && !args.changedPaths.has(normalized)) {
     return {
       providerName: args.provider.name,
       findingId: args.findingId,
@@ -168,12 +172,13 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       usage: null,
     };
   }
+  const mode = evidenceOverlapsHunk ? "inline" : "artifact";
 
   // Step 2: make the provider call with a hard timeout.
   let raw: PatchSuggestionResult;
   try {
     raw = await withTimeout(
-      args.provider.proposePatch(".", buildPatchPrompt(args.finding), args.model),
+      args.provider.proposePatch(".", buildPatchPrompt(args.finding, mode), args.model),
       args.timeoutMs,
     );
   } catch {
@@ -228,7 +233,11 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       usage: raw.usage ?? null,
     };
   }
-  if (!patchFallsInsideHunks(raw.patch, hunks, normalized, evidence.startLine, evidence.endLine)) {
+  const targetable =
+    mode === "inline"
+      ? patchFallsInsideHunks(raw.patch, hunks, normalized, evidence.startLine, evidence.endLine)
+      : patchTargetsFinding(raw.patch, normalized, evidence.startLine, evidence.endLine);
+  if (!targetable) {
     return {
       providerName: args.provider.name,
       findingId: args.findingId,
@@ -249,6 +258,8 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
     usage: raw.usage ?? null,
   };
 }
+
+type PatchPromptMode = "inline" | "artifact";
 
 function patchFallsInsideHunks(
   patch: string,
@@ -310,10 +321,11 @@ function normalizePath(p: string): string {
 // Prompt for the proposePatch call. Intentionally compact — the model has
 // already produced this finding once; we don't re-narrate the codebase, just
 // ask for the patch. Falls back gracefully when reproduction is absent.
-export function buildPatchPrompt(finding: Finding): string {
+export function buildPatchPrompt(finding: Finding, mode: PatchPromptMode = "inline"): string {
   const ev = finding.evidence[0];
   const target = ev === undefined ? "(unknown)" : formatEvidencePath(ev);
   const reproduction = finding.reproduction === null ? "(none provided)" : finding.reproduction;
+  const artifactMode = mode === "artifact";
   return [
     `You previously flagged a ${finding.category} (${finding.severity}) finding titled:`,
     `  ${finding.title}`,
@@ -324,11 +336,15 @@ export function buildPatchPrompt(finding: Finding): string {
     `Recommendation: ${finding.recommendation}`,
     `Reproduction: ${reproduction}`,
     ``,
-    `Propose a SINGLE-FILE unified-diff patch that fixes this finding.`,
+    artifactMode
+      ? `Propose a SINGLE-FILE unified-diff patch artifact that fixes this finding.`
+      : `Propose a SINGLE-FILE unified-diff patch that fixes this finding.`,
     ``,
     `Hard rules:`,
     `  1. Output ≤ ${PATCH_SIZE_LINE_CAP} added lines total.`,
-    `  2. The patch must target lines INSIDE the PR's diff hunks for this file.`,
+    artifactMode
+      ? `  2. The patch may target this file outside the PR diff hunk; it will be rendered as a non-click-to-apply artifact.`
+      : `  2. The patch must target lines INSIDE the PR's diff hunks for this file.`,
     `  3. If no clean fix fits within those rules, return { "patch": null,`,
     `     "rationale": "<one sentence on why" }.`,
     `  4. Do NOT propose deferred fixes. Never output TODO comments, "fix in a follow-up",`,
@@ -338,6 +354,25 @@ export function buildPatchPrompt(finding: Finding): string {
     ``,
     `Return JSON: { "patch": "<unified-diff or null>", "rationale": "<string or null>" }.`,
   ].join("\n");
+}
+
+function patchTargetsFinding(
+  patch: string,
+  expectedPath: string,
+  evidenceStartLine: number | null,
+  evidenceEndLine: number | null,
+): boolean {
+  if (!patchTargetsExpectedPath(patch, expectedPath)) return false;
+  if (evidenceStartLine === null) return true;
+  const patchHunks = parseHunkRanges(patch);
+  if (patchHunks.length !== 1) return false;
+  const [patchHunk] = patchHunks;
+  if (patchHunk === undefined) return false;
+  return rangeOverlapsHunk(
+    [{ start: patchHunk.start, end: patchHunk.end }],
+    evidenceStartLine,
+    evidenceEndLine,
+  );
 }
 
 function formatEvidencePath(ev: NonNullable<Finding["evidence"][number]>): string {

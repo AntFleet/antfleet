@@ -456,6 +456,7 @@ describe("runReviewWorker", () => {
         "",
       ].join("\n"),
       modelId: "claude-opus-4-7",
+      mode: "inline" as const,
     };
 
     const SINGLE_LINE_BUNDLE = mkBundle({
@@ -478,6 +479,7 @@ describe("runReviewWorker", () => {
         },
       ],
       byIndex: new Map([[0, SINGLE_LINE_PATCH]]),
+      inlineByIndex: new Map([[0, SINGLE_LINE_PATCH]]),
       elapsedMs: 1,
     };
 
@@ -609,6 +611,38 @@ describe("runReviewWorker", () => {
         }),
       });
       await runReviewWorker("rev-1", "webhook", deps);
+      expect(deps.isPatchAgentClickApplyEnabledForInstall).not.toHaveBeenCalled();
+      expect(deps.postPatchReviewComment).not.toHaveBeenCalled();
+    });
+
+    it("renders out-of-hunk artifacts but does not invoke click-apply", async () => {
+      const artifactPatch = {
+        patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -50,1 +50,1 @@\n-old\n+new\n",
+        modelId: "claude-opus-4-7",
+        mode: "artifact" as const,
+      };
+      const deps = mkDeps({
+        reviewPR: vi.fn().mockResolvedValue(SINGLE_LINE_BUNDLE),
+        runPatchAgent: vi.fn().mockResolvedValue({
+          decisions: [
+            {
+              findingId: "rev-1-0",
+              patch: artifactPatch.patch,
+              modelId: artifactPatch.modelId,
+              skipReason: null,
+              candidates: { opus: artifactPatch.patch, gpt5: "-old\n+other\n" },
+              selector: "deterministic-opus" as const,
+            },
+          ],
+          byIndex: new Map([[0, artifactPatch]]),
+          inlineByIndex: new Map(),
+          elapsedMs: 1,
+        }),
+        isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(true),
+      });
+      await runReviewWorker("rev-1", "webhook", deps);
+      const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+      expect(body).toContain("Out-of-hunk patch artifact");
       expect(deps.isPatchAgentClickApplyEnabledForInstall).not.toHaveBeenCalled();
       expect(deps.postPatchReviewComment).not.toHaveBeenCalled();
     });

@@ -125,11 +125,14 @@ describe("generateReviewPatches — fan-out", () => {
 });
 
 describe("generateReviewPatches — diff-hunk filter", () => {
-  it("emits outside_diff_hunk when evidence.startLine is null (file-level finding)", async () => {
+  it("calls the provider for file-level findings in changed files as out-of-hunk artifacts", async () => {
     let called = false;
     const provider = buildProvider("anthropic", async () => {
       called = true;
-      throw new Error("should not reach provider");
+      return {
+        patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -25,1 +25,1 @@\n-old\n+new\n",
+        rationale: "file-level fix",
+      };
     });
     const finding = stubFinding({
       evidence: [{ path: "src/foo.ts", startLine: null, endLine: null, symbol: null, quote: null }],
@@ -137,9 +140,9 @@ describe("generateReviewPatches — diff-hunk filter", () => {
     const result = await generateReviewPatches(
       baseArgs({ findings: [finding], providers: [provider] }),
     );
-    expect(result.proposals[0]?.patch).toBeNull();
-    expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
-    expect(called).toBe(false);
+    expect(result.proposals[0]?.patch).toContain("+new");
+    expect(result.proposals[0]?.skipReason).toBeNull();
+    expect(called).toBe(true);
   });
 
   it("emits outside_diff_hunk when evidence path is missing from PR diff", async () => {
@@ -158,11 +161,14 @@ describe("generateReviewPatches — diff-hunk filter", () => {
     expect(called).toBe(false);
   });
 
-  it("emits outside_diff_hunk when evidence range is in the same file but disjoint from the hunk", async () => {
+  it("calls the provider when evidence is in the same changed file but disjoint from the hunk", async () => {
     let called = false;
     const provider = buildProvider("anthropic", async () => {
       called = true;
-      throw new Error("should not reach provider");
+      return {
+        patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -50,1 +50,1 @@\n-old\n+new\n",
+        rationale: "out-of-hunk fix",
+      };
     });
     const finding = stubFinding({
       // Hunk in stubFile covers lines 1..15 — 50 is well outside.
@@ -171,8 +177,25 @@ describe("generateReviewPatches — diff-hunk filter", () => {
     const result = await generateReviewPatches(
       baseArgs({ findings: [finding], providers: [provider] }),
     );
+    expect(result.proposals[0]?.patch).toContain("+new");
+    expect(result.proposals[0]?.skipReason).toBeNull();
+    expect(called).toBe(true);
+  });
+
+  it("rejects an out-of-hunk artifact that does not overlap the finding evidence", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -80,1 +80,1 @@\n-old\n+new\n",
+      rationale: "wrong out-of-hunk target",
+    }));
+    const finding = stubFinding({
+      evidence: [{ path: "src/foo.ts", startLine: 50, endLine: 52, symbol: null, quote: null }],
+    });
+    const result = await generateReviewPatches(
+      baseArgs({ findings: [finding], providers: [provider] }),
+    );
+    expect(result.proposals[0]?.patch).toBeNull();
     expect(result.proposals[0]?.skipReason).toBe("outside_diff_hunk");
-    expect(called).toBe(false);
+    expect(result.proposals[0]?.rationale).toBe("wrong out-of-hunk target");
   });
 
   it("reaches both providers when evidence is fully contained in a hunk", async () => {
@@ -189,9 +212,7 @@ describe("generateReviewPatches — diff-hunk filter", () => {
       // Hunk in stubFile covers lines 1..15; 12..20 overlaps at 12..15.
       evidence: [{ path: "src/foo.ts", startLine: 12, endLine: 20, symbol: null, quote: null }],
     });
-    const result = await generateReviewPatches(
-      baseArgs({ findings: [finding], providers }),
-    );
+    const result = await generateReviewPatches(baseArgs({ findings: [finding], providers }));
     expect(calls.toSorted()).toEqual(["anthropic", "openai"]);
     expect(result.proposals).toHaveLength(2);
     expect(result.proposals.every((p) => p.patch?.includes("+new"))).toBe(true);
@@ -203,9 +224,7 @@ describe("generateReviewPatches — diff-hunk filter", () => {
       // Hunk in stubFile covers lines 1..15; 1..50 cites a broader block.
       evidence: [{ path: "src/foo.ts", startLine: 1, endLine: 50, symbol: null, quote: null }],
     });
-    const result = await generateReviewPatches(
-      baseArgs({ findings: [finding], providers }),
-    );
+    const result = await generateReviewPatches(baseArgs({ findings: [finding], providers }));
     expect(calls.toSorted()).toEqual(["anthropic", "openai"]);
     expect(result.proposals).toHaveLength(2);
     expect(result.proposals.every((p) => p.patch?.includes("+new"))).toBe(true);
@@ -329,9 +348,7 @@ describe("generateReviewPatches — size cap", () => {
     }));
     const result = await generateReviewPatches(
       baseArgs({
-        changedFiles: [
-          stubFile({ patch: "@@ -1,40 +1,40 @@\n context\n+added\n" }),
-        ],
+        changedFiles: [stubFile({ patch: "@@ -1,40 +1,40 @@\n context\n+added\n" })],
         providers: [provider],
       }),
     );
@@ -425,6 +442,13 @@ describe("buildPatchPrompt", () => {
     expect(prompt).toContain("Off-by-one in counter init");
     expect(prompt).toContain("src/foo.ts:10-12");
     expect(prompt).toContain("≤ 20 added lines");
+  });
+
+  it("describes artifact mode when the patch is allowed outside the PR hunk", () => {
+    const prompt = buildPatchPrompt(stubFinding(), "artifact");
+    expect(prompt).toContain("patch artifact");
+    expect(prompt).toContain("outside the PR diff hunk");
+    expect(prompt).toContain("non-click-to-apply artifact");
   });
 
   it("renders '(none provided)' when reproduction is null", () => {

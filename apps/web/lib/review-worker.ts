@@ -363,13 +363,16 @@ async function processClaimedRow(
     });
   }
 
+  const inlinePatchByIndex =
+    patchOutcome === null ? new Map() : (patchOutcome.inlineByIndex ?? patchOutcome.byIndex);
+
   // Patch Agent v1.6 — click-apply lane gate. Resolved ONCE up here so
   // both the issue-comment shape (formatPRComment receives clickApplyEnabled)
   // AND the review-comment post loop (below recordPatchDecisions) see the
   // same answer. Resolved to false on any lookup failure — conservative
   // default keeps v1.5 behavior on the rare DB hiccup.
   let clickApplyEnabled = false;
-  if (patchOutcome !== null && patchOutcome.byIndex.size > 0) {
+  if (patchOutcome !== null && inlinePatchByIndex.size > 0) {
     try {
       clickApplyEnabled = await deps.isPatchAgentClickApplyEnabledForInstall(
         row.installationId,
@@ -502,7 +505,7 @@ async function processClaimedRow(
       // non-break invariant 2; the issue comment is the contract path.
       const reviewCommentByFindingId = new Map<string, { id: number; url: string }>();
       if (clickApplyEnabled) {
-        for (const [findingIndex, patch] of patchOutcome.byIndex.entries()) {
+        for (const [findingIndex, patch] of inlinePatchByIndex.entries()) {
           const finding = bundle.agreed[findingIndex];
           if (finding === undefined) continue;
           const ev = finding.evidence[0];

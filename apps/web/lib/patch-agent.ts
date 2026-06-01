@@ -19,6 +19,7 @@ import { openaiProvider } from "@antfleet/cli/providers/openai";
 import { decidePatchOutcomes, type PatchDecision } from "@antfleet/cli/providers/patch-gate";
 import { makeFindingId } from "@/db/queries";
 import { generateReviewPatches, type PatchProposingProvider } from "./patch-generation";
+import { parseHunkRanges, rangeOverlapsHunk } from "./diff-hunks";
 import {
   estimatePatchCostUsd,
   patchTokensByFinding,
@@ -54,6 +55,9 @@ const DEFAULT_PATCH_PROVIDERS: PatchProposingProvider[] = [
 export type PatchAgentOutcome = {
   decisions: PatchDecision[];
   byIndex: Map<number, PatchForRender>;
+  // Subset of byIndex whose patches are safe to post as GitHub line-anchored
+  // review comments. Out-of-hunk artifacts stay in the issue comment only.
+  inlineByIndex: Map<number, PatchForRender>;
   elapsedMs: number;
   // Aggregate USD cost of the patch lane for this review, summed from the
   // real per-call token usage now threaded out of the provider SDKs. Persisted
@@ -102,6 +106,7 @@ export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgent
     return {
       decisions: [],
       byIndex: new Map(),
+      inlineByIndex: new Map(),
       elapsedMs: 0,
       costPatchUsd: 0,
       tokensByFindingId: new Map(),
@@ -119,6 +124,7 @@ export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgent
     return {
       decisions: [],
       byIndex: new Map(),
+      inlineByIndex: new Map(),
       elapsedMs: 0,
       costPatchUsd: 0,
       tokensByFindingId: new Map(),
@@ -137,20 +143,43 @@ export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgent
   const decisions = decidePatchOutcomes(generation.proposals);
 
   const byIndex = new Map<number, PatchForRender>();
+  const inlineByIndex = new Map<number, PatchForRender>();
   for (const [i, fid] of findingIds.entries()) {
     const d = decisions.find((x) => x.findingId === fid);
     if (d === undefined) continue;
     if (d.patch !== null && d.modelId !== null) {
-      byIndex.set(i, { patch: d.patch, modelId: d.modelId });
+      const mode = isInlinePatchable(args.findings[i], args.changedFiles) ? "inline" : "artifact";
+      const patch = { patch: d.patch, modelId: d.modelId, mode } satisfies PatchForRender;
+      byIndex.set(i, patch);
+      if (mode === "inline") {
+        inlineByIndex.set(i, patch);
+      }
     }
   }
 
   return {
     decisions,
     byIndex,
+    inlineByIndex,
     elapsedMs: generation.elapsedMs,
     // Real spend now that proposePatch threads SDK usage through the proposals.
     costPatchUsd: estimatePatchCostUsd(generation.proposals),
     tokensByFindingId: patchTokensByFinding(generation.proposals),
   };
+}
+
+function isInlinePatchable(
+  finding: Finding | undefined,
+  changedFiles: readonly ChangedFile[],
+): boolean {
+  const evidence = finding?.evidence[0];
+  if (evidence === undefined) return false;
+  const expectedPath = normalizePath(evidence.path);
+  const file = changedFiles.find((f) => normalizePath(f.filename) === expectedPath);
+  if (file === undefined) return false;
+  return rangeOverlapsHunk(parseHunkRanges(file.patch), evidence.startLine, evidence.endLine);
+}
+
+function normalizePath(p: string): string {
+  return p.replace(/^\.\//u, "").replace(/\\/gu, "/");
 }

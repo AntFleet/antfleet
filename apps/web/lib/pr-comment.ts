@@ -17,6 +17,10 @@ const RECOMMENDATION_MAX_CHARS = 300;
 export type PatchForRender = {
   patch: string;
   modelId: string;
+  // inline = GitHub suggestion replacement text; artifact = non-click-to-
+  // apply unified diff for fixes outside the PR hunk. Undefined preserves
+  // pre-v1.7 callers as inline.
+  mode?: "inline" | "artifact";
 };
 
 export type ReviewMeta = {
@@ -135,13 +139,26 @@ function formatFinding(
   // comments only render the apply button on a single anchored line and
   // start_line ranges detach across edits (operator decision Q2 LOCKED).
   if (patch !== null) {
-    const block = renderSuggestionBlock(patch);
+    const mode = patch.mode ?? "inline";
+    const block =
+      mode === "artifact" ? renderDiffArtifactBlock(patch) : renderSuggestionBlock(patch);
     if (block !== null) {
       const evidenceIsSingleLine =
         ev !== undefined &&
         ev.startLine !== null &&
         (ev.endLine === null || ev.endLine === ev.startLine);
-      if (clickApplyEnabled && evidenceIsSingleLine) {
+      if (mode === "artifact") {
+        lines.push("");
+        lines.push(`<details>`);
+        lines.push(`<summary>Out-of-hunk patch artifact (model: ${patch.modelId})</summary>`);
+        lines.push("");
+        lines.push(
+          `This non-click-to-apply fix is outside the PR diff hunk, so GitHub cannot render it as a suggestion.`,
+        );
+        lines.push("");
+        lines.push(...block);
+        lines.push(`</details>`);
+      } else if (clickApplyEnabled && evidenceIsSingleLine) {
         lines.push("");
         lines.push(`→ Proposed patch as a reviewable comment below (click \`Commit suggestion\`)`);
       } else {
@@ -167,6 +184,14 @@ export function renderSuggestionBlock(patch: PatchForRender): string[] | null {
     return [`~~~suggestion`, replacement, `~~~`];
   }
   return ["```suggestion", replacement, "```"];
+}
+
+export function renderDiffArtifactBlock(patch: PatchForRender): string[] | null {
+  if (patch.patch.trim().length === 0) return null;
+  if (patch.patch.includes("```")) {
+    return ["~~~diff", patch.patch.trimEnd(), "~~~"];
+  }
+  return ["```diff", patch.patch.trimEnd(), "```"];
 }
 
 function formatEvidencePath(ev: Finding["evidence"][number]): string {

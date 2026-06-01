@@ -94,6 +94,8 @@ describe("runPatchAgent — happy path", () => {
     expect(patch).toBeDefined();
     expect(patch?.patch).toBe("@@ -10,1 +10,1 @@\n-old\n+new\n");
     expect(patch?.modelId).toBe("claude-opus-4-7");
+    expect(patch?.mode).toBe("inline");
+    expect(out!.inlineByIndex.get(0)).toEqual(patch);
   });
 
   it("computes a real cost and per-finding token split from provider usage", async () => {
@@ -174,6 +176,7 @@ describe("runPatchAgent — degenerate paths", () => {
     expect(out).toEqual({
       decisions: [],
       byIndex: new Map(),
+      inlineByIndex: new Map(),
       elapsedMs: 0,
       costPatchUsd: 0,
       tokensByFindingId: new Map(),
@@ -225,5 +228,44 @@ describe("runPatchAgent — degenerate paths", () => {
     });
     expect(out!.byIndex.size).toBe(0);
     expect(out!.decisions).toEqual([]);
+  });
+
+  it("renders agreed out-of-hunk patches as artifacts, not inline click-apply patches", async () => {
+    const out = await runPatchAgent({
+      reviewId: "rev-1",
+      installationId: 12345,
+      repo: "test-repo",
+      findings: [
+        stubFinding({
+          evidence: [{ path: "src/foo.ts", startLine: 50, endLine: 50, symbol: null, quote: null }],
+        }),
+      ],
+      changedFiles: [stubFile()],
+      providers: [
+        {
+          name: "anthropic",
+          async proposePatch() {
+            return {
+              patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -50,1 +50,1 @@\n-old\n+new\n",
+              rationale: null,
+              modelId: "claude-opus-4-7",
+            };
+          },
+        },
+        {
+          name: "openai",
+          async proposePatch() {
+            return {
+              patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -50,1 +50,1 @@\n-old\n+other\n",
+              rationale: null,
+              modelId: "gpt-5",
+            };
+          },
+        },
+      ],
+      enabled: () => true,
+    });
+    expect(out!.byIndex.get(0)?.mode).toBe("artifact");
+    expect(out!.inlineByIndex.size).toBe(0);
   });
 });

@@ -202,6 +202,20 @@ describe("formatPRComment — flag-on rendering", () => {
     // GitHub would close the fence early and break the comment.
     expect(out).not.toContain("```suggestion\n```ts");
   });
+
+  it("renders out-of-hunk artifacts as unified diffs, not suggestion blocks", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      patchesByIndex: new Map([[0, { ...PATCH, mode: "artifact" }]]),
+    });
+    expect(out).toContain("Out-of-hunk patch artifact (model: claude-opus-4-7)");
+    expect(out).toContain("non-click-to-apply");
+    expect(out).toContain("```diff");
+    expect(out).toContain("--- a/src/foo.ts");
+    expect(out).toContain("+const counter = 0;");
+    expect(out).not.toContain("```suggestion");
+    expect(out).not.toContain("Commit suggestion");
+  });
 });
 
 describe("formatPRComment — settlement footer with patch", () => {

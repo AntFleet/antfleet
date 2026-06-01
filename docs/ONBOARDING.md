@@ -121,9 +121,21 @@ where both models agreed independently. Each finding has:
 - A file path + line range
 - A short prose description
 
-We don't post fix suggestions in Phase 2. Patch Bot (the fourth
-agent — proposes the fix and pins a closure SHA on apply) is a
-Phase 3+ surface.
+Some findings also include Patch Agent output:
+
+- Findings whose evidence overlaps the PR diff hunk can get a
+  click-to-apply GitHub suggestion.
+- Findings in a changed file but outside the PR diff hunk can get
+  a non-click-to-apply unified-diff artifact in the review comment.
+- File-level findings can get a non-click-to-apply artifact, but
+  not an inline suggestion, because GitHub suggestions require a
+  line anchor inside the PR diff.
+
+For benchmark/manual onboarding runs where Patch Agent output is
+part of the goal, create the benchmark hunk adjacent to the suspected
+target line or function. Top-of-file marker comments are useful for
+reviewer detection, but they are not a good Patch Agent anchor unless
+the suspected fix is also near the top of the file.
 
 Once Onboarder ships, a second comment from Onboarder will appear
 shortly after your _first_ PR review: a partner-private framing of
