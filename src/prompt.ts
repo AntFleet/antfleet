@@ -97,6 +97,9 @@ export async function buildFixPrompt(
 
 Fix only the finding below. Keep the patch minimal. Add or update focused tests when feasible.
 Do not commit, push, switch branches, or run destructive git commands.
+Do not defer: never output TODO comments, "fix in a follow-up", or "address later". Either
+apply a minimal in-scope fix now or return the JSON with a concrete skip reason. Deferral is
+not a valid outcome.
 After editing, return strict JSON only:
 {
   "summary": "string",

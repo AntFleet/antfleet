@@ -262,6 +262,10 @@ export function buildPatchPrompt(finding: Finding): string {
     `  2. The patch must target lines INSIDE the PR's diff hunks for this file.`,
     `  3. If no clean fix fits within those rules, return { "patch": null,`,
     `     "rationale": "<one sentence on why" }.`,
+    `  4. Do NOT propose deferred fixes. Never output TODO comments, "fix in a follow-up",`,
+    `     or "address in a later PR". Either ship a minimal in-scope patch now, or return`,
+    `     patch=null with a concrete skip reason (needs architectural change, unsafe without`,
+    `     more context, exceeds line cap). Deferral is not a valid patch outcome.`,
     ``,
     `Return JSON: { "patch": "<unified-diff or null>", "rationale": "<string or null>" }.`,
   ].join("\n");
