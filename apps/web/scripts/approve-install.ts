@@ -2,7 +2,10 @@
  * Admin tool — approve one GitHub App installation/repo pair for AntFleet.
  *
  * Usage (from apps/web):
- *   pnpm exec tsx scripts/approve-install.ts <installationId> <repo> [--notes "..."]
+ *   pnpm exec tsx scripts/approve-install.ts <installationId> <repo> [--notes "..."] [--no-patch-agent]
+ *
+ * Manual partner onboarding should leave Patch Agent enabled by default so
+ * benchmark reviews get suggested-patch decisions independent of local env.
  */
 import { config as loadDotenv } from "dotenv";
 loadDotenv({ path: ".env.local", quiet: true });
@@ -26,7 +29,10 @@ async function main() {
   const notesCandidate = notesIdx !== -1 ? process.argv[notesIdx + 1] : undefined;
   const notes =
     notesCandidate !== undefined && !notesCandidate.startsWith("--") ? notesCandidate : undefined;
-  const { listInstallRows, setInstallStatus } = await import("../db/queries");
+  const patchAgentEnabled = !process.argv.includes("--no-patch-agent");
+  const { listInstallRows, setInstallPatchAgentEnabled, setInstallStatus } = await import(
+    "../db/queries"
+  );
 
   const pre = (await listInstallRows()).find(
     (r) => r.installationId === installationId && r.repo === repo,
@@ -43,6 +49,16 @@ async function main() {
   if (!updated) {
     console.error("\n[abort] installation row not found");
     process.exit(1);
+  }
+  if (patchAgentEnabled) {
+    const patchUpdated = await setInstallPatchAgentEnabled(installationId, repo, true);
+    if (!patchUpdated) {
+      console.error("\n[abort] patch-agent opt-in failed; installation row not found");
+      process.exit(1);
+    }
+    console.log("\n[patch-agent] enabled for this install");
+  } else {
+    console.log("\n[patch-agent] skipped by --no-patch-agent");
   }
 
   const post = (await listInstallRows()).find(

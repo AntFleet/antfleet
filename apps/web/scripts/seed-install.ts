@@ -9,7 +9,11 @@
  *
  * Usage:
  *   pnpm exec tsx scripts/seed-install.ts <installationId> <owner> <repo> \
- *     [--token <0x...>] [--notes "..."]
+ *     [--token <0x...>] [--notes "..."] [--no-patch-agent]
+ *
+ * Manual partner onboarding enables Patch Agent by default. Pass
+ * --no-patch-agent only when intentionally collecting findings without
+ * suggested patches.
  *
  * --token <address>
  *   ERC-20 token address of the agent on Base. When provided, upserts a
@@ -52,12 +56,15 @@ function parseArgs() {
   const notes =
     notesCandidate !== undefined && !notesCandidate.startsWith("--") ? notesCandidate : undefined;
 
-  return { installationId, owner, repo, tokenAddress, notes };
+  const patchAgentEnabled = !process.argv.includes("--no-patch-agent");
+
+  return { installationId, owner, repo, tokenAddress, notes, patchAgentEnabled };
 }
 
 async function main() {
-  const { installationId, owner, repo, tokenAddress, notes } = parseArgs();
-  const { listInstallRows, upsertInstallEntry, setInstallStatus } = await import("../db/queries");
+  const { installationId, owner, repo, tokenAddress, notes, patchAgentEnabled } = parseArgs();
+  const { listInstallRows, setInstallPatchAgentEnabled, upsertInstallEntry, setInstallStatus } =
+    await import("../db/queries");
 
   // ── 1. installations row ───────────────────────────────────────────────────
 
@@ -67,6 +74,20 @@ async function main() {
   if (existing !== undefined) {
     console.log("\n[noop] installations row already exists:");
     console.table([existing]);
+    if (patchAgentEnabled) {
+      const patchUpdated = await setInstallPatchAgentEnabled(installationId, repo, true);
+      if (!patchUpdated) {
+        console.error("[abort] patch-agent opt-in failed; installation row not found");
+        process.exit(1);
+      }
+      const post = (await listInstallRows()).find(
+        (r) => r.installationId === installationId && r.repo === repo,
+      );
+      console.log("\n[patch-agent] enabled for existing install");
+      console.table(post === undefined ? [] : [post]);
+    } else {
+      console.log("\n[patch-agent] skipped by --no-patch-agent");
+    }
     process.exit(0);
   }
 
@@ -77,6 +98,16 @@ async function main() {
   if (!approved) {
     console.error("[abort] setInstallStatus returned false");
     process.exit(1);
+  }
+  if (patchAgentEnabled) {
+    const patchUpdated = await setInstallPatchAgentEnabled(installationId, repo, true);
+    if (!patchUpdated) {
+      console.error("[abort] patch-agent opt-in failed; installation row not found");
+      process.exit(1);
+    }
+    console.log("\n[patch-agent] enabled for this install");
+  } else {
+    console.log("\n[patch-agent] skipped by --no-patch-agent");
   }
 
   const post = (await listInstallRows()).find(

@@ -2614,6 +2614,8 @@ export type InstallRow = {
   walletProofSignature: string | null;
   walletBoundAt: Date | null;
   legacyPartner: boolean;
+  patchAgentEnabled: boolean | null;
+  patchAgentClickApplyEnabled: boolean | null;
 };
 
 export async function listInstallRows(filter?: InstallStatus): Promise<InstallRow[]> {
@@ -2641,6 +2643,19 @@ export async function setInstallStatus(
       ...(notes !== undefined ? { notes } : {}),
       ...(status === "approved" ? { approvedAt: now } : { rejectedAt: now }),
     })
+    .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
+    .returning({ id: installations.id });
+  return updated.length > 0;
+}
+
+export async function setInstallPatchAgentEnabled(
+  installationId: number,
+  repo: string,
+  enabled: boolean,
+): Promise<boolean> {
+  const updated = await db
+    .update(installations)
+    .set({ patchAgentEnabled: enabled })
     .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
     .returning({ id: installations.id });
   return updated.length > 0;
