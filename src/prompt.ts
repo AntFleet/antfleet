@@ -46,6 +46,11 @@ with multiple evidence refs instead of separate one-off findings.
 
 Avoid speculative low-evidence findings. Evidence must point at included files.
 
+Posting bar: only emit a finding if NOT posting it would let code health regress. Polish-grade
+observations, stylistic preferences, and speculative future risks fail this bar — drop them
+silently. This review feeds a two-model unanimous gate where every posted finding is treated as
+blocking; reserve emission for findings that meet that bar.
+
 JSON shape:
 {
   "findings": [
