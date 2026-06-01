@@ -60,7 +60,7 @@ from the code and comments in front of you whether this is a bug or a feature, s
 Upstream origin: when a finding's root cause traces to an imported external dependency (npm
 package, upstream smart contract, third-party SDK) rather than code in the reviewed files, set
 upstreamOrigin to {"package":"<package-name>","reason":"<why the bug is in the dep>"}. Set it to
-null when the bug is in the reviewed code itself. This field drives upstream PR targeting.
+null when the bug is in the reviewed code itself. This field is collected to inform upstream PR targeting.
 
 JSON shape:
 {

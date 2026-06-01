@@ -58,10 +58,18 @@ const byCategory: Record<string, number> = {};
 const byProviderSet: Record<string, number> = {};
 let policyReviewInDisagreements = 0;
 let upstreamOriginInDisagreements = 0;
+// Same two flags counted within agreed (posted) findings — the symmetric
+// denominator. Together with the disagreement counts they answer "how often
+// do the models raise these flags at all", not just "within blocked findings".
+let policyReviewInAgreed = 0;
+let upstreamOriginInAgreed = 0;
 
 const bump = (table: Record<string, number>, key: string): void => {
   table[key] = (table[key] ?? 0) + 1;
 };
+
+const hasUpstreamOrigin = (f: Finding): boolean =>
+  f.upstreamOrigin !== undefined && f.upstreamOrigin !== null;
 
 for (const row of rows) {
   const decision = row.agreementDecision as AgreementDecisionAtRest | null;
@@ -76,6 +84,13 @@ for (const row of rows) {
   totalAgreed += agreed.length;
   totalDisagreements += disagreements.length;
 
+  for (const finding of agreed) {
+    if (finding === undefined || finding === null) continue;
+    // New v1.5 flags — 0 for reviews stored before the fields shipped.
+    if (finding.requiresPolicyReview === true) policyReviewInAgreed++;
+    if (hasUpstreamOrigin(finding)) upstreamOriginInAgreed++;
+  }
+
   for (const d of disagreements) {
     const finding = d.finding;
     if (finding !== undefined && finding !== null) {
@@ -83,9 +98,7 @@ for (const row of rows) {
       bump(byCategory, finding.category ?? "unknown");
       // New v1.5 flags — 0 for reviews stored before the fields shipped.
       if (finding.requiresPolicyReview === true) policyReviewInDisagreements++;
-      if (finding.upstreamOrigin !== undefined && finding.upstreamOrigin !== null) {
-        upstreamOriginInDisagreements++;
-      }
+      if (hasUpstreamOrigin(finding)) upstreamOriginInDisagreements++;
     }
     // providers is the set that flagged this single-sided cluster — in
     // unanimous mode it is usually one name ("anthropic" / "openai").
@@ -136,12 +149,12 @@ for (const [key, n] of sortDesc(byProviderSet)) {
   console.log(`  ${key.padEnd(20)} ${String(n).padStart(5)}  ${pct(n, totalDisagreements)}`);
 }
 console.log("");
-console.log("New-flag prevalence in disagreements (0 for pre-flag reviews)");
+console.log("New-flag prevalence (0 for pre-flag reviews)");
 console.log(
-  `  requiresPolicyReview=true: ${policyReviewInDisagreements}  ${pct(policyReviewInDisagreements, totalDisagreements)}`,
+  `  requiresPolicyReview=true  agreed: ${policyReviewInAgreed} ${pct(policyReviewInAgreed, totalAgreed)}   blocked: ${policyReviewInDisagreements} ${pct(policyReviewInDisagreements, totalDisagreements)}`,
 );
 console.log(
-  `  upstreamOrigin!=null:      ${upstreamOriginInDisagreements}  ${pct(upstreamOriginInDisagreements, totalDisagreements)}`,
+  `  upstreamOrigin!=null       agreed: ${upstreamOriginInAgreed} ${pct(upstreamOriginInAgreed, totalAgreed)}   blocked: ${upstreamOriginInDisagreements} ${pct(upstreamOriginInDisagreements, totalDisagreements)}`,
 );
 
 process.exit(0);
