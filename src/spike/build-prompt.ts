@@ -51,6 +51,17 @@ code they describe; a comment that lies about behavior is itself a bug.
 Avoid speculative low-evidence findings. Evidence MUST point at the file:line
 ranges you actually inspected.
 
+Policy context: when a finding's severity hinges on whether the behavior is intentional design
+rather than a bug — e.g. a limit that can be exceeded but may be a documented feature, or an
+auth bypass that might be an explicitly granted escape hatch — set requiresPolicyReview to true.
+Cap severity at "medium" when requiresPolicyReview is true. Do not guess; if you cannot determine
+from the code and comments in front of you whether this is a bug or a feature, set this flag.
+
+Upstream origin: when a finding's root cause traces to an imported external dependency (npm
+package, upstream smart contract, third-party SDK) rather than code in the reviewed files, set
+upstreamOrigin to {"package":"<package-name>","reason":"<why the bug is in the dep>"}. Set it to
+null when the bug is in the reviewed code itself. This field drives upstream PR targeting.
+
 JSON shape:
 {
   "findings": [
@@ -65,7 +76,9 @@ JSON shape:
       "recommendation": "string",
       "whyTestsDoNotAlreadyCoverThis": "string",
       "suggestedRegressionTest": "string or null",
-      "minimumFixScope": "string"
+      "minimumFixScope": "string",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
     }
   ],
   "inspected": {"files":["string"],"symbols":["string"],"notes":["string"]}

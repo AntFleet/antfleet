@@ -170,6 +170,8 @@ const mockProvider: Provider = {
             "Mock fixtures do not encode this marker as intended behavior.",
           suggestedRegressionTest: "Add a focused test that fails when TODO_BUG is present.",
           minimumFixScope: "Replace the marker in the owning feature file.",
+          requiresPolicyReview: false,
+          upstreamOrigin: null,
         },
       ],
       inspected: { files: ["src/index.ts"], symbols: [], notes: ["mock finding"] },
@@ -283,6 +285,8 @@ export const reviewJsonSchema = {
           "whyTestsDoNotAlreadyCoverThis",
           "suggestedRegressionTest",
           "minimumFixScope",
+          "requiresPolicyReview",
+          "upstreamOrigin",
         ],
         properties: {
           title: { type: "string" },
@@ -309,6 +313,21 @@ export const reviewJsonSchema = {
           whyTestsDoNotAlreadyCoverThis: { type: "string" },
           suggestedRegressionTest: { anyOf: [{ type: "string" }, { type: "null" }] },
           minimumFixScope: { type: "string" },
+          requiresPolicyReview: { type: "boolean" },
+          upstreamOrigin: {
+            anyOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["package", "reason"],
+                properties: {
+                  package: { type: "string" },
+                  reason: { type: "string" },
+                },
+              },
+              { type: "null" },
+            ],
+          },
         },
       },
     },

@@ -26,6 +26,8 @@ const stubFinding = (overrides: Partial<Finding> = {}): Finding => ({
   whyTestsDoNotAlreadyCoverThis: "Stub.",
   suggestedRegressionTest: null,
   minimumFixScope: "Stub.",
+  requiresPolicyReview: false,
+  upstreamOrigin: null,
   ...overrides,
 });
 

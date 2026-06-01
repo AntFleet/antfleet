@@ -333,6 +333,21 @@ export const reviewOutputSchema = z.object({
       whyTestsDoNotAlreadyCoverThis: z.string(),
       suggestedRegressionTest: z.string().nullable(),
       minimumFixScope: z.string(),
+      // Set when severity hinges on whether the flagged behavior is intentional
+      // design (a documented limit, a granted escape hatch) rather than a bug.
+      // The reviewer caps severity at "medium" and the gate treats it as a
+      // policy question, not a blocking defect. Optional + default false keeps
+      // pre-flag stored findings parsing unchanged.
+      requiresPolicyReview: z.boolean().optional().default(false),
+      // Set when a finding's root cause lives in an external dependency (npm
+      // package, imported contract, upstream SDK) rather than the reviewed
+      // files — the fix path is an upstream PR. Null when the bug is in the
+      // reviewed code. Optional + default null keeps existing findings valid.
+      upstreamOrigin: z
+        .object({ package: z.string(), reason: z.string() })
+        .nullable()
+        .optional()
+        .default(null),
     }),
   ),
   inspected: z.object({
