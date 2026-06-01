@@ -127,7 +127,9 @@ describe("reviewPR triage pre-pass", () => {
     openaiReview.mockResolvedValue(mkOutput());
 
     const bundle = await reviewPR({
-      files: [mkFile({ filename: ".github/workflows/ci.yml", contents: "on: pull_request_target" })],
+      files: [
+        mkFile({ filename: ".github/workflows/ci.yml", contents: "on: pull_request_target" }),
+      ],
       owner: "o",
       repo: "r",
       prNumber: 1,

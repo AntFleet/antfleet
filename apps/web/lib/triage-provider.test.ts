@@ -34,9 +34,7 @@ beforeEach(() => {
 
 describe("triagePR", () => {
   it("returns worthEscalating: false for a docs-only file list", async () => {
-    createMock.mockResolvedValue(
-      textResponse({ worthEscalating: false, reason: "docs only" }),
-    );
+    createMock.mockResolvedValue(textResponse({ worthEscalating: false, reason: "docs only" }));
     const result = await triagePR({ files: [mkFile()] });
     expect(result.worthEscalating).toBe(false);
     expect(result.reason).toBe("docs only");
@@ -50,7 +48,9 @@ describe("triagePR", () => {
       textResponse({ worthEscalating: true, reason: "logic change in source" }),
     );
     const result = await triagePR({
-      files: [mkFile({ filename: "apps/web/lib/foo.ts", contents: "export function f(){return 1}" })],
+      files: [
+        mkFile({ filename: "apps/web/lib/foo.ts", contents: "export function f(){return 1}" }),
+      ],
     });
     expect(result.worthEscalating).toBe(true);
     expect(result.error).toBeNull();
