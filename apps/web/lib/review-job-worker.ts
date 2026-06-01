@@ -331,6 +331,9 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
           disagreements: bundle.disagreements,
           degraded: bundle.degraded,
           degradedReason: bundle.degradedReason,
+          // Keep the triage decision in the paid-path audit trail too, so a
+          // triage-skip is distinguishable from a real empty consensus.
+          triage: bundle.triage,
         },
         timingMs: bundle.totalMs,
         costEstimatedUsd: bundle.estimatedCostUsd,

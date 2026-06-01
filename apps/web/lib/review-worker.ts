@@ -289,6 +289,9 @@ async function processClaimedRow(
       disagreements: bundle.disagreements,
       degraded: bundle.degraded,
       degradedReason: bundle.degradedReason,
+      // Full triage decision (or null when triage was bypassed) kept in the
+      // JSONB audit trail alongside the agreement outcome.
+      triage: bundle.triage,
     },
     timingMs: bundle.totalMs,
     costEstimatedUsd: bundle.estimatedCostUsd,
@@ -298,6 +301,8 @@ async function processClaimedRow(
     agreedCount: bundle.agreed.length,
     degraded: bundle.degraded,
     degradedReason: bundle.degradedReason,
+    triageSkipped: bundle.triage?.worthEscalating === false,
+    triageReason: bundle.triage?.reason ?? null,
     totalMs: bundle.totalMs,
     estimatedCostUsd: bundle.estimatedCostUsd,
     providerStatuses: bundle.perProvider.map((p) => ({
