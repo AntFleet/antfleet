@@ -43,11 +43,11 @@ export async function GET(): Promise<Response> {
       get_installation: `${base}/api/v1/installations/{id}`,
       review_x402: {
         url: `${base}/api/v1/review/x402`,
-        access_scope: "aeon-ecosystem-callers-only-v1",
+        access_scope: "public",
       },
       get_x402_review: {
         url: `${base}/api/v1/review/x402/{jobId}`,
-        access_scope: "aeon-ecosystem-callers-only-v1",
+        access_scope: "public",
       },
       scan_x402: {
         url: `${base}/api/v1/scan/x402`,

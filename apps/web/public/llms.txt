@@ -22,9 +22,7 @@ installed/private repos — no subscription, no email, no dashboard.
 - Price per review: 0.50 USDC (override via REVIEW_PRICE_USDC env var)
 - Endpoint: POST /api/v1/review/x402
 - Status: GET /api/v1/review/x402/{jobId}
-- Access in v1 is restricted to aeon-ecosystem callers (requires
-  `X-Aeon-Context` header); broader public access planned for v2.
-  Non-aeon callers will receive HTTP 403.
+- Access: open to any x402 buyer. No X-Aeon-Context header required.
 - First request without PAYMENT-SIGNATURE returns HTTP 402 with payment
   requirements. Repeat with PAYMENT-SIGNATURE to enqueue the review.
 - Payment settles to the same operator wallet used by prepaid channel deposits.
@@ -54,14 +52,13 @@ Base URL: https://www.antfleet.dev
 3. Repeat POST /api/v1/scan/x402 with PAYMENT-SIGNATURE header.
    → waits (up to 180s), returns complete findings JSON directly.
 
-## Default public-repo agent flow
+## PR review agent flow
 
 Base URL: https://www.antfleet.dev
 
 1. POST /api/v1/review/x402
    headers:
      content-type: application/json
-     X-Aeon-Context: {signed aeon context}
    body: {"target": {"repo": "owner/name", "pr": 123}}
    → returns HTTP 402 with x402Version, accepts[], and PAYMENT-REQUIRED header
 
@@ -70,7 +67,6 @@ Base URL: https://www.antfleet.dev
 3. Repeat POST /api/v1/review/x402 with:
    headers:
      content-type: application/json
-     X-Aeon-Context: {signed aeon context}
      PAYMENT-SIGNATURE: {base64 payment payload}
    body: {"target": {"repo": "owner/name", "pr": 123}}
    → returns jobId, statusUrl, status: queued, expectedDurationSec
