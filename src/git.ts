@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
-import { runCommand } from "./exec.js";
+import { runArgv } from "./exec.js";
 import { FleetError } from "./errors.js";
 
 export type GitInfo = {
@@ -13,7 +13,7 @@ export type GitInfo = {
 };
 
 export async function discoverGit(cwd: string): Promise<GitInfo> {
-  const root = await gitLine(cwd, "git rev-parse --show-toplevel");
+  const root = await gitLine(cwd, ["rev-parse", "--show-toplevel"]);
   if (root === null) {
     return {
       root: null,
@@ -25,11 +25,11 @@ export async function discoverGit(cwd: string): Promise<GitInfo> {
     };
   }
   const [remoteUrl, currentBranch, headSha, statusOutput, originHead] = await Promise.all([
-    gitLine(root, "git config --get remote.origin.url"),
-    gitLine(root, "git branch --show-current"),
-    gitLine(root, "git rev-parse HEAD"),
-    gitText(root, "git status --porcelain"),
-    gitLine(root, "git symbolic-ref refs/remotes/origin/HEAD"),
+    gitLine(root, ["config", "--get", "remote.origin.url"]),
+    gitLine(root, ["branch", "--show-current"]),
+    gitLine(root, ["rev-parse", "HEAD"]),
+    gitText(root, ["status", "--porcelain"]),
+    gitLine(root, ["symbolic-ref", "refs/remotes/origin/HEAD"]),
   ]);
   return {
     root,
@@ -64,8 +64,8 @@ export function projectNameFromRoot(root: string, remoteUrl: string | null): str
   return basename(root);
 }
 
-async function gitLine(cwd: string, command: string): Promise<string | null> {
-  const result = await runCommand(command, cwd);
+async function gitLine(cwd: string, args: string[]): Promise<string | null> {
+  const result = await runArgv("git", args, cwd);
   if (result.exitCode !== 0) {
     return null;
   }
@@ -73,7 +73,7 @@ async function gitLine(cwd: string, command: string): Promise<string | null> {
   return line.length > 0 ? line : null;
 }
 
-async function gitText(cwd: string, command: string): Promise<string> {
-  const result = await runCommand(command, cwd);
+async function gitText(cwd: string, args: string[]): Promise<string> {
+  const result = await runArgv("git", args, cwd);
   return result.exitCode === 0 ? result.stdout : "";
 }

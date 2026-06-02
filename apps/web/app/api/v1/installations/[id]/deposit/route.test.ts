@@ -70,7 +70,7 @@ function deps(
       return CHANNEL_ID;
     }),
     creditDeposit: vi.fn(async () => true),
-    markActive: vi.fn(async () => undefined),
+    markActiveIfFunded: vi.fn(async () => true),
     verifier: {
       getTransactionReceipt: vi.fn(async () => ({
         status: "success" as const,
@@ -100,18 +100,18 @@ const ctx = { params: Promise.resolve({ id: ROW_ID }) };
 describe("POST /api/v1/installations/{id}/deposit", () => {
   it("credits a verified deposit and transitions to active", async () => {
     const creditDeposit = vi.fn(async () => true);
-    const markActive = vi.fn(async () => undefined);
+    const markActiveIfFunded = vi.fn(async () => true);
     const res = await handleDepositInstallation(
       req({ tx_hash: TX_HASH }),
       ctx,
-      deps({ creditDeposit, markActive }),
+      deps({ creditDeposit, markActiveIfFunded }),
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["status"]).toBe("active");
     expect((body["deposit"] as Record<string, unknown>)["amount_usdc"]).toBe("5.000000");
     expect(creditDeposit).toHaveBeenCalledOnce();
-    expect(markActive).toHaveBeenCalledWith(ROW_ID);
+    expect(markActiveIfFunded).not.toHaveBeenCalled();
   });
 
   it("rejects tx_hash whose sender is not the bound wallet", async () => {
@@ -177,6 +177,29 @@ describe("POST /api/v1/installations/{id}/deposit", () => {
     expect(body.error.code).toBe("insufficient_confirmations");
   });
 
+  it("returns retryable 503 when the Base block-height read fails", async () => {
+    const rpcDeps = deps({
+      verifier: {
+        getTransactionReceipt: vi.fn(async () => ({
+          status: "success" as const,
+          from: WALLET as `0x${string}`,
+          to: USDC_BASE_ADDRESS as `0x${string}`,
+          blockNumber: 1_000_000n,
+          logs: [buildTransferLog({ from: WALLET, to: DEPOSIT_ADDR, valueRaw: 5_000_000n })],
+        })),
+        getBlockNumber: vi.fn(async () => {
+          throw new Error("rpc unavailable");
+        }),
+      },
+    });
+
+    const res = await handleDepositInstallation(req({ tx_hash: TX_HASH }), ctx, rpcDeps);
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("rpc_unavailable");
+  });
+
   it("idempotently treats a replayed tx_hash as success (no double credit)", async () => {
     const creditDeposit = vi.fn(async () => false); // signals already-credited
     const res = await handleDepositInstallation(
@@ -188,6 +211,24 @@ describe("POST /api/v1/installations/{id}/deposit", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect((body["deposit"] as Record<string, unknown>)["credited"]).toBe(false);
     expect(creditDeposit).toHaveBeenCalledOnce();
+  });
+
+  it("does not activate an awaiting install on a replayed tx without funded balance", async () => {
+    const creditDeposit = vi.fn(async () => false);
+    const markActiveIfFunded = vi.fn(async () => false);
+    const res = await handleDepositInstallation(
+      req({ tx_hash: TX_HASH }),
+      ctx,
+      deps({ creditDeposit, markActiveIfFunded }, row({ status: "awaiting_deposit" }), channel()),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("deposit_already_recorded");
+    expect(markActiveIfFunded).toHaveBeenCalledWith({
+      installationRowId: ROW_ID,
+      minBalanceUsdc: "5.00",
+    });
   });
 
   it("returns 503 when ANTFLEET_DEPOSIT_ADDRESS is not set", async () => {

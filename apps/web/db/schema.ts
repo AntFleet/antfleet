@@ -11,8 +11,10 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // Schema follows AGENTS.md §10. Changes here are schema_version bumps —
 // the column is preserved so historical rows remain interpretable. Mission 3
@@ -322,49 +324,81 @@ export const outgoingPrs = pgTable(
 // being the FeeLocker selector mismatch on agent-autonomopoly). The table is
 // intentionally schema-light — every column is markdown-or-string so future
 // findings on other agents need no migration.
-export const agentFindings = pgTable("agent_findings", {
-  // Stable slug, e.g. "feelocker-selector-2026-05-18". Used in the URL when
-  // we add per-finding detail pages later; for now the address page renders
-  // the full body inline.
-  findingId: text("finding_id").primaryKey(),
-  // The agent's primary on-chain identity — usually the ERC-20 token address
-  // that names the agent. Indexed via the route path /agents/[address].
-  agentTokenAddress: text("agent_token_address").notNull(),
-  // Human-readable repo name (e.g. "agent-autonomopoly").
-  agentName: text("agent_name").notNull(),
-  // Upstream/full repository identity for API filters and receipts, when
-  // known. Do not use this for benchmark review joins; some rows point at the
-  // upstream repo while others were seeded from the bench mirror.
-  repoFullName: text("repo_full_name"),
-  // Short repo name stored in reviews.repo for this agent's benchmark mirror,
-  // e.g. "aeon-bench" or "agent-autonomopoly-bench".
-  benchRepoName: text("bench_repo_name"),
-  title: text("title").notNull(),
-  // info | low | med | high. Free text rather than a pg enum so new levels
-  // are application-only.
-  severity: text("severity").notNull(),
-  // Markdown body. Rendered with a small allowlist (paragraphs, lists, code,
-  // links) — no raw HTML.
-  summary: text("summary").notNull(),
-  // Markdown — usually a short list of links and reproducible commands.
-  evidence: text("evidence"),
-  // Filled in after the upstream PR opens; null while the finding is still
-  // unmaintained-only documentation.
-  upstreamPrUrl: text("upstream_pr_url"),
-  // Filled in if/when the upstream merges the fix. Null while open.
-  upstreamMergedSha: text("upstream_merged_sha"),
-  publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const agentFindings = pgTable(
+  "agent_findings",
+  {
+    // Stable slug, e.g. "feelocker-selector-2026-05-18". Used in the URL when
+    // we add per-finding detail pages later; for now the address page renders
+    // the full body inline.
+    findingId: text("finding_id").primaryKey(),
+    // The agent's primary on-chain identity — usually the ERC-20 token address
+    // that names the agent. Indexed via the route path /agents/[address].
+    agentTokenAddress: text("agent_token_address").notNull(),
+    // Human-readable repo name (e.g. "agent-autonomopoly").
+    agentName: text("agent_name").notNull(),
+    // Upstream/full repository identity for API filters and receipts, when
+    // known. Do not use this for benchmark review joins; some rows point at the
+    // upstream repo while others were seeded from the bench mirror.
+    repoFullName: text("repo_full_name"),
+    // Short repo name stored in reviews.repo for this agent's benchmark mirror,
+    // e.g. "aeon-bench" or "agent-autonomopoly-bench".
+    benchRepoName: text("bench_repo_name"),
+    title: text("title").notNull(),
+    // info | low | med | high. Free text rather than a pg enum so new levels
+    // are application-only.
+    severity: text("severity").notNull(),
+    // Markdown body. Rendered with a small allowlist (paragraphs, lists, code,
+    // links) — no raw HTML.
+    summary: text("summary").notNull(),
+    // Markdown — usually a short list of links and reproducible commands.
+    evidence: text("evidence"),
+    // Filled in after the upstream PR opens; null while the finding is still
+    // unmaintained-only documentation.
+    upstreamPrUrl: text("upstream_pr_url"),
+    // Filled in if/when the upstream merges the fix. Null while open.
+    upstreamMergedSha: text("upstream_merged_sha"),
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("agent_findings_public_page_idx").on(t.publishedAt, t.findingId),
+    index("agent_findings_agent_page_idx").on(
+      sql`lower(${t.agentTokenAddress})`,
+      t.publishedAt,
+      t.findingId,
+    ),
+    index("agent_findings_repo_page_idx").on(
+      sql`lower(${t.repoFullName})`,
+      t.publishedAt,
+      t.findingId,
+    ),
+    index("agent_findings_severity_page_idx").on(t.severity, t.publishedAt, t.findingId),
+  ],
+);
 
-export const driftSnapshots = pgTable("drift_snapshots", {
-  id: text("id").primaryKey(),
-  agentTokenAddress: text("agent_token_address").notNull(),
-  commitSha: text("commit_sha").notNull(),
-  commitTimestamp: timestamp("commit_timestamp", { withTimezone: true }).notNull(),
-  driftScore: numeric("drift_score").notNull(),
-  threshold: numeric("threshold").notNull(),
-  observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const driftSnapshots = pgTable(
+  "drift_snapshots",
+  {
+    id: text("id").primaryKey(),
+    agentTokenAddress: text("agent_token_address").notNull(),
+    commitSha: text("commit_sha").notNull(),
+    commitTimestamp: timestamp("commit_timestamp", { withTimezone: true }).notNull(),
+    driftScore: numeric("drift_score").notNull(),
+    threshold: numeric("threshold").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("drift_snapshots_agent_commit_idx").on(
+      sql`lower(${t.agentTokenAddress})`,
+      t.commitTimestamp,
+      t.id,
+    ),
+    index("drift_snapshots_agent_observed_idx").on(
+      sql`lower(${t.agentTokenAddress})`,
+      t.observedAt,
+      t.id,
+    ),
+  ],
+);
 
 export const roastSubmissions = pgTable("roast_submissions", {
   id: text("id").primaryKey(),
@@ -392,23 +426,33 @@ export const roastSubmissions = pgTable("roast_submissions", {
 //   published → roast finished, prelaunchFindingId set
 //   repo_not_found → discovery exhausted, no repo within 24h window
 //   benchmark_failed → runner reported terminal failure
-export const factoryLaunches = pgTable("factory_launches", {
-  tokenAddress: text("token_address").primaryKey(),
-  deployerAddress: text("deployer_address").notNull(),
-  tokenName: text("token_name"),
-  tokenSymbol: text("token_symbol"),
-  blockNumber: bigint("block_number", { mode: "number" }).notNull(),
-  txHash: text("tx_hash").notNull(),
-  deployedAt: timestamp("deployed_at", { withTimezone: true }).notNull(),
-  repoFullName: text("repo_full_name"),
-  repoDiscoveredAt: timestamp("repo_discovered_at", { withTimezone: true }),
-  repoDiscoveryMethod: text("repo_discovery_method"),
-  prelaunchStatus: text("prelaunch_status").notNull().default("pending"),
-  // App-level reference (no FK) to roast_submissions.id once the dispatcher
-  // hands off to the runner. Stays null until the roast publishes.
-  prelaunchFindingId: text("prelaunch_finding_id"),
-  observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const factoryLaunches = pgTable(
+  "factory_launches",
+  {
+    tokenAddress: text("token_address").primaryKey(),
+    deployerAddress: text("deployer_address").notNull(),
+    tokenName: text("token_name"),
+    tokenSymbol: text("token_symbol"),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    txHash: text("tx_hash").notNull(),
+    deployedAt: timestamp("deployed_at", { withTimezone: true }).notNull(),
+    repoFullName: text("repo_full_name"),
+    repoDiscoveredAt: timestamp("repo_discovered_at", { withTimezone: true }),
+    repoDiscoveryMethod: text("repo_discovery_method"),
+    prelaunchStatus: text("prelaunch_status").notNull().default("pending"),
+    // App-level reference (no FK) to roast_submissions.id once the dispatcher
+    // hands off to the runner. Stays null until the roast publishes.
+    prelaunchFindingId: text("prelaunch_finding_id"),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("factory_launches_published_token_idx").on(
+      t.prelaunchStatus,
+      sql`lower(${t.tokenAddress})`,
+    ),
+    index("factory_launches_directory_idx").on(t.prelaunchStatus, t.deployedAt, t.tokenAddress),
+  ],
+);
 
 // Status vocabulary (text, application-validated):
 //   Legacy gate flow (pre-paywall, webhook-created rows):
@@ -540,7 +584,12 @@ export const payments = pgTable(
     reviewId: uuid("review_id").references(() => reviews.reviewId, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("payments_channel_id_idx").on(t.channelId)],
+  (t) => [
+    uniqueIndex("payments_tx_hash_uniq")
+      .on(t.chainId, t.txHash)
+      .where(sql`${t.txHash} IS NOT NULL`),
+    index("payments_channel_id_idx").on(t.channelId),
+  ],
 );
 
 // Generic cursor store for cron-style scripts. Pattern avoids per-job tables
@@ -594,6 +643,28 @@ export const reviewJobs = pgTable(
     index("idx_review_jobs_x402_pay_to").on(t.x402PayTo),
     index("idx_review_jobs_x402_review_id").on(t.x402ReviewId),
     index("idx_review_jobs_x402_settlement_status").on(t.x402SettlementStatus),
+  ],
+);
+
+export const x402ScanClaims = pgTable(
+  "x402_scan_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    authorizationKey: text("authorization_key").notNull(),
+    callerWallet: text("caller_wallet").notNull(),
+    repoOwner: text("repo_owner").notNull(),
+    repoName: text("repo_name").notNull(),
+    headSha: text("head_sha"),
+    status: text("status").notNull().default("claimed"),
+    settlementResponse: jsonb("settlement_response"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("x402_scan_claims_authorization_key_uniq").on(t.authorizationKey),
+    index("x402_scan_claims_wallet_created_idx").on(t.callerWallet, t.createdAt),
+    index("x402_scan_claims_repo_created_idx").on(t.repoOwner, t.repoName, t.createdAt),
+    index("x402_scan_claims_status_idx").on(t.status),
   ],
 );
 
@@ -681,5 +752,7 @@ export type WeeklyFeature = typeof weeklyFeatures.$inferSelect;
 export type NewWeeklyFeature = typeof weeklyFeatures.$inferInsert;
 export type ReviewJob = typeof reviewJobs.$inferSelect;
 export type NewReviewJob = typeof reviewJobs.$inferInsert;
+export type X402ScanClaim = typeof x402ScanClaims.$inferSelect;
+export type NewX402ScanClaim = typeof x402ScanClaims.$inferInsert;
 export type ScorecardSnapshot = typeof scorecardSnapshots.$inferSelect;
 export type NewScorecardSnapshot = typeof scorecardSnapshots.$inferInsert;

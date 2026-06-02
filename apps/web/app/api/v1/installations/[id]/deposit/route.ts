@@ -14,7 +14,7 @@ import {
   creditChannelFromDeposit,
   loadChannelForInstallation,
   loadPaywallInstallation,
-  markInstallationActive,
+  markInstallationActiveIfFunded,
   type PaywallChannelRow,
   type PaywallInstallationRow,
 } from "@/lib/paywall/queries";
@@ -25,6 +25,7 @@ import {
   defaultDepositVerifierDeps,
   verifyDeposit,
   type DepositVerifierDeps,
+  type VerifyDepositError,
   type VerifiedDeposit,
 } from "@/lib/paywall/deposit-verifier";
 
@@ -47,7 +48,7 @@ export type DepositInstallationDeps = {
     amountUsdc: string;
     blockNumber: number | null;
   }) => Promise<boolean>;
-  markActive: (id: string) => Promise<void>;
+  markActiveIfFunded: (args: { installationRowId: string; minBalanceUsdc: string }) => Promise<boolean>;
   verifier: DepositVerifierDeps;
   getDepositAddress: () => string | null;
   getMinDeposit: () => string;
@@ -59,7 +60,7 @@ function defaultDeps(): DepositInstallationDeps {
     loadChannel: (id) => loadChannelForInstallation(db, id),
     createChannel: (args) => createChannelForInstallation(db, args),
     creditDeposit: (args) => creditChannelFromDeposit(db, args),
-    markActive: (id) => markInstallationActive(db, id),
+    markActiveIfFunded: (args) => markInstallationActiveIfFunded(db, args),
     verifier: defaultDepositVerifierDeps(),
     getDepositAddress,
     getMinDeposit: getMinDepositUsdc,
@@ -126,7 +127,11 @@ export async function handleDepositInstallation(
         code: verification.error.code,
         message: verification.error.message,
       });
-      return jsonError(400, verification.error.code, verification.error.message);
+      return jsonError(
+        statusForVerifyDepositError(verification.error),
+        verification.error.code,
+        verification.error.message,
+      );
     }
 
     const channel = await ensureChannel(deps, row);
@@ -138,7 +143,21 @@ export async function handleDepositInstallation(
       amountUsdc: verification.deposit.amountUsdc,
       blockNumber: verification.deposit.blockNumber,
     });
-    await deps.markActive(row.id);
+    let status = credited || row.status === PAYWALL_STATUS.active ? PAYWALL_STATUS.active : row.status;
+    if (!credited && status !== PAYWALL_STATUS.active) {
+      const activated = await deps.markActiveIfFunded({
+        installationRowId: row.id,
+        minBalanceUsdc: deps.getMinDeposit(),
+      });
+      if (!activated) {
+        return jsonError(
+          409,
+          "deposit_already_recorded",
+          "deposit transaction was already recorded and did not fund this installation",
+        );
+      }
+      status = PAYWALL_STATUS.active;
+    }
 
     logInfo("paywall.deposit.ok", {
       installationId: row.id,
@@ -151,7 +170,7 @@ export async function handleDepositInstallation(
     return jsonOk(
       {
         installation_id: row.id,
-        status: PAYWALL_STATUS.active,
+        status,
         wallet_address: row.walletAddress,
         deposit: {
           tx_hash: verification.deposit.txHash,
@@ -161,7 +180,7 @@ export async function handleDepositInstallation(
         },
         channel: { id: channel.id },
         next_step: buildNextStep({
-          status: row.installationId === null ? PAYWALL_STATUS.active : "linked",
+          status: row.installationId === null ? status : "linked",
           installationId: row.id,
         }),
       },
@@ -194,6 +213,10 @@ async function ensureChannel(
 
 // Expose for the scan-deposits cron in PR #3 — same body shape, same idempotency.
 export type { VerifiedDeposit };
+
+function statusForVerifyDepositError(error: VerifyDepositError): 400 | 503 {
+  return error.code === "rpc_unavailable" ? 503 : 400;
+}
 
 async function readJson(req: NextRequest): Promise<unknown> {
   try {

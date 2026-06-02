@@ -48,6 +48,7 @@ function deps(overrides: Partial<IssueReviewChallengeDeps> = {}): IssueReviewCha
         usedForReviewId: null,
       }),
     ),
+    countOutstandingChallenges: vi.fn(async () => 0),
     now: () => NOW,
     ...overrides,
   };
@@ -80,6 +81,16 @@ describe("POST /api/v1/installations/{id}/review/challenge", () => {
     const res = await handleIssueReviewChallenge(req, ctx, deps());
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["wallet_address"]).toBeUndefined();
+  });
+
+  it("caps outstanding unredeemed challenges per installation", async () => {
+    const d = deps({ countOutstandingChallenges: vi.fn(async () => 5) });
+    const res = await handleIssueReviewChallenge(req, ctx, d);
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("challenge_limit_exceeded");
+    expect(d.insertChallenge).not.toHaveBeenCalled();
   });
 
   it("returns 404 not_eligible (collapsed) when the installation row is missing", async () => {

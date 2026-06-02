@@ -9,12 +9,11 @@ export const runtime = "nodejs";
 
 // Operator-only retraction endpoint. NOT publicly documented — the operator
 // hits it via curl when a maintainer's correction request (to
-// privacy@antfleet.dev) is upheld. Auth: OPERATOR_SECRET if set, else
-// CRON_SECRET (the operator already holds it). Constant-time bearer compare,
-// same pattern as the cron routes.
+// privacy@antfleet.dev) is upheld. Auth: OPERATOR_SECRET only; cron
+// credentials must never authorize operator-only state changes.
 export type RetractDeps = {
-  // Resolved server secret (OPERATOR_SECRET ?? CRON_SECRET). Undefined/empty
-  // means the server is misconfigured → 500, never an auth bypass.
+  // Resolved server secret. Undefined/empty means the server is
+  // misconfigured → 500, never an auth bypass.
   secret: string | undefined;
   // Returns false when the finding id is unknown or already retracted → 404.
   retract: (findingId: string, reason: string, requestorEmail: string | null) => Promise<boolean>;
@@ -40,7 +39,7 @@ export async function handleRetract(
   deps: RetractDeps,
 ): Promise<NextResponse> {
   if (deps.secret === undefined || deps.secret.length === 0) {
-    logError("admin.retract_misconfigured", { reason: "OPERATOR_SECRET/CRON_SECRET missing" });
+    logError("admin.retract_misconfigured", { reason: "OPERATOR_SECRET missing" });
     return new NextResponse("server misconfigured", { status: 500 });
   }
   const authHeader = req.headers.get("authorization");
@@ -87,6 +86,6 @@ export async function POST(
   { params }: { params: Promise<{ findingId: string }> },
 ): Promise<NextResponse> {
   const { findingId } = await params;
-  const secret = process.env["OPERATOR_SECRET"] ?? process.env["CRON_SECRET"];
+  const secret = process.env["OPERATOR_SECRET"];
   return handleRetract(req, findingId, { secret, retract: retractFinding });
 }

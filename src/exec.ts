@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { CommandResult } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -16,13 +16,43 @@ export async function runCommand(
   input?: string,
   options: RunCommandOptions = {},
 ): Promise<CommandResult> {
+  return runSpawned(command, cwd, input, options, () =>
+    spawn(command, {
+      cwd,
+      shell: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    }),
+  );
+}
+
+export async function runArgv(
+  file: string,
+  args: string[],
+  cwd: string,
+  input?: string,
+  options: RunCommandOptions = {},
+): Promise<CommandResult> {
+  const command = displayArgv(file, args);
+  return runSpawned(command, cwd, input, options, () =>
+    spawn(file, args, {
+      cwd,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    }),
+  );
+}
+
+async function runSpawned(
+  command: string,
+  cwd: string,
+  input: string | undefined,
+  options: RunCommandOptions,
+  startChild: () => ChildProcessWithoutNullStreams,
+): Promise<CommandResult> {
   const started = Date.now();
-  const child = spawn(command, {
-    cwd,
-    shell: true,
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
+  const child = startChild();
   const stdout = new OutputBuffer();
   const stderr = new OutputBuffer();
   let timedOut = false;
@@ -33,7 +63,9 @@ export async function runCommand(
     stderr.append(`\n[command timed out after ${timeoutMs}ms]\n`);
     terminateChild(child.pid, "SIGTERM");
     killTimer = setTimeout(() => terminateChild(child.pid, "SIGKILL"), TERMINATION_GRACE_MS);
+    killTimer.unref?.();
   }, timeoutMs);
+  timeoutTimer.unref?.();
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
@@ -47,12 +79,16 @@ export async function runCommand(
   } else {
     child.stdin.end();
   }
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.on("close", resolve);
-    child.on("error", reject);
-  });
-  clearTimeout(timeoutTimer);
-  if (killTimer !== undefined) clearTimeout(killTimer);
+  let exitCode: number | null;
+  try {
+    exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.on("close", resolve);
+      child.on("error", reject);
+    });
+  } finally {
+    clearTimeout(timeoutTimer);
+    if (killTimer !== undefined) clearTimeout(killTimer);
+  }
   return {
     command,
     cwd,
@@ -61,6 +97,14 @@ export async function runCommand(
     stdout: stdout.toString(),
     stderr: stderr.toString(),
   };
+}
+
+function displayArgv(file: string, args: string[]): string {
+  return [file, ...args].map(displayArg).join(" ");
+}
+
+function displayArg(value: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/u.test(value) ? value : JSON.stringify(value);
 }
 
 function readTimeoutMs(value: number | undefined): number {

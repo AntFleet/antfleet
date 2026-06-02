@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runCommand } from "./exec.js";
+import { runArgv, runCommand } from "./exec.js";
 
 const node = JSON.stringify(process.execPath);
 
@@ -28,5 +28,16 @@ describe("runCommand", () => {
     expect(result.stdout).toContain("...[trimmed ");
     expect(result.stdout.endsWith("TAIL")).toBe(true);
     expect(result.stdout.length).toBeLessThan(8_200);
+  });
+
+  it("runs argv without interpreting shell metacharacters", async () => {
+    const result = await runArgv(
+      process.execPath,
+      ["-e", "process.stdout.write(process.argv[1])", "literal;not-shell"],
+      process.cwd(),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("literal;not-shell");
   });
 });

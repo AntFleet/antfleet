@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
-import { handleAgentFindings, type AgentFindingsDeps } from "./route";
+import { decodeCursor } from "@/lib/api-v1/cursor";
+import { handleAgentFindings, pageFindings, type AgentFindingsDeps } from "./route";
 import type { FindingRow } from "@/lib/api-v1/serialize";
 
 const address = "0x0000000000000000000000000000000000000001";
@@ -40,6 +41,21 @@ describe("GET /api/v1/agents/:address/findings", () => {
     }
     expect(ids).toEqual(["f1", "f2", "f3"]);
     expect(new Set(ids).size).toBe(3);
+  });
+
+  it("preserves raw sub-millisecond timestamps in next cursors", () => {
+    const page = pageFindings(
+      [
+        finding("f1", "2026-05-18T03:00:00.123456Z"),
+        finding("f2", "2026-05-18T03:00:00.123455Z"),
+      ],
+      1,
+    );
+
+    expect(decodeCursor(page.nextCursor!, 2)).toEqual([
+      "2026-05-18T03:00:00.123456Z",
+      "f1",
+    ]);
   });
 });
 

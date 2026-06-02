@@ -54,9 +54,8 @@ const DEFAULT_DEPS: AgentFindingsDeps = {
     if (query.severity) filters.push(eq(agentFindings.severity, query.severity));
     if (query.since) filters.push(gte(agentFindings.publishedAt, new Date(query.since)));
     if (cursor) {
-      const cursorDate = new Date(cursor[0]);
       filters.push(
-        sql`(${agentFindings.publishedAt} < ${cursorDate} OR (${agentFindings.publishedAt} = ${cursorDate} AND ${agentFindings.findingId} > ${cursor[1]}))`,
+        sql`(${agentFindings.publishedAt} < ${cursor[0]}::timestamptz OR (${agentFindings.publishedAt} = ${cursor[0]}::timestamptz AND ${agentFindings.findingId} > ${cursor[1]}))`,
       );
     }
     const rows = await db
@@ -106,7 +105,7 @@ function parseCursor(token: string | undefined): [string, string] | null | "inva
   if (
     decoded === null ||
     typeof decoded[0] !== "string" ||
-    Number.isNaN(new Date(decoded[0]).getTime()) ||
+    Number.isNaN(Date.parse(decoded[0])) ||
     typeof decoded[1] !== "string"
   ) {
     return "invalid";
@@ -114,16 +113,20 @@ function parseCursor(token: string | undefined): [string, string] | null | "inva
   return [decoded[0], decoded[1]];
 }
 
-function pageFindings(rows: FindingRow[], limit: number): Page {
+export function pageFindings(rows: FindingRow[], limit: number): Page {
   const data = rows.slice(0, limit);
   const last = data[data.length - 1];
   return {
     rows: data,
     nextCursor:
       rows.length > limit && last !== undefined
-        ? encodeCursor([serializeFinding(last).published_at, last.findingId])
+        ? encodeCursor([cursorTimestamp(last.publishedAt), last.findingId])
         : null,
   };
+}
+
+function cursorTimestamp(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
 }
 
 function sqlRows<T>(result: unknown): T[] {

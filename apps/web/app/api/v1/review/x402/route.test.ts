@@ -7,6 +7,7 @@ import {
   X402_SEPOLIA_USDC,
   type X402Config,
 } from "@/lib/x402/env";
+import { X402PaymentError } from "@/lib/x402/facilitator";
 import { handleX402ReviewRequest, type X402RouteDeps } from "./route";
 import type { ReviewJobRow } from "@/lib/review-job-queries";
 
@@ -173,9 +174,17 @@ describe("POST /api/v1/review/x402", () => {
     });
   });
 
-  it("checks cooldown before payment verification", async () => {
+  it("verifies payment before repo cooldown and scopes cooldown to the verified wallet", async () => {
     await withGate(async () => {
-      const verifyPayment = vi.fn();
+      const verifyPayment = vi.fn(async () => ({
+        callerWallet: WALLET_ONE,
+        payload: {},
+        payloadBase64: "payload",
+        validAfter: NOW,
+        validBefore: new Date(NOW.getTime() + 600_000),
+        resource: "https://www.antfleet.dev/api/v1/review/x402",
+        facilitatorResponse: { isValid: true },
+      }));
       const createJob = vi.fn();
       const findRecentRepoShaJob = vi.fn(async () =>
         job({ callerWallet: WALLET_ONE, status: "complete" }),
@@ -187,17 +196,30 @@ describe("POST /api/v1/review/x402", () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ jobId: "job-1", status: "complete" });
-      expect(verifyPayment).not.toHaveBeenCalled();
+      expect(verifyPayment).toHaveBeenCalledTimes(1);
       expect(createJob).not.toHaveBeenCalled();
       expect(findRecentRepoShaJob).toHaveBeenCalledWith(
-        expect.objectContaining({ owner: "antfleet", repo: "x402-fixture", sha: "abc1234" }),
+        expect.objectContaining({
+          owner: "antfleet",
+          repo: "x402-fixture",
+          sha: "abc1234",
+          callerWallet: WALLET_ONE,
+        }),
       );
     });
   });
 
-  it("rejects wallet quota before payment verification and exposes retry-after", async () => {
+  it("rejects wallet quota after payment verification and exposes retry-after", async () => {
     await withGate(async () => {
-      const verifyPayment = vi.fn();
+      const verifyPayment = vi.fn(async () => ({
+        callerWallet: WALLET_ONE,
+        payload: {},
+        payloadBase64: "payload",
+        validAfter: NOW,
+        validBefore: new Date(NOW.getTime() + 600_000),
+        resource: "https://www.antfleet.dev/api/v1/review/x402",
+        facilitatorResponse: { isValid: true },
+      }));
       const checkWalletRateLimit = vi.fn(async () => ({
         ok: false as const,
         retryAfterSeconds: 123,
@@ -215,13 +237,25 @@ describe("POST /api/v1/review/x402", () => {
         retry_after_seconds: 123,
       });
       expect(Number.isInteger(123)).toBe(true);
-      expect(verifyPayment).not.toHaveBeenCalled();
+      expect(verifyPayment).toHaveBeenCalledTimes(1);
+      expect(checkWalletRateLimit).toHaveBeenCalledWith({
+        callerWallet: WALLET_ONE,
+        now: NOW,
+      });
     });
   });
 
-  it("returns an existing idempotent terminal job without payment verification", async () => {
+  it("returns an existing idempotent terminal job only after payment verification", async () => {
     await withGate(async () => {
-      const verifyPayment = vi.fn();
+      const verifyPayment = vi.fn(async () => ({
+        callerWallet: WALLET_ONE,
+        payload: {},
+        payloadBase64: "payload",
+        validAfter: NOW,
+        validBefore: new Date(NOW.getTime() + 600_000),
+        resource: "https://www.antfleet.dev/api/v1/review/x402",
+        facilitatorResponse: { isValid: true },
+      }));
       const createJob = vi.fn();
       const scheduleWorker = vi.fn();
       const findJobByIdempotencyKey = vi.fn(async () => job({ status: "complete" }));
@@ -232,9 +266,41 @@ describe("POST /api/v1/review/x402", () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ jobId: "job-1", status: "complete" });
-      expect(verifyPayment).not.toHaveBeenCalled();
+      expect(verifyPayment).toHaveBeenCalledTimes(1);
       expect(createJob).not.toHaveBeenCalled();
       expect(scheduleWorker).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not resolve GitHub target or read cooldown state when payment verification fails", async () => {
+    await withGate(async () => {
+      const verifyPayment = vi.fn(async () => {
+        throw new X402PaymentError(402, "x402_verify_failed", "x402 payment verification failed");
+      });
+      const makeOctokit = vi.fn(() => octokit());
+      const findRecentRepoShaJob = vi.fn(async () => null);
+      const checkWalletRateLimit = vi.fn(async () => ({ ok: true as const }));
+      const findJobByIdempotencyKey = vi.fn(async () => null);
+      const res = await handleX402ReviewRequest(
+        request({ ...aeonHeader(), "payment-signature": paymentSignature(WALLET_TWO) }),
+        happyDeps({
+          verifyPayment,
+          makeOctokit,
+          findRecentRepoShaJob,
+          checkWalletRateLimit,
+          findJobByIdempotencyKey,
+        }),
+      );
+
+      expect(res.status).toBe(402);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { code: "x402_verify_failed" },
+      });
+      expect(makeOctokit).not.toHaveBeenCalled();
+      expect(findRecentRepoShaJob).not.toHaveBeenCalled();
+      expect(checkWalletRateLimit).not.toHaveBeenCalled();
+      expect(findJobByIdempotencyKey).not.toHaveBeenCalled();
+      expect(verifyPayment).toHaveBeenCalledTimes(1);
     });
   });
 

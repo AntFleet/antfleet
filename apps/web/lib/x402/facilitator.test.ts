@@ -126,6 +126,34 @@ describe("x402 facilitator wrapper", () => {
     expect(verified.callerWallet).toBe("0x0000000000000000000000000000000000000001");
   });
 
+  it("ignores decoy authorization windows outside the authorization object", async () => {
+    const now = new Date("2026-05-29T00:00:00Z");
+    const payload = {
+      validAfter: Math.floor(now.getTime() / 1000),
+      validBefore: Math.floor(now.getTime() / 1000) + 901,
+      nested: {
+        validBefore: Math.floor(now.getTime() / 1000) - 1,
+      },
+      authorization: {
+        from: "0x0000000000000000000000000000000000000001",
+        validAfter: Math.floor(now.getTime() / 1000),
+        validBefore: Math.floor(now.getTime() / 1000) + 600,
+      },
+    };
+
+    const verified = await verifyPayment({
+      paymentSignature: Buffer.from(JSON.stringify(payload)).toString("base64"),
+      config,
+      resource: "https://example.test/api/v1/review/x402",
+      now,
+      fetchImpl: vi.fn(
+        async () => new Response(JSON.stringify({ isValid: true }), { status: 200 }),
+      ),
+    });
+
+    expect(verified.validBefore.toISOString()).toBe("2026-05-29T00:10:00.000Z");
+  });
+
   it("rejects authorization windows over 900 seconds", async () => {
     const now = new Date("2026-05-29T00:00:00Z");
     const payload = {

@@ -30,6 +30,7 @@ import { jsonError, jsonOk, NO_STORE, optionsResponse } from "@/lib/api-v1/respo
 import { logError, logInfo, logWarn } from "@/lib/log";
 import { buildReviewChallenge, REVIEW_CHALLENGE_MAX_AGE_MS } from "@/lib/paywall/review-challenge";
 import {
+  countOutstandingReviewChallenges,
   insertReviewChallenge,
   loadPaywallInstallation,
   type PaywallInstallationRow,
@@ -39,6 +40,7 @@ import { PAYWALL_STATUS } from "@/lib/paywall/state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const REVIEW_CHALLENGE_OUTSTANDING_LIMIT = 5;
 
 export type IssueReviewChallengeDeps = {
   loadInstallation: (id: string) => Promise<PaywallInstallationRow | null>;
@@ -47,12 +49,14 @@ export type IssueReviewChallengeDeps = {
     issuedAt: Date;
     expiresAt: Date;
   }) => Promise<ReviewChallengeRow>;
+  countOutstandingChallenges: (args: { installationRowId: string; now: Date }) => Promise<number>;
   now: () => Date;
 };
 
 const DEFAULT_DEPS: IssueReviewChallengeDeps = {
   loadInstallation: (id) => loadPaywallInstallation(db, id),
   insertChallenge: (args) => insertReviewChallenge(db, args),
+  countOutstandingChallenges: (args) => countOutstandingReviewChallenges(db, args),
   now: () => new Date(),
 };
 
@@ -92,6 +96,17 @@ export async function handleIssueReviewChallenge(
       return jsonError(404, "not_eligible", "installation is not eligible for review challenges");
     }
     const issuedAt = deps.now();
+    const outstanding = await deps.countOutstandingChallenges({
+      installationRowId: row.id,
+      now: issuedAt,
+    });
+    if (outstanding >= REVIEW_CHALLENGE_OUTSTANDING_LIMIT) {
+      return jsonError(
+        429,
+        "challenge_limit_exceeded",
+        "too many outstanding review challenges; redeem or wait for expiry",
+      );
+    }
     const expiresAt = new Date(issuedAt.getTime() + REVIEW_CHALLENGE_MAX_AGE_MS);
     const inserted = await deps.insertChallenge({
       installationRowId: row.id,

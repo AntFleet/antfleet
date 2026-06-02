@@ -14,7 +14,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { db } from "@/db";
-import { debitForReview, type DebitForReviewResult } from "./gate";
+import { debitForJob, debitForReview, type DebitForReviewResult } from "./gate";
 import type { GateDecision } from "./gate";
 
 // debitForReview's Queryable type is Pick<typeof db, "execute">, where
@@ -150,5 +150,86 @@ describe("debitForReview", () => {
     if (result.ok) {
       expect(result.debitedUsdc).toBe("0.500000");
     }
+  });
+});
+
+describe("debitForJob", () => {
+  it("debits, records drawdown, links, and queues the job in one statement", async () => {
+    const q = makeQueryable({
+      responses: [
+        {
+          rows: [
+            {
+              jobReady: true,
+              newBalanceUsdc: "0.500000",
+              drawdownId: "drawdown-id-job",
+              queued: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await debitForJob(q as unknown as DbQueryable, {
+      decision: debitDecision("0.50"),
+      jobId: "job-1",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      debitedUsdc: "0.500000",
+      newBalanceUsdc: "0.500000",
+      drawdownId: "drawdown-id-job",
+    });
+    expect(q.calls).toHaveLength(1);
+  });
+
+  it("returns insufficient without queuing when the atomic debit cannot lock funds", async () => {
+    const q = makeQueryable({
+      responses: [
+        {
+          rows: [
+            {
+              jobReady: true,
+              newBalanceUsdc: null,
+              drawdownId: null,
+              queued: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await debitForJob(q as unknown as DbQueryable, {
+      decision: debitDecision("0.50"),
+      jobId: "job-1",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "insufficient_at_debit" });
+    expect(q.calls).toHaveLength(1);
+  });
+
+  it("throws before debit semantics when the billing-pending job is unavailable", async () => {
+    const q = makeQueryable({
+      responses: [
+        {
+          rows: [
+            {
+              jobReady: false,
+              newBalanceUsdc: null,
+              drawdownId: null,
+              queued: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    await expect(
+      debitForJob(q as unknown as DbQueryable, {
+        decision: debitDecision("0.50"),
+        jobId: "job-1",
+      }),
+    ).rejects.toThrow("billing-pending review job was not available for debit");
   });
 });

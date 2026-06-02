@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { Octokit } from "@octokit/rest";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { db } from "@/db";
 import { jsonError, NO_STORE, optionsResponse } from "@/lib/api-v1/responses";
@@ -8,7 +9,6 @@ import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { requireAeonContextForScan } from "@/lib/x402/aeon-gate";
 import {
   buildScanPaymentRequired,
-  extractClaimedSigner,
   makeAuthorizationState,
   PAYMENT_REQUIRED_HEADER,
   PAYMENT_RESPONSE_HEADER,
@@ -19,7 +19,14 @@ import {
   type VerifiedPayment,
 } from "@/lib/x402/facilitator";
 import { isX402ConfigError, loadX402Config, type X402Config } from "@/lib/x402/env";
-import { checkWalletRateLimit, type WalletRateLimitResult } from "@/lib/x402/rate-limit";
+import {
+  checkWalletRateLimit,
+  claimX402ScanAuthorization,
+  markX402ScanClaimStatus,
+  type WalletRateLimitResult,
+  type X402ScanClaimResult,
+  type X402ScanClaimStatus,
+} from "@/lib/x402/rate-limit";
 import { scanRepo, type ScanOctokit, type ScanResult } from "@/lib/repo-scanner";
 
 export const runtime = "nodejs";
@@ -65,7 +72,22 @@ export type X402ScanRouteDeps = {
   checkWalletRateLimit: (args: {
     callerWallet: string;
     now: Date;
+    includeCurrent?: boolean;
   }) => Promise<WalletRateLimitResult>;
+  claimScanAuthorization: (args: {
+    authorizationKey: string;
+    callerWallet: string;
+    owner: string;
+    repo: string;
+    now: Date;
+  }) => Promise<X402ScanClaimResult>;
+  markScanClaimStatus: (args: {
+    claimId: string;
+    status: Exclude<X402ScanClaimStatus, "claimed">;
+    now: Date;
+    headSha?: string | null;
+    settlementResponse?: unknown;
+  }) => Promise<void>;
   makeOctokit: () => ScanRouteOctokit;
   scanRepo: typeof scanRepo;
 };
@@ -76,6 +98,8 @@ const DEFAULT_DEPS: X402ScanRouteDeps = {
   verifyPayment,
   settlePayment,
   checkWalletRateLimit: (args) => checkWalletRateLimit(db, args),
+  claimScanAuthorization: (args) => claimX402ScanAuthorization(db, args),
+  markScanClaimStatus: (args) => markX402ScanClaimStatus(db, args),
   makeOctokit: () => {
     const token = process.env["GITHUB_PUBLIC_TOKEN"];
     return (token ? new Octokit({ auth: token }) : new Octokit()) as unknown as ScanRouteOctokit;
@@ -136,32 +160,6 @@ export async function handleX402ScanRequest(req: NextRequest, deps: X402ScanRout
       return jsonError(400, "invalid_input", parsed.error.issues[0]?.message ?? "bad request");
     }
 
-    const octokit = deps.makeOctokit();
-    const target = await resolveScanTarget(parsed.data, octokit);
-    if (target.kind === "error") return jsonError(target.status, target.code, target.message);
-
-    const claimedSigner = extractClaimedSigner(paymentSignature);
-    if (claimedSigner === null) {
-      return jsonError(402, "x402_signer_missing", "payment payload did not include signer");
-    }
-
-    // Per-wallet hourly budget. The limiter counts the wallet's recent
-    // review_jobs rows, so this PRE-GATES a scan against the wallet's PR-review
-    // usage (a wallet that's burned its budget on reviews can't scan). Scans
-    // are synchronous and write no review_jobs row (spec: no DB writes), so a
-    // scan does NOT itself consume budget — it is checked, not counted.
-    const rate = await deps.checkWalletRateLimit({ callerWallet: claimedSigner, now });
-    if (!rate.ok) {
-      const res = jsonError(
-        429,
-        "rate_limited_wallet",
-        `Rate limit exceeded: ${rate.limit} requests per wallet per hour`,
-        { retry_after_seconds: rate.retryAfterSeconds },
-      );
-      res.headers.set("Retry-After", String(rate.retryAfterSeconds));
-      return res;
-    }
-
     let payment: VerifiedPayment;
     try {
       payment = await deps.verifyPayment({
@@ -174,6 +172,46 @@ export async function handleX402ScanRequest(req: NextRequest, deps: X402ScanRout
     } catch (err) {
       if (err instanceof X402PaymentError) return jsonError(err.status, err.code, err.message);
       throw err;
+    }
+
+    const octokit = deps.makeOctokit();
+    const target = await resolveScanTarget(parsed.data, octokit);
+    if (target.kind === "error") return jsonError(target.status, target.code, target.message);
+
+    const claim = await deps.claimScanAuthorization({
+      authorizationKey: scanAuthorizationKey(payment),
+      callerWallet: payment.callerWallet,
+      owner: target.owner,
+      repo: target.repo,
+      now,
+    });
+    if (!claim.claimed) {
+      return jsonError(
+        409,
+        "duplicate_x402_authorization",
+        "this x402 authorization has already been used for a scan",
+      );
+    }
+
+    const rate = await deps.checkWalletRateLimit({
+      callerWallet: payment.callerWallet,
+      now,
+      includeCurrent: true,
+    });
+    if (!rate.ok) {
+      await deps.markScanClaimStatus({
+        claimId: claim.claimId,
+        status: "rate_limited",
+        now: deps.now(),
+      });
+      const res = jsonError(
+        429,
+        "rate_limited_wallet",
+        `Rate limit exceeded: ${rate.limit} requests per wallet per hour`,
+        { retry_after_seconds: rate.retryAfterSeconds },
+      );
+      res.headers.set("Retry-After", String(rate.retryAfterSeconds));
+      return res;
     }
 
     // Run the scan BEFORE settling. If scanRepo throws (provider error, timeout,
@@ -194,6 +232,11 @@ export async function handleX402ScanRequest(req: NextRequest, deps: X402ScanRout
         repo: `${target.owner}/${target.repo}`,
         message: messageOf(err),
       });
+      await deps.markScanClaimStatus({
+        claimId: claim.claimId,
+        status: "scan_failed",
+        now: deps.now(),
+      });
       // No settlement on the provider-error path (mirrors PR review).
       return jsonError(502, "scan_failed", "repo scan failed");
     }
@@ -204,17 +247,25 @@ export async function handleX402ScanRequest(req: NextRequest, deps: X402ScanRout
     // chunks but reached no consensus still settles below, with degraded:true —
     // that work cost real model spend, mirroring the PR-review path.)
     if (result.chunkCount === 0) {
+      await deps.markScanClaimStatus({
+        claimId: claim.claimId,
+        status: "no_reviewable_files",
+        now: deps.now(),
+        headSha: result.headSha,
+      });
       return jsonError(422, "no_reviewable_files", "repo has no reviewable files to scan");
     }
 
+    let settlementResponse: unknown = null;
     try {
-      await deps.settlePayment({
+      const settlement = await deps.settlePayment({
         job: { x402PayTo: config.treasury },
         config,
         authorization: makeAuthorizationState(payment),
         now: deps.now(),
         paymentRequirements,
       });
+      settlementResponse = settlement.response;
     } catch (err) {
       // The scan completed but settlement failed. Don't hand back findings the
       // buyer hasn't paid for; surface the settlement error so they can retry.
@@ -222,9 +273,25 @@ export async function handleX402ScanRequest(req: NextRequest, deps: X402ScanRout
         repo: `${target.owner}/${target.repo}`,
         message: messageOf(err),
       });
+      await deps.markScanClaimStatus({
+        claimId: claim.claimId,
+        status: "settlement_failed",
+        now: deps.now(),
+        headSha: result.headSha,
+        settlementResponse:
+          err instanceof X402PaymentError ? { code: err.code, message: err.message } : null,
+      });
       if (err instanceof X402PaymentError) return jsonError(err.status, err.code, err.message);
       return jsonError(502, "x402_settle_failed", "x402 settlement failed");
     }
+
+    await deps.markScanClaimStatus({
+      claimId: claim.claimId,
+      status: "settled",
+      now: deps.now(),
+      headSha: result.headSha,
+      settlementResponse,
+    });
 
     logInfo("x402_scan", {
       event: "complete",
@@ -262,6 +329,10 @@ export async function handleX402ScanRequest(req: NextRequest, deps: X402ScanRout
     logError("x402_scan_endpoint.internal", { message: messageOf(err) });
     return jsonError(500, "internal", "internal error");
   }
+}
+
+function scanAuthorizationKey(payment: VerifiedPayment): string {
+  return createHash("sha256").update(payment.payloadBase64).digest("hex");
 }
 
 type ResolvedScanTarget =

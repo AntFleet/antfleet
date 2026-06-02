@@ -39,9 +39,10 @@ import {
   DEPOSIT_MIN_CONFIRMATIONS,
   getBaseRpcUrl,
   getDepositAddress,
+  getMinDepositUsdc,
   USDC_BASE_ADDRESS,
-  USDC_DECIMALS,
 } from "../lib/paywall/env";
+import { compareUsdcStrings, formatUsdcUnits } from "../lib/paywall/deposit-verifier";
 
 type BaseClient = ReturnType<typeof createPublicClient<ReturnType<typeof http>, typeof base>>;
 type Db = ReturnType<typeof drizzle>;
@@ -85,6 +86,7 @@ export type ScanDepositsResult = {
   credited: number;
   alreadyCredited: number;
   unmatched: number;
+  belowMinimum: number;
   fromBlock: string;
   toBlock: string;
 };
@@ -102,6 +104,7 @@ export type ScanDepositsDeps = {
     amountUsdc: string;
     blockNumber: number;
   }) => Promise<boolean>;
+  getMinDepositUsdc: () => string;
 };
 
 export async function scanDepositsOnce(): Promise<ScanDepositsResult | { skipped: string }> {
@@ -162,6 +165,7 @@ export function buildLiveDeps(
     writeCursor: (block) => writeCursor(db, LAST_PROCESSED_CURSOR_KEY, block),
     loadChannelByWallet: (wallet) => loadChannelByWallet(db, wallet),
     creditDeposit: (args) => creditDeposit(db, args),
+    getMinDepositUsdc,
   };
 }
 
@@ -186,6 +190,7 @@ export async function scanDepositsWithDeps(deps: ScanDepositsDeps): Promise<Scan
       credited: 0,
       alreadyCredited: 0,
       unmatched: 0,
+      belowMinimum: 0,
       fromBlock: fromBlock.toString(),
       toBlock: toBlock.toString(),
     };
@@ -195,24 +200,56 @@ export async function scanDepositsWithDeps(deps: ScanDepositsDeps): Promise<Scan
   let credited = 0;
   let alreadyCredited = 0;
   let unmatched = 0;
+  let belowMinimum = 0;
+  const minDepositUsdc = deps.getMinDepositUsdc();
 
   for (let chunkFrom = fromBlock; chunkFrom <= toBlock; chunkFrom += LOG_RANGE_LIMIT) {
     const chunkTo = minBigInt(chunkFrom + LOG_RANGE_LIMIT - 1n, toBlock);
     const logs = await deps.getLogs({ fromBlock: chunkFrom, toBlock: chunkTo });
     scanned += logs.length;
+    const pending = new Map<
+      string,
+      {
+        channel: ChannelRow;
+        txHash: string;
+        fromAddress: string;
+        rawAmount: bigint;
+        blockNumber: bigint;
+      }
+    >();
     for (const log of logs) {
       const channel = await deps.loadChannelByWallet(log.from);
       if (channel === null) {
         unmatched += 1;
         continue;
       }
-      const amountUsdc = formatUsdcUnits(log.value);
+      const key = `${channel.id}:${log.txHash}`;
+      const existing = pending.get(key);
+      if (existing === undefined) {
+        pending.set(key, {
+          channel,
+          txHash: log.txHash,
+          fromAddress: log.from,
+          rawAmount: log.value,
+          blockNumber: log.blockNumber,
+        });
+      } else {
+        existing.rawAmount += log.value;
+        if (log.blockNumber < existing.blockNumber) existing.blockNumber = log.blockNumber;
+      }
+    }
+    for (const entry of pending.values()) {
+      const amountUsdc = formatUsdcUnits(entry.rawAmount);
+      if (compareUsdcStrings(amountUsdc, minDepositUsdc) < 0) {
+        belowMinimum += 1;
+        continue;
+      }
       const wasFirstObservation = await deps.creditDeposit({
-        channelId: channel.id,
-        txHash: log.txHash,
-        fromAddress: log.from,
+        channelId: entry.channel.id,
+        txHash: entry.txHash,
+        fromAddress: entry.fromAddress,
         amountUsdc,
-        blockNumber: Number(log.blockNumber),
+        blockNumber: Number(entry.blockNumber),
       });
       if (wasFirstObservation) credited += 1;
       else alreadyCredited += 1;
@@ -225,6 +262,7 @@ export async function scanDepositsWithDeps(deps: ScanDepositsDeps): Promise<Scan
     credited,
     alreadyCredited,
     unmatched,
+    belowMinimum,
     fromBlock: fromBlock.toString(),
     toBlock: toBlock.toString(),
   };
@@ -331,13 +369,6 @@ async function creditDeposit(
       AND i.status IN ('awaiting_deposit', 'active')
   `);
   return true;
-}
-
-function formatUsdcUnits(value: bigint): string {
-  const divisor = 10n ** BigInt(USDC_DECIMALS);
-  const whole = value / divisor;
-  const fraction = (value % divisor).toString().padStart(USDC_DECIMALS, "0");
-  return `${whole.toString()}.${fraction}`;
 }
 
 function minBigInt(a: bigint, b: bigint): bigint {

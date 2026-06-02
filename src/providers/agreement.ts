@@ -111,10 +111,13 @@ export function mergeFindings(
   const disagreements: Disagreement[] = [];
   for (const cluster of clusters.values()) {
     const providers = uniqueSorted(cluster.map((t) => t.provider));
-    const representative = pickRepresentative(cluster.map((t) => t.finding));
-    if (providers.length >= threshold) {
-      agreed.push(representative);
+    const qualifyingFindings = cluster
+      .filter((candidate) => directSupportProviders(candidate, cluster).length >= threshold)
+      .map((candidate) => candidate.finding);
+    if (qualifyingFindings.length > 0) {
+      agreed.push(pickRepresentative(qualifyingFindings));
     } else {
+      const representative = pickRepresentative(cluster.map((t) => t.finding));
       disagreements.push({
         providers,
         finding: representative,
@@ -124,6 +127,20 @@ export function mergeFindings(
   }
 
   return { agreed, disagreements };
+}
+
+function directSupportProviders(
+  candidate: { provider: string; finding: Finding },
+  cluster: Array<{ provider: string; finding: Finding }>,
+): string[] {
+  const providers = new Set<string>([candidate.provider]);
+  for (const tagged of cluster) {
+    if (tagged.provider === candidate.provider) continue;
+    if (findingsAgree(candidate.finding, tagged.finding)) {
+      providers.add(tagged.provider);
+    }
+  }
+  return Array.from(providers).toSorted();
 }
 
 function thresholdFor(mode: AgreementMode, total: number): number {

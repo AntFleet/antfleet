@@ -152,6 +152,9 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     queryMocks.markX402JobCompleteSettled.mockImplementation(async () => {
       events.push("mark-complete-settled");
     });
+    queryMocks.markX402SettlementSettled.mockImplementation(async () => {
+      events.push("mark-settled");
+    });
     queryMocks.markJobComplete.mockImplementation(async () => {
       events.push("mark-complete");
     });
@@ -160,7 +163,7 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     const outcome = await processReviewJob("job-x402");
 
     expect(outcome).toEqual({ kind: "complete", jobId: "job-x402" });
-    expect(events).toEqual(["settle", "mark-complete-settled"]);
+    expect(events).toEqual(["settle", "mark-settled", "mark-complete-settled"]);
     expect(queryMocks.markJobComplete).not.toHaveBeenCalled();
     expect(queryMocks.markX402JobFailedWithResultAndSettlement).not.toHaveBeenCalled();
   });
@@ -220,6 +223,48 @@ describe("processReviewJob x402 settlement lifecycle", () => {
       expect.objectContaining({ settlement_status: "settled" }),
       "settled",
       { transaction: "0xsettled" },
+      expect.any(Date),
+    );
+  });
+
+  it("preserves a captured settlement when the terminal completion write fails", async () => {
+    const events: string[] = [];
+    queryMocks.getReviewJob.mockResolvedValueOnce(x402Job).mockResolvedValueOnce({
+      ...x402Job,
+      x402ReviewId: "review-1",
+      x402SettlementStatus: "pending",
+      x402SettlementResponse: null,
+    });
+    facilitatorMocks.settlePayment.mockImplementation(async () => {
+      events.push("settle");
+      return { settled: true, paymentResponseHeader: "header", response: { txHash: "0xsettled" } };
+    });
+    queryMocks.markX402SettlementSettled.mockImplementation(async () => {
+      events.push("mark-settled");
+    });
+    queryMocks.markX402JobCompleteSettled.mockImplementation(async () => {
+      events.push("mark-complete-settled");
+      throw new Error("db write failed");
+    });
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("job-x402");
+
+    expect(outcome).toMatchObject({ kind: "failed", jobId: "job-x402", failureMode: "internal" });
+    expect(events).toEqual(["settle", "mark-settled", "mark-complete-settled", "mark-settled"]);
+    expect(queryMocks.markX402SettlementNotSettled).not.toHaveBeenCalled();
+    expect(queryMocks.markX402SettlementFailed).not.toHaveBeenCalled();
+    expect(queryMocks.markX402JobFailedWithResultAndSettlement).toHaveBeenCalledWith(
+      {},
+      "job-x402",
+      "internal",
+      "An internal error occurred after x402 payment settlement. The receipt is preserved.",
+      expect.objectContaining({
+        reviewId: "review-1",
+        settlement_status: "settled",
+      }),
+      "settled",
+      { txHash: "0xsettled" },
       expect.any(Date),
     );
   });

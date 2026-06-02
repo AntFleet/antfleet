@@ -75,10 +75,13 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
 
   logInfo("review_job", { jobId, event: "started", installationId: job.installationId });
 
+  let capturedX402Settlement: SettlementResult | null = null;
   try {
     const result = await runJobPipeline(job);
     if (job.paymentRail === "x402") {
       const settlement = await settleX402Job(job, readRequiredAuthorization(job));
+      capturedX402Settlement = settlement;
+      await markX402SettlementSettled(db, jobId, settlement.response);
       await markX402JobCompleteSettled(db, jobId, result, settlement.response, new Date());
     } else {
       await markJobComplete(db, jobId, result, new Date());
@@ -112,6 +115,7 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
         err,
         failureMode,
         publicMessage,
+        capturedSettlement: capturedX402Settlement,
       });
       outcomeFailureMode = x402Failure.failureMode;
       outcomeFailureMessage = x402Failure.failureMessage;
@@ -425,6 +429,7 @@ async function handleX402JobFailure(args: {
   err: unknown;
   failureMode: string;
   publicMessage: string;
+  capturedSettlement?: SettlementResult | null;
 }): Promise<{ failureMode: string; failureMessage: string }> {
   const latestJob = (await getReviewJob(db, args.jobId)) ?? args.job;
   let failureMode = args.failureMode;
@@ -442,6 +447,19 @@ async function handleX402JobFailure(args: {
   } else if (settlementStatus === "settlement_failed") {
     failureMode = "internal";
     publicMessage = x402FailureMessage(failureMode, settlementStatus);
+  } else if (args.capturedSettlement?.settled === true) {
+    failureMode = "internal";
+    settlementStatus = "settled";
+    settlementResponse = args.capturedSettlement.response;
+    publicMessage = x402FailureMessage(failureMode, settlementStatus);
+    try {
+      await markX402SettlementSettled(db, args.jobId, settlementResponse);
+    } catch (markErr) {
+      logError("review_job_worker.x402_settlement_preserve_failed", {
+        jobId: args.jobId,
+        message: messageOf(markErr),
+      });
+    }
   } else if (args.err instanceof X402PaymentError || isX402SettlementFailure(args.err)) {
     failureMode = "internal";
     settlementStatus = "settlement_failed";

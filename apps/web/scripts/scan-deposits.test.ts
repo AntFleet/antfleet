@@ -32,6 +32,7 @@ function makeDeps(opts: {
   logs: TransferLog[][];
   channels?: Record<string, ChannelRow | null>;
   creditedTxHashes?: Set<string>;
+  minDepositUsdc?: string;
 }): ScanDepositsDeps & {
   state: {
     cursor: bigint | null;
@@ -58,6 +59,7 @@ function makeDeps(opts: {
       state.cursor = block;
     }),
     loadChannelByWallet: vi.fn(async (wallet) => channelMap[wallet] ?? null),
+    getMinDepositUsdc: vi.fn(() => opts.minDepositUsdc ?? "5.00"),
     creditDeposit: vi.fn(async (args) => {
       state.creditCalls.push({
         channelId: args.channelId,
@@ -188,6 +190,62 @@ describe("scanDepositsWithDeps", () => {
     const result = await scanDepositsWithDeps(deps);
     expect(result.credited).toBe(2);
     expect(deps.state.creditCalls.map((c) => c.amount)).toEqual(["5.000000", "7.500000"]);
+  });
+
+  it("sums multiple Transfer logs from the same tx before crediting once", async () => {
+    const deps = makeDeps({
+      cursorAt: 999n,
+      currentBlock: 1_010n,
+      logs: [
+        [
+          transferLog({
+            from: WALLET_A,
+            txHash: "0xbatched",
+            blockNumber: 1_000n,
+            valueRaw: 3_000_000n,
+          }),
+          transferLog({
+            from: WALLET_A,
+            txHash: "0xbatched",
+            blockNumber: 1_000n,
+            valueRaw: 2_500_000n,
+          }),
+        ],
+      ],
+      channels: { [WALLET_A]: { id: CHANNEL_A, walletAddress: WALLET_A } },
+    });
+
+    const result = await scanDepositsWithDeps(deps);
+
+    expect(result.scanned).toBe(2);
+    expect(result.credited).toBe(1);
+    expect(deps.state.creditCalls).toEqual([
+      { channelId: CHANNEL_A, txHash: "0xbatched", amount: "5.500000" },
+    ]);
+  });
+
+  it("skips below-minimum cron deposits using the same floor as the fast path", async () => {
+    const deps = makeDeps({
+      cursorAt: 999n,
+      currentBlock: 1_010n,
+      logs: [
+        [
+          transferLog({
+            from: WALLET_A,
+            txHash: "0xdust",
+            blockNumber: 1_000n,
+            valueRaw: 4_999_999n,
+          }),
+        ],
+      ],
+      channels: { [WALLET_A]: { id: CHANNEL_A, walletAddress: WALLET_A } },
+      minDepositUsdc: "5.00",
+    });
+
+    const result = await scanDepositsWithDeps(deps);
+
+    expect(result).toMatchObject({ scanned: 1, credited: 0, belowMinimum: 1 });
+    expect(deps.state.creditCalls).toEqual([]);
   });
 
   it("starts from the USDC deploy block when cursor is unset", async () => {

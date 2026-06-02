@@ -15,7 +15,6 @@ import { processReviewJob } from "@/lib/review-job-worker";
 import { requireAeonContext } from "@/lib/x402/aeon-gate";
 import {
   buildPaymentRequired,
-  extractClaimedSigner,
   PAYMENT_REQUIRED_HEADER,
   PAYMENT_RESPONSE_HEADER,
   makeAuthorizationState,
@@ -80,6 +79,7 @@ export type X402RouteDeps = {
     owner: string;
     repo: string;
     sha: string;
+    callerWallet: string;
     now: Date;
   }) => Promise<ReviewJobRow | null>;
   checkWalletRateLimit: (args: {
@@ -164,47 +164,6 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
       return jsonError(400, "invalid_input", parsed.error.issues[0]?.message ?? "bad request");
     }
 
-    const target = await resolveTarget(parsed.data, deps.makeOctokit());
-    if (target.kind === "error") return jsonError(target.status, target.code, target.message);
-
-    const cooldownHit = await deps.findRecentRepoShaJob({
-      owner: target.owner,
-      repo: target.repo,
-      sha: target.sha,
-      now,
-    });
-    if (cooldownHit !== null) return jobResponse(cooldownHit, statusForExisting(cooldownHit));
-
-    const claimedSigner = extractClaimedSigner(paymentSignature);
-    if (claimedSigner === null) {
-      return jsonError(402, "x402_signer_missing", "payment payload did not include signer");
-    }
-
-    const rate = await deps.checkWalletRateLimit({
-      callerWallet: claimedSigner,
-      now,
-    });
-    if (!rate.ok) {
-      const res = jsonError(
-        429,
-        "rate_limited_wallet",
-        `Rate limit exceeded: ${rate.limit} reviews per wallet per hour`,
-        { retry_after_seconds: rate.retryAfterSeconds },
-      );
-      res.headers.set("Retry-After", String(rate.retryAfterSeconds));
-      return res;
-    }
-
-    const idempotencyKey = buildX402IdempotencyKey({
-      callerWallet: claimedSigner,
-      owner: target.owner,
-      repo: target.repo,
-      prNumber: target.prNumber,
-      sha: target.sha,
-    });
-    const existing = await deps.findJobByIdempotencyKey(idempotencyKey);
-    if (existing !== null) return jobResponse(existing, statusForExisting(existing));
-
     let payment: VerifiedPayment;
     try {
       payment = await deps.verifyPayment({
@@ -219,6 +178,43 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
       }
       throw err;
     }
+
+    const target = await resolveTarget(parsed.data, deps.makeOctokit());
+    if (target.kind === "error") return jsonError(target.status, target.code, target.message);
+
+    const cooldownHit = await deps.findRecentRepoShaJob({
+      owner: target.owner,
+      repo: target.repo,
+      sha: target.sha,
+      callerWallet: payment.callerWallet,
+      now,
+    });
+    if (cooldownHit !== null) return jobResponse(cooldownHit, statusForExisting(cooldownHit));
+
+    const rate = await deps.checkWalletRateLimit({
+      callerWallet: payment.callerWallet,
+      now,
+    });
+    if (!rate.ok) {
+      const res = jsonError(
+        429,
+        "rate_limited_wallet",
+        `Rate limit exceeded: ${rate.limit} reviews per wallet per hour`,
+        { retry_after_seconds: rate.retryAfterSeconds },
+      );
+      res.headers.set("Retry-After", String(rate.retryAfterSeconds));
+      return res;
+    }
+
+    const idempotencyKey = buildX402IdempotencyKey({
+      callerWallet: payment.callerWallet,
+      owner: target.owner,
+      repo: target.repo,
+      prNumber: target.prNumber,
+      sha: target.sha,
+    });
+    const existing = await deps.findJobByIdempotencyKey(idempotencyKey);
+    if (existing !== null) return jobResponse(existing, statusForExisting(existing));
 
     const job = await deps.createJob({
       callerWallet: payment.callerWallet,

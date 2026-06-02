@@ -83,7 +83,7 @@ function jobRow(overrides: Partial<ReviewJobRow> = {}): ReviewJobRow {
     prNumber: PR,
     sha: SHA,
     idempotencyKey: null,
-    status: "queued",
+    status: "billing_pending",
     failureMode: null,
     failureMessage: null,
     result: null,
@@ -148,7 +148,6 @@ function deps(overrides: Partial<ReviewEndpointDeps> = {}): ReviewEndpointDeps {
     now: () => NOW,
     createReviewJob: vi.fn(async () => ({ row: jobRow(), created: true })),
     findJobByIdempotencyKey: vi.fn(async () => null),
-    linkDebitToJob: vi.fn(async () => undefined),
     markBillingJobFailed: vi.fn(async () => undefined),
     markJobQueued: vi.fn(async () => true),
     scheduleWorker: vi.fn(),
@@ -179,13 +178,18 @@ describe("POST /api/v1/installations/{id}/review (async)", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["jobId"]).toBe(JOB_ID);
     expect(body["statusUrl"]).toBe(`/api/v1/installations/${ROW_ID}/review/${JOB_ID}`);
+    expect(body["status"]).toBe("queued");
     expect(body["expectedDurationSec"]).toBe(180);
     expect(d.debitForJob).toHaveBeenCalledTimes(1);
+    expect(d.debitForJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ jobId: JOB_ID }),
+    );
     expect(d.createReviewJob).toHaveBeenCalledTimes(1);
     expect(d.createReviewJob).toHaveBeenCalledWith(
       expect.objectContaining({ initialStatus: "billing_pending" }),
     );
-    expect(d.markJobQueued).toHaveBeenCalledWith(JOB_ID);
+    expect(d.markJobQueued).not.toHaveBeenCalled();
     expect(d.scheduleWorker).toHaveBeenCalledWith(JOB_ID);
     expect(d.claimChallenge).toHaveBeenCalledTimes(1);
     expect(d.linkChallengeToReview).toHaveBeenCalledTimes(1);

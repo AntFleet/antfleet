@@ -184,28 +184,63 @@ export async function creditChannelFromDeposit(
   // This was a latent prod bug in the paywall MVP — discovered the first
   // time a real agent tried to credit a deposit (2026-05-22).
   const insertResult = await q.execute(sql`
-    INSERT INTO payments (channel_id, type, tx_hash, chain_id, from_address, amount_usdc, block_number)
-    VALUES (
-      ${args.channelId},
-      'deposit',
-      ${args.txHash},
-      ${args.chainId},
-      ${args.fromAddress.toLowerCase()},
-      ${args.amountUsdc},
-      ${args.blockNumber}
+    WITH candidate_channel AS (
+      SELECT id, installation_id
+      FROM channels
+      WHERE id = ${args.channelId}
+      FOR UPDATE
+    ),
+    deposit_insert AS (
+      INSERT INTO payments (
+        channel_id, type, tx_hash, chain_id, from_address, amount_usdc, block_number
+      )
+      SELECT
+        id,
+        'deposit',
+        ${args.txHash},
+        ${args.chainId},
+        ${args.fromAddress.toLowerCase()},
+        ${args.amountUsdc},
+        ${args.blockNumber}
+      FROM candidate_channel
+      ON CONFLICT (chain_id, tx_hash) WHERE tx_hash IS NOT NULL DO NOTHING
+      RETURNING channel_id, amount_usdc, tx_hash
+    ),
+    credited AS (
+      UPDATE channels
+      SET
+        balance_usdc = balance_usdc + deposit_insert.amount_usdc,
+        last_deposit_tx_hash = deposit_insert.tx_hash
+      FROM deposit_insert
+      WHERE channels.id = deposit_insert.channel_id
+      RETURNING channels.installation_id
+    ),
+    activated AS (
+      UPDATE installations
+      SET status = 'active'
+      WHERE id = (SELECT installation_id FROM credited)
+        AND status IN ('awaiting_deposit', 'active')
+      RETURNING id
     )
-    ON CONFLICT (chain_id, tx_hash) WHERE tx_hash IS NOT NULL DO NOTHING
-    RETURNING id
+    SELECT
+      EXISTS (SELECT 1 FROM candidate_channel) AS "channelReady",
+      EXISTS (SELECT 1 FROM deposit_insert) AS "inserted",
+      EXISTS (SELECT 1 FROM credited) AS "credited",
+      EXISTS (SELECT 1 FROM activated) AS "activated"
   `);
-  const inserted = firstRow<{ id: string }>(insertResult);
-  if (inserted === null) return false;
-  await q.execute(sql`
-    UPDATE channels
-    SET
-      balance_usdc = balance_usdc + ${args.amountUsdc}::numeric,
-      last_deposit_tx_hash = ${args.txHash}
-    WHERE id = ${args.channelId}
-  `);
+  const inserted = firstRow<{
+    channelReady: boolean;
+    inserted: boolean;
+    credited: boolean;
+    activated: boolean;
+  }>(insertResult);
+  if (inserted === null || !inserted.channelReady) {
+    throw new Error("deposit channel was not available for credit");
+  }
+  if (!inserted.inserted) return false;
+  if (!inserted.credited || !inserted.activated) {
+    throw new Error("deposit credit did not activate the installation");
+  }
   return true;
 }
 
@@ -238,6 +273,26 @@ export async function markInstallationActive(
     WHERE id = ${installationRowId}
       AND status IN ('awaiting_deposit', 'active')
   `);
+}
+
+export async function markInstallationActiveIfFunded(
+  q: Queryable,
+  args: { installationRowId: string; minBalanceUsdc: string },
+): Promise<boolean> {
+  const result = await q.execute(sql`
+    UPDATE installations
+    SET status = 'active'
+    WHERE id = ${args.installationRowId}
+      AND status IN ('awaiting_deposit', 'active')
+      AND EXISTS (
+        SELECT 1
+        FROM channels
+        WHERE installation_id = ${args.installationRowId}
+          AND balance_usdc >= ${args.minBalanceUsdc}::numeric
+      )
+    RETURNING id
+  `);
+  return firstRow<{ id: string }>(result) !== null;
 }
 
 // Settlement context for a paid review — the post-debit channel balance
@@ -568,6 +623,20 @@ export async function loadReviewChallenge(
   const row = firstRow<ReviewChallengeRow>(result);
   if (row === null) return null;
   return parseReviewChallengeRow(row);
+}
+
+export async function countOutstandingReviewChallenges(
+  q: Queryable,
+  args: { installationRowId: string; now: Date },
+): Promise<number> {
+  const result = await q.execute(sql`
+    SELECT count(*)::int AS "count"
+    FROM review_challenges
+    WHERE installation_row_id = ${args.installationRowId}
+      AND used_at IS NULL
+      AND expires_at > ${args.now}
+  `);
+  return Number(firstRow<{ count: number | string }>(result)?.count ?? 0);
 }
 
 function parseReviewChallengeRow(row: ReviewChallengeRow): ReviewChallengeRow {

@@ -289,9 +289,11 @@ function extractAuthorizationWindow(
   verifyResponse: unknown,
 ): { validAfter: Date; validBefore: Date } {
   const validAfter =
-    findNumberishField(payload, "validAfter") ?? findNumberishField(verifyResponse, "validAfter");
+    readAuthorizationNumber(payload, "validAfter") ??
+    readAuthorizationNumber(verifyResponse, "validAfter");
   const validBefore =
-    findNumberishField(payload, "validBefore") ?? findNumberishField(verifyResponse, "validBefore");
+    readAuthorizationNumber(payload, "validBefore") ??
+    readAuthorizationNumber(verifyResponse, "validBefore");
   if (validAfter === null || validBefore === null) {
     throw new X402PaymentError(
       400,
@@ -300,6 +302,16 @@ function extractAuthorizationWindow(
     );
   }
   return { validAfter: new Date(validAfter * 1000), validBefore: new Date(validBefore * 1000) };
+}
+
+function readAuthorizationNumber(value: unknown, key: "validAfter" | "validBefore"): number | null {
+  if (typeof value !== "object" || value === null) return null;
+  const authorization = (value as Record<string, unknown>)["authorization"];
+  if (typeof authorization !== "object" || authorization === null) return null;
+  const direct = (authorization as Record<string, unknown>)[key];
+  if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+  if (typeof direct === "string" && /^\d+$/u.test(direct)) return Number(direct);
+  return null;
 }
 
 function extractCallerWallet(value: unknown): string | null {
@@ -312,19 +324,6 @@ function readAuthorizationFrom(value: unknown): string | null {
   if (typeof authorization !== "object" || authorization === null) return null;
   const from = (authorization as Record<string, unknown>)["from"];
   return typeof from === "string" && /^0x[a-fA-F0-9]{40}$/.test(from) ? from : null;
-}
-
-function findNumberishField(value: unknown, key: string): number | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  const direct = record[key];
-  if (typeof direct === "number" && Number.isFinite(direct)) return direct;
-  if (typeof direct === "string" && /^\d+$/.test(direct)) return Number(direct);
-  for (const child of Object.values(record)) {
-    const nested = findNumberishField(child, key);
-    if (nested !== null) return nested;
-  }
-  return null;
 }
 
 function isVerificationValid(value: unknown): boolean {

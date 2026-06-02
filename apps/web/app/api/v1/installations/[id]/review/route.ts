@@ -42,7 +42,6 @@ import {
 import {
   createReviewJob,
   findJobByIdempotencyKey,
-  linkDebitPaymentToJob,
   markBillingJobFailed,
   markJobQueued,
   type CreateReviewJobResult,
@@ -117,7 +116,6 @@ export type ReviewEndpointDeps = {
     installationId: string,
     idempotencyKey: string,
   ) => Promise<ReviewJobRow | null>;
-  linkDebitToJob: (jobId: string, debitPaymentId: string) => Promise<void>;
   markBillingJobFailed: (
     jobId: string,
     failureMode: string,
@@ -143,7 +141,6 @@ const DEFAULT_DEPS: ReviewEndpointDeps = {
   createReviewJob: (args) => createReviewJob(db, args),
   findJobByIdempotencyKey: (installationId, idempotencyKey) =>
     findJobByIdempotencyKey(db, installationId, idempotencyKey),
-  linkDebitToJob: (jobId, debitPaymentId) => linkDebitPaymentToJob(db, jobId, debitPaymentId),
   markBillingJobFailed: (jobId, failureMode, failureMessage, now) =>
     markBillingJobFailed(db, jobId, failureMode, failureMessage, now),
   markJobQueued: (jobId) => markJobQueued(db, jobId),
@@ -379,12 +376,14 @@ export async function handleReviewRequest(
       });
       return reviewJobResponse(id, job, 200);
     }
+    let responseJob: ReviewJobRow = job;
 
     // Debit channel (only for gate.kind === "debit").
     // bypass (legacy partner): no debit — job proceeds with debitPaymentId=NULL.
     if (gate.kind === "debit") {
       const debit = await deps.debitForJob(db, {
         decision: gate,
+        jobId: job.jobId,
         logContext: { id, surface: "api-async" },
       });
       if (!debit.ok) {
@@ -405,17 +404,14 @@ export async function handleReviewRequest(
           },
         );
       }
-      // Link the debit payment to the job row
-      if (debit.drawdownId !== null) {
-        await deps.linkDebitToJob(job.jobId, debit.drawdownId);
-      }
+      responseJob = { ...job, status: "queued", debitPaymentId: debit.drawdownId };
     } else if (gate.kind === "bypass") {
       logInfo("review_endpoint.bypass_legacy_partner", { id, jobId: job.jobId });
-    }
-
-    const queued = await deps.markJobQueued(job.jobId);
-    if (!queued) {
-      throw new Error("review job left billing state before queue transition");
+      const queued = await deps.markJobQueued(job.jobId);
+      if (!queued) {
+        throw new Error("review job left billing state before queue transition");
+      }
+      responseJob = { ...job, status: "queued" };
     }
 
     // Audit-link challenge to the job (best-effort)
@@ -440,7 +436,7 @@ export async function handleReviewRequest(
     deps.scheduleWorker(job.jobId);
 
     // Return 202 immediately
-    return reviewJobResponse(id, job, 202);
+    return reviewJobResponse(id, responseJob, 202);
   } catch (err) {
     logError("review_endpoint.internal", {
       message: err instanceof Error ? err.message : String(err),

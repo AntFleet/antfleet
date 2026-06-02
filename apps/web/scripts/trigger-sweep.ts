@@ -11,9 +11,25 @@
  * Never prints the secret. Prints HTTP status + JSON response body.
  */
 import { config as loadDotenv } from "dotenv";
+import { pathToFileURL } from "node:url";
 loadDotenv({ path: ".env.local", quiet: true });
 
 const DEFAULT_BASE = "https://www.antfleet.dev";
+const TRUSTED_SWEEP_HOSTS = new Set(["www.antfleet.dev", "antfleet-web.vercel.app"]);
+
+export function resolveSweepUrl(
+  baseUrl: string = DEFAULT_BASE,
+  trustedHosts: ReadonlySet<string> = TRUSTED_SWEEP_HOSTS,
+): string {
+  const parsed = new URL(baseUrl);
+  if (parsed.protocol !== "https:") {
+    throw new Error("sweep trigger base URL must use https");
+  }
+  if (!trustedHosts.has(parsed.hostname)) {
+    throw new Error(`refusing to send CRON_SECRET to untrusted host: ${parsed.hostname}`);
+  }
+  return new URL("/api/cron/sweep", parsed.origin).toString();
+}
 
 async function main() {
   const baseUrl = process.argv[2] ?? DEFAULT_BASE;
@@ -23,7 +39,7 @@ async function main() {
     process.exit(2);
   }
 
-  const url = `${baseUrl}/api/cron/sweep`;
+  const url = resolveSweepUrl(baseUrl);
   console.log(`[trigger] ${url}`);
 
   const t0 = Date.now();
@@ -42,10 +58,12 @@ async function main() {
   if (!resp.ok) process.exit(1);
 }
 
-main().then(
-  () => process.exit(0),
-  (err) => {
-    console.error(err);
-    process.exit(1);
-  },
-);
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(
+    () => process.exit(0),
+    (err) => {
+      console.error(err);
+      process.exit(1);
+    },
+  );
+}

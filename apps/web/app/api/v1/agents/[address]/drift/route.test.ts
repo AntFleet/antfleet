@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
-import { handleAgentDrift, type AgentDriftDeps } from "./route";
+import { decodeCursor } from "@/lib/api-v1/cursor";
+import { handleAgentDrift, pageDrift, type AgentDriftDeps } from "./route";
 import type { DriftRow } from "@/lib/api-v1/serialize";
 
 const address = "0x0000000000000000000000000000000000000001";
@@ -45,6 +46,21 @@ describe("GET /api/v1/agents/:address/drift", () => {
     }
     expect(ids).toEqual(["d1", "d2", "d3"]);
     expect(new Set(ids).size).toBe(3);
+  });
+
+  it("preserves raw sub-millisecond timestamps in next cursors", () => {
+    const page = pageDrift(
+      [
+        drift("d1", "2026-05-18T03:00:00.123456Z"),
+        drift("d2", "2026-05-18T03:00:00.123455Z"),
+      ],
+      1,
+    );
+
+    expect(decodeCursor(page.nextCursor!, 2)).toEqual([
+      "2026-05-18T03:00:00.123456Z",
+      "d1",
+    ]);
   });
 });
 

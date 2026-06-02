@@ -6,6 +6,7 @@ import {
   X402_SEPOLIA_USDC,
   type X402Config,
 } from "@/lib/x402/env";
+import { X402PaymentError } from "@/lib/x402/facilitator";
 import { handleX402ScanRequest, type X402ScanRouteDeps } from "./route";
 import type { ScanResult } from "@/lib/repo-scanner";
 
@@ -77,6 +78,8 @@ function deps(overrides: Partial<X402ScanRouteDeps> = {}): X402ScanRouteDeps {
     verifyPayment: vi.fn(),
     settlePayment: vi.fn(),
     checkWalletRateLimit: vi.fn(),
+    claimScanAuthorization: vi.fn(async () => ({ claimed: true as const, claimId: "claim-1" })),
+    markScanClaimStatus: vi.fn(async () => undefined),
     makeOctokit: vi.fn(() => octokit()),
     scanRepo: vi.fn(),
     ...overrides,
@@ -119,8 +122,16 @@ describe("POST /api/v1/scan/x402", () => {
     });
   });
 
-  it("rejects a private repo before payment verification", async () => {
-    const verifyPayment = vi.fn();
+  it("rejects a private repo after payment verification", async () => {
+    const verifyPayment = vi.fn(async () => ({
+      callerWallet: WALLET,
+      payload: {},
+      payloadBase64: "payload",
+      validAfter: NOW,
+      validBefore: new Date(NOW.getTime() + 600_000),
+      resource: "https://www.antfleet.dev/api/v1/scan/x402",
+      facilitatorResponse: { isValid: true },
+    }));
     const res = await handleX402ScanRequest(
       request({ "payment-signature": paymentSignature() }),
       happyDeps({ verifyPayment, makeOctokit: vi.fn(() => octokit({ private: true })) }),
@@ -130,20 +141,31 @@ describe("POST /api/v1/scan/x402", () => {
     await expect(res.json()).resolves.toMatchObject({
       error: { code: "private_repo_not_supported" },
     });
-    expect(verifyPayment).not.toHaveBeenCalled();
+    expect(verifyPayment).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects when the wallet quota is exhausted and exposes retry-after", async () => {
-    const verifyPayment = vi.fn();
+  it("rejects when the wallet quota is exhausted after payment verification and exposes retry-after", async () => {
+    const verifyPayment = vi.fn(async () => ({
+      callerWallet: WALLET,
+      payload: {},
+      payloadBase64: "payload",
+      validAfter: NOW,
+      validBefore: new Date(NOW.getTime() + 600_000),
+      resource: "https://www.antfleet.dev/api/v1/scan/x402",
+      facilitatorResponse: { isValid: true },
+    }));
+    const makeOctokit = vi.fn(() => octokit());
+    const checkWalletRateLimit = vi.fn(async () => ({
+      ok: false as const,
+      retryAfterSeconds: 321,
+      limit: 10,
+    }));
     const res = await handleX402ScanRequest(
       request({ "payment-signature": paymentSignature() }),
       happyDeps({
         verifyPayment,
-        checkWalletRateLimit: vi.fn(async () => ({
-          ok: false as const,
-          retryAfterSeconds: 321,
-          limit: 10,
-        })),
+        makeOctokit,
+        checkWalletRateLimit,
       }),
     );
 
@@ -153,7 +175,47 @@ describe("POST /api/v1/scan/x402", () => {
       error: { code: "rate_limited_wallet" },
       retry_after_seconds: 321,
     });
-    expect(verifyPayment).not.toHaveBeenCalled();
+    expect(verifyPayment).toHaveBeenCalledTimes(1);
+    expect(checkWalletRateLimit).toHaveBeenCalledWith({
+      callerWallet: WALLET,
+      now: NOW,
+      includeCurrent: true,
+    });
+    expect(makeOctokit).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resolve GitHub, rate-limit, scan, or settle when payment verification fails", async () => {
+    const verifyPayment = vi.fn(async () => {
+      throw new X402PaymentError(402, "x402_verify_failed", "x402 payment verification failed");
+    });
+    const makeOctokit = vi.fn(() => octokit());
+    const checkWalletRateLimit = vi.fn(async () => ({ ok: true as const }));
+    const scan = vi.fn(async () => scanResult());
+    const settlePayment = vi.fn(async () => ({
+      settled: true,
+      paymentResponseHeader: null,
+      response: {},
+    }));
+    const res = await handleX402ScanRequest(
+      request({ "payment-signature": paymentSignature() }),
+      happyDeps({
+        verifyPayment,
+        makeOctokit,
+        checkWalletRateLimit,
+        scanRepo: scan,
+        settlePayment,
+      }),
+    );
+
+    expect(res.status).toBe(402);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "x402_verify_failed" },
+    });
+    expect(verifyPayment).toHaveBeenCalledTimes(1);
+    expect(makeOctokit).not.toHaveBeenCalled();
+    expect(checkWalletRateLimit).not.toHaveBeenCalled();
+    expect(scan).not.toHaveBeenCalled();
+    expect(settlePayment).not.toHaveBeenCalled();
   });
 
   it("runs the scan and settles on a verified payment", async () => {
@@ -182,6 +244,25 @@ describe("POST /api/v1/scan/x402", () => {
     });
     expect(scan).toHaveBeenCalledTimes(1);
     expect(settlePayment).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects duplicate x402 authorizations before running scan inference", async () => {
+    const scan = vi.fn(async () => scanResult());
+    const claimScanAuthorization = vi.fn(async () => ({
+      claimed: false as const,
+      reason: "duplicate_authorization" as const,
+    }));
+    const res = await handleX402ScanRequest(
+      request({ "payment-signature": paymentSignature() }),
+      happyDeps({ claimScanAuthorization, scanRepo: scan }),
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "duplicate_x402_authorization" },
+    });
+    expect(claimScanAuthorization).toHaveBeenCalledOnce();
+    expect(scan).not.toHaveBeenCalled();
   });
 
   it("verifies and settles with the scan-price requirements (amount 2000000)", async () => {

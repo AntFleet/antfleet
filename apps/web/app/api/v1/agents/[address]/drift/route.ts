@@ -6,7 +6,7 @@ import { driftSnapshots } from "@/db/schema";
 import { findAgentByAddress } from "@/lib/agent-registry";
 import { decodeCursor, encodeCursor } from "@/lib/api-v1/cursor";
 import { jsonError, jsonOk, LIST_CACHE, optionsResponse } from "@/lib/api-v1/responses";
-import { iso, serializeDriftSnapshot, type DriftRow } from "@/lib/api-v1/serialize";
+import { serializeDriftSnapshot, type DriftRow } from "@/lib/api-v1/serialize";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,9 +41,8 @@ const DEFAULT_DEPS: AgentDriftDeps = {
     const filters = [sql`lower(${driftSnapshots.agentTokenAddress}) = ${address.toLowerCase()}`];
     if (query.since) filters.push(gte(driftSnapshots.commitTimestamp, new Date(query.since)));
     if (cursor) {
-      const cursorDate = new Date(cursor[0]);
       filters.push(
-        sql`(${driftSnapshots.commitTimestamp} < ${cursorDate} OR (${driftSnapshots.commitTimestamp} = ${cursorDate} AND ${driftSnapshots.id} > ${cursor[1]}))`,
+        sql`(${driftSnapshots.commitTimestamp} < ${cursor[0]}::timestamptz OR (${driftSnapshots.commitTimestamp} = ${cursor[0]}::timestamptz AND ${driftSnapshots.id} > ${cursor[1]}))`,
       );
     }
     const rows = await db
@@ -93,7 +92,7 @@ function parseCursor(token: string | undefined): [string, string] | null | "inva
   if (
     decoded === null ||
     typeof decoded[0] !== "string" ||
-    Number.isNaN(new Date(decoded[0]).getTime()) ||
+    Number.isNaN(Date.parse(decoded[0])) ||
     typeof decoded[1] !== "string"
   ) {
     return "invalid";
@@ -101,16 +100,20 @@ function parseCursor(token: string | undefined): [string, string] | null | "inva
   return [decoded[0], decoded[1]];
 }
 
-function pageDrift(rows: DriftRow[], limit: number): Page {
+export function pageDrift(rows: DriftRow[], limit: number): Page {
   const data = rows.slice(0, limit);
   const last = data[data.length - 1];
   return {
     rows: data,
     nextCursor:
       rows.length > limit && last !== undefined
-        ? encodeCursor([iso(last.commitTimestamp), last.id])
+        ? encodeCursor([cursorTimestamp(last.commitTimestamp), last.id])
         : null,
   };
+}
+
+function cursorTimestamp(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
 }
 
 function sqlRows<T>(result: unknown): T[] {

@@ -4,7 +4,7 @@ import { hostname } from "node:os";
 import { loadConfig, resolveStateDir, GlobalOptions } from "./config.js";
 import { detectProject } from "./detect.js";
 import { FleetError, assertDefined, messageOf } from "./errors.js";
-import { runCommand } from "./exec.js";
+import { runArgv } from "./exec.js";
 import { nowIso, writeJson } from "./fs.js";
 import { discoverGit, findProjectRoot } from "./git.js";
 import { stableId, runId } from "./id.js";
@@ -627,7 +627,7 @@ export async function fixCommand(
   const validationCommands = collectValidationCommands(config.commands);
   const commandsRun: CommandResult[] = [];
   for (const command of validationCommands) {
-    commandsRun.push(await runCommand(command, loaded.root));
+    commandsRun.push(await runValidationCommand(command, loaded.root));
   }
   const afterChanged = (await sourceChangedPaths(loaded.root, loaded.paths.stateDir)) ?? new Set();
   const filesChanged = Array.from(afterChanged).filter((path) => !beforeChanged.has(path));
@@ -844,7 +844,7 @@ async function hasSourceDirtyWorktree(root: string, stateDir: string): Promise<b
 }
 
 async function sourceChangedPaths(root: string, stateDir: string): Promise<Set<string> | null> {
-  const result = await runCommand("git status --porcelain", root);
+  const result = await runArgv("git", ["status", "--porcelain"], root);
   if (result.exitCode !== 0) {
     return null;
   }
@@ -855,6 +855,44 @@ async function sourceChangedPaths(root: string, stateDir: string): Promise<Set<s
       .map((line) => normalizePath(line.slice(3).trim()))
       .filter((path) => path.length > 0 && !isStatePath(path, relativeStateDir)),
   );
+}
+
+async function runValidationCommand(command: string, root: string): Promise<CommandResult> {
+  const argv = parseValidationCommand(command);
+  return runArgv(argv.file, argv.args, root);
+}
+
+function parseValidationCommand(command: string): { file: string; args: string[] } {
+  const tokens = command.trim().split(/\s+/u).filter((token) => token.length > 0);
+  const file = tokens[0];
+  if (file === undefined) {
+    throw new FleetError("empty validation command", 2, "unsafe-validation-command");
+  }
+  const allowedExecutables = new Set([
+    "npm",
+    "pnpm",
+    "yarn",
+    "bun",
+    "cargo",
+    "go",
+    "uv",
+    "poetry",
+    "swift",
+    "python",
+    "python3",
+    "pytest",
+    "ruff",
+    "hatch",
+  ]);
+  const safeToken = /^[A-Za-z0-9_./:@%+=,-]+$/u;
+  if (!allowedExecutables.has(file) || !tokens.every((token) => safeToken.test(token))) {
+    throw new FleetError(
+      `unsafe validation command rejected: ${command}`,
+      2,
+      "unsafe-validation-command",
+    );
+  }
+  return { file, args: tokens.slice(1) };
 }
 
 function isStatePath(path: string, relativeStateDir: string): boolean {

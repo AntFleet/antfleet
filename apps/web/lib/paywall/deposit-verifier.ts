@@ -64,6 +64,7 @@ export function defaultDepositVerifierDeps(): DepositVerifierDeps {
 
 export type VerifyDepositError =
   | { code: "tx_not_found"; message: string }
+  | { code: "rpc_unavailable"; message: string }
   | { code: "tx_reverted"; message: string }
   | { code: "insufficient_confirmations"; message: string; needed: number; observed: number }
   | { code: "no_matching_transfer"; message: string }
@@ -89,7 +90,15 @@ export async function verifyDeposit(
     return { ok: false, error: { code: "tx_reverted", message: "transaction reverted" } };
   }
 
-  const latest = await deps.getBlockNumber();
+  let latest: bigint;
+  try {
+    latest = await deps.getBlockNumber();
+  } catch {
+    return {
+      ok: false,
+      error: { code: "rpc_unavailable", message: "Base RPC unavailable; retry this tx hash" },
+    };
+  }
   const confirmations = Number(latest - receipt.blockNumber) + 1;
   if (confirmations < DEPOSIT_MIN_CONFIRMATIONS) {
     return {
@@ -120,11 +129,11 @@ export async function verifyDeposit(
     eventName: "Transfer",
   });
 
-  const matching = transferLogs.find(
+  const matchingLogs = transferLogs.filter(
     (log) =>
       log.args.from.toLowerCase() === expectedFromLc && log.args.to.toLowerCase() === depositLc,
   );
-  if (matching === undefined) {
+  if (matchingLogs.length === 0) {
     // Distinguish "wrong sender" from "no USDC Transfer to deposit address
     // at all" so the agent can act on the message. Receipt.from is the EOA
     // that submitted the tx; for a typical wallet sending USDC it equals
@@ -148,7 +157,8 @@ export async function verifyDeposit(
     };
   }
 
-  const amountUsdc = formatUsdcUnits(matching.args.value);
+  const totalRaw = matchingLogs.reduce((sum, log) => sum + log.args.value, 0n);
+  const amountUsdc = formatUsdcUnits(totalRaw);
   if (compareUsdcStrings(amountUsdc, args.minDepositUsdc) < 0) {
     return {
       ok: false,
@@ -166,7 +176,7 @@ export async function verifyDeposit(
     deposit: {
       txHash: args.txHash.toLowerCase(),
       chainId: BASE_CHAIN_ID,
-      fromAddress: matching.args.from.toLowerCase(),
+      fromAddress: expectedFromLc,
       amountUsdc,
       blockNumber: Number(receipt.blockNumber),
     },

@@ -722,6 +722,49 @@ describe("workflow", () => {
     delete process.env["FLEET_PROVIDER"];
   });
 
+  it("rejects unsafe configured validation commands without interpreting shell metacharacters", async () => {
+    const root = await fixtureRoot("fleet-validation-injection-");
+    await runCommand(
+      "git init -q && git config user.email test@example.com && git config user.name Test",
+      root,
+    );
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "buggy", bin: { buggy: "src/index.ts" } }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    await runCommand(
+      "git add package.json src/index.ts && git -c commit.gpgsign=false commit -q -m init",
+      root,
+    );
+    process.env["FLEET_PROVIDER"] = "mock";
+    const context = await makeContext(testOptions(root));
+
+    await initCommand(context, {});
+    await mapCommand(context);
+    const config = await loadConfig(root, testOptions(root));
+    await writeFixture(
+      root,
+      ".fleet/config.json",
+      JSON.stringify({
+        ...config,
+        commands: {
+          ...config.commands,
+          test: "npm run test; touch VALIDATION_PWNED",
+        },
+      }),
+    );
+    const reviewed = (await reviewCommand(context, { limit: "1" })) as { next: string };
+    const finding = reviewed.next.split(" ").at(-1) ?? "";
+
+    await expect(fixCommand(context, { finding })).rejects.toMatchObject({
+      code: "unsafe-validation-command",
+    });
+    await expect(access(join(root, "VALIDATION_PWNED"))).rejects.toThrow();
+    delete process.env["FLEET_PROVIDER"];
+  });
+
   it("marks review runs failed on lock conflicts", async () => {
     const root = await fixtureRoot("fleet-lock-conflict-");
     await writeFixture(

@@ -14,25 +14,40 @@ export type WalletRateLimitResult =
 
 export async function checkWalletRateLimit(
   q: Queryable,
-  args: { callerWallet: string; now: Date; limit?: number; windowSeconds?: number },
+  args: {
+    callerWallet: string;
+    now: Date;
+    limit?: number;
+    windowSeconds?: number;
+    includeCurrent?: boolean;
+  },
 ): Promise<WalletRateLimitResult> {
   const limit = args.limit ?? X402_WALLET_LIMIT;
   const windowSeconds = args.windowSeconds ?? X402_WALLET_WINDOW_SECONDS;
   const windowStart = new Date(args.now.getTime() - windowSeconds * 1000);
   const result = await q.execute(sql`
     SELECT created_at AS "createdAt"
-    FROM review_jobs
-    WHERE payment_rail = 'x402'
-      AND lower(caller_wallet) = ${args.callerWallet.toLowerCase()}
-      AND created_at >= ${windowStart}
-      AND (
-        status IN ('queued', 'running', 'complete')
-        OR (status = 'failed' AND failure_mode IN ('user_input', 'validation'))
-      )
+    FROM (
+      SELECT created_at
+      FROM review_jobs
+      WHERE payment_rail = 'x402'
+        AND lower(caller_wallet) = ${args.callerWallet.toLowerCase()}
+        AND created_at >= ${windowStart}
+        AND (
+          status IN ('queued', 'running', 'complete')
+          OR (status = 'failed' AND failure_mode IN ('user_input', 'validation'))
+        )
+      UNION ALL
+      SELECT created_at
+      FROM x402_scan_claims
+      WHERE lower(caller_wallet) = ${args.callerWallet.toLowerCase()}
+        AND created_at >= ${windowStart}
+        AND status IN ('claimed', 'scan_failed', 'settlement_failed', 'settled')
+    ) AS wallet_usage
     ORDER BY created_at ASC
   `);
   const rows = rowsOf<{ createdAt: Date | string }>(result);
-  if (rows.length < limit) return { ok: true };
+  if (args.includeCurrent ? rows.length <= limit : rows.length < limit) return { ok: true };
   const oldest = parseDate(rows[0]!.createdAt);
   const retryAfterSeconds = Math.max(
     1,
@@ -41,9 +56,81 @@ export async function checkWalletRateLimit(
   return { ok: false, retryAfterSeconds, limit };
 }
 
+export type X402ScanClaimStatus =
+  | "claimed"
+  | "rate_limited"
+  | "scan_failed"
+  | "no_reviewable_files"
+  | "settlement_failed"
+  | "settled";
+
+export type X402ScanClaimResult =
+  | { claimed: true; claimId: string }
+  | { claimed: false; reason: "duplicate_authorization" };
+
+export async function claimX402ScanAuthorization(
+  q: Queryable,
+  args: {
+    authorizationKey: string;
+    callerWallet: string;
+    owner: string;
+    repo: string;
+    now: Date;
+  },
+): Promise<X402ScanClaimResult> {
+  const result = await q.execute(sql`
+    INSERT INTO x402_scan_claims (
+      authorization_key, caller_wallet, repo_owner, repo_name, status, created_at
+    )
+    VALUES (
+      ${args.authorizationKey},
+      ${args.callerWallet.toLowerCase()},
+      ${args.owner},
+      ${args.repo},
+      'claimed',
+      ${args.now}
+    )
+    ON CONFLICT (authorization_key) DO NOTHING
+    RETURNING id
+  `);
+  const row = firstRow<{ id: string }>(result);
+  if (row === null) return { claimed: false, reason: "duplicate_authorization" };
+  return { claimed: true, claimId: row.id };
+}
+
+export async function markX402ScanClaimStatus(
+  q: Queryable,
+  args: {
+    claimId: string;
+    status: Exclude<X402ScanClaimStatus, "claimed">;
+    now: Date;
+    headSha?: string | null;
+    settlementResponse?: unknown;
+  },
+): Promise<void> {
+  const settlementResponseJson =
+    args.settlementResponse === undefined ? null : JSON.stringify(args.settlementResponse);
+  await q.execute(sql`
+    UPDATE x402_scan_claims
+    SET status = ${args.status},
+        head_sha = COALESCE(${args.headSha ?? null}, head_sha),
+        settlement_response = ${settlementResponseJson}::jsonb,
+        completed_at = ${args.now}
+    WHERE id = ${args.claimId}
+      AND status = 'claimed'
+  `);
+}
+
 export async function findRecentRepoShaJob(
   q: Queryable,
-  args: { owner: string; repo: string; sha: string; now: Date; cooldownSeconds?: number },
+  args: {
+    owner: string;
+    repo: string;
+    sha: string;
+    callerWallet: string;
+    now: Date;
+    cooldownSeconds?: number;
+  },
 ): Promise<ReviewJobRow | null> {
   const cooldownSeconds = args.cooldownSeconds ?? X402_REPO_COOLDOWN_SECONDS;
   const windowStart = new Date(args.now.getTime() - cooldownSeconds * 1000);
@@ -54,6 +141,7 @@ export async function findRecentRepoShaJob(
       AND lower(repo_owner) = ${args.owner.toLowerCase()}
       AND lower(repo_name) = ${args.repo.toLowerCase()}
       AND lower(sha) = ${args.sha.toLowerCase()}
+      AND lower(caller_wallet) = ${args.callerWallet.toLowerCase()}
       AND created_at >= ${windowStart}
       AND status IN ('queued', 'running', 'complete')
     ORDER BY created_at DESC

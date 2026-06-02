@@ -275,9 +275,17 @@ export async function debitForJob(
   q: Queryable,
   args: {
     decision: Extract<GateDecision, { kind: "debit" }>;
+    jobId?: string;
     logContext?: Record<string, unknown>;
   },
 ): Promise<DebitForReviewResult> {
+  if (args.jobId !== undefined) {
+    return debitAndQueueJob(q, {
+      decision: args.decision,
+      jobId: args.jobId,
+    });
+  }
+
   const priceUsdc = quantizeUsdc(args.decision.priceUsdc);
   const debited = await debitChannel(q, {
     channelId: args.decision.channelId,
@@ -305,6 +313,81 @@ export async function debitForJob(
     debitedUsdc: priceUsdc,
     newBalanceUsdc: debited.newBalanceUsdc,
     drawdownId,
+  };
+}
+
+async function debitAndQueueJob(
+  q: Queryable,
+  args: {
+    decision: Extract<GateDecision, { kind: "debit" }>;
+    jobId: string;
+  },
+): Promise<DebitForReviewResult> {
+  const priceUsdc = quantizeUsdc(args.decision.priceUsdc);
+  const result = await q.execute(sql`
+    WITH candidate_job AS (
+      SELECT job_id
+      FROM review_jobs
+      WHERE job_id = ${args.jobId}
+        AND status = 'billing_pending'
+      FOR UPDATE
+    ),
+    debited AS (
+      UPDATE channels
+      SET
+        balance_usdc = balance_usdc - ${priceUsdc}::numeric,
+        last_drawdown_at = now()
+      WHERE id = ${args.decision.channelId}
+        AND balance_usdc >= ${priceUsdc}::numeric
+        AND EXISTS (SELECT 1 FROM candidate_job)
+      RETURNING id, balance_usdc::text AS "newBalanceUsdc"
+    ),
+    drawdown AS (
+      INSERT INTO payments (channel_id, type, chain_id, from_address, amount_usdc)
+      SELECT
+        id,
+        'drawdown',
+        8453,
+        ${args.decision.walletAddress.toLowerCase()},
+        ${priceUsdc}
+      FROM debited
+      RETURNING id
+    ),
+    queued AS (
+      UPDATE review_jobs
+      SET
+        debit_payment_id = (SELECT id FROM drawdown),
+        status = 'queued'
+      WHERE job_id = (SELECT job_id FROM candidate_job)
+        AND EXISTS (SELECT 1 FROM drawdown)
+      RETURNING job_id
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM candidate_job) AS "jobReady",
+      (SELECT "newBalanceUsdc" FROM debited) AS "newBalanceUsdc",
+      (SELECT id FROM drawdown) AS "drawdownId",
+      EXISTS (SELECT 1 FROM queued) AS "queued"
+  `);
+  const row = firstRow<{
+    jobReady: boolean;
+    newBalanceUsdc: string | null;
+    drawdownId: string | null;
+    queued: boolean;
+  }>(result);
+  if (row === null || !row.jobReady) {
+    throw new Error("billing-pending review job was not available for debit");
+  }
+  if (row.newBalanceUsdc === null) {
+    return { ok: false, reason: "insufficient_at_debit" };
+  }
+  if (!row.queued || row.drawdownId === null) {
+    throw new Error("review job debit did not queue the job");
+  }
+  return {
+    ok: true,
+    debitedUsdc: priceUsdc,
+    newBalanceUsdc: row.newBalanceUsdc,
+    drawdownId: row.drawdownId,
   };
 }
 

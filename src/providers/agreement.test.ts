@@ -338,23 +338,34 @@ describe("mergeFindings", () => {
     expect(result.disagreements).toHaveLength(0);
   });
 
-  it("groups via transitive overlap: A overlaps B, B overlaps C, A does not directly overlap C", () => {
+  it("does not promote a higher-severity transitive endpoint as unanimous consensus", () => {
     const a = makeFinding({
+      title: "left endpoint",
+      severity: "medium",
       evidence: [{ path: "src/x.ts", startLine: 10, endLine: 15, symbol: null, quote: null }],
     });
     const b = makeFinding({
+      title: "bridge finding",
+      severity: "medium",
       evidence: [{ path: "src/x.ts", startLine: 14, endLine: 22, symbol: null, quote: null }],
     });
     const c = makeFinding({
+      title: "unsupported high endpoint",
+      severity: "high",
       evidence: [{ path: "src/x.ts", startLine: 21, endLine: 30, symbol: null, quote: null }],
     });
-    const { agreedCount, disagreementCount } = run("unanimous", [
+    expect(findingsAgree(a, b)).toBe(true);
+    expect(findingsAgree(b, c)).toBe(true);
+    expect(findingsAgree(a, c)).toBe(false);
+
+    const { agreedCount, disagreementCount, result } = run("unanimous", [
       review("a", [a]),
       review("b", [b]),
       review("c", [c]),
     ]);
     expect(agreedCount).toBe(1);
     expect(disagreementCount).toBe(0);
+    expect(result.agreed[0]?.title).toBe("bridge finding");
   });
 
   it("disagreement entries record the providers that flagged the rejected finding", () => {
