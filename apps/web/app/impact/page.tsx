@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "AntFleet · Impact",
   description:
-    "Upstream bugs fixed by AntFleet. Every row is a merged PR on a repo AntFleet doesn't own.",
+    "Upstream bugs fixed by AntFleet. Every row is a receipt-eligible fix on a repo AntFleet doesn't own.",
 };
 
 export default async function ImpactPage() {
@@ -32,9 +32,10 @@ export default async function ImpactPage() {
           </h1>
 
           <p className="mt-6 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-            Every row below is a pull request merged on a repo AntFleet doesn&apos;t own. The
-            upstream maintainer reviewed the fix independently and accepted it. This is the
-            highest-trust receipt class — a third party confirmed the bug was real.
+            Every row below is an upstream fix on a repo AntFleet doesn&apos;t own: either a
+            merged pull request or an absorbed-inline fix. The upstream maintainer reviewed
+            the change independently and accepted it. This is the highest-trust receipt class
+            — a third party confirmed the bug was real.
           </p>
 
           {crossRepo.total > 0 && (
@@ -44,7 +45,7 @@ export default async function ImpactPage() {
                   {crossRepo.total}
                 </p>
                 <p className="mt-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
-                  {crossRepo.total === 1 ? "PR merged" : "PRs merged"}
+                  {crossRepo.total === 1 ? "fix landed" : "fixes landed"}
                 </p>
               </div>
               <div>
@@ -85,10 +86,10 @@ function UpstreamList({ rows, now }: { rows: CrossRepoReceiptRow[]; now: Date })
       <ContentWrap>
         <div className="mb-6 flex items-baseline justify-between">
           <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
-            Merged upstream PRs
+            Upstream fixes
           </h2>
           <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-            {rows.length} {rows.length === 1 ? "merge" : "merges"}
+            {rows.length} {rows.length === 1 ? "fix" : "fixes"}
           </span>
         </div>
 

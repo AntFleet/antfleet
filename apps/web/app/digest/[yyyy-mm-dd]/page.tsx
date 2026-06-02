@@ -2,7 +2,12 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { TweetIntent } from "@/components/TweetIntent";
 import { loadDigestForWeek, parseDigestSlug, type WeeklyDigest } from "@/lib/digest";
-import { toDisplayReceipt, type DisplayReceipt } from "@/lib/receipts";
+import {
+  formatRelativeTime,
+  toDisplayReceipt,
+  type CrossRepoReceiptRow,
+  type DisplayReceipt,
+} from "@/lib/receipts";
 
 export const dynamic = "force-dynamic";
 
@@ -49,9 +54,18 @@ export default async function DigestPage({ params }: { params: Promise<RoutePara
     <>
       <Hero digest={digest} weekEndingIso={weekEndingIso} />
       <SectionDivider />
-      <TopClosures displays={displays} />
+      <WeeklyReceipts
+        displays={displays}
+        crossRepoReceipts={digest.crossRepoReceipts}
+        now={now}
+      />
       <SectionDivider />
-      <ShareFooter digest={digest} displays={displays} canonicalUrl={canonicalUrl} />
+      <ShareFooter
+        digest={digest}
+        displays={displays}
+        crossRepoReceipts={digest.crossRepoReceipts}
+        canonicalUrl={canonicalUrl}
+      />
     </>
   );
 }
@@ -102,28 +116,42 @@ function Hero({ digest, weekEndingIso }: { digest: WeeklyDigest; weekEndingIso: 
   );
 }
 
-function TopClosures({ displays }: { displays: DisplayReceipt[] }) {
+function WeeklyReceipts({
+  displays,
+  crossRepoReceipts,
+  now,
+}: {
+  displays: DisplayReceipt[];
+  crossRepoReceipts: CrossRepoReceiptRow[];
+  now: Date;
+}) {
+  const visibleCount = displays.length + crossRepoReceipts.length;
   return (
     <section>
       <ContentWrap>
         <div className="mb-6 flex items-baseline justify-between">
           <h2 className="font-mono text-xs uppercase tracking-widest text-[var(--color-ink-subtle)]">
-            Top closures
+            Weekly receipts
           </h2>
           <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-            {displays.length} of 3
+            {visibleCount} shown
           </span>
         </div>
 
-        {displays.length === 0 ? (
+        {visibleCount === 0 ? (
           <p className="border-y border-[var(--color-line)] py-5 font-mono text-sm text-[var(--color-ink-muted)]">
-            no closures this week
+            no receipts this week
           </p>
         ) : (
           <ul className="flex flex-col divide-y divide-[var(--color-line)] border-y border-[var(--color-line)]">
             {displays.map((display) => (
               <li key={display.findingId}>
                 <ReceiptRow display={display} />
+              </li>
+            ))}
+            {crossRepoReceipts.map((row) => (
+              <li key={row.id}>
+                <CrossRepoReceiptRow row={row} now={now} />
               </li>
             ))}
           </ul>
@@ -168,16 +196,65 @@ function ReceiptRow({ display }: { display: DisplayReceipt }) {
   );
 }
 
+function CrossRepoReceiptRow({ row, now }: { row: CrossRepoReceiptRow; now: Date }) {
+  const shortSha = row.resolutionSha.slice(0, 7);
+  const isAbsorbed = row.closureMethod === "absorbed_inline";
+  return (
+    <div className="group -mx-3 flex flex-col gap-3 rounded-md px-3 py-5 transition-colors hover:bg-[var(--color-bg-elevated)] sm:flex-row sm:items-start sm:gap-6">
+      <a
+        href={`/anatomy/${encodeURIComponent(row.sourceFindingId)}`}
+        className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-start sm:gap-6"
+      >
+        <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
+          <Badge>{isAbsorbed ? "fix absorbed" : "cross-repo"}</Badge>
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="font-mono text-sm leading-snug text-[var(--color-ink)] underline-offset-2 group-hover:underline">
+            AntFleet → {row.upstreamOwner}/{row.upstreamRepo}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            <span>PR #{row.upstreamPrNumber}</span>
+            <span className="text-[var(--color-line-strong)]">·</span>
+            <span>
+              {isAbsorbed ? "absorbed at" : "merged at"}{" "}
+              <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
+            </span>
+            <span className="text-[var(--color-line-strong)]">·</span>
+            <span>{formatRelativeTime(now, row.resolvedAt)}</span>
+          </div>
+        </div>
+        <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] transition-colors group-hover:text-[var(--color-ink)] sm:shrink-0 sm:self-center">
+          anatomy →
+        </span>
+      </a>
+      <a
+        href={row.prUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="self-start font-mono text-[11px] text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)] sm:self-center sm:shrink-0"
+      >
+        GitHub →
+      </a>
+    </div>
+  );
+}
+
 function ShareFooter({
   digest,
   displays,
+  crossRepoReceipts,
   canonicalUrl,
 }: {
   digest: WeeklyDigest;
   displays: DisplayReceipt[];
+  crossRepoReceipts: CrossRepoReceiptRow[];
   canonicalUrl: string;
 }) {
-  const top = displays[0]?.title ?? "no closures";
+  const top =
+    displays[0]?.title ??
+    (crossRepoReceipts[0] === undefined
+      ? "no receipts"
+      : `AntFleet -> ${crossRepoReceipts[0].upstreamOwner}/${crossRepoReceipts[0].upstreamRepo}`);
   const text = `AntFleet · week of ${formatIsoDate(digest.weekEndingAt)}: ${digest.counts.receiptsClosed} receipts closed across ${digest.counts.reviewsRun} reviews. Top: ${truncate(top, 80)}.`;
 
   return (

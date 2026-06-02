@@ -4,6 +4,10 @@ import {
   type ActivityWindow,
   type PublicReceiptRow,
 } from "@/db/queries";
+import {
+  loadCrossRepoReceiptsBetween,
+  type CrossRepoReceiptRow,
+} from "@/lib/receipts";
 
 export const DIGEST_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -16,6 +20,7 @@ export interface WeeklyDigest {
   until: Date;
   counts: ActivityWindow;
   topClosures: PublicReceiptRow[];
+  crossRepoReceipts: CrossRepoReceiptRow[];
 }
 
 export function parseDigestSlug(raw: string, now: Date = new Date()): Date | null {
@@ -39,12 +44,23 @@ export async function loadDigestForWeek(
   const since = new Date(weekEndingAt.getTime() - 7 * DAY_MS);
 
   try {
-    const [counts, topClosures] = await Promise.all([
+    const [counts, topClosures, crossRepoReceipts] = await Promise.all([
       activityWindow(since, weekEndingAt),
       loadTopClosuresBetween(since, weekEndingAt, TOP_CLOSURES_LIMIT),
+      loadCrossRepoReceiptsBetween(since, weekEndingAt, TOP_CLOSURES_LIMIT),
     ]);
 
-    return { weekEndingAt, since, until: weekEndingAt, counts, topClosures };
+    return {
+      weekEndingAt,
+      since,
+      until: weekEndingAt,
+      counts: {
+        ...counts,
+        receiptsClosed: counts.receiptsClosed + crossRepoReceipts.total,
+      },
+      topClosures,
+      crossRepoReceipts: crossRepoReceipts.recent,
+    };
   } catch (error) {
     // Swallow DB errors so a transient Neon outage 404s the digest URL
     // rather than leaking a 500 + stack trace to anonymous visitors.

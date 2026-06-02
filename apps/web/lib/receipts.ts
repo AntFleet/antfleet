@@ -1,4 +1,4 @@
-import { inArray, sql } from "drizzle-orm";
+import { and, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
 import { outgoingPrs, type OutgoingPr } from "@/db/schema";
@@ -100,6 +100,8 @@ export type CrossRepoReceiptsPage = {
   lastResolvedAt: Date | null;
 };
 
+export type CrossRepoReceiptsWindow = CrossRepoReceiptsPage;
+
 export function upstreamPrUrl(owner: string, repo: string, number: number): string {
   return `https://github.com/${owner}/${repo}/pull/${number}`;
 }
@@ -166,6 +168,40 @@ export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoRec
     .select({ value: sql<number>`count(*)::int`.as("value") })
     .from(outgoingPrs)
     .where(inArray(outgoingPrs.status, receiptStatuses));
+
+  return { total: countRow?.value ?? 0, recent: receipts, lastResolvedAt };
+}
+
+export async function loadCrossRepoReceiptsBetween(
+  since: Date,
+  until: Date,
+  limit: number,
+): Promise<CrossRepoReceiptsWindow> {
+  if (until.getTime() <= since.getTime() || limit <= 0) {
+    return { total: 0, recent: [], lastResolvedAt: null };
+  }
+
+  const receiptStatuses = ["merged", "closed_absorbed"];
+  const resolvedAt = sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt})`;
+  const windowFilter = and(
+    inArray(outgoingPrs.status, receiptStatuses),
+    sql`${resolvedAt} >= ${since}`,
+    sql`${resolvedAt} < ${until}`,
+  );
+
+  const rows = (await db
+    .select()
+    .from(outgoingPrs)
+    .where(windowFilter)
+    .orderBy(sql`${resolvedAt} DESC NULLS LAST`)
+    .limit(limit)) as OutgoingPr[];
+
+  const { receipts, lastResolvedAt } = mapReceiptEligibleRows(rows);
+
+  const [countRow] = await db
+    .select({ value: sql<number>`count(*)::int`.as("value") })
+    .from(outgoingPrs)
+    .where(windowFilter);
 
   return { total: countRow?.value ?? 0, recent: receipts, lastResolvedAt };
 }
