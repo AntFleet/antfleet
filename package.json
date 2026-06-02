@@ -13,6 +13,14 @@
   ],
   "type": "module",
   "exports": {
+    "./detect": {
+      "types": "./dist/detect.d.ts",
+      "default": "./dist/detect.js"
+    },
+    "./mapper": {
+      "types": "./dist/mapper.d.ts",
+      "default": "./dist/mapper.js"
+    },
     "./provider": {
       "types": "./dist/provider.d.ts",
       "default": "./dist/provider.js"
