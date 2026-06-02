@@ -29,6 +29,31 @@ installed/private repos — no subscription, no email, no dashboard.
   requirements. Repeat with PAYMENT-SIGNATURE to enqueue the review.
 - Payment settles to the same operator wallet used by prepaid channel deposits.
 
+## x402 repo vulnerability scan
+
+- Chain: Base mainnet (chainId 8453)
+- Token: USDC at 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (6 decimals)
+- Price per scan: 2.00 USDC (flat, covers up to 10 semantic chunks)
+- Endpoint: POST /api/v1/scan/x402
+- Public repos only (v1). No GitHub App install required.
+- Access: open to any x402 buyer (no X-Aeon-Context header required).
+- First request without PAYMENT-SIGNATURE returns HTTP 402 with payment requirements.
+- Repeat with PAYMENT-SIGNATURE to run the scan. Response is synchronous (~60-180s).
+- Returns findings, chunk count, and head SHA directly in the response body.
+
+## Repo scan agent flow
+
+Base URL: https://www.antfleet.dev
+
+1. POST /api/v1/scan/x402
+   body: {"target": {"repo": "owner/name"}}
+   → returns HTTP 402 with payment requirements
+
+2. Sign the x402 USDC authorization from the paying wallet.
+
+3. Repeat POST /api/v1/scan/x402 with PAYMENT-SIGNATURE header.
+   → waits (up to 180s), returns complete findings JSON directly.
+
 ## Default public-repo agent flow
 
 Base URL: https://www.antfleet.dev

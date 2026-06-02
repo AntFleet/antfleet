@@ -44,6 +44,21 @@ export function requireAeonContext(
   return { ok: true, required: true, sessionId: parsed.sessionId, kid: parsed.kid };
 }
 
+// Repo-scan flavour of the gate. Same token-verification logic, but the
+// default is flipped: the scan endpoint is public from day one, so an UNSET
+// X402_REQUIRE_AEON_CONTEXT means "open" (not "gated"). Only an explicit
+// "true" turns the aeon requirement on for scans. This deliberately does NOT
+// change the PR-review gate, which stays gated-by-default.
+export function requireAeonContextForScan(
+  req: Pick<NextRequest, "headers">,
+  deps: AeonGateDeps = { now: () => new Date(), env: process.env },
+): AeonGateResult {
+  if ((deps.env["X402_REQUIRE_AEON_CONTEXT"] ?? "false").toLowerCase() !== "true") {
+    return { ok: true, required: false, sessionId: null, kid: null };
+  }
+  return requireAeonContext(req, deps);
+}
+
 export function mintAeonContextToken(args: {
   kid: string;
   secret: string;

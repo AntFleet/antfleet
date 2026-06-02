@@ -17,6 +17,11 @@ export type X402Config = {
   treasury: string;
   priceUsdc: string;
   priceBaseUnits: string;
+  // Flat price for a full-repo vulnerability scan (POST /api/v1/scan/x402),
+  // independent of the per-PR review price. Sourced from
+  // X402_REPO_SCAN_PRICE_USDC, default "2.00".
+  repoScanPriceUsdc: string;
+  repoScanPriceBaseUnits: string;
   cdpApiKeyId: string | null;
   cdpApiKeySecret: string | null;
 };
@@ -57,6 +62,14 @@ export function loadX402Config(env: EnvMap = process.env): X402Config {
     );
   }
 
+  const repoScanPriceUsdc = env["X402_REPO_SCAN_PRICE_USDC"] ?? "2.00";
+  if (!/^\d+(\.\d{1,6})?$/.test(repoScanPriceUsdc)) {
+    throw new X402ConfigError(
+      "x402_repo_scan_price_invalid",
+      "X402_REPO_SCAN_PRICE_USDC must be a decimal USDC amount with <= 6 decimals",
+    );
+  }
+
   const expectedAsset = network === X402_MAINNET_NETWORK ? X402_MAINNET_USDC : X402_SEPOLIA_USDC;
   if (usdcAsset !== getAddress(expectedAsset)) {
     throw new X402ConfigError(
@@ -92,6 +105,8 @@ export function loadX402Config(env: EnvMap = process.env): X402Config {
     treasury,
     priceUsdc,
     priceBaseUnits: usdcToBaseUnits(priceUsdc),
+    repoScanPriceUsdc,
+    repoScanPriceBaseUnits: usdcToBaseUnits(repoScanPriceUsdc),
     cdpApiKeyId,
     cdpApiKeySecret,
   };

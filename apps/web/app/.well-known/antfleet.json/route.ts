@@ -10,6 +10,7 @@ import {
   getGitHubAppInstallUrl,
   getMinDepositUsdc,
   getPublicBaseUrl,
+  getRepoScanPriceUsdc,
   getReviewPriceUsdc,
   USDC_BASE_ADDRESS,
 } from "@/lib/paywall/env";
@@ -47,6 +48,12 @@ export async function GET(): Promise<Response> {
       get_x402_review: {
         url: `${base}/api/v1/review/x402/{jobId}`,
         access_scope: "aeon-ecosystem-callers-only-v1",
+      },
+      scan_x402: {
+        url: `${base}/api/v1/scan/x402`,
+        access_scope: "public",
+        price_usdc: getRepoScanPriceUsdc(),
+        description: "Full-repo vulnerability scan, semantic chunking, two-model consensus",
       },
       llms_txt: `${base}/llms.txt`,
       manifest: `${base}/.well-known/antfleet.json`,
