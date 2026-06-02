@@ -83,12 +83,12 @@ export const REVIEW_BLOCKLIST_PATH_SUFFIXES = [
 // README at 29KB) silently slipping through the gate with
 // "no reviewable files". Files above the cap now fall back to the PR's
 // unified diff (see fetchChangedFilesWith) instead of being dropped.
-const MAX_FILE_BYTES = 80 * 1024;
-const MAX_FILES = 15;
+export const MAX_FILE_BYTES = 80 * 1024;
+export const MAX_FILES = 15;
 // Hard ceiling on the combined size of file contents going into the prompt.
 // Roughly tracks spike's empirically-tested corpus size with headroom for
 // the prompt scaffolding and per-file `--- path\n` separators.
-const MAX_TOTAL_PROMPT_BYTES = 150 * 1024;
+export const MAX_TOTAL_PROMPT_BYTES = 150 * 1024;
 
 export type ChangedFile = {
   filename: string;
