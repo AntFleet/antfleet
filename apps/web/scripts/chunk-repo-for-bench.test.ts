@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_FILE_BYTES, MAX_FILES } from "../lib/github-files";
 import {
   buildChunks,
+  createChunkPr,
   directoryGroups,
   packGroup,
   parseArgs,
@@ -12,7 +13,10 @@ import {
   retryDelayMs,
   slugify,
   splitOwnerRepo,
+  type Chunk,
   type FileGroup,
+  type GhRequest,
+  type GhResponse,
 } from "./chunk-repo-for-bench";
 
 describe("parseArgs", () => {
@@ -276,5 +280,190 @@ describe("filesystem helpers", () => {
       const chunks = buildChunks(root, [featGroup]);
       expect(chunks[0]!.featureTitle).toBe("Feature X");
     });
+  });
+});
+
+// --- createChunkPr: full PR-creation orchestration via an injected GhRequest ---
+
+type RecordedCall = { method: string; path: string; body: unknown };
+
+function fakeRequest(route: (method: string, path: string, body: unknown) => GhResponse): {
+  request: GhRequest;
+  calls: RecordedCall[];
+} {
+  const calls: RecordedCall[] = [];
+  const request: GhRequest = async (method, path, body) => {
+    calls.push({ method, path, body });
+    return route(method, path, body);
+  };
+  return { request, calls };
+}
+
+const BENCH = { owner: "AntFleet", repo: "x-bench" };
+const BASE = { branch: "main", sha: "deadbeef" };
+
+function chunkOf(files: Chunk["files"], overrides: Partial<Chunk> = {}): Chunk {
+  return {
+    featureId: "feat_config_abc123",
+    featureTitle: "Project config",
+    featureKind: "config",
+    files,
+    ...overrides,
+  };
+}
+
+const isPullsList = (m: string, p: string): boolean => m === "GET" && p.includes("/pulls?head=");
+const isRefRead = (m: string, p: string): boolean => m === "GET" && p.includes("/git/ref/heads/");
+const isCreateRef = (m: string, p: string): boolean => m === "POST" && p.endsWith("/git/refs");
+const isPut = (m: string, p: string): boolean => m === "PUT" && p.includes("/contents/");
+const isOpenPr = (m: string, p: string): boolean => m === "POST" && p.endsWith("/pulls");
+const isDeleteRef = (m: string, p: string): boolean =>
+  m === "DELETE" && p.includes("/git/refs/heads/");
+
+const run = (request: GhRequest, chunk: Chunk, index = 1, total = 2) =>
+  createChunkPr(request, BENCH, BASE, chunk, "owner/src", "srcsha", index, total);
+
+describe("createChunkPr", () => {
+  it("creates a branch, one commit per file, and opens a PR on the happy path", async () => {
+    const { request, calls } = fakeRequest((m, p) => {
+      if (isPullsList(m, p)) return { status: 200, body: [] };
+      if (isRefRead(m, p)) return { status: 404, body: {} };
+      if (isCreateRef(m, p)) return { status: 201, body: {} };
+      if (isPut(m, p)) return { status: 201, body: {} };
+      if (isOpenPr(m, p)) return { status: 201, body: { number: 7, html_url: "u" } };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    const outcome = await run(
+      request,
+      chunkOf([
+        { path: "a.ts", contents: "aa", byteLength: 2 },
+        { path: "b.ts", contents: "bb", byteLength: 2 },
+      ]),
+    );
+    expect(outcome).toBe("created");
+    expect(calls.filter((c) => isPut(c.method, c.path))).toHaveLength(2);
+    expect(calls.some((c) => isDeleteRef(c.method, c.path))).toBe(false);
+    // No orphan branch existed, so no DELETE; branch ref created from base sha.
+    const createRef = calls.find((c) => isCreateRef(c.method, c.path))!;
+    expect((createRef.body as { ref: string; sha: string }).ref).toBe(
+      "refs/heads/feat/chunk-001-feat-config-abc123",
+    );
+    expect((createRef.body as { sha: string }).sha).toBe("deadbeef");
+  });
+
+  it("skips (no writes) when a PR already exists for the head branch", async () => {
+    const { request, calls } = fakeRequest((m, p) => {
+      if (isPullsList(m, p)) return { status: 200, body: [{ number: 1 }] };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    const outcome = await run(request, chunkOf([{ path: "a.ts", contents: "x", byteLength: 1 }]));
+    expect(outcome).toBe("skipped");
+    expect(calls).toHaveLength(1);
+    expect(calls.some((c) => isCreateRef(c.method, c.path))).toBe(false);
+  });
+
+  it("cleans up an orphan branch (exists, no PR) before recreating it", async () => {
+    const { request, calls } = fakeRequest((m, p) => {
+      if (isPullsList(m, p)) return { status: 200, body: [] };
+      if (isRefRead(m, p)) return { status: 200, body: { object: { sha: "old" } } };
+      if (isDeleteRef(m, p)) return { status: 204, body: null };
+      if (isCreateRef(m, p)) return { status: 201, body: {} };
+      if (isPut(m, p)) return { status: 201, body: {} };
+      if (isOpenPr(m, p)) return { status: 201, body: { number: 9, html_url: "u" } };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    const outcome = await run(request, chunkOf([{ path: "a.ts", contents: "x", byteLength: 1 }]));
+    expect(outcome).toBe("created");
+    // The orphan DELETE must happen, and must precede the (re)create of the ref.
+    const deleteIdx = calls.findIndex((c) => isDeleteRef(c.method, c.path));
+    const createIdx = calls.findIndex((c) => isCreateRef(c.method, c.path));
+    expect(deleteIdx).toBeGreaterThanOrEqual(0);
+    expect(deleteIdx).toBeLessThan(createIdx);
+  });
+
+  it("deletes the orphaned ref and fails when PR creation fails", async () => {
+    const { request, calls } = fakeRequest((m, p) => {
+      if (isPullsList(m, p)) return { status: 200, body: [] };
+      if (isRefRead(m, p)) return { status: 404, body: {} };
+      if (isCreateRef(m, p)) return { status: 201, body: {} };
+      if (isPut(m, p)) return { status: 201, body: {} };
+      if (isOpenPr(m, p)) return { status: 422, body: { message: "boom" } };
+      if (isDeleteRef(m, p)) return { status: 204, body: null };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    const outcome = await run(request, chunkOf([{ path: "a.ts", contents: "x", byteLength: 1 }]));
+    expect(outcome).toBe("failed");
+    // Cleanup DELETE must come after the failed PR open, so a re-run retries clean.
+    const prIdx = calls.findIndex((c) => isOpenPr(c.method, c.path));
+    const deleteIdx = calls.findIndex((c) => isDeleteRef(c.method, c.path));
+    expect(deleteIdx).toBeGreaterThan(prIdx);
+  });
+
+  it("fails without PUT/PR when branch creation fails", async () => {
+    const { request, calls } = fakeRequest((m, p) => {
+      if (isPullsList(m, p)) return { status: 200, body: [] };
+      if (isRefRead(m, p)) return { status: 404, body: {} };
+      if (isCreateRef(m, p)) return { status: 422, body: { message: "exists" } };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    const outcome = await run(request, chunkOf([{ path: "a.ts", contents: "x", byteLength: 1 }]));
+    expect(outcome).toBe("failed");
+    expect(calls.some((c) => isPut(c.method, c.path))).toBe(false);
+    expect(calls.some((c) => isOpenPr(c.method, c.path))).toBe(false);
+    expect(calls.some((c) => isDeleteRef(c.method, c.path))).toBe(false);
+  });
+
+  it("base64-encodes file contents with a per-file commit message", async () => {
+    let putBody: { message: string; content: string; branch: string } | undefined;
+    const { request } = fakeRequest((m, p, body) => {
+      if (isPullsList(m, p)) return { status: 200, body: [] };
+      if (isRefRead(m, p)) return { status: 404, body: {} };
+      if (isCreateRef(m, p)) return { status: 201, body: {} };
+      if (isPut(m, p)) {
+        putBody = body as typeof putBody;
+        return { status: 201, body: {} };
+      }
+      if (isOpenPr(m, p)) return { status: 201, body: { number: 1, html_url: "u" } };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    await run(request, chunkOf([{ path: "src/a.ts", contents: "hello", byteLength: 5 }]));
+    expect(putBody?.message).toBe("feat: add src/a.ts");
+    expect(putBody?.branch).toBe("feat/chunk-001-feat-config-abc123");
+    expect(Buffer.from(putBody!.content, "base64").toString("utf8")).toBe("hello");
+  });
+
+  it("treats a failed file PUT as non-fatal and still opens the PR", async () => {
+    const { request } = fakeRequest((m, p) => {
+      if (isPullsList(m, p)) return { status: 200, body: [] };
+      if (isRefRead(m, p)) return { status: 404, body: {} };
+      if (isCreateRef(m, p)) return { status: 201, body: {} };
+      if (isPut(m, p)) return { status: 500, body: { message: "flaky" } };
+      if (isOpenPr(m, p)) return { status: 201, body: { number: 1, html_url: "u" } };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    const outcome = await run(request, chunkOf([{ path: "a.ts", contents: "x", byteLength: 1 }]));
+    expect(outcome).toBe("created");
+  });
+
+  it("falls back to a chunk-index branch slug when the feature id has no usable chars", async () => {
+    let refBody: { ref: string } | undefined;
+    const { request } = fakeRequest((m, p, body) => {
+      if (isPullsList(m, p)) return { status: 200, body: [] };
+      if (isRefRead(m, p)) return { status: 404, body: {} };
+      if (isCreateRef(m, p)) {
+        refBody = body as typeof refBody;
+        return { status: 201, body: {} };
+      }
+      if (isPut(m, p)) return { status: 201, body: {} };
+      if (isOpenPr(m, p)) return { status: 201, body: { number: 1, html_url: "u" } };
+      throw new Error(`unexpected ${m} ${p}`);
+    });
+    await run(
+      request,
+      chunkOf([{ path: "a.ts", contents: "x", byteLength: 1 }], { featureId: "///" }),
+      3,
+      5,
+    );
+    expect(refBody?.ref).toBe("refs/heads/feat/chunk-003-chunk-3");
   });
 });

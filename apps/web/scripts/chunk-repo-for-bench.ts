@@ -379,49 +379,50 @@ function printDryRun(chunks: Chunk[], source: string, headSha: string): void {
   console.log("No PRs created (dry run).");
 }
 
-type GhResponse = { status: number; body: unknown };
+export type GhResponse = { status: number; body: unknown };
+// One authenticated GitHub REST call. Injected into the helpers below so tests
+// can supply a fake without touching the network.
+export type GhRequest = (method: string, path: string, body?: unknown) => Promise<GhResponse>;
 
-async function gh(
-  args: CliArgs,
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<GhResponse> {
-  // Retry once on a rate-limit response (secondary limits are realistic across a
-  // 40-chunk run of ref + content + PR writes), honoring Retry-After / the
-  // x-ratelimit-reset hint before giving up.
-  for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(`${GITHUB_API}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${args.token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": USER_AGENT,
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    const rateLimited =
-      response.status === 429 ||
-      (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0");
-    if (rateLimited && attempt < 2) {
-      const waitMs = retryDelayMs(response.headers);
-      console.log(`  rate-limited (${response.status}) — waiting ${Math.round(waitMs / 1000)}s`);
-      await sleep(waitMs);
-      continue;
-    }
-    let parsed: unknown = null;
-    const text = await response.text();
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = text;
+// Build the real GitHub request function, bound to a PAT. Retries once on a
+// rate-limit response (secondary limits are realistic across a 40-chunk run of
+// ref + content + PR writes), honoring Retry-After / the x-ratelimit-reset hint
+// before giving up.
+function createGhRequest(token: string): GhRequest {
+  return async (method, path, body) => {
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await fetch(`${GITHUB_API}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": USER_AGENT,
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const rateLimited =
+        response.status === 429 ||
+        (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0");
+      if (rateLimited && attempt < 2) {
+        const waitMs = retryDelayMs(response.headers);
+        console.log(`  rate-limited (${response.status}) — waiting ${Math.round(waitMs / 1000)}s`);
+        await sleep(waitMs);
+        continue;
       }
+      let parsed: unknown = null;
+      const text = await response.text();
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = text;
+        }
+      }
+      return { status: response.status, body: parsed };
     }
-    return { status: response.status, body: parsed };
-  }
+  };
 }
 
 // Compute how long to back off from a rate-limited response's headers. Prefers
@@ -449,8 +450,8 @@ function errorMessage(body: unknown): string {
   return JSON.stringify(body);
 }
 
-async function defaultBranch(args: CliArgs, owner: string, repo: string): Promise<string> {
-  const res = await gh(args, "GET", `/repos/${owner}/${repo}`);
+async function defaultBranch(request: GhRequest, owner: string, repo: string): Promise<string> {
+  const res = await request("GET", `/repos/${owner}/${repo}`);
   if (res.status !== 200) {
     throw new Error(
       `GET /repos/${owner}/${repo} failed (${res.status}): ${errorMessage(res.body)}`,
@@ -464,13 +465,12 @@ async function defaultBranch(args: CliArgs, owner: string, repo: string): Promis
 }
 
 async function branchHeadSha(
-  args: CliArgs,
+  request: GhRequest,
   owner: string,
   repo: string,
   branch: string,
 ): Promise<string> {
-  const res = await gh(
-    args,
+  const res = await request(
     "GET",
     `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
   );
@@ -485,13 +485,12 @@ async function branchHeadSha(
 }
 
 async function branchExists(
-  args: CliArgs,
+  request: GhRequest,
   owner: string,
   repo: string,
   branch: string,
 ): Promise<boolean> {
-  const res = await gh(
-    args,
+  const res = await request(
     "GET",
     `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
   );
@@ -502,13 +501,12 @@ async function branchExists(
 // existence — is the real "already done" signal: a prior run can leave an orphan
 // branch (ref created, then a PUT/PR step failed) that we want to retry, not skip.
 async function prExistsForHead(
-  args: CliArgs,
+  request: GhRequest,
   owner: string,
   repo: string,
   branch: string,
 ): Promise<boolean> {
-  const res = await gh(
-    args,
+  const res = await request(
     "GET",
     `/repos/${owner}/${repo}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all&per_page=1`,
   );
@@ -516,22 +514,22 @@ async function prExistsForHead(
 }
 
 async function deleteBranch(
-  args: CliArgs,
+  request: GhRequest,
   owner: string,
   repo: string,
   branch: string,
 ): Promise<void> {
-  await gh(args, "DELETE", `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`);
+  await request("DELETE", `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms));
 }
 
-type CreateOutcome = "created" | "skipped" | "failed";
+export type CreateOutcome = "created" | "skipped" | "failed";
 
-async function createChunkPr(
-  args: CliArgs,
+export async function createChunkPr(
+  request: GhRequest,
   bench: { owner: string; repo: string },
   base: { branch: string; sha: string },
   chunk: Chunk,
@@ -545,16 +543,16 @@ async function createChunkPr(
 
   // Already-done check: skip only when a PR exists for this head. A bare branch
   // with no PR is an orphan from a prior partial run — delete it and retry clean.
-  if (await prExistsForHead(args, bench.owner, bench.repo, branch)) {
+  if (await prExistsForHead(request, bench.owner, bench.repo, branch)) {
     console.log(`  skipped: PR already exists for ${branch}`);
     return "skipped";
   }
-  if (await branchExists(args, bench.owner, bench.repo, branch)) {
+  if (await branchExists(request, bench.owner, bench.repo, branch)) {
     console.log(`  cleaning orphan branch (no PR) — ${branch}`);
-    await deleteBranch(args, bench.owner, bench.repo, branch);
+    await deleteBranch(request, bench.owner, bench.repo, branch);
   }
 
-  const createRef = await gh(args, "POST", `/repos/${bench.owner}/${bench.repo}/git/refs`, {
+  const createRef = await request("POST", `/repos/${bench.owner}/${bench.repo}/git/refs`, {
     ref: `refs/heads/${branch}`,
     sha: base.sha,
   });
@@ -567,8 +565,7 @@ async function createChunkPr(
 
   // Each file is its own commit so the resulting PR diff is navigable.
   for (const file of chunk.files) {
-    const put = await gh(
-      args,
+    const put = await request(
       "PUT",
       `/repos/${bench.owner}/${bench.repo}/contents/${encodeContentsPath(file.path)}`,
       {
@@ -582,7 +579,7 @@ async function createChunkPr(
     }
   }
 
-  const pr = await gh(args, "POST", `/repos/${bench.owner}/${bench.repo}/pulls`, {
+  const pr = await request("POST", `/repos/${bench.owner}/${bench.repo}/pulls`, {
     title: `[chunk ${chunkIndex}/${totalChunks}] ${chunk.featureTitle}`,
     body: prBody(chunk, source, sourceHeadSha, chunkIndex, totalChunks),
     head: branch,
@@ -592,7 +589,7 @@ async function createChunkPr(
     console.log(`  failed: open PR for ${branch} (${pr.status}): ${errorMessage(pr.body)}`);
     // Remove the now-orphaned branch so the next run retries this chunk cleanly
     // instead of treating it as already-done.
-    await deleteBranch(args, bench.owner, bench.repo, branch);
+    await deleteBranch(request, bench.owner, bench.repo, branch);
     return "failed";
   }
   const prInfo = pr.body as { number?: unknown; html_url?: unknown };
@@ -675,11 +672,12 @@ async function main(): Promise<void> {
       return;
     }
 
+    const request = createGhRequest(args.token);
     const base = {
-      branch: await defaultBranch(args, bench.owner, bench.repo),
+      branch: await defaultBranch(request, bench.owner, bench.repo),
       sha: "",
     };
-    base.sha = await branchHeadSha(args, bench.owner, bench.repo, base.branch);
+    base.sha = await branchHeadSha(request, bench.owner, bench.repo, base.branch);
 
     let created = 0;
     let skipped = 0;
@@ -691,7 +689,7 @@ async function main(): Promise<void> {
       let outcome: CreateOutcome;
       try {
         outcome = await createChunkPr(
-          args,
+          request,
           bench,
           base,
           chunk,
