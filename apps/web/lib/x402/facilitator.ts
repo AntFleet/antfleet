@@ -46,22 +46,36 @@ export class X402PaymentError extends Error {
   }
 }
 
-export function buildPaymentRequired(config: X402Config, resource: string) {
+// Overrides for the resource a payment authorization is bound to. Defaults
+// describe the per-PR review; the repo-scan endpoint passes its own price +
+// description so a single buyer-signed authorization covers a full scan.
+export type PaymentResourceOptions = {
+  amountBaseUnits?: string;
+  description?: string;
+  serviceName?: string;
+  tags?: string[];
+};
+
+export function buildPaymentRequired(
+  config: X402Config,
+  resource: string,
+  opts: PaymentResourceOptions = {},
+) {
   return {
     x402Version: 2,
     resource: {
       url: resource,
-      description: "AntFleet two-model-consensus PR review (Opus 4.7 + GPT-5)",
+      description: opts.description ?? "AntFleet two-model-consensus PR review (Opus 4.7 + GPT-5)",
       mimeType: "application/json",
-      serviceName: "AntFleet PR Review",
-      tags: ["pr-review", "antfleet"],
+      serviceName: opts.serviceName ?? "AntFleet PR Review",
+      tags: opts.tags ?? ["pr-review", "antfleet"],
     },
     accepts: [
       {
         scheme: "exact",
         network: config.network,
         asset: config.usdcAsset,
-        amount: config.priceBaseUnits,
+        amount: opts.amountBaseUnits ?? config.priceBaseUnits,
         payTo: config.treasury,
         maxTimeoutSeconds: X402_MAX_TIMEOUT_SECONDS,
         extra: eip3009DomainExtra(config.network),
@@ -69,6 +83,18 @@ export function buildPaymentRequired(config: X402Config, resource: string) {
     ],
     error: "PAYMENT-REQUIRED",
   };
+}
+
+// Repo-scan flavour of the payment requirements: charges config.repoScanPriceUsdc
+// (flat per-scan price) instead of the per-PR review price.
+export function buildScanPaymentRequired(config: X402Config, resource: string) {
+  return buildPaymentRequired(config, resource, {
+    amountBaseUnits: config.repoScanPriceBaseUnits,
+    description:
+      "AntFleet repo vulnerability scan — semantic chunking + two-model consensus (up to 10 chunks)",
+    serviceName: "AntFleet Repo Scan",
+    tags: ["repo-scan", "antfleet"],
+  });
 }
 
 function eip3009DomainExtra(network: X402Config["network"]): { name: string; version: string } {
@@ -83,6 +109,11 @@ export async function verifyPayment(args: {
   resource: string;
   now: Date;
   fetchImpl?: typeof fetch;
+  // Prebuilt accepts[0] requirements. The repo-scan route passes its own
+  // (scan price + description) so verification checks the signed authorization
+  // against the amount the buyer was quoted. Defaults to the per-PR review
+  // requirements when omitted.
+  paymentRequirements?: unknown;
 }): Promise<VerifiedPayment> {
   const payload = decodeBase64Json(args.paymentSignature);
   const resp = await (args.fetchImpl ?? fetch)(`${args.config.facilitator}/verify`, {
@@ -91,7 +122,8 @@ export async function verifyPayment(args: {
     body: JSON.stringify({
       x402Version: 2,
       paymentPayload: payload,
-      paymentRequirements: buildPaymentRequired(args.config, args.resource).accepts[0],
+      paymentRequirements:
+        args.paymentRequirements ?? buildPaymentRequired(args.config, args.resource).accepts[0],
     }),
   });
   const body = await readJsonBody(resp);
@@ -123,11 +155,15 @@ export async function verifyPayment(args: {
 }
 
 export async function settlePayment(args: {
-  job: ReviewJobRow;
+  job: Pick<ReviewJobRow, "x402PayTo">;
   config: X402Config;
   authorization: X402AuthorizationState;
   now: Date;
   fetchImpl?: typeof fetch;
+  // Prebuilt accepts[0] requirements, mirroring verifyPayment. Must match what
+  // verification used (same amount/description) or the facilitator rejects the
+  // settle. Defaults to the per-PR review requirements when omitted.
+  paymentRequirements?: unknown;
 }): Promise<SettlementResult> {
   if (args.job.x402PayTo !== args.config.treasury) {
     throw new X402PaymentError(500, "x402_pay_to_mismatch", "x402 payTo changed after verify");
@@ -142,8 +178,9 @@ export async function settlePayment(args: {
     body: JSON.stringify({
       x402Version: 2,
       paymentPayload: args.authorization.paymentPayload,
-      paymentRequirements: buildPaymentRequired(args.config, args.authorization.resource)
-        .accepts[0],
+      paymentRequirements:
+        args.paymentRequirements ??
+        buildPaymentRequired(args.config, args.authorization.resource).accepts[0],
     }),
   });
   const body = await readJsonBody(resp);

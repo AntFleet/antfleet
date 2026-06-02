@@ -301,6 +301,8 @@ function configFor(cli: Cli): X402Config {
     treasury,
     priceUsdc: cli.amountUsdc,
     priceBaseUnits: usdcToBaseUnits(cli.amountUsdc),
+    repoScanPriceUsdc: cli.amountUsdc,
+    repoScanPriceBaseUnits: usdcToBaseUnits(cli.amountUsdc),
     cdpApiKeyId: envConfig?.cdpApiKeyId ?? process.env["CDP_API_KEY_ID"] ?? null,
     cdpApiKeySecret: envConfig?.cdpApiKeySecret ?? process.env["CDP_API_KEY_SECRET"] ?? null,
   };

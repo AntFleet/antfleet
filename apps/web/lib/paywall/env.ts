@@ -17,6 +17,13 @@ export function getReviewPriceUsdc(): string {
   return process.env["REVIEW_PRICE_USDC"] ?? "0.50";
 }
 
+// Flat price for a full-repo vulnerability scan (POST /api/v1/scan/x402).
+// Mirrors the X402_REPO_SCAN_PRICE_USDC default in lib/x402/env.ts so the
+// public manifest and the paywall agree on the quoted price.
+export function getRepoScanPriceUsdc(): string {
+  return process.env["X402_REPO_SCAN_PRICE_USDC"] ?? "2.00";
+}
+
 export function getMinDepositUsdc(): string {
   return process.env["MIN_DEPOSIT_USDC"] ?? "5.00";
 }

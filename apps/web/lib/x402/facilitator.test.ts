@@ -22,6 +22,8 @@ const config: X402Config = {
   treasury: "0x000000000000000000000000000000000000dEaD",
   priceUsdc: "0.5",
   priceBaseUnits: "500000",
+  repoScanPriceUsdc: "2.00",
+  repoScanPriceBaseUnits: "2000000",
   cdpApiKeyId: null,
   cdpApiKeySecret: null,
 };
