@@ -4,10 +4,7 @@ import {
   type ActivityWindow,
   type PublicReceiptRow,
 } from "@/db/queries";
-import {
-  loadCrossRepoReceiptsBetween,
-  type CrossRepoReceiptRow,
-} from "@/lib/receipts";
+import { loadCrossRepoReceiptsBetween, type CrossRepoReceiptRow } from "@/lib/receipts";
 
 export const DIGEST_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 

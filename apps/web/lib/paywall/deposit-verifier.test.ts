@@ -14,12 +14,11 @@ const DEPOSIT = "0x2222222222222222222222222222222222222222";
 const TX_HASH = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-function transferLog(args: {
-  from: string;
-  to?: string;
-  value: bigint;
-  address?: string;
-}): { address: Address; topics: readonly Hex[]; data: Hex } {
+function transferLog(args: { from: string; to?: string; value: bigint; address?: string }): {
+  address: Address;
+  topics: readonly Hex[];
+  data: Hex;
+} {
   return {
     address: (args.address ?? USDC_BASE_ADDRESS) as Address,
     topics: [

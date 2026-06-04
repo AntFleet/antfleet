@@ -48,7 +48,10 @@ export type DepositInstallationDeps = {
     amountUsdc: string;
     blockNumber: number | null;
   }) => Promise<boolean>;
-  markActiveIfFunded: (args: { installationRowId: string; minBalanceUsdc: string }) => Promise<boolean>;
+  markActiveIfFunded: (args: {
+    installationRowId: string;
+    minBalanceUsdc: string;
+  }) => Promise<boolean>;
   verifier: DepositVerifierDeps;
   getDepositAddress: () => string | null;
   getMinDeposit: () => string;
@@ -143,7 +146,8 @@ export async function handleDepositInstallation(
       amountUsdc: verification.deposit.amountUsdc,
       blockNumber: verification.deposit.blockNumber,
     });
-    let status = credited || row.status === PAYWALL_STATUS.active ? PAYWALL_STATUS.active : row.status;
+    let status =
+      credited || row.status === PAYWALL_STATUS.active ? PAYWALL_STATUS.active : row.status;
     if (!credited && status !== PAYWALL_STATUS.active) {
       const activated = await deps.markActiveIfFunded({
         installationRowId: row.id,

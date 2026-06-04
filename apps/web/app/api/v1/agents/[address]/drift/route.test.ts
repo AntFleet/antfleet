@@ -50,17 +50,11 @@ describe("GET /api/v1/agents/:address/drift", () => {
 
   it("preserves raw sub-millisecond timestamps in next cursors", () => {
     const page = pageDrift(
-      [
-        drift("d1", "2026-05-18T03:00:00.123456Z"),
-        drift("d2", "2026-05-18T03:00:00.123455Z"),
-      ],
+      [drift("d1", "2026-05-18T03:00:00.123456Z"), drift("d2", "2026-05-18T03:00:00.123455Z")],
       1,
     );
 
-    expect(decodeCursor(page.nextCursor!, 2)).toEqual([
-      "2026-05-18T03:00:00.123456Z",
-      "d1",
-    ]);
+    expect(decodeCursor(page.nextCursor!, 2)).toEqual(["2026-05-18T03:00:00.123456Z", "d1"]);
   });
 });
 

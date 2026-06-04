@@ -54,11 +54,7 @@ export default async function DigestPage({ params }: { params: Promise<RoutePara
     <>
       <Hero digest={digest} weekEndingIso={weekEndingIso} />
       <SectionDivider />
-      <WeeklyReceipts
-        displays={displays}
-        crossRepoReceipts={digest.crossRepoReceipts}
-        now={now}
-      />
+      <WeeklyReceipts displays={displays} crossRepoReceipts={digest.crossRepoReceipts} now={now} />
       <SectionDivider />
       <ShareFooter
         digest={digest}

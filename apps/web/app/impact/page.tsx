@@ -32,10 +32,10 @@ export default async function ImpactPage() {
           </h1>
 
           <p className="mt-6 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-            Every row below is an upstream fix on a repo AntFleet doesn&apos;t own: either a
-            merged pull request or an absorbed-inline fix. The upstream maintainer reviewed
-            the change independently and accepted it. This is the highest-trust receipt class
-            — a third party confirmed the bug was real.
+            Every row below is an upstream fix on a repo AntFleet doesn&apos;t own: either a merged
+            pull request or an absorbed-inline fix. The upstream maintainer reviewed the change
+            independently and accepted it. This is the highest-trust receipt class — a third party
+            confirmed the bug was real.
           </p>
 
           {crossRepo.total > 0 && (

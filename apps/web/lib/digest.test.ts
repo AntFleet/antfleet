@@ -58,10 +58,7 @@ describe("loadDigestForWeek", () => {
     mocks.loadTopClosuresBetween.mockResolvedValue(TOP_CLOSURES);
     mocks.loadCrossRepoReceiptsBetween.mockResolvedValue(CROSS_REPO);
 
-    const digest = await loadDigestForWeek(
-      "2026-06-01",
-      new Date("2026-06-02T00:00:00.000Z"),
-    );
+    const digest = await loadDigestForWeek("2026-06-01", new Date("2026-06-02T00:00:00.000Z"));
 
     expect(digest).not.toBeNull();
     expect(digest?.since.toISOString()).toBe("2026-05-25T00:00:00.000Z");

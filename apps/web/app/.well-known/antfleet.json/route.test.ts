@@ -33,11 +33,11 @@ describe("GET /.well-known/antfleet.json", () => {
     expect(endpoints["submit_deposit"]).toContain("/deposit");
     expect(endpoints["review_x402"]).toMatchObject({
       url: "https://www.antfleet.dev/api/v1/review/x402",
-      access_scope: "aeon-ecosystem-callers-only-v1",
+      access_scope: "public",
     });
     expect(endpoints["get_x402_review"]).toMatchObject({
       url: "https://www.antfleet.dev/api/v1/review/x402/{jobId}",
-      access_scope: "aeon-ecosystem-callers-only-v1",
+      access_scope: "public",
     });
     const token = body["payment_token"] as Record<string, unknown>;
     expect(token["symbol"]).toBe("USDC");

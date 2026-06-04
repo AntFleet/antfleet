@@ -863,7 +863,10 @@ async function runValidationCommand(command: string, root: string): Promise<Comm
 }
 
 function parseValidationCommand(command: string): { file: string; args: string[] } {
-  const tokens = command.trim().split(/\s+/u).filter((token) => token.length > 0);
+  const tokens = command
+    .trim()
+    .split(/\s+/u)
+    .filter((token) => token.length > 0);
   const file = tokens[0];
   if (file === undefined) {
     throw new FleetError("empty validation command", 2, "unsafe-validation-command");

@@ -63,17 +63,11 @@ describe("GET /api/v1/findings", () => {
 
   it("preserves raw sub-millisecond timestamps in next cursors", () => {
     const page = pageFindings(
-      [
-        finding("f1", "2026-05-18T03:00:00.123456Z"),
-        finding("f2", "2026-05-18T03:00:00.123455Z"),
-      ],
+      [finding("f1", "2026-05-18T03:00:00.123456Z"), finding("f2", "2026-05-18T03:00:00.123455Z")],
       1,
     );
 
-    expect(decodeCursor(page.nextCursor!, 2)).toEqual([
-      "2026-05-18T03:00:00.123456Z",
-      "f1",
-    ]);
+    expect(decodeCursor(page.nextCursor!, 2)).toEqual(["2026-05-18T03:00:00.123456Z", "f1"]);
   });
 });
 

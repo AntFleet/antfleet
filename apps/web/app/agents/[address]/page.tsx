@@ -231,7 +231,7 @@ function AgentSubmissionsSection({
           </span>
         </div>
         <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
-          PRs and issues submitted by <span className="font-mono">antfleet-ops</span>{" "}against this
+          PRs and issues submitted by <span className="font-mono">antfleet-ops</span> against this
           agent&apos;s upstream repo. Every row is AntFleet work, whether it originated from the app
           pipeline or an operator-assisted review loop.
         </p>
@@ -254,9 +254,10 @@ function AgentSubmissionsSection({
 function AgentSubmissionRow({ submission, now }: { submission: AgentSubmission; now: Date }) {
   const submittedRelative = formatRelativeTime(now, new Date(submission.submittedAt));
   const resolvedRelative =
-    submission.resolvedAt !== null ? formatRelativeTime(now, new Date(submission.resolvedAt)) : null;
-  const shortSha =
-    submission.resolutionSha !== null ? submission.resolutionSha.slice(0, 7) : null;
+    submission.resolvedAt !== null
+      ? formatRelativeTime(now, new Date(submission.resolvedAt))
+      : null;
+  const shortSha = submission.resolutionSha !== null ? submission.resolutionSha.slice(0, 7) : null;
   const channelLabel =
     submission.channel === "direct_claude_code" ? "operator-assisted AntFleet" : "AntFleet app";
   const statusLabel = (() => {
@@ -277,7 +278,9 @@ function AgentSubmissionRow({ submission, now }: { submission: AgentSubmission; 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-6">
         <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
           <Badge>{statusLabel}</Badge>
-          <Badge>{submission.kind.toUpperCase()} #{submission.number}</Badge>
+          <Badge>
+            {submission.kind.toUpperCase()} #{submission.number}
+          </Badge>
         </div>
         <div className="flex-1 min-w-0">
           <a
