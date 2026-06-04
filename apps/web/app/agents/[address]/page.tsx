@@ -9,6 +9,7 @@ import {
 } from "@/db/queries";
 import type { AgentFinding } from "@/db/schema";
 import { findAgentByAddress } from "@/lib/agent-registry";
+import { loadAgentSubmissions, type AgentSubmission } from "@/lib/agent-submissions";
 import { formatRelativeTime } from "@/lib/receipts";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
 import { CopyBadgeSnippet } from "./CopyBadgeSnippet";
@@ -67,6 +68,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
   }
 
   const registryEntry = findAgentByAddress(address);
+  const submissions = loadAgentSubmissions(detail.agentTokenAddress);
 
   return (
     <>
@@ -75,6 +77,12 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
         <>
           <SectionDivider />
           <BadgeEmbedSection repo={registryEntry.repo} address={address} />
+        </>
+      )}
+      {submissions.length > 0 && (
+        <>
+          <SectionDivider />
+          <AgentSubmissionsSection submissions={submissions} now={now} />
         </>
       )}
       {detail.crossRepoMerges.length > 0 && (
@@ -196,6 +204,126 @@ function UnclaimedBanner({ address }: { address: string }) {
         Claim this agent →
       </a>
     </div>
+  );
+}
+
+function AgentSubmissionsSection({
+  submissions,
+  now,
+}: {
+  submissions: AgentSubmission[];
+  now: Date;
+}) {
+  const prCount = submissions.filter((submission) => submission.kind === "pr").length;
+  const issueCount = submissions.filter((submission) => submission.kind === "issue").length;
+  const openCount = submissions.filter((submission) => submission.status === "open").length;
+  const landedCount = submissions.filter((submission) => submission.status !== "open").length;
+
+  return (
+    <section>
+      <ContentWrap>
+        <div className="mb-5 flex items-baseline justify-between gap-4">
+          <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+            AntFleet submissions
+          </h2>
+          <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            {prCount} PRs · {issueCount} issues
+          </span>
+        </div>
+        <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
+          PRs and issues submitted by <span className="font-mono">antfleet-ops</span>{" "}against this
+          agent&apos;s upstream repo. Every row is AntFleet work, whether it originated from the app
+          pipeline or an operator-assisted review loop.
+        </p>
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <Badge>{openCount} open</Badge>
+          <Badge>{landedCount} landed or resolved</Badge>
+        </div>
+        <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
+          {submissions.map((submission) => (
+            <li key={`${submission.kind}-${submission.number}`}>
+              <AgentSubmissionRow submission={submission} now={now} />
+            </li>
+          ))}
+        </ul>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function AgentSubmissionRow({ submission, now }: { submission: AgentSubmission; now: Date }) {
+  const submittedRelative = formatRelativeTime(now, new Date(submission.submittedAt));
+  const resolvedRelative =
+    submission.resolvedAt !== null ? formatRelativeTime(now, new Date(submission.resolvedAt)) : null;
+  const shortSha =
+    submission.resolutionSha !== null ? submission.resolutionSha.slice(0, 7) : null;
+  const channelLabel =
+    submission.channel === "direct_claude_code" ? "operator-assisted AntFleet" : "AntFleet app";
+  const statusLabel = (() => {
+    switch (submission.status) {
+      case "open":
+        return "open";
+      case "merged":
+        return "merged";
+      case "absorbed":
+        return "fix absorbed";
+      case "superseded_landed":
+        return "superseded, landed";
+    }
+  })();
+
+  return (
+    <article className="py-5 -mx-3 px-3 rounded-md transition-colors hover:bg-[var(--color-bg-elevated)]">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-6">
+        <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
+          <Badge>{statusLabel}</Badge>
+          <Badge>{submission.kind.toUpperCase()} #{submission.number}</Badge>
+        </div>
+        <div className="flex-1 min-w-0">
+          <a
+            href={submission.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-[var(--color-ink)] leading-snug hover:underline underline-offset-2"
+          >
+            {submission.title} ↗
+          </a>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            <span>{channelLabel}</span>
+            <span className="text-[var(--color-line-strong)]">·</span>
+            <span>opened {submittedRelative}</span>
+            {resolvedRelative !== null && (
+              <>
+                <span className="text-[var(--color-line-strong)]">·</span>
+                <span>resolved {resolvedRelative}</span>
+              </>
+            )}
+            {shortSha !== null && (
+              <>
+                <span className="text-[var(--color-line-strong)]">·</span>
+                {submission.resolutionUrl !== null ? (
+                  <a
+                    href={submission.resolutionUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:underline underline-offset-2"
+                  >
+                    {shortSha} ↗
+                  </a>
+                ) : (
+                  <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
+                )}
+              </>
+            )}
+          </div>
+          {submission.note !== null && (
+            <p className="mt-2 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+              {submission.note}
+            </p>
+          )}
+        </div>
+      </div>
+    </article>
   );
 }
 

@@ -71,17 +71,84 @@ Author: `antfleet-ops` (GitHub user; member of AntFleet org)
 - Closed by: upstream owner (`Gordon Slater`). No comment from upstream — PR was closed without explanation; we did not author a closure comment.
 - Diff scope: PR 4 added a startup-time runtime assertion `assert token0 < token1` for the reposition flow + corrected the `computeNewRange` comment to match canonical Uniswap v3 invariant ordering. The closing commit `7329b8a` includes the same ordering assertion as part of a broader security hardening pass that also adds explicit GitHub Actions workflow permissions.
 
+## PR 5 — Venice bearer cache permissions
+
+- Upstream PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/9
+- Branch on fork: `antfleet-ops/agent-autonomopoly:fix/bearer-cache-permissions`
+- Opened: 2026-06-01T22:51:15Z by `antfleet-ops`
+- Source: operator-assisted AntFleet review loop, not the app pipeline.
+- Status: `superseded_landed` 2026-06-03T21:21:46Z
+- closureMethod: `superseded_by_upstream_pr`
+- closureSha: `12e8f0a7d379b6b8d3d1d804d2f328ad4a3aec84`
+- Superseding PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/14
+- Closure evidence: maintainer comment says PR #14 ported the exact bearer-cache `0o600` hardening onto current `main` and merged at `12e8f0a`.
+
+## PR 6 — Venice demand estimator reads `variant`
+
+- Upstream PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/10
+- Branch on fork: `antfleet-ops/agent-autonomopoly:fix/venice-demand-field`
+- Opened: 2026-06-01T22:51:37Z by `antfleet-ops`
+- Source: operator-assisted AntFleet review loop, not the app pipeline.
+- Status: `superseded_landed` 2026-06-03T21:21:48Z
+- closureMethod: `superseded_by_upstream_pr`
+- closureSha: `12e8f0a7d379b6b8d3d1d804d2f328ad4a3aec84`
+- Superseding PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/14
+- Closure evidence: maintainer comment says PR #14 ported the exact `variant` field read in `estimateVeniceDemandDiem` onto current `main` and merged at `12e8f0a`.
+
+## PR 7 — Zero-token retry guard
+
+- Upstream PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/11
+- Branch on fork: `antfleet-ops/agent-autonomopoly:fix/zero-token-retry-exit`
+- Opened: 2026-06-01T22:52:12Z by `antfleet-ops`
+- Source: operator-assisted AntFleet review loop, not the app pipeline.
+- Status: `superseded_landed` 2026-06-03T21:21:50Z
+- closureMethod: `superseded_by_upstream_pr`
+- closureSha: `12e8f0a7d379b6b8d3d1d804d2f328ad4a3aec84`
+- Superseding PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/14
+- Closure evidence: maintainer comment says PR #14 ported the exact zero-token retry guard in `aeon.yml` onto current `main` and merged at `12e8f0a`.
+
+## PR 8 — Reactive trigger parser accepts unquoted `on:`
+
+- Upstream PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/31
+- Branch on fork: `antfleet-ops/agent-autonomopoly:fix/reactive-trigger-unquoted-on`
+- Opened: 2026-06-03T22:39:06Z by `antfleet-ops`
+- Source: operator-assisted AntFleet review loop, not the app pipeline.
+- Status: `open` as of 2026-06-04.
+
+## PR 9 — Diagnose skill passes Privy config
+
+- Upstream PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/32
+- Branch on fork: `antfleet-ops/agent-autonomopoly:fix/diagnose-loadprivyconfig`
+- Opened: 2026-06-03T22:42:48Z by `antfleet-ops`
+- Source: operator-assisted AntFleet review loop, not the app pipeline.
+- Status: `open` as of 2026-06-04.
+
+## PR 10 — Post-merge polish batch
+
+- Upstream PR: https://github.com/Liquid-Protocol-Ops/agent-autonomopoly/pull/33
+- Branch on fork: `antfleet-ops/agent-autonomopoly:fix/post-merge-polish`
+- Opened: 2026-06-03T22:57:40Z by `antfleet-ops`
+- Source: operator-assisted AntFleet review loop, not the app pipeline.
+- Status: `open` as of 2026-06-04.
+
+## Issues
+
+Live GitHub search on 2026-06-04 found no pure issues authored by
+`antfleet-ops` in `Liquid-Protocol-Ops/agent-autonomopoly`; all matching
+submissions are pull requests.
+
 ## Monitoring
 
-Re-check status periodically. Three closure outcomes are tracked:
+Re-check status periodically. Four closure outcomes are tracked:
 
 - `merged` — capture merge SHA; becomes a cross-repo receipt anchor on `antfleet.dev/receipts`.
 - `absorbed_inline` — capture closure SHA on upstream base branch (the commit that applied the fix without merging our PR); should also become receipt-eligible once the absorbed-inline detection sprint ships (schema migration + UI surface update).
+- `superseded_landed` — our PR closed without merge because an upstream-authored PR ported the same fix onto current `main`; capture the superseding merge SHA.
 - `declined` — capture closure timestamp; not receipt-eligible.
 
 For `absorbed_inline` outcomes, the closure SHA is what matters — not whether our PR was technically merged. The receipt claim is "AntFleet's signal preceded the fix," which holds whether attribution is clean (`merged`) or absorbed (`absorbed_inline`).
 
-## Record summary (as of 2026-05-26)
+## Record summary (as of 2026-06-04)
 
 | PR  | Upstream # | Opened     | Status            | Outcome SHA  | Days to fix |
 | --- | ---------- | ---------- | ----------------- | ------------ | ----------- |
@@ -89,8 +156,17 @@ For `absorbed_inline` outcomes, the closure SHA is what matters — not whether 
 | 2   | #4         | 2026-05-18 | `merged`          | `fb5509c`    | 1           |
 | 3   | #5         | 2026-05-19 | `closed_absorbed` | `bab1e4b`    | 7           |
 | 4   | #8         | 2026-05-20 | `closed_absorbed` | `7329b8a`    | 6           |
+| 5   | #9         | 2026-06-01 | `superseded_landed` | `12e8f0a`  | 2           |
+| 6   | #10        | 2026-06-01 | `superseded_landed` | `12e8f0a`  | 2           |
+| 7   | #11        | 2026-06-01 | `superseded_landed` | `12e8f0a`  | 2           |
+| 8   | #31        | 2026-06-03 | `open`            | n/a          | n/a         |
+| 9   | #32        | 2026-06-03 | `open`            | n/a          | n/a         |
+| 10  | #33        | 2026-06-03 | `open`            | n/a          | n/a         |
 
-**Net record: 4 substantive PRs filed, 4/4 underlying fixes landed on upstream within 8 days. AntFleet's signal preceded the fix in 100% of cases.** Two via clean merge, two via inline absorption.
+**Net resolved record: 7 substantive PRs resolved, 7/7 underlying fixes landed on upstream.**
+Two via clean merge, two via inline absorption, and three via upstream PR #14
+superseding the antfleet-ops branches. Three additional PRs remain open as of
+2026-06-04.
 
 ## Notes
 
