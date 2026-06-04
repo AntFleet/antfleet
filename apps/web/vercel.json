@@ -23,7 +23,7 @@
     },
     {
       "path": "/api/cron/review-jobs",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/cron/scorecard-snapshot",
