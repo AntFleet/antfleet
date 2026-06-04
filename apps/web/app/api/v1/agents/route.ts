@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { AUTONOMOPOLY_AGENT } from "@/lib/agent-registry";
+import { loadAgentSubmissionStats } from "@/lib/agent-submissions";
 import { decodeCursor, encodeCursor } from "@/lib/api-v1/cursor";
 import { jsonError, jsonOk, LIST_CACHE, optionsResponse } from "@/lib/api-v1/responses";
 import { iso, serializeAgent, type AgentListRow } from "@/lib/api-v1/serialize";
@@ -117,7 +118,10 @@ const DEFAULT_DEPS: AgentsDeps = {
       ORDER BY directory.first_seen_at DESC, directory.address ASC
       LIMIT ${query.limit + 1}
     `);
-    return pageAgents(sqlRows<SqlAgentRow>(result).map(agentRowFromSql), query.limit);
+    return pageAgents(
+      sqlRows<SqlAgentRow>(result).map(agentRowFromSql).map(applySubmissionStats),
+      query.limit,
+    );
   },
 };
 
@@ -188,6 +192,25 @@ function agentRowFromSql(row: SqlAgentRow): AgentListRow {
         : Number.parseInt(row.findings_count, 10),
     latestFindingAt: row.latest_finding_at,
   };
+}
+
+function applySubmissionStats(row: AgentListRow): AgentListRow {
+  const submissions = loadAgentSubmissionStats(row.address);
+  if (submissions.total === 0) return row;
+  return {
+    ...row,
+    findingsCount: Math.max(row.findingsCount, submissions.total),
+    latestFindingAt: latestDateLike(row.latestFindingAt, submissions.latestSubmittedAt),
+  };
+}
+
+function latestDateLike(
+  left: Date | string | null,
+  right: Date | string | null,
+): Date | string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return new Date(right) > new Date(left) ? right : left;
 }
 
 function sqlRows<T>(result: unknown): T[] {

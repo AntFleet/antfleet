@@ -17,6 +17,13 @@ export type AgentSubmission = {
   note: string | null;
 };
 
+export type AgentSubmissionStats = {
+  total: number;
+  open: number;
+  landed: number;
+  latestSubmittedAt: string | null;
+};
+
 const AUTONOMOPOLY_TOKEN = "0xB3D7e0c3C39A1D3F1B304663065A2F83Ddf56d8e";
 const AUTONOMOPOLY_REPO = "Liquid-Protocol-Ops/agent-autonomopoly";
 const AUTONOMOPOLY_PR = (number: number) =>
@@ -192,4 +199,46 @@ export function loadAgentSubmissions(agentTokenAddress: string): AgentSubmission
   return AGENT_SUBMISSIONS.filter((submission) => {
     return submission.agentTokenAddress.toLowerCase() === normalized;
   });
+}
+
+export function loadAgentSubmissionStats(agentTokenAddress: string): AgentSubmissionStats {
+  return summarizeAgentSubmissions(loadAgentSubmissions(agentTokenAddress));
+}
+
+export function loadRepoSubmissionStats(repoFullName: string): AgentSubmissionStats {
+  const normalized = repoFullName.toLowerCase();
+  return summarizeAgentSubmissions(
+    AGENT_SUBMISSIONS.filter((submission) => submission.repoFullName.toLowerCase() === normalized),
+  );
+}
+
+export function isLandedAgentSubmission(submission: AgentSubmission): boolean {
+  return submission.status !== "open";
+}
+
+function summarizeAgentSubmissions(submissions: readonly AgentSubmission[]): AgentSubmissionStats {
+  let latestSubmittedAt: string | null = null;
+  let open = 0;
+  let landed = 0;
+
+  for (const submission of submissions) {
+    if (submission.status === "open") {
+      open += 1;
+    } else {
+      landed += 1;
+    }
+    if (
+      latestSubmittedAt === null ||
+      new Date(submission.submittedAt) > new Date(latestSubmittedAt)
+    ) {
+      latestSubmittedAt = submission.submittedAt;
+    }
+  }
+
+  return {
+    total: submissions.length,
+    open,
+    landed,
+    latestSubmittedAt,
+  };
 }

@@ -10,6 +10,7 @@ import {
   type AgentDetailRow,
   type AgentListRow,
 } from "@/lib/api-v1/serialize";
+import { loadAgentSubmissionStats } from "@/lib/agent-submissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -129,8 +130,10 @@ const DEFAULT_DEPS: AgentDetailDeps = {
     };
     return {
       ...base,
-      findingsCount: numberFromSql(stats.findings_count),
-      latestFindingAt: stats.latest_finding_at,
+      ...applySubmissionStats(base.address, {
+        findingsCount: numberFromSql(stats.findings_count),
+        latestFindingAt: stats.latest_finding_at,
+      }),
       drift: {
         snapshotsCount: numberFromSql(stats.snapshots_count),
         latestObservedAt: stats.latest_observed_at,
@@ -162,6 +165,27 @@ export async function handleAgentDetail(
 
 function numberFromSql(value: number | string): number {
   return typeof value === "number" ? value : Number.parseInt(value, 10);
+}
+
+function applySubmissionStats(
+  address: string,
+  stats: { findingsCount: number; latestFindingAt: Date | string | null },
+): { findingsCount: number; latestFindingAt: Date | string | null } {
+  const submissions = loadAgentSubmissionStats(address);
+  if (submissions.total === 0) return stats;
+  return {
+    findingsCount: Math.max(stats.findingsCount, submissions.total),
+    latestFindingAt: latestDateLike(stats.latestFindingAt, submissions.latestSubmittedAt),
+  };
+}
+
+function latestDateLike(
+  left: Date | string | null,
+  right: Date | string | null,
+): Date | string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return new Date(right) > new Date(left) ? right : left;
 }
 
 function sqlRows<T>(result: unknown): T[] {

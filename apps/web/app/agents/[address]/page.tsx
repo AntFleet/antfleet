@@ -9,13 +9,31 @@ import {
 } from "@/db/queries";
 import type { AgentFinding } from "@/db/schema";
 import { findAgentByAddress } from "@/lib/agent-registry";
-import { loadAgentSubmissions, type AgentSubmission } from "@/lib/agent-submissions";
+import {
+  isLandedAgentSubmission,
+  loadAgentSubmissions,
+  type AgentSubmission,
+} from "@/lib/agent-submissions";
 import { formatRelativeTime } from "@/lib/receipts";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
 import { CopyBadgeSnippet } from "./CopyBadgeSnippet";
 import { TweetIntent } from "@/components/TweetIntent";
 
 const SITE_URL = "https://www.antfleet.dev";
+
+type AgentUpstreamFix = {
+  id: string;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  upstreamPrNumber: number;
+  title: string | null;
+  resolvedAt: Date;
+  resolutionSha: string;
+  closureMethod: string;
+  prUrl: string;
+  resolutionUrl: string | null;
+  channel: AgentSubmission["channel"] | null;
+};
 
 // Per-agent finding page. Reads agent_findings WHERE lower(address) = lower
 // (slug) and renders every finding inline (info → high), most recent first.
@@ -69,10 +87,19 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
 
   const registryEntry = findAgentByAddress(address);
   const submissions = loadAgentSubmissions(detail.agentTokenAddress);
+  const publicFindingCount = Math.max(detail.findings.length, submissions.length);
+  const latestActivityAt = latestAgentActivityAt(detail.findings, submissions);
+  const upstreamFixes = agentUpstreamFixes(detail.crossRepoMerges, submissions);
 
   return (
     <>
-      <Header detail={detail} now={now} />
+      <Header
+        detail={detail}
+        now={now}
+        publicFindingCount={publicFindingCount}
+        latestActivityAt={latestActivityAt}
+        upstreamFixCount={upstreamFixes.length}
+      />
       {registryEntry !== null && (
         <>
           <SectionDivider />
@@ -85,14 +112,19 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
           <AgentSubmissionsSection submissions={submissions} now={now} />
         </>
       )}
-      {detail.crossRepoMerges.length > 0 && (
+      {upstreamFixes.length > 0 && (
         <>
           <SectionDivider />
-          <CrossRepoMergesSection merges={detail.crossRepoMerges} now={now} />
+          <CrossRepoMergesSection fixes={upstreamFixes} now={now} />
         </>
       )}
       <SectionDivider />
-      <FindingsSection findings={detail.findings} now={now} />
+      <FindingsSection
+        findings={detail.findings}
+        submissionCount={submissions.length}
+        publicFindingCount={publicFindingCount}
+        now={now}
+      />
       {detail.benchmarkReviews.length > 0 && (
         <>
           <SectionDivider />
@@ -345,6 +377,87 @@ function BadgeEmbedSection({ repo, address }: { repo: string; address: string })
   );
 }
 
+function latestAgentActivityAt(findings: AgentFinding[], submissions: AgentSubmission[]): Date {
+  const timestamps = [
+    ...findings.map((finding) => finding.publishedAt),
+    ...submissions.map((submission) => new Date(submission.submittedAt)),
+  ];
+  return timestamps.reduce((latest, current) => (current > latest ? current : latest));
+}
+
+function agentUpstreamFixes(
+  merges: AgentCrossRepoMerge[],
+  submissions: AgentSubmission[],
+): AgentUpstreamFix[] {
+  const fixes = new Map<string, AgentUpstreamFix>();
+
+  for (const submission of submissions) {
+    if (
+      submission.kind !== "pr" ||
+      !isLandedAgentSubmission(submission) ||
+      submission.resolvedAt === null ||
+      submission.resolutionSha === null
+    ) {
+      continue;
+    }
+    const repo = parseRepoFullName(submission.repoFullName);
+    if (repo === null) continue;
+    fixes.set(`${submission.repoFullName.toLowerCase()}#${submission.number}`, {
+      id: `submission-${submission.repoFullName}-${submission.number}`,
+      upstreamOwner: repo.owner,
+      upstreamRepo: repo.repo,
+      upstreamPrNumber: submission.number,
+      title: submission.title,
+      resolvedAt: new Date(submission.resolvedAt),
+      resolutionSha: submission.resolutionSha,
+      closureMethod: closureMethodForSubmission(submission),
+      prUrl: submission.url,
+      resolutionUrl: submission.resolutionUrl,
+      channel: submission.channel,
+    });
+  }
+
+  for (const merge of merges) {
+    const key =
+      `${merge.upstreamOwner}/${merge.upstreamRepo}#${merge.upstreamPrNumber}`.toLowerCase();
+    if (fixes.has(key)) continue;
+    fixes.set(key, {
+      id: merge.id,
+      upstreamOwner: merge.upstreamOwner,
+      upstreamRepo: merge.upstreamRepo,
+      upstreamPrNumber: merge.upstreamPrNumber,
+      title: null,
+      resolvedAt: merge.resolvedAt,
+      resolutionSha: merge.resolutionSha,
+      closureMethod: merge.closureMethod,
+      prUrl: merge.prUrl,
+      resolutionUrl: null,
+      channel: null,
+    });
+  }
+
+  return [...fixes.values()].toSorted((a, b) => b.resolvedAt.getTime() - a.resolvedAt.getTime());
+}
+
+function parseRepoFullName(repoFullName: string): { owner: string; repo: string } | null {
+  const [owner, repo] = repoFullName.split("/");
+  if (owner === undefined || repo === undefined || owner === "" || repo === "") return null;
+  return { owner, repo };
+}
+
+function closureMethodForSubmission(submission: AgentSubmission): string {
+  switch (submission.status) {
+    case "absorbed":
+      return "absorbed_inline";
+    case "superseded_landed":
+      return "superseded_landed";
+    case "merged":
+      return "merged";
+    case "open":
+      return "open";
+  }
+}
+
 function ContentWrap({ children }: { children: React.ReactNode }) {
   return <div className="mx-auto max-w-3xl px-6">{children}</div>;
 }
@@ -356,6 +469,9 @@ function SectionDivider() {
 function Header({
   detail,
   now,
+  publicFindingCount,
+  latestActivityAt,
+  upstreamFixCount,
 }: {
   detail: {
     agentName: string;
@@ -364,15 +480,16 @@ function Header({
     crossRepoMerges: AgentCrossRepoMerge[];
   };
   now: Date;
+  publicFindingCount: number;
+  latestActivityAt: Date;
+  upstreamFixCount: number;
 }) {
-  const findingCount = detail.findings.length;
-  const lastFinding = detail.findings[0]!;
-  const relative = formatRelativeTime(now, lastFinding.publishedAt);
+  const relative = formatRelativeTime(now, latestActivityAt);
   const hasOpenPr = detail.findings.some(
     (f) => f.upstreamPrUrl !== null && f.upstreamMergedSha === null,
   );
-  const hasMergedPr = detail.findings.some((f) => f.upstreamMergedSha !== null);
-  const upstreamMergeCount = detail.crossRepoMerges.length;
+  const hasMergedPr =
+    upstreamFixCount > 0 || detail.findings.some((f) => f.upstreamMergedSha !== null);
 
   return (
     <section className="py-20 pb-12">
@@ -384,9 +501,9 @@ function Header({
           {detail.agentName}
         </h1>
         <div className="mt-5 flex flex-wrap items-center gap-2">
-          <Badge>{`${findingCount} finding${findingCount === 1 ? "" : "s"}`}</Badge>
-          {upstreamMergeCount > 0 && (
-            <Badge>{`${upstreamMergeCount} merge${upstreamMergeCount === 1 ? "" : "s"} upstream`}</Badge>
+          <Badge>{`${publicFindingCount} finding${publicFindingCount === 1 ? "" : "s"}`}</Badge>
+          {upstreamFixCount > 0 && (
+            <Badge>{`${upstreamFixCount} upstream fix${upstreamFixCount === 1 ? "" : "es"}`}</Badge>
           )}
           {hasMergedPr && <Badge>upstream merged</Badge>}
           {hasOpenPr && !hasMergedPr && <Badge>upstream PR open</Badge>}
@@ -404,7 +521,7 @@ function Header({
             basescan ↗
           </a>
           <TweetIntent
-            text={`Public investigation on ${detail.agentName} (${shortAddress(detail.agentTokenAddress)}): ${findingCount} finding${findingCount === 1 ? "" : "s"} on file.`}
+            text={`Public investigation on ${detail.agentName} (${shortAddress(detail.agentTokenAddress)}): ${publicFindingCount} finding${publicFindingCount === 1 ? "" : "s"} on file.`}
             url={`${SITE_URL}/agents/${detail.agentTokenAddress}`}
             ariaLabel={`Tweet this agent's findings: ${detail.agentName}`}
             className="underline underline-offset-2 hover:text-[var(--color-ink)] transition-colors"
@@ -441,13 +558,30 @@ function Header({
   );
 }
 
-function FindingsSection({ findings, now }: { findings: AgentFinding[]; now: Date }) {
+function FindingsSection({
+  findings,
+  submissionCount,
+  publicFindingCount,
+  now,
+}: {
+  findings: AgentFinding[];
+  submissionCount: number;
+  publicFindingCount: number;
+  now: Date;
+}) {
   return (
     <section>
       <ContentWrap>
         <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)] mb-5">
-          Findings
+          Finding writeups
         </h2>
+        {submissionCount > findings.length && (
+          <p className="mb-8 max-w-xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
+            AntFleet has {publicFindingCount} findings on file for this agent. The long-form
+            writeups below are the published investigation bodies; the complete PR-level finding
+            ledger is listed above under AntFleet submissions.
+          </p>
+        )}
         <div className="flex flex-col gap-12">
           {findings.map((f) => (
             <FindingBlock key={f.findingId} finding={f} now={now} />
@@ -504,7 +638,7 @@ function FindingBlock({ finding, now }: { finding: AgentFinding; now: Date }) {
   );
 }
 
-function CrossRepoMergesSection({ merges, now }: { merges: AgentCrossRepoMerge[]; now: Date }) {
+function CrossRepoMergesSection({ fixes, now }: { fixes: AgentUpstreamFix[]; now: Date }) {
   return (
     <section>
       <ContentWrap>
@@ -513,17 +647,18 @@ function CrossRepoMergesSection({ merges, now }: { merges: AgentCrossRepoMerge[]
             Upstream fixes
           </h2>
           <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
-            {merges.length} {merges.length === 1 ? "fix" : "fixes"} landed on this agent
+            {fixes.length} {fixes.length === 1 ? "fix" : "fixes"} landed on this agent
           </span>
         </div>
         <p className="text-sm text-[var(--color-ink-muted)] mb-6 max-w-xl leading-relaxed">
-          PRs AntFleet opened against this agent&apos;s own repo where the underlying fix landed
-          upstream — whether via merge or via a separate upstream commit that applies the same fix.
+          PRs AntFleet filed against this agent&apos;s own repo where the underlying fix landed
+          upstream — whether via a clean merge, a separate upstream commit, or an upstream PR that
+          ported the same fix.
         </p>
         <ul className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
-          {merges.map((m) => (
-            <li key={m.id}>
-              <CrossRepoMergeRow merge={m} now={now} />
+          {fixes.map((fix) => (
+            <li key={fix.id}>
+              <CrossRepoMergeRow fix={fix} now={now} />
             </li>
           ))}
         </ul>
@@ -532,14 +667,21 @@ function CrossRepoMergesSection({ merges, now }: { merges: AgentCrossRepoMerge[]
   );
 }
 
-function CrossRepoMergeRow({ merge, now }: { merge: AgentCrossRepoMerge; now: Date }) {
-  const arrowLabel = `AntFleet → ${merge.upstreamOwner.toLowerCase()}/${merge.upstreamRepo.toLowerCase()}`;
-  const shortSha = merge.resolutionSha.slice(0, 7);
-  const isAbsorbed = merge.closureMethod === "absorbed_inline";
-  const resolvedLabel = isAbsorbed ? "fix absorbed at" : "merged at";
-  const linkUrl = isAbsorbed
-    ? `https://github.com/${merge.upstreamOwner}/${merge.upstreamRepo}/commit/${merge.resolutionSha}`
-    : merge.prUrl;
+function CrossRepoMergeRow({ fix, now }: { fix: AgentUpstreamFix; now: Date }) {
+  const arrowLabel = `AntFleet → ${fix.upstreamOwner.toLowerCase()}/${fix.upstreamRepo.toLowerCase()}`;
+  const shortSha = fix.resolutionSha.slice(0, 7);
+  const isAbsorbed = fix.closureMethod === "absorbed_inline";
+  const isSuperseded = fix.closureMethod === "superseded_landed";
+  const resolvedLabel = isAbsorbed
+    ? "fix absorbed at"
+    : isSuperseded
+      ? "ported upstream at"
+      : "merged at";
+  const linkUrl =
+    fix.resolutionUrl ??
+    (isAbsorbed || isSuperseded
+      ? `https://github.com/${fix.upstreamOwner}/${fix.upstreamRepo}/commit/${fix.resolutionSha}`
+      : fix.prUrl);
   return (
     <a
       href={linkUrl}
@@ -548,24 +690,28 @@ function CrossRepoMergeRow({ merge, now }: { merge: AgentCrossRepoMerge; now: Da
       className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:gap-6 group transition-colors hover:bg-[var(--color-bg-elevated)] -mx-3 px-3 rounded-md"
     >
       <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
-        <Badge>{isAbsorbed ? "fix absorbed" : "cross-repo"}</Badge>
+        <Badge>{isAbsorbed ? "fix absorbed" : isSuperseded ? "fix ported" : "merged"}</Badge>
+        {fix.channel === "direct_claude_code" && <Badge>operator-assisted</Badge>}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm text-[var(--color-ink)] leading-snug group-hover:underline underline-offset-2 font-mono">
           {arrowLabel}
         </p>
+        {fix.title !== null && (
+          <p className="mt-1 text-sm leading-snug text-[var(--color-ink-muted)]">{fix.title}</p>
+        )}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
-          <span>PR #{merge.upstreamPrNumber}</span>
+          <span>PR #{fix.upstreamPrNumber}</span>
           <span className="text-[var(--color-line-strong)]">·</span>
           <span>
             {resolvedLabel} <span className="text-[var(--color-ink-muted)]">{shortSha}</span>
           </span>
           <span className="text-[var(--color-line-strong)]">·</span>
-          <span>{formatRelativeTime(now, merge.resolvedAt)}</span>
+          <span>{formatRelativeTime(now, fix.resolvedAt)}</span>
         </div>
       </div>
       <span className="font-mono text-[11px] text-[var(--color-ink-subtle)] group-hover:text-[var(--color-ink)] transition-colors sm:shrink-0 sm:self-center">
-        {isAbsorbed ? "view commit →" : "view PR →"}
+        {isAbsorbed || isSuperseded ? "view commit →" : "view PR →"}
       </span>
     </a>
   );

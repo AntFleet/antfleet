@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import { agentFindings, driftSnapshots } from "@/db/schema";
+import { loadRepoSubmissionStats } from "./agent-submissions";
 import type { AgentRegistryEntry } from "./agent-registry";
 import { writePostDraft } from "./post-drafts";
 
@@ -229,7 +230,7 @@ export async function countFindingsForRepo(repoFullName: string): Promise<number
     .select({ count: sql<number>`count(*)::int` })
     .from(agentFindings)
     .where(sql`lower(${agentFindings.repoFullName}) = ${repoFullName.toLowerCase()}`);
-  return rows[0]?.count ?? 0;
+  return Math.max(rows[0]?.count ?? 0, loadRepoSubmissionStats(repoFullName).total);
 }
 
 export function isNearThreshold(score: number, threshold: number): boolean {
