@@ -38,7 +38,6 @@ export async function generateMetadata({
 
   const { submission, findings } = detail;
   const pageUrl = roastPageUrl(submission.id);
-  const badgeUrl = roastBadgeUrl(submission.repoFullName);
   const title = metadataTitle(submission);
   const description = metadataDescription(submission, findings);
 
@@ -48,11 +47,10 @@ export async function generateMetadata({
     openGraph: {
       title,
       description,
-      images: [badgeUrl],
       url: pageUrl,
     },
     twitter: {
-      card: "summary",
+      card: "summary_large_image",
     },
   };
 }

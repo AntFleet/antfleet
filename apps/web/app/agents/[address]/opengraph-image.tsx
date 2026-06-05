@@ -4,6 +4,7 @@ import type { AgentFinding } from "@/db/schema";
 import { severityLabel, shortAddress } from "@/lib/agent-findings";
 
 export const runtime = "nodejs";
+export const revalidate = 60;
 export const alt = "AntFleet agent investigation card showing public finding count and severity";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";

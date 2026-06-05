@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import type { ReactNode } from "react";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
@@ -18,12 +19,36 @@ const jbMono = JetBrains_Mono({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  metadataBase: new URL("https://www.antfleet.dev"),
-  title: "AntFleet — the trust layer for code written by agents",
-  description:
-    "The trust layer for code written by agents. Two independent frontier models review every PR; only unanimous findings post, and every closure is SHA-pinned to GitHub's event log.",
-};
+const DEFAULT_SITE_URL = "https://www.antfleet.dev";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const headerStore = await headers();
+  const headerHost = headerStore.get("host");
+  const headerOrigin =
+    headerHost === null ? null : `${localProtocolFor(headerHost)}://${headerHost}`;
+
+  return {
+    metadataBase: new URL(
+      normalizeOrigin(process.env.NEXT_PUBLIC_SITE_URL) ?? headerOrigin ?? DEFAULT_SITE_URL,
+    ),
+    title: "AntFleet — the trust layer for code written by agents",
+    description:
+      "The trust layer for code written by agents. Two independent frontier models review every PR; only unanimous findings post, and every closure is SHA-pinned to GitHub's event log.",
+  };
+}
+
+function normalizeOrigin(value: string | undefined): string | null {
+  if (value === undefined || value.trim() === "") return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function localProtocolFor(host: string): "http" | "https" {
+  return host.includes("localhost") || host.startsWith("127.") ? "http" : "https";
+}
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (

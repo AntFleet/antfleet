@@ -4,6 +4,7 @@ import { redactSecrets } from "@/lib/disagreements";
 import { shortenRepoHash, shortenSha } from "@/lib/short-id";
 
 export const runtime = "nodejs";
+export const revalidate = 3600;
 export const alt = "AntFleet anatomy card showing a unanimous reviewer finding";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";

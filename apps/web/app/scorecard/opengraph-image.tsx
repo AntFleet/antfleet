@@ -2,6 +2,7 @@ import { ImageResponse } from "next/og";
 import { loadScorecardIndex } from "@/db/queries";
 
 export const runtime = "nodejs";
+export const revalidate = 3600;
 export const alt = "AntFleet AI Scorecard — weekly provider comparison";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";

@@ -4,6 +4,7 @@ import type { AgentFinding } from "@/db/schema";
 import { severityLabel } from "@/lib/agent-findings";
 
 export const runtime = "nodejs";
+export const revalidate = 60;
 export const alt = "AntFleet roast card showing repository review status and findings";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";

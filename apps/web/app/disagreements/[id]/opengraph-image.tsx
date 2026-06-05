@@ -7,6 +7,7 @@ import {
 import { shortenRepoHash } from "@/lib/short-id";
 
 export const runtime = "nodejs";
+export const revalidate = 3600;
 export const alt = "AntFleet disagreement card showing a filtered reviewer finding";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";

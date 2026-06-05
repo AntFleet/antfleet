@@ -8,6 +8,7 @@ import { formatUsd, type RetroEvidence } from "@/lib/retro-render";
 // can't drift away from the body copy.
 
 export const runtime = "nodejs";
+export const revalidate = 3600;
 export const alt =
   "AntFleet retro receipt card — Moonwell MIP-X43 oracle bug, unanimous gate fired";
 export const size = { width: 1200, height: 630 };
