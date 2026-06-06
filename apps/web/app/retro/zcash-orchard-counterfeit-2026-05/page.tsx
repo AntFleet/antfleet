@@ -50,7 +50,7 @@ const specialist = JSON.parse(
 ) as EvidenceBundle;
 
 const META_DESC =
-  "Re-ran AntFleet's two-model unanimous review against the 2021 commit that introduced the Zcash Orchard counterfeiting bug disclosed by Taylor Hornby on 2026-05-29. Honest receipt: generalist surfaced adjacent soundness concerns; a 50-line halo2 context block got GPT-5 to the exact fix mechanism, blind.";
+  "Re-ran AntFleet's two-model unanimous review against the 2021 commit that introduced the Zcash Orchard counterfeiting bug disclosed by Taylor Hornby on 2026-05-29. Honest receipt: generalist surfaced adjacent soundness concerns; a 50-line halo2 context block put GPT-5 on the right defect class — missing copy-constraint on the base — blind.";
 
 export const metadata: Metadata = {
   title: "Retro: Zcash Orchard counterfeiting bug | AntFleet",
@@ -228,10 +228,13 @@ export default function RetroZcashOrchardPage() {
                   </p>
                 </td>
                 <td className="py-4">
-                  <span className="font-mono text-[11px] text-emerald-700">DIRECT HIT</span>
+                  <span className="font-mono text-[11px] text-emerald-700">CLASS HIT</span>
                   <p className="mt-1 text-[var(--color-ink-muted)]">
-                    &ldquo;{specialistOpenaiTopBug?.title}.&rdquo; Mechanism, exploit, and
-                    recommended fix line up with the actual June 1, 2026 fix commit point-for-point.
+                    &ldquo;{specialistOpenaiTopBug?.title}.&rdquo; Named the missing
+                    copy-constraint mechanism on the base coordinates — the defect class Taylor&apos;s
+                    bug exploits. Mechanism and fix direction align with the June 1 commit; not a
+                    direct pin of the{" "}
+                    <code className="font-mono text-[12px]">copy_advice</code> call site.
                   </p>
                 </td>
               </tr>
@@ -241,7 +244,7 @@ export default function RetroZcashOrchardPage() {
       </section>
 
       <section className="mt-12 space-y-4">
-        <h2 className="text-xl font-semibold tracking-tight">The direct hit, verbatim</h2>
+        <h2 className="text-xl font-semibold tracking-tight">The class hit, verbatim</h2>
         <p className="text-sm text-[var(--color-ink-muted)]">
           GPT-5, specialist wrapper, blind. No mention of the bug, the disclosure date, or Taylor in
           the prompt.
@@ -299,11 +302,14 @@ export default function RetroZcashOrchardPage() {
           </li>
           <li>
             <strong>
-              A 50-line halo2 specialist wrapper, blind, closes the gap on one of two reviewers.
+              A 50-line halo2 specialist wrapper, blind, puts the right defect class on one
+              reviewer&apos;s radar.
             </strong>{" "}
-            GPT-5 with the wrapper produces a finding whose mechanism and recommended fix match the
-            actual June 2026 fix commit. No model upgrade, no custom harness, no agentic loop. Opus
-            4.7 with the same wrapper catches the bug class but localized to{" "}
+            GPT-5 with the wrapper names the missing copy-constraint mechanism and recommends the
+            fix direction that matches the June 2026 patch — not a direct pin of the{" "}
+            <code className="font-mono">copy_advice</code> call site, but the class, exploit path,
+            and fix all point at the right thing. No model upgrade, no custom harness, no agentic
+            loop. Opus 4.7 with the same wrapper also catches the bug class but localizes to{" "}
             <code className="font-mono">process_lsb</code> rather than the main loop — partial
             recall lift.
           </li>
@@ -313,7 +319,7 @@ export default function RetroZcashOrchardPage() {
               for deep targeted audit.
             </strong>{" "}
             A finding only one reviewer surfaces is dropped at the gate, even when both flagged real
-            soundness bugs in the same gadget. Audit-mode review is a different product.
+            soundness bugs in the same gadget. Specialist reviewer AntFleet will be building next.
           </li>
         </ul>
       </section>

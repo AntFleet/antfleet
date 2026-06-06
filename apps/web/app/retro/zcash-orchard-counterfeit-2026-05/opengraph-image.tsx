@@ -1,12 +1,12 @@
 import { ImageResponse } from "next/og";
 
 // 1200×630 OG card for the Zcash Orchard methodology retro.
-// Heroes the four-cell result honestly: PARTIAL / DIRECT HIT.
+// Heroes the four-cell result honestly: PARTIAL / CLASS HIT.
 
 export const runtime = "nodejs";
 export const revalidate = 3600;
 export const alt =
-  "AntFleet retro receipt card — Zcash Orchard counterfeiting bug, blind re-run of the 2021 introducing commit, generalist surfaced adjacent soundness, halo2 specialist wrapper produced a direct hit on GPT-5";
+  "AntFleet retro receipt card — Zcash Orchard counterfeiting bug, blind re-run of the 2021 introducing commit, generalist surfaced adjacent soundness, halo2 specialist wrapper put GPT-5 on the right defect class";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -79,8 +79,9 @@ export default function Image(): ImageResponse {
             maxWidth: 1000,
           }}
         >
-          Generalist gate surfaced adjacent soundness flags. A 50-line halo2 specialist wrapper got
-          GPT-5 to the exact fix mechanism — no model upgrade, no custom harness.
+          Generalist gate surfaced adjacent soundness flags. A 50-line halo2 specialist wrapper put
+          GPT-5 on the missing copy-constraint class — mechanism and fix direction matched. No model
+          upgrade, no custom harness.
         </div>
         <div
           style={{
@@ -95,7 +96,7 @@ export default function Image(): ImageResponse {
         >
           <span>generalist · partial / partial</span>
           <span>·</span>
-          <span style={{ color: INK }}>specialist · partial / DIRECT HIT</span>
+          <span style={{ color: INK }}>specialist · partial / CLASS HIT</span>
         </div>
       </div>
 
