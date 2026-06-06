@@ -7,6 +7,7 @@ const BASE_NOW = new Date("2026-05-17T12:00:00.000Z");
 const SAMPLE: PublicReceiptRow = {
   findingId: "83e79770-1",
   severity: "High",
+  label: "blocking",
   category: "Security",
   title: "SQL injection in getOrder handler",
   // 64-hex sha256 — only first 8 should ever leave the server

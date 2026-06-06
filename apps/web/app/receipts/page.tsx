@@ -340,6 +340,11 @@ function ReceiptRow({ display }: { display: DisplayReceipt }) {
         <div className="flex flex-wrap items-center gap-2 sm:w-44 sm:shrink-0">
           <Badge>{display.category}</Badge>
           <Badge>{display.severity}</Badge>
+          {display.label && display.label !== "blocking" && (
+            <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 capitalize">
+              {display.label}
+            </span>
+          )}
         </div>
 
         {/* body */}

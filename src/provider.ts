@@ -153,6 +153,7 @@ const mockProvider: Provider = {
           title: "Marker bug found",
           category: "bug",
           severity: "medium",
+          label: "blocking",
           confidence: "high",
           evidence: [
             {

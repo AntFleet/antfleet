@@ -12,6 +12,7 @@ import { shortenRepoHash, shortenReviewId, shortenSha } from "./short-id";
 export type DisplayReceipt = {
   findingId: string;
   severity: string;
+  label: string | null;
   category: string;
   title: string;
   repoLabel: string;
@@ -30,6 +31,7 @@ export function toDisplayReceipt(row: PublicReceiptRow, now: Date): DisplayRecei
   return {
     findingId: row.findingId,
     severity: row.severity,
+    label: row.label,
     category: row.category,
     title: row.title,
     repoLabel: `repo ${shortenRepoHash(row.repoHash)}`,

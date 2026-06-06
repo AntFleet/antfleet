@@ -17,6 +17,7 @@ const mkFinding = (overrides: Partial<Finding> = {}): Finding => ({
   title: "Off-by-one in counter init",
   category: "bug",
   severity: "high",
+  label: "blocking",
   confidence: "high",
   evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 12, symbol: null, quote: null }],
   reasoning: "Counter starts at 1 instead of 0.",
