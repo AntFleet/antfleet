@@ -980,6 +980,7 @@ function findingFromOutput(
     title: finding.title,
     category: finding.category,
     severity: finding.severity,
+    label: finding.label,
     confidence: finding.confidence,
     triage: deriveFindingTriage(finding.category, finding.confidence),
     evidence: finding.evidence,

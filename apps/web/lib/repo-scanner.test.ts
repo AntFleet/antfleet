@@ -11,6 +11,7 @@ function finding(overrides: Partial<Finding> = {}): Finding {
     title: "Unchecked input",
     category: "security",
     severity: "high",
+    label: "blocking",
     confidence: "high",
     evidence: [{ path: "src/a.ts", startLine: 10, endLine: 12, symbol: null, quote: null }],
     reasoning: "reasoning",

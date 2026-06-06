@@ -17,6 +17,7 @@ function makeFinding(overrides: FindingOverrides = {}): Finding {
     title: "Null deref in handler",
     category: "bug",
     severity: "high",
+    label: "blocking",
     confidence: "high",
     evidence: [
       {

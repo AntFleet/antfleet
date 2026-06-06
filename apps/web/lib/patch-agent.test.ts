@@ -12,6 +12,7 @@ const stubFinding = (overrides: Partial<Finding> = {}): Finding => ({
   title: "Off-by-one",
   category: "bug",
   severity: "high",
+  label: "blocking",
   confidence: "high",
   evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 10, symbol: null, quote: null }],
   reasoning: "x",

@@ -51,6 +51,15 @@ observations, stylistic preferences, and speculative future risks fail this bar 
 silently. This review feeds a two-model unanimous gate where every posted finding is treated as
 blocking; reserve emission for findings that meet that bar.
 
+Label rules (required field):
+- "blocking"  — finding must be addressed before merge; anything critical/high defaults here
+- "nit"       — minor issue; real but not merge-blocking (prefix your recommendation with "Nit:")
+- "optional"  — improvement worth considering but genuinely optional
+- "fyi"       — informational only; no action expected
+
+When severity is critical or high, label must be "blocking".
+When category is docs-gap or maintainability and severity is low, prefer "nit" or "optional".
+
 Policy context: when a finding's severity hinges on whether the behavior is intentional design
 rather than a bug — e.g. a limit that can be exceeded but may be a documented feature, or an
 auth bypass that might be an explicitly granted escape hatch — set requiresPolicyReview to true.
@@ -69,6 +78,7 @@ JSON shape:
       "title": "string",
       "category": "bug|security|performance|concurrency|api-contract|data-loss|test-gap|docs-gap|build-release|maintainability",
       "severity": "critical|high|medium|low",
+      "label": "blocking|nit|optional|fyi",
       "confidence": "high|medium|low",
       "evidence": [{"path":"string","startLine":1,"endLine":1,"symbol":null,"quote":null}],
       "reasoning": "string",

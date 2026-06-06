@@ -13,6 +13,9 @@ export const findingCategories = [
   "maintainability",
 ] as const;
 
+export const findingLabels = ["blocking", "nit", "optional", "fyi"] as const;
+export type FindingLabel = (typeof findingLabels)[number];
+
 export const findingTriages = [
   "confirmed-bug",
   "contract-mismatch",
@@ -226,6 +229,7 @@ export const findingRecordSchema = z
     title: z.string(),
     category: z.enum(findingCategories),
     severity: z.enum(["critical", "high", "medium", "low"]),
+    label: z.enum(["blocking", "nit", "optional", "fyi"]).default("blocking"),
     confidence: z.enum(["high", "medium", "low"]),
     triage: z.enum(findingTriages).optional(),
     evidence: z.array(evidenceRefSchema),
@@ -326,6 +330,7 @@ export const reviewOutputSchema = z.object({
         title: z.string(),
         category: z.enum(findingCategories),
         severity: z.enum(["critical", "high", "medium", "low"]),
+        label: z.enum(findingLabels).default("blocking"),
         confidence: z.enum(["high", "medium", "low"]),
         evidence: z.array(evidenceRefSchema),
         reasoning: z.string(),

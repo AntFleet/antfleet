@@ -364,6 +364,7 @@ export async function setReviewComment(args: {
 export type FindingLifecycleInput = {
   title: string;
   severity: string;
+  label?: string | null;
   category: string;
 };
 
@@ -378,6 +379,7 @@ export async function recordFindingStatuses(
     findingId: makeFindingId(reviewId, index),
     title: f.title,
     severity: f.severity,
+    label: f.label ?? "blocking",
     category: f.category,
   }));
   const inserted = await db.insert(findingStatus).values(rows).returning({
@@ -949,6 +951,7 @@ export async function stampFindingPolled(findingId: string, now: Date): Promise<
 export type PublicReceiptRow = {
   findingId: string;
   severity: string;
+  label: string | null;
   category: string;
   title: string;
   repoHash: string;
@@ -1011,6 +1014,7 @@ export async function loadPublicReceiptsPage(args: {
       .select({
         findingId: findingStatus.findingId,
         severity: findingStatus.severity,
+        label: findingStatus.label,
         category: findingStatus.category,
         title: findingStatus.title,
         repoHash: reviews.repoHash,
@@ -1067,6 +1071,7 @@ export async function loadTopClosuresBetween(
     .select({
       findingId: findingStatus.findingId,
       severity: findingStatus.severity,
+      label: findingStatus.label,
       category: findingStatus.category,
       title: findingStatus.title,
       repoHash: reviews.repoHash,
@@ -1138,6 +1143,7 @@ export async function loadPublicReceiptDetail(
       findingId: findingStatus.findingId,
       findingIndex: findingStatus.findingIndex,
       severity: findingStatus.severity,
+      label: findingStatus.label,
       category: findingStatus.category,
       title: findingStatus.title,
       closureSha: findingStatus.closureSha,

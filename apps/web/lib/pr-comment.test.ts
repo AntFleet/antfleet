@@ -13,6 +13,7 @@ const mkFinding = (overrides: Partial<Finding> = {}): Finding => ({
   title: "Title",
   category: "bug",
   severity: "medium",
+  label: "blocking",
   confidence: "high",
   evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
   reasoning: "Reasoning text",
@@ -37,6 +38,21 @@ describe("formatPRComment", () => {
     expect(out).toContain("`src/foo.ts:10-20`");
     expect(out).toContain("> Reasoning text");
     expect(out).toContain("**Fix:** Recommendation text");
+  });
+
+  it("prefixes non-blocking labels on the fix line", () => {
+    expect(formatPRComment([mkFinding({ label: "nit" })], META)).toContain(
+      "**Fix:** **Nit:** Recommendation text",
+    );
+    expect(formatPRComment([mkFinding({ label: "optional" })], META)).toContain(
+      "**Fix:** **Optional:** Recommendation text",
+    );
+    expect(formatPRComment([mkFinding({ label: "fyi" })], META)).toContain(
+      "**Fix:** **FYI:** Recommendation text",
+    );
+    expect(formatPRComment([mkFinding({ label: "blocking" })], META)).toContain(
+      "**Fix:** Recommendation text",
+    );
   });
 
   it("uses singular 'finding' for 1, plural for >1", () => {

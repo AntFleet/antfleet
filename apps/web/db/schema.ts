@@ -126,6 +126,7 @@ export const findingStatus = pgTable("finding_status", {
   findingId: text("finding_id").notNull().unique(),
   title: text("title").notNull(),
   severity: text("severity").notNull(),
+  label: text("label").default("blocking"),
   category: text("category").notNull(),
   // open | closed | superseded
   status: text("status").notNull().default("open"),

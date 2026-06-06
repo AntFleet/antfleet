@@ -116,7 +116,7 @@ function formatFinding(
   lines.push("");
   lines.push(`> ${truncate(f.reasoning, REASONING_MAX_CHARS)}`);
   lines.push("");
-  lines.push(`**Fix:** ${truncate(f.recommendation, RECOMMENDATION_MAX_CHARS)}`);
+  lines.push(`**Fix:** ${formatRecommendation(f)}`);
   // Patch Agent v1.5: optional suggestion subsection AFTER the fix line,
   // delimited as <details> so the finding metadata stays scannable and the
   // sweeper's regex on the header line is unaffected. Spec §4 names the
@@ -214,6 +214,24 @@ function titleCase(s: string): string {
 function truncate(s: string, n: number): string {
   if (s.length <= n) return s;
   return `${s.slice(0, n - 1).trimEnd()}…`;
+}
+
+function formatRecommendation(f: Finding): string {
+  const prefix = labelPrefix(f.label);
+  return `${prefix}${truncate(f.recommendation, RECOMMENDATION_MAX_CHARS)}`;
+}
+
+function labelPrefix(label: Finding["label"] | undefined): string {
+  switch (label) {
+    case "nit":
+      return "**Nit:** ";
+    case "optional":
+      return "**Optional:** ";
+    case "fyi":
+      return "**FYI:** ";
+    default:
+      return "";
+  }
 }
 
 /**
