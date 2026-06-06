@@ -230,11 +230,10 @@ export default function RetroZcashOrchardPage() {
                 <td className="py-4">
                   <span className="font-mono text-[11px] text-emerald-700">CLASS HIT</span>
                   <p className="mt-1 text-[var(--color-ink-muted)]">
-                    &ldquo;{specialistOpenaiTopBug?.title}.&rdquo; Named the missing
-                    copy-constraint mechanism on the base coordinates — the defect class Taylor&apos;s
-                    bug exploits. Mechanism and fix direction align with the June 1 commit; not a
-                    direct pin of the{" "}
-                    <code className="font-mono text-[12px]">copy_advice</code> call site.
+                    &ldquo;{specialistOpenaiTopBug?.title}.&rdquo; Named the missing copy-constraint
+                    mechanism on the base coordinates — the defect class Taylor&apos;s bug exploits.
+                    Mechanism and fix direction align with the June 1 commit; not a direct pin of
+                    the <code className="font-mono text-[12px]">copy_advice</code> call site.
                   </p>
                 </td>
               </tr>
