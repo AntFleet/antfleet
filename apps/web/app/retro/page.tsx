@@ -8,6 +8,15 @@ export const metadata: Metadata = {
 
 const CASES = [
   {
+    slug: "zcash-orchard-counterfeit-2026-05",
+    title: "Zcash Orchard counterfeiting bug",
+    subtitle:
+      "Re-ran our gate against the 2021 introducing commit. Generalist surfaced adjacent soundness; a 50-line halo2 wrapper got GPT-5 to the exact fix mechanism — blind. Honest receipt of where the gate works and where it doesn't.",
+    date: "June 2026",
+    severity: "critical",
+    category: "methodology",
+  },
+  {
     slug: "openclaw-cve-2026-31998-synology-chat",
     title: "OpenClaw CVE-2026-31998 — synology-chat auth bypass",
     subtitle:

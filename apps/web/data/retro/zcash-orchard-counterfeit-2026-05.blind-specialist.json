@@ -1,0 +1,452 @@
+{
+  "caseId": "zcash-halo2-cc9dd205-blind-specialist",
+  "label": "halo2 ecc chip variable-base scalar mul implementation",
+  "incidentDate": "2026-05-29",
+  "lossesUsd": 0,
+  "repo": "zcash/halo2",
+  "introducingPrSha": "cc9dd20536ecd3bd3732f4ff2dc5ee230a27de55",
+  "introducingFiles": [
+    "src/circuit/gadget/ecc/chip.rs",
+    "src/circuit/gadget/ecc/chip/mul.rs",
+    "src/circuit/gadget/ecc/chip/mul/complete.rs",
+    "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+    "src/constants.rs"
+  ],
+  "promptVariant": "specialist-halo2",
+  "promptSha": "e068c5e2ef03d444b61db502272cc735ee3512b5d4316232344e0126e0d97a4c",
+  "pipelineVersion": "0.1.0-specialist",
+  "pipelineCommitSha": "24a174226c731bfde31865b13eba13f609de7e45",
+  "modelIds": {
+    "anthropic": "claude-opus-4-7",
+    "openai": "gpt-5"
+  },
+  "scannedAt": "2026-06-06T06:09:18.287Z",
+  "anthropicRawFindings": [
+    {
+      "title": "Scalar input to variable-base scalar multiplication is never copy-constrained into the recovery row",
+      "category": "security",
+      "severity": "critical",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 167,
+          "endLine": 197,
+          "symbol": "Config::assign_region",
+          "quote": "let (result, z_final) = self.process_lsb(region, offset, scalar, base, acc, lsb, *z)?;"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 209,
+          "endLine": 260,
+          "symbol": "Config::process_lsb",
+          "quote": "_scalar: &CellValue<pallas::Base>,"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 116,
+          "endLine": 130,
+          "symbol": "Config::create_final_scalar_gate",
+          "quote": "let scalar = meta.query_advice(self.scalar, Rotation::cur());\n            let z_cur = meta.query_advice(self.z_complete, Rotation::cur());\n\n            // The scalar field `F_q = 2^254 + t_q`.\n            // -((2^127)^2) = -(2^254) = t_q (mod q)\n            let t_q = -(pallas::Scalar::from_u128(1u128 << 127).square());\n            let t_q = pallas::Base::from_bytes(&t_q.to_bytes()).unwrap();\n\n            // Check that `k = scalar + t_q`\n            vec![q_mul_decompose_var * (scalar + Expression::Constant(t_q) - z_cur)]"
+        }
+      ],
+      "reasoning": "create_final_scalar_gate enforces `scalar + t_q - z_cur = 0` on the row where `q_mul_decompose_var` is enabled, querying advice column `self.scalar` (advices[1]). However, `process_lsb` takes the scalar as `_scalar` (unused), never copies it into `self.scalar` on any row, and the `q_mul_decompose_var` selector is never enabled anywhere in this file. As a result (a) the input scalar passed by the caller is never bound to the bit decomposition `z_final` at all, and (b) the recovery gate is dead code. A malicious prover can supply any `scalar` cell, decompose an entirely different scalar k' into bits, and obtain a proof that `result = k'·base` is `scalar·base`. This breaks soundness of variable-base scalar multiplication.",
+      "reproduction": "Construct a witness where the caller-provided `scalar` cell holds value s, but `decompose_for_scalar_mul` is fed a different value s' (e.g. by directly invoking the gadget with mismatched values). Because no constraint ties `scalar` to `z_final`, the proof verifies.",
+      "recommendation": "In `process_lsb`, copy `_scalar.cell()` into the `self.scalar` advice column at the row where `q_mul_decompose_var` is enabled (with `copy(..., &self.perm)`), and enable `self.q_mul_decompose_var` on that row so the recovery gate `scalar + t_q == z_final` is actually applied.",
+      "whyTestsDoNotAlreadyCoverThis": "The unit test `test_mul` only exercises honest provers: the scalar used to decompose and the scalar witnessed are the same value, so the missing binding is invisible. Only a malicious prover that decouples them would exhibit the bug.",
+      "suggestedRegressionTest": "Negative test that constructs a circuit where the witnessed scalar cell differs from the bits driving the double-and-add and asserts that proof verification fails.",
+      "minimumFixScope": "src/circuit/gadget/ecc/chip/mul.rs: process_lsb (copy scalar into self.scalar column and enable q_mul_decompose_var on that row).",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Final `z_0` running sum value is not copy-constrained to the scalar recovery gate",
+      "category": "security",
+      "severity": "high",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 222,
+          "endLine": 240,
+          "symbol": "Config::process_lsb",
+          "quote": "let z_cell = region.assign_advice(\n                || \"final z_0\",\n                self.z_complete,\n                offset,\n                || z_val.ok_or(Error::SynthesisError),\n            )?;\n            Z(CellValue::new(z_cell, z_val))\n        };\n\n        // Enforce that the final bit decomposition from `z_1` to `z_0` was done correctly.\n        self.q_mul_complete.enable(region, offset)?;"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/complete.rs",
+          "startLine": 41,
+          "endLine": 63,
+          "symbol": "complete::Config::create_gate",
+          "quote": "let k = z_cur - Expression::Constant(pallas::Base::from_u64(2)) * z_prev;\n                // (k_i) ⋅ (k_i - 1) = 0\n                let bool_check = k.clone() * (k + Expression::Constant(-pallas::Base::one()));"
+        }
+      ],
+      "reasoning": "process_lsb assigns `z_0` as `2*z_1 + lsb` and enables `q_mul_complete` on that row, which enforces only the booleanity check `(z_cur - 2*z_prev)*(z_cur - 2*z_prev - 1) = 0` (i.e. lsb ∈ {0,1}). It never ties the *value* of `z_0` to either the lsb that drives the choice of `x_p, y_p` on the next row, nor to the scalar via `q_mul_decompose_var` (which is in fact never enabled). The `lsb` used in selecting `±P` is a Rust-level `Option<bool>` derived from `decompose_for_scalar_mul(scalar.value())` and is not constrained to equal `z_0 - 2*z_1`. Combined with the missing scalar copy, the entire scalar-recovery chain is unanchored.",
+      "reproduction": "Provide a witness in which `z_0` is consistent with one bit pattern while `x_p, y_p` on the final addition row encode a different lsb; no gate ties them together.",
+      "recommendation": "Enable `q_mul_decompose_var` on the final `z_0` row and copy-constrain the input `scalar` cell into `self.scalar` on the same row. Also ensure `x_p`/`y_p` on the final addition row are derived through a gate from `z_0 - 2*z_1` (or from a copy of the bit cell) rather than being free advice assignments.",
+      "whyTestsDoNotAlreadyCoverThis": "Honest provers naturally pick consistent values for `z_0`, the lsb, and `x_p/y_p`; a soundness bug only appears for a malicious prover.",
+      "suggestedRegressionTest": "Negative test constructing a witness where `lsb_value` used to pick `±P` differs from the value implied by the final two `z_complete` running sum cells, and assert verification fails.",
+      "minimumFixScope": "src/circuit/gadget/ecc/chip/mul.rs: process_lsb, plus enabling the recovery gate and copy-constraining the scalar.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Final-bit `x_p`/`y_p` advice cells in process_lsb are not constrained to equal ±base",
+      "category": "security",
+      "severity": "high",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 242,
+          "endLine": 280,
+          "symbol": "Config::process_lsb",
+          "quote": "let x_p_cell = region.assign_advice(\n            || \"x_p\",\n            self.add_config.x_p,\n            offset + 1,\n            || x_p.ok_or(Error::SynthesisError),\n        )?;\n\n        let y_p_cell = region.assign_advice(\n            || \"y_p\",\n            self.add_config.y_p,\n            offset + 1,\n            || y_p.ok_or(Error::SynthesisError),\n        )?;"
+        }
+      ],
+      "reasoning": "For the LSB step the gadget needs to add either `(−P)` (when lsb=0) or the identity (when lsb=1) to the accumulator. `x_p` and `y_p` are assigned with `assign_advice` only; they are never copy-constrained to `base.x()`/`base.y()` and no gate ties them to the `lsb` bit. A malicious prover can substitute arbitrary curve points for the final addend, including a point that conveniently changes the result of `[scalar]B` to a target value. Even if the scalar binding were fixed, this row remains a free choice.",
+      "reproduction": "Witness arbitrary `(x_p, y_p)` on the final addition row instead of `(base.x, -base.y)` or `(0,0)`; the only constraints are those of complete addition on the chosen `(x_p, y_p)` and `acc`, both of which remain satisfiable.",
+      "recommendation": "Either (a) copy-constrain `x_p` to `base.x` and `y_p` to a cell that is constrained by a gate to be `(2*lsb - 1) * base.y`, with `lsb` itself copy-constrained from the scalar decomposition; or (b) re-use the same `q_mul_decompose_var`-style gate to bind these cells.",
+      "whyTestsDoNotAlreadyCoverThis": "Honest provers always assign the correct ±P, so the constraint gap is not exercised by valid-input tests.",
+      "suggestedRegressionTest": "Negative test that replaces the final-row `(x_p, y_p)` with another on-curve point and asserts verification fails.",
+      "minimumFixScope": "src/circuit/gadget/ecc/chip/mul.rs: process_lsb final-bit assignment.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Selector for incomplete-addition gate disabled on row 0, omitting the first double-and-add constraint",
+      "category": "security",
+      "severity": "medium",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+          "startLine": 173,
+          "endLine": 178,
+          "symbol": "incomplete::Config::double_and_add",
+          "quote": "// Enable `q_mul` on all but the last row of the incomplete range.\n        for row in 1..(self.num_bits - 1) {\n            self.q_mul.enable(region, offset + row)?;\n        }"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+          "startLine": 180,
+          "endLine": 230,
+          "symbol": "incomplete::Config::double_and_add",
+          "quote": "// Initialise the running `z` sum for the scalar bits.\n        let mut z = copy(region, || \"starting z\", self.z, offset, &acc.2, &self.perm)?;\n\n        // Increase offset by 1; we used row 0 for initializing `z`.\n        let offset = offset + 1;"
+        }
+      ],
+      "reasoning": "The incomplete-addition gate is two-row (queries cur and next). The comment says `Enable q_mul on all but the last row`, but the loop range `1..(num_bits - 1)` actually skips both row 0 *and* row `num_bits - 1`. After the `offset += 1` shift, the first double-and-add iteration is written at row 0 (relative to the shifted offset) and the next at row 1. Skipping `q_mul` at row 0 means the constraints that relate iteration 0 to iteration 1 (booleanity of `k_0`, λ1/λ2 relations, `x_a_next` from `lambda2^2 - x_a - x_r`, base coordinate equality between row 0 and row 1, etc.) are not enforced for the first bit of each half. That leaves the first bit `k_0` and the first λ1/λ2/x_a transition unconstrained, which is a soundness gap (and additionally a correctness bug for honest provers if the witness on row 0 is anything but consistent — only the next gate catches the inconsistency through `x_a_cur` on row 1, but the iteration-0 relations themselves are skipped).",
+      "reproduction": "Construct a witness where on the first row of the incomplete range, the assigned `lambda1`, `lambda2`, or `k_0` violate the double-and-add relations; because `q_mul` is not enabled on row 0, the gate is not triggered.",
+      "recommendation": "Change the loop to `for row in 0..(self.num_bits - 1)` so `q_mul` is enabled on every row of the incomplete range except the last (which has no `next` row inside the region). Re-evaluate the comment, and add a regression test that selectively perturbs row-0 witness values.",
+      "whyTestsDoNotAlreadyCoverThis": "Valid-input tests never exercise rows where the witness disagrees with the gate, so an inactive selector is invisible.",
+      "suggestedRegressionTest": "Negative test that mutates the row-0 `lambda1` or `k` cell of the incomplete range and asserts the proof fails to verify.",
+      "minimumFixScope": "src/circuit/gadget/ecc/chip/mul/incomplete.rs: selector-enable loop in double_and_add.",
+      "requiresPolicyReview": true,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Running sum `z_init` is not copy-constrained between hi and lo halves and into complete addition",
+      "category": "security",
+      "severity": "medium",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 134,
+          "endLine": 165,
+          "symbol": "Config::assign_region",
+          "quote": "let (x_a, y_a, zs_incomplete_hi) = self.hi_config.double_and_add(\n            region,\n            offset,\n            &base,\n            bits_incomplete_hi,\n            (X(acc.x), Y(acc.y.value()), z_init),\n        )?;\n\n        // Double-and-add (incomplete addition) for the `lo` half of the scalar decomposition\n        let z = &zs_incomplete_hi[zs_incomplete_hi.len() - 1];\n        let (x_a, y_a, zs_incomplete_lo) = self.lo_config.double_and_add(\n            region,\n            offset,\n            &base,\n            bits_incomplete_lo,\n            (x_a, y_a, *z),\n        )?;"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+          "startLine": 187,
+          "endLine": 196,
+          "symbol": "incomplete::Config::double_and_add",
+          "quote": "let mut x_a = copy(\n            region,\n            || \"starting x_a\",\n            self.x_a,\n            offset,\n            &acc.0,\n            &self.perm,\n        )?;\n        let mut y_a = *acc.1;"
+        }
+      ],
+      "reasoning": "`y_a` (the accumulator y-coordinate) is passed between hi and lo halves as a raw `Option<F>` (`Y` is just a newtype around `Option<F>`), never as a `CellValue`, and is never copy-constrained when it enters the next region or the complete-addition stage. Likewise `acc.y` produced by the initial `[2]base` doubling is taken via `.value()` only on entry. Because there is no permutation tie to a previously constrained cell, a malicious prover can choose a different `y_a` value on the row where lo begins (or where complete starts), which then propagates through the rest of the multiplication. The x-coordinate, in contrast, is correctly carried as a `CellValue` and copied via the permutation. This is a chip-boundary anchoring gap (class 3) for `y_a`.",
+      "reproduction": "Inside a custom circuit, replace `y_a` on the boundary row (start of lo half, or start of complete) with an unrelated field element while keeping x_a fixed; with no copy constraint binding y_a, the prover can then re-pick lambda1/lambda2 to satisfy the row's gates with the new y_a.",
+      "recommendation": "Carry `y_a` as a `CellValue` (allocate an advice cell for it inside the gate region) and copy-constrain it across region boundaries. At minimum, copy-constrain the y_a entering `lo_config.double_and_add` to the y_a produced by `hi_config.double_and_add` (and similarly into the complete-addition stage).",
+      "whyTestsDoNotAlreadyCoverThis": "Honest provers compute `y_a` consistently across regions, so the missing copy constraint never surfaces in positive tests.",
+      "suggestedRegressionTest": "Negative test that perturbs the y_a cell at the hi/lo boundary and verifies the proof fails.",
+      "minimumFixScope": "src/circuit/gadget/ecc/chip/mul.rs and incomplete.rs: thread `y_a` as a CellValue and copy-constrain across boundaries.",
+      "requiresPolicyReview": true,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "`z_init` is assigned without copy constraint linking it to the q_init_z row",
+      "category": "security",
+      "severity": "medium",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 137,
+          "endLine": 153,
+          "symbol": "Config::assign_region",
+          "quote": "// Initialize the running sum for scalar decomposition to zero\n        let z_init = {\n            // Constrain the initialization of `z` to equal zero.\n            self.q_init_z.enable(region, offset)?;\n\n            let z_val = pallas::Base::zero();\n            let z_cell =\n                region.assign_advice(|| \"initial z\", self.hi_config.z, offset, || Ok(z_val))?;\n\n            Z(CellValue::new(z_cell, Some(z_val)))\n        };"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 104,
+          "endLine": 114,
+          "symbol": "Config::create_init_scalar_gate",
+          "quote": "meta.create_gate(\"Initialize running sum for variable-base mul\", |meta| {\n            let q_init_z = meta.query_selector(self.q_init_z);\n            let z = meta.query_advice(self.hi_config.z, Rotation::cur());\n\n            vec![q_init_z * z]\n        });"
+        }
+      ],
+      "reasoning": "Good news: `z_init` is forced to 0 by `q_init_z * z = 0`, then copied (via `copy(...)`) into the start of hi_config.double_and_add. This case is fine. The concern is more subtle: the *next* incomplete iteration's starting z (for lo) is taken as `zs_incomplete_hi.last()`, but the last `z` cell in hi was written via `assign_advice` without being marked as a copy source other than through the `Z` newtype and the permutation argument when `copy` is later called. Since incomplete::double_and_add does copy that `z` into its starting row via `copy(..., &self.perm)`, this is in fact sound. Marking this as low/medium because the pattern is fragile and the comment in mul.rs about offset arithmetic is brittle (see other finding).",
+      "reproduction": null,
+      "recommendation": "Document the invariant that all transitions of `z` between sub-regions go through `copy(..., perm)` and add a debug assertion or test that mutates a boundary `z` cell.",
+      "whyTestsDoNotAlreadyCoverThis": "No negative tests exist.",
+      "suggestedRegressionTest": "Negative test mutating the boundary z cell to assert verification fails.",
+      "minimumFixScope": "Documentation + assertion only.",
+      "requiresPolicyReview": true,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Brittle and undocumented offset arithmetic between incomplete and complete stages",
+      "category": "maintainability",
+      "severity": "medium",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": 156,
+          "endLine": 168,
+          "symbol": "Config::assign_region",
+          "quote": "// Move from incomplete addition to complete addition.\n        // Inside incomplete::double_and_add, the offset was increase once after initialization\n        // of the running sum.\n        // Then, the final assignment of double-and-add was made on row + offset + 1.\n        // Outside of incomplete addition, we must account for these offset increases by adding\n        // 2 to the incomplete addition length.\n        let offset = offset + INCOMPLETE_LO_RANGE.len() + 2;"
+        }
+      ],
+      "reasoning": "The caller manually re-derives the row consumed by `double_and_add` (`INCOMPLETE_LO_RANGE.len() + 2`) from prose comments rather than from a value returned by the callee. If `incomplete::double_and_add` is ever changed to consume a different number of rows (e.g. an extra initialization or boundary row), this caller will silently overlap the complete-addition rows on top of incomplete-addition rows, breaking soundness without any compile-time signal. The fact that `hi_config.double_and_add` and `lo_config.double_and_add` are called at the same `offset` and rely on column non-overlap further compounds this.",
+      "reproduction": "Modify `incomplete::double_and_add` to consume one extra row and run `test_mul`: rows will collide silently because `assign_region` does not detect duplicate writes if the same advice column is written by two callees.",
+      "recommendation": "Have `double_and_add` return the row count it consumed (or the next free offset) and have the caller use that. Add a debug assertion that the next row after the incomplete range is free before complete addition assigns into it.",
+      "whyTestsDoNotAlreadyCoverThis": "Tests run against the current consistent constants; a future refactor would slip through.",
+      "suggestedRegressionTest": "Add a doctest or compile-time assertion that ties incomplete row count to caller offset.",
+      "minimumFixScope": "Return next offset from `double_and_add` and use it in `mul::assign_region`.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Misleading comment vs. code: `constrain_equal` says \"Constrain x-coordinates\" twice but second call constrains y",
+      "category": "docs-gap",
+      "severity": "low",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip.rs",
+          "startLine": 215,
+          "endLine": 226,
+          "symbol": "EccChip::constrain_equal",
+          "quote": "// Constrain x-coordinates\n                region.constrain_equal(&config.perm, a.x().cell(), b.x().cell())?;\n                // Constrain x-coordinates\n                region.constrain_equal(&config.perm, a.y().cell(), b.y().cell())"
+        }
+      ],
+      "reasoning": "Both comments say \"Constrain x-coordinates\" but the second call constrains y. Pure documentation defect — code is correct — but for a security-critical primitive this is the kind of comment that gets copy-pasted and misleads future maintainers.",
+      "reproduction": null,
+      "recommendation": "Change the second comment to \"Constrain y-coordinates\".",
+      "whyTestsDoNotAlreadyCoverThis": "Comment defects are not test-visible.",
+      "suggestedRegressionTest": null,
+      "minimumFixScope": "src/circuit/gadget/ecc/chip.rs constrain_equal comment.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "`EccPoint::point()` calls `pallas::Affine::from_xy(x,y).unwrap()` — panics if witness is off-curve",
+      "category": "bug",
+      "severity": "medium",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip.rs",
+          "startLine": 41,
+          "endLine": 56,
+          "symbol": "EccPoint::point",
+          "quote": "Some(pallas::Affine::from_xy(x, y).unwrap())"
+        }
+      ],
+      "reasoning": "`point()` is documented as returning the value of the point if known, but if a (malicious or buggy) caller assigns advice values that do not correspond to an on-curve point, `from_xy` returns `None` and `.unwrap()` panics. This panic occurs in prover/synthesis code paths and can be triggered (a) during the test code in `mul::assign_region` (`#[cfg(test)] { ... result.point() ... }`), and (b) anywhere downstream that uses `.point()` for debug or recovery. Panics on prover-controlled input are usually a DoS-class bug rather than a soundness one, but still undesirable for a production gadget.",
+      "reproduction": "Inject an off-curve `(x, y)` via `EccPoint::from_coordinates_unchecked` (or any path that writes both cells with assign_advice only) and call `.point()`.",
+      "recommendation": "Return `pallas::Affine::from_xy(x, y).into()` (i.e. `Option<...>`) or explicitly handle the None case with a propagated error, rather than `unwrap`.",
+      "whyTestsDoNotAlreadyCoverThis": "Tests only feed on-curve points.",
+      "suggestedRegressionTest": "Construct an off-curve EccPoint via `from_coordinates_unchecked` and assert `point()` does not panic.",
+      "minimumFixScope": "src/circuit/gadget/ecc/chip.rs EccPoint::point.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "`L_ORCHARD_MERKLE` and `L_ORCHARD_SCALAR` documented as 255 but tied to NUM_BITS, comments/tests are inconsistent",
+      "category": "docs-gap",
+      "severity": "low",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "src/constants.rs",
+          "startLine": 35,
+          "endLine": 47,
+          "symbol": "L_ORCHARD_*",
+          "quote": "/// $\\ell^\\mathsf{Orchard}_\\mathsf{Merkle}$\npub(crate) const L_ORCHARD_MERKLE: usize = 255;\n\n/// $\\ell^\\mathsf{Orchard}_\\mathsf{base}$\npub(crate) const L_ORCHARD_BASE: usize = 255;\n\n/// $\\ell^\\mathsf{Orchard}_\\mathsf{scalar}$\npub(crate) const L_ORCHARD_SCALAR: usize = 255;"
+        },
+        {
+          "path": "src/constants.rs",
+          "startLine": 252,
+          "endLine": 266,
+          "symbol": "tests::l_orchard_*",
+          "quote": "fn l_orchard_merkle() {\n        assert_eq!(super::L_ORCHARD_MERKLE, pallas::Base::NUM_BITS as usize);\n    }"
+        }
+      ],
+      "reasoning": "Constants are hardcoded to 255 but asserted at test time to equal `pallas::{Base,Scalar}::NUM_BITS`. If the upstream pasta curves ever expose NUM_BITS != 255, the test will fail rather than the constant being derived. Minor maintainability nit; flag for awareness.",
+      "reproduction": null,
+      "recommendation": "Define these constants as `pallas::Base::NUM_BITS as usize` directly (where const-context allows) or replace the asserts with a compile-time check.",
+      "whyTestsDoNotAlreadyCoverThis": "Current upstream values happen to match.",
+      "suggestedRegressionTest": null,
+      "minimumFixScope": "src/constants.rs constant definitions.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Comment on incomplete-addition selector loop is misleading",
+      "category": "docs-gap",
+      "severity": "low",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+          "startLine": 173,
+          "endLine": 178,
+          "symbol": "incomplete::Config::double_and_add",
+          "quote": "// Enable `q_mul` on all but the last row of the incomplete range.\n        for row in 1..(self.num_bits - 1) {\n            self.q_mul.enable(region, offset + row)?;\n        }"
+        }
+      ],
+      "reasoning": "The comment claims `q_mul` is enabled on all but the last row, but the loop starts at 1, also skipping the first row. Either the comment is wrong (in which case this is documentation rot) or the loop bound is wrong (see the high-severity finding above). Either way, the comment-code mismatch should be resolved.",
+      "reproduction": null,
+      "recommendation": "Update either the comment or the loop bounds to match.",
+      "whyTestsDoNotAlreadyCoverThis": "Documentation defects aren't test-visible.",
+      "suggestedRegressionTest": null,
+      "minimumFixScope": "Comment or loop bounds in incomplete.rs::double_and_add.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    }
+  ],
+  "openaiRawFindings": [
+    {
+      "title": "Variable-base scalar mul does not constrain the provided scalar witness (missing anchoring and unused cell)",
+      "category": "security",
+      "severity": "critical",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "fn witness_scalar_var(&self, layouter: &mut impl Layouter<pallas::Base>, value: Option<pallas::Base>) -> Result<Self::ScalarVar, Error> { ... let cell = region.assign_advice(|| \"Witness scalar var\", config.advices[0], 0, || value.ok_or(Error::SynthesisError), )?; Ok(CellValue::new(cell, value)) }"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "pub struct Config { ... q_mul_decompose_var: Selector, ... scalar: Column<Advice>, ... }"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "fn create_final_scalar_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) { ... let scalar = meta.query_advice(self.scalar, Rotation::cur()); let z_cur = meta.query_advice(self.z_complete, Rotation::cur()); ... vec![q_mul_decompose_var * (scalar + Expression::Constant(t_q) - z_cur)] }"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "pub(super) fn assign_region(&self, scalar: &CellValue<pallas::Base>, base: &EccPoint, offset: usize, region: &mut Region<'_, pallas::Base>,) -> Result<EccPoint, Error> { ... // no assignment to self.scalar and no enable of q_mul_decompose_var anywhere ... }"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "fn process_lsb(&self, region: &mut Region<'_, pallas::Base>, offset: usize, _scalar: &CellValue<pallas::Base>, base: &EccPoint, acc: EccPoint, lsb: Option<bool>, z: Z<pallas::Base>,) -> Result<(EccPoint, Z<pallas::Base>), Error> { ... }"
+        }
+      ],
+      "reasoning": "The scalar for variable-base multiplication is witnessed in its own region (advices[0]) and returned as a CellValue, but it is never copied via the permutation argument into the variable-base mul region. The mul::Config defines a dedicated advice column (scalar) and a gate (q_mul_decompose_var) to link the decomposed-running-sum z to the original scalar via z_0 = scalar + t_q, but assign_region never assigns the scalar into self.scalar nor enables q_mul_decompose_var at any row. Further, process_lsb explicitly ignores the scalar parameter (_scalar). As a result, the prover can choose any scalar bits (through the unconstrained z running-sum) independent of the provided scalar cell; the proof will still verify because all other relations are internally consistent. This is a missing chip-boundary anchoring plus an under-constrained advice cell (the witnessed scalar cell itself is unused).",
+      "reproduction": null,
+      "recommendation": "- In mul::Config::assign_region, copy-constrain the provided scalar cell into self.scalar at the row where z_0 is assigned, and enable q_mul_decompose_var on that row to enforce scalar + t_q = z_0.\n- Alternatively, enforce the same equality at a dedicated row immediately after assigning z_0.\n- Ensure witness_scalar_var writes to a column that is later copy-constrained (or explicitly copy the CellValue returned by witness_scalar_var into self.scalar before enabling the gate).\n- Remove the underscore from process_lsb’s scalar parameter and propagate the CellValue into the region as needed.\n- Add assertions preventing column overlap pitfalls if reusing columns across selectors.",
+      "whyTestsDoNotAlreadyCoverThis": "Tests use an honest witness, so the same scalar value is used everywhere and the final equality happens to hold. A malicious prover can witness any scalar cell value, while choosing a different decomposition (and hence different z_0) to satisfy the internal gates, producing a valid proof for an incorrect scalar.",
+      "suggestedRegressionTest": "Construct a test that witnesses scalar s1 via witness_scalar_var, but feeds mul with internal assignments corresponding to a different scalar s2 != s1 (e.g., by instrumenting a custom test chip or by asserting the returned point equals [s2]B but s1 != s2). The proof should currently verify; after the fix, it must fail. Additionally, check that constraining z_0 = scalar + t_q at the enabled row causes a mismatch when s1 != s2.",
+      "minimumFixScope": "one-module",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Base point argument is not copy-constrained into x_p/y_p columns (missing anchoring across regions)",
+      "category": "security",
+      "severity": "critical",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "// Assign `x_p`, `y_p`\nregion.assign_advice(|| \"x_p\", self.x_p, row + offset, || x_p.ok_or(Error::SynthesisError))?;\nregion.assign_advice(|| \"y_p\", self.y_p, row + offset, || y_p.ok_or(Error::SynthesisError))?;"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/complete.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "// Assign `x_p` for complete addition\nlet x_p_val = base.x.value();\nlet x_p_cell = region.assign_advice(|| \"x_p\", self.add_config.x_p, row + offset, || x_p_val.ok_or(Error::SynthesisError))?; ...\n// Assign `y_p` for complete addition.\nlet y_p = base.y.value(); ... region.assign_advice(|| \"y_p\", self.add_config.y_p, row + offset, || y_p.ok_or(Error::SynthesisError))?;"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "fn process_lsb(..., base: &EccPoint, ... ) -> Result<..., Error> { ... let x_p_cell = region.assign_advice(|| \"x_p\", self.add_config.x_p, offset + 1, || x_p.ok_or(Error::SynthesisError))?; let y_p_cell = region.assign_advice(|| \"y_p\", self.add_config.y_p, offset + 1, || y_p.ok_or(Error::SynthesisError))?; ... }"
+        }
+      ],
+      "reasoning": "The base point passed into mul is a pair of advice cells from another region (witness_point). Throughout incomplete and complete addition, the code repeatedly assigns x_p/y_p from base.x.value()/base.y.value() using assign_advice, but never copy-constrains those cells to the original base cells via the permutation argument. The only enforced property is that x_p,y_p remain constant across rows (x_p_cur - x_p_next = 0, etc.), which does not tie them to the input base. A malicious prover can therefore choose an internal base Q unrelated to the provided base B, and satisfy all internal gates; the resulting point is then [k]Q, not [k]B, but the proof still verifies. This is a classic missing chip-boundary anchoring defect.",
+      "reproduction": null,
+      "recommendation": "- In the first row where x_p/y_p are assigned for incomplete and complete addition, use copy(...) to copy-constrain base.x and base.y into the x_p and y_p columns, respectively, and then enforce constancy across rows as currently done.\n- Alternatively, add explicit region.constrain_equal calls tying the initial x_p/y_p cells to base.x()/base.y().\n- Audit all occurrences of assigning base coordinates (including process_lsb and complete addition) to ensure at least one row copy-constrains from the provided base cells in each sub-region.",
+      "whyTestsDoNotAlreadyCoverThis": "Honest tests provide consistent base coordinates and assign the same values everywhere, so numeric equality holds by construction. Without permutation ties, a malicious prover can pick different values for x_p/y_p inside the mul region while still satisfying all active gates.",
+      "suggestedRegressionTest": "Construct a test that witnesses a base point B via witness_point, but internally assigns x_p/y_p corresponding to a different point Q. Assert that the proof verifies and the output equals [k]Q with the current code; after the fix, this should fail unless Q = B via permutation ties.",
+      "minimumFixScope": "one-module",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Off-by-one selector enable leaves first iteration of incomplete addition unconstrained",
+      "category": "security",
+      "severity": "high",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "// Enable `q_mul` on all but the last row of the incomplete range.\nfor row in 1..(self.num_bits - 1) {\n    self.q_mul.enable(region, offset + row)?;\n}"
+        },
+        {
+          "path": "src/circuit/gadget/ecc/chip/mul/incomplete.rs",
+          "startLine": null,
+          "endLine": null,
+          "symbol": null,
+          "quote": "meta.create_gate(\"Incomplete addition for variable-base scalar mul\", |meta| {\n    let q_mul = meta.query_selector(self.q_mul);\n    let z_cur = meta.query_advice(self.z, Rotation::cur());\n    let z_prev = meta.query_advice(self.z, Rotation::prev());\n    let x_a_cur = meta.query_advice(self.x_a, Rotation::cur());\n    let x_a_next = meta.query_advice(self.x_a, Rotation::next());\n    let x_p_cur = meta.query_advice(self.x_p, Rotation::cur());\n    let x_p_next = meta.query_advice(self.x_p, Rotation::next());\n    let y_p_cur = meta.query_advice(self.y_p, Rotation::cur());\n    let y_p_next = meta.query_advice(self.y_p, Rotation::next());\n    let lambda1_cur = meta.query_advice(self.lambda1, Rotation::cur());\n    let lambda2_cur = meta.query_advice(self.lambda2, Rotation::cur());\n    let lambda1_next = meta.query_advice(self.lambda1, Rotation::next());\n    let lambda2_next = meta.query_advice(self.lambda2, Rotation::next());\n    ...\n})"
+        }
+      ],
+      "reasoning": "The incomplete addition gate enforces relations between row i and row i+1 for all relevant columns. However, q_mul is enabled only for rows 1..(num_bits-1), skipping row 0 entirely. The first iteration (row 0) assigns z, lambda1, lambda2, x_p, y_p, and x_a_next, but none of these are constrained by any active gate. Subsequent constraints at row 1 relate only rows 1 and 2, and do not retroactively constrain row 0’s assignments. This creates a constraint-scope gap for the first bit in the incomplete range, allowing a malicious prover to set those first-iteration values arbitrarily without detection.",
+      "reproduction": null,
+      "recommendation": "Enable q_mul also at the first iteration row (row 0) while maintaining it disabled at the final row to avoid next-rotation boundary issues. Since Rotation::prev is used for z only, ensure the starting z is assigned on the immediately previous row (as it already is) so that prev exists. Alternatively, add a dedicated one-off gate for the first iteration that enforces the same relations without querying next’s next where unavailable.",
+      "whyTestsDoNotAlreadyCoverThis": "Honest witnesses satisfy the first-iteration relations naturally, so skipping constraints is not observable in tests proving valid statements. Only adversarial witnesses that set inconsistent first-iteration values expose the gap.",
+      "suggestedRegressionTest": "Add a test that deliberately sets the first-iteration (row 0) lambda1/lambda2/x_a_next inconsistent with the double-and-add formulas while keeping later rows consistent; the proof currently verifies but should fail after enabling the selector at row 0 or adding an explicit first-iteration constraint.",
+      "minimumFixScope": "one-module",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    }
+  ],
+  "anthropicError": null,
+  "openaiError": null,
+  "outcome": "A",
+  "outcomeRationale": "Both anthropic and openai produced findings in the introducing commit's files. Unanimous gate would have fired."
+}
