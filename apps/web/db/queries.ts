@@ -415,6 +415,10 @@ export type RecordPatchDecisionInput = {
   // Eval Phase 0 — dual-candidate persistence.
   candidates: { opus: string | null; gpt5: string | null };
   rationales?: { opus: string | null; gpt5: string | null };
+  // Migration 0035 — per-side raw orchestrator skip reason. Optional like
+  // `tokens` and `rationales`: callers that omit it get NULL writes (the
+  // existing aggregate patch_skip_reason column above continues to land).
+  skipReasons?: { opus: string | null; gpt5: string | null };
   selector:
     | "deterministic-opus"
     | "no-opus-deterministic-skip"
@@ -478,6 +482,18 @@ async function recordOnePatchDecision(i: RecordPatchDecisionInput): Promise<void
   } catch (err) {
     if (!isMissingPatchRationaleColumnError(err)) throw err;
   }
+
+  try {
+    await db
+      .update(findingStatus)
+      .set({
+        patchSkipReasonOpus: i.skipReasons?.opus ?? null,
+        patchSkipReasonGpt5: i.skipReasons?.gpt5 ?? null,
+      })
+      .where(eq(findingStatus.findingId, i.findingId));
+  } catch (err) {
+    if (!isMissingPatchSkipReasonColumnError(err)) throw err;
+  }
 }
 
 export function isMissingPatchRationaleColumnError(err: unknown): boolean {
@@ -485,6 +501,13 @@ export function isMissingPatchRationaleColumnError(err: unknown): boolean {
   if (maybe.code !== "42703") return false;
   const message = typeof maybe.message === "string" ? maybe.message : "";
   return message.includes("patch_rationale_opus") || message.includes("patch_rationale_gpt5");
+}
+
+export function isMissingPatchSkipReasonColumnError(err: unknown): boolean {
+  const maybe = err as { code?: unknown; message?: unknown };
+  if (maybe.code !== "42703") return false;
+  const message = typeof maybe.message === "string" ? maybe.message : "";
+  return message.includes("patch_skip_reason_opus") || message.includes("patch_skip_reason_gpt5");
 }
 
 // Patch Agent v1.6 — persist the PR review-comment artifact id/url after

@@ -77,6 +77,14 @@ export type PatchDecision = {
   // Provider-side explanation returned by proposePatch. This is operator
   // observability only: rendered comments still show only shipped patches.
   rationales?: { opus: string | null; gpt5: string | null };
+  // Per-provider raw orchestrator skip reason captured from each side's
+  // ProviderPatchProposal. The top-level `skipReason` field above carries
+  // the GATE'S decision (models_disagreed when one side declined, etc.) —
+  // these carry the unaggregated truth. A side that proposed a patch has
+  // null here; a side that didn't carries the orchestrator reason
+  // (generation_error / outside_diff_hunk / size_cap) or null if it
+  // returned patch=null with a clean rationale (the "policy decline" case).
+  skipReasons: { opus: PatchSkipReason | null; gpt5: PatchSkipReason | null };
   selector: PatchSelector;
 };
 
@@ -119,6 +127,10 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     opus: anthropicProposal?.rationale ?? null,
     gpt5: openaiProposal?.rationale ?? null,
   };
+  const skipReasons = {
+    opus: anthropicProposal?.skipReason ?? null,
+    gpt5: openaiProposal?.skipReason ?? null,
+  };
 
   // Happy path: every provider in the group proposed a patch. Ship the
   // anthropic one. Tolerant of additional providers (future stack growth)
@@ -139,6 +151,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       skipReason: null,
       candidates,
       rationales,
+      skipReasons,
       selector: "deterministic-opus",
     };
   }
@@ -157,6 +170,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       skipReason: "models_disagreed",
       candidates,
       rationales,
+      skipReasons,
       selector,
     };
   }
@@ -172,6 +186,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     skipReason: reason,
     candidates,
     rationales,
+    skipReasons,
     selector: "no-candidates",
   };
 }

@@ -34,6 +34,7 @@ describe("decidePatchOutcomes — the four spec cases", () => {
     expect(out[0]?.modelId).toBe("claude-opus-4-7");
     expect(out[0]?.skipReason).toBeNull();
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: PATCH_B });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.selector).toBe("deterministic-opus");
   });
 
@@ -49,6 +50,7 @@ describe("decidePatchOutcomes — the four spec cases", () => {
       opus: "fixes the branch",
       gpt5: "no in-hunk safe fix",
     });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
   });
 
@@ -57,6 +59,7 @@ describe("decidePatchOutcomes — the four spec cases", () => {
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
     expect(out[0]?.candidates).toEqual({ opus: null, gpt5: PATCH_B });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.selector).toBe("no-opus-deterministic-skip");
   });
 
@@ -65,6 +68,7 @@ describe("decidePatchOutcomes — the four spec cases", () => {
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
     expect(out[0]?.candidates).toEqual({ opus: null, gpt5: null });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.selector).toBe("no-candidates");
   });
 });
@@ -140,7 +144,30 @@ describe("decidePatchOutcomes — disagreement keeps the loser's reason out", ()
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: "size_cap" });
     expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
+  });
+
+  it("propagates per-side skipReason: opus shipped, gpt5 generation_error", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ patch: PATCH_A, skipReason: null }),
+      openai({ patch: null, skipReason: "generation_error" }),
+    ]);
+    expect(out[0]?.patch).toBeNull();
+    expect(out[0]?.skipReason).toBe("models_disagreed");
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: "generation_error" });
+    expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
+  });
+
+  it("propagates per-side skipReason: gpt5 shipped, opus generation_error", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ patch: null, skipReason: "generation_error" }),
+      openai({ patch: PATCH_B, skipReason: null }),
+    ]);
+    expect(out[0]?.patch).toBeNull();
+    expect(out[0]?.skipReason).toBe("models_disagreed");
+    expect(out[0]?.skipReasons).toEqual({ opus: "generation_error", gpt5: null });
+    expect(out[0]?.selector).toBe("no-opus-deterministic-skip");
   });
 });
 
@@ -188,6 +215,7 @@ describe("decidePatchOutcomes — degenerate inputs", () => {
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.skipReason).toBe("models_disagreed");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
   });
 
   it("ships when more than two providers exist as long as anthropic + ONE other propose", () => {
