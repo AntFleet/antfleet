@@ -1,11 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const dbMocks = vi.hoisted(() => {
+  const setCalls: unknown[] = [];
+  const where = vi.fn(() => Promise.resolve());
+  const set = vi.fn((values: unknown) => {
+    setCalls.push(values);
+    return { where };
+  });
+  const update = vi.fn(() => ({ set }));
+  return {
+    db: { update },
+    setCalls,
+    set,
+    update,
+    where,
+  };
+});
+
+vi.mock("./index", () => ({ db: dbMocks.db }));
+
 import {
   isMissingPatchRationaleColumnError,
+  isMissingPatchSkipReasonColumnError,
   normalizeActivityWindow,
+  recordPatchDecisions,
   summarizeRoastFindings,
 } from "./queries";
 
 const NOW = new Date("2026-05-19T12:00:00.000Z");
+
+beforeEach(() => {
+  dbMocks.setCalls.length = 0;
+  dbMocks.update.mockClear();
+  dbMocks.set.mockClear();
+  dbMocks.where.mockClear();
+});
 
 describe("normalizeActivityWindow", () => {
   it("passes both-null through (all-time window)", () => {
@@ -80,6 +109,64 @@ describe("summarizeRoastFindings", () => {
   });
 });
 
+describe("recordPatchDecisions", () => {
+  it("writes per-side skip reasons with the optional rationale columns", async () => {
+    await recordPatchDecisions([
+      {
+        findingId: "rev-1-0",
+        suggestedPatch: null,
+        patchModelId: null,
+        patchSkipReason: "models_disagreed",
+        proposedAt: NOW,
+        candidates: { opus: "-old\n+new\n", gpt5: null },
+        rationales: { opus: "safe fix", gpt5: null },
+        skipReasons: { opus: null, gpt5: "generation_error" },
+        selector: "no-gpt5-deterministic-skip",
+      },
+    ]);
+
+    expect(dbMocks.setCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          patchRationaleOpus: "safe fix",
+          patchRationaleGpt5: null,
+        }),
+        expect.objectContaining({
+          patchSkipReasonOpus: null,
+          patchSkipReasonGpt5: "generation_error",
+        }),
+      ]),
+    );
+  });
+
+  it("writes NULL per-side skip reasons when omitted", async () => {
+    await recordPatchDecisions([
+      {
+        findingId: "rev-1-0",
+        suggestedPatch: "-old\n+new\n",
+        patchModelId: "claude-opus-4-7",
+        patchSkipReason: null,
+        proposedAt: NOW,
+        candidates: { opus: "-old\n+new\n", gpt5: "-old\n+other\n" },
+        selector: "deterministic-opus",
+      },
+    ]);
+
+    expect(dbMocks.setCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          patchRationaleOpus: null,
+          patchRationaleGpt5: null,
+        }),
+        expect.objectContaining({
+          patchSkipReasonOpus: null,
+          patchSkipReasonGpt5: null,
+        }),
+      ]),
+    );
+  });
+});
+
 describe("isMissingPatchRationaleColumnError", () => {
   it("matches undefined-column errors for the additive rationale columns", () => {
     expect(
@@ -95,6 +182,41 @@ describe("isMissingPatchRationaleColumnError", () => {
       isMissingPatchRationaleColumnError({
         code: "42703",
         message: 'column "suggested_patch_gpt5" of relation "finding_status" does not exist',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isMissingPatchSkipReasonColumnError", () => {
+  it("matches undefined-column errors for additive per-side skip-reason columns", () => {
+    expect(
+      isMissingPatchSkipReasonColumnError({
+        code: "42703",
+        message: 'column "patch_skip_reason_opus" of relation "finding_status" does not exist',
+      }),
+    ).toBe(true);
+    expect(
+      isMissingPatchSkipReasonColumnError({
+        code: "42703",
+        message: 'column "patch_skip_reason_gpt5" of relation "finding_status" does not exist',
+      }),
+    ).toBe(true);
+  });
+
+  it("does not hide missing rationale columns", () => {
+    expect(
+      isMissingPatchSkipReasonColumnError({
+        code: "42703",
+        message: 'column "patch_rationale_gpt5" of relation "finding_status" does not exist',
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the rationale predicate narrow", () => {
+    expect(
+      isMissingPatchRationaleColumnError({
+        code: "42703",
+        message: 'column "patch_skip_reason_gpt5" of relation "finding_status" does not exist',
       }),
     ).toBe(false);
   });

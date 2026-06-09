@@ -338,6 +338,7 @@ describe("runReviewWorker", () => {
               modelId: "claude-opus-4-7",
               skipReason: null,
               candidates: { opus: "-old\n+new\n", gpt5: "-old\n+other\n" },
+              skipReasons: { opus: null, gpt5: null },
               selector: "deterministic-opus",
             },
           ],
@@ -351,6 +352,7 @@ describe("runReviewWorker", () => {
         expect.objectContaining({
           findingId: "rev-1-0",
           rationales: { opus: null, gpt5: null },
+          skipReasons: { opus: null, gpt5: null },
         }),
       ]);
     });
@@ -475,6 +477,7 @@ describe("runReviewWorker", () => {
           modelId: SINGLE_LINE_PATCH.modelId,
           skipReason: null,
           candidates: { opus: SINGLE_LINE_PATCH.patch, gpt5: "-old\n+other\n" },
+          skipReasons: { opus: null, gpt5: null },
           selector: "deterministic-opus" as const,
         },
       ],

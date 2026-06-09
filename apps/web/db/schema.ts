@@ -187,6 +187,15 @@ export const findingStatus = pgTable("finding_status", {
   // not decline explanations.
   patchRationaleOpus: text("patch_rationale_opus"),
   patchRationaleGpt5: text("patch_rationale_gpt5"),
+  // Patch Agent diagnostic surface (migration 0035). Per-side orchestrator
+  // skip reason, mirroring ProviderPatchProposal.skipReason. Lets operators
+  // distinguish a silent throw/timeout (generation_error) from a clean
+  // policy decline (model returned patch=null with a rationale) without
+  // cross-referencing token + rationale columns. The aggregate
+  // patch_skip_reason column above continues to record the gate-level
+  // outcome (models_disagreed etc.); these record the per-side raw reason.
+  patchSkipReasonOpus: text("patch_skip_reason_opus"),
+  patchSkipReasonGpt5: text("patch_skip_reason_gpt5"),
   // Retraction surface (migration 0030). When the unanimous gate produces a
   // false positive, the operator retracts the finding: the /anatomy page drops
   // its JSON-LD + adds noindex and renders a retraction notice instead. All
