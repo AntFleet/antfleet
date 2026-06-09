@@ -50,7 +50,10 @@ describe("VirtualsClient", () => {
 describe("probe parsing helpers", () => {
   it("extracts JSON patch payloads", () => {
     const parsed = parsePatchPayload(
-      JSON.stringify({ patch: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n", rationale: null }),
+      JSON.stringify({
+        patch: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+        rationale: null,
+      }),
     );
     expect(parsed.jsonOk).toBe(true);
     expect(parsed.patch).toContain("+new");

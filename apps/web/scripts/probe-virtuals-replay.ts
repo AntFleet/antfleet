@@ -161,7 +161,11 @@ const findingSchema: z.ZodType<Finding> = z.object({
   suggestedRegressionTest: z.string().nullable(),
   minimumFixScope: z.string(),
   requiresPolicyReview: z.boolean().optional().default(false),
-  upstreamOrigin: z.object({ package: z.string(), reason: z.string() }).nullable().optional().default(null),
+  upstreamOrigin: z
+    .object({ package: z.string(), reason: z.string() })
+    .nullable()
+    .optional()
+    .default(null),
 });
 
 async function main(): Promise<void> {
@@ -182,7 +186,8 @@ async function main(): Promise<void> {
   ]);
   const routes = resolveRoutes(models);
   const rates = buildRateTable(models, routes);
-  const callsPlanned = rows.filter((r) => r.suggestedPatchOpus !== null).length * RUNS_PER_PROMPT +
+  const callsPlanned =
+    rows.filter((r) => r.suggestedPatchOpus !== null).length * RUNS_PER_PROMPT +
     rows.filter((r) => r.suggestedPatchGpt5 !== null).length * RUNS_PER_PROMPT;
 
   if (callsPlanned > MAX_CALLS) {
@@ -219,7 +224,8 @@ async function main(): Promise<void> {
 
       for (let run = 1; run <= RUNS_PER_PROMPT; run++) {
         callsMade += 1;
-        if (callsMade > MAX_CALLS) throw new Error(`Virtuals hard cap exceeded at call ${callsMade}`);
+        if (callsMade > MAX_CALLS)
+          throw new Error(`Virtuals hard cap exceeded at call ${callsMade}`);
         const response = await client.streamChatCompletion({
           model: route.resolvedModel,
           temperature: 0,
@@ -326,14 +332,19 @@ function resolveRoutes(models: readonly VirtualsModel[]): ReplayRoute[] {
       storedColumn: "gpt5",
       preferredModels: ["openai-gpt-55"],
       resolvedModel: "openai-gpt-55",
-      modelParityGap: ids.has("openai-gpt-55") ? null : "openai-gpt-55 was not listed by /v1/models.",
+      modelParityGap: ids.has("openai-gpt-55")
+        ? null
+        : "openai-gpt-55 was not listed by /v1/models.",
     },
   ];
 }
 
 type TokenRate = { promptUsdPerToken: number; completionUsdPerToken: number };
 
-function buildRateTable(models: readonly VirtualsModel[], routes: readonly ReplayRoute[]): Map<RouteId, TokenRate> {
+function buildRateTable(
+  models: readonly VirtualsModel[],
+  routes: readonly ReplayRoute[],
+): Map<RouteId, TokenRate> {
   const out = new Map<RouteId, TokenRate>();
   for (const route of routes) {
     const model = models.find((candidate) => candidate.id === route.resolvedModel);
@@ -347,7 +358,12 @@ function extractTokenRate(model: VirtualsModel): TokenRate | null {
   const pricing = model.pricing;
   if (pricing === undefined) return null;
   const prompt = numberField(pricing, ["prompt", "input", "prompt_tokens", "input_tokens"]);
-  const completion = numberField(pricing, ["completion", "output", "completion_tokens", "output_tokens"]);
+  const completion = numberField(pricing, [
+    "completion",
+    "output",
+    "completion_tokens",
+    "output_tokens",
+  ]);
   if (prompt === null || completion === null) return null;
   return { promptUsdPerToken: prompt, completionUsdPerToken: completion };
 }
@@ -409,13 +425,19 @@ async function cachedCheckout(cache: Map<string, Promise<RepoCheckout>>, row: Co
   return promise;
 }
 
-async function checkoutRepoAtSha(row: Pick<CohortRow, "owner" | "repo" | "commitSha">): Promise<RepoCheckout> {
+async function checkoutRepoAtSha(
+  row: Pick<CohortRow, "owner" | "repo" | "commitSha">,
+): Promise<RepoCheckout> {
   const dir = await mkdtemp(join(tmpdir(), "virtuals-replay-"));
   try {
     await execFileAsync("git", ["init"], { cwd: dir });
-    await execFileAsync("git", ["remote", "add", "origin", `https://github.com/${row.owner}/${row.repo}.git`], {
-      cwd: dir,
-    });
+    await execFileAsync(
+      "git",
+      ["remote", "add", "origin", `https://github.com/${row.owner}/${row.repo}.git`],
+      {
+        cwd: dir,
+      },
+    );
     await execFileAsync("git", ["fetch", "--depth", "1", "origin", row.commitSha], { cwd: dir });
     await execFileAsync("git", ["checkout", "--detach", "FETCH_HEAD"], { cwd: dir });
     return { dir, skippedReason: null };
@@ -475,7 +497,8 @@ export async function measureReplayRun(args: {
     run: args.run,
     model: args.model,
     storedHash: hashNormalizedDiff(args.storedPatch),
-    diffHashMatch: patch === null ? false : hashNormalizedDiff(patch) === hashNormalizedDiff(args.storedPatch),
+    diffHashMatch:
+      patch === null ? false : hashNormalizedDiff(patch) === hashNormalizedDiff(args.storedPatch),
     jsonOk: parsed.jsonOk,
     parsedOk,
     apply,
@@ -487,12 +510,16 @@ export async function measureReplayRun(args: {
     costUsd:
       args.rate === null || promptTokens === null || completionTokens === null
         ? null
-        : promptTokens * args.rate.promptUsdPerToken + completionTokens * args.rate.completionUsdPerToken,
+        : promptTokens * args.rate.promptUsdPerToken +
+          completionTokens * args.rate.completionUsdPerToken,
     anomaly: parsed.error,
   };
 }
 
-export function parsePatchPayload(content: string, refusal: string | null = null): PatchParseResult {
+export function parsePatchPayload(
+  content: string,
+  refusal: string | null = null,
+): PatchParseResult {
   if (refusal !== null && refusal.length > 0) {
     return { patch: null, jsonOk: false, refusal: true, error: "refusal" };
   }
@@ -503,14 +530,25 @@ export function parsePatchPayload(content: string, refusal: string | null = null
   try {
     const json = JSON.parse(trimmed) as unknown;
     if (typeof json !== "object" || json === null) {
-      return { patch: null, jsonOk: false, refusal: false, error: "JSON response was not an object" };
+      return {
+        patch: null,
+        jsonOk: false,
+        refusal: false,
+        error: "JSON response was not an object",
+      };
     }
     const patch = (json as Record<string, unknown>)["patch"];
     if (patch === null) return { patch: null, jsonOk: true, refusal: false, error: "patch=null" };
     if (typeof patch === "string") return { patch, jsonOk: true, refusal: false, error: null };
-    return { patch: null, jsonOk: false, refusal: false, error: "JSON patch field was not string|null" };
+    return {
+      patch: null,
+      jsonOk: false,
+      refusal: false,
+      error: "JSON patch field was not string|null",
+    };
   } catch {
-    if (parsesAsUnifiedDiff(trimmed)) return { patch: trimmed, jsonOk: false, refusal: false, error: "raw diff response" };
+    if (parsesAsUnifiedDiff(trimmed))
+      return { patch: trimmed, jsonOk: false, refusal: false, error: "raw diff response" };
     return { patch: null, jsonOk: false, refusal: false, error: "invalid JSON and not a diff" };
   }
 }
@@ -549,7 +587,8 @@ function summarizeRoute(
     .filter((row) => row.anomaly !== null || row.apply.skipped || row.apply.reason !== null)
     .map((row) => `${row.findingId} run ${row.run}: ${row.anomaly ?? row.apply.reason}`);
   if (route.modelParityGap !== null) anomalies.unshift(route.modelParityGap);
-  if (rate === null) anomalies.unshift(`No token pricing found in /v1/models for ${route.resolvedModel}.`);
+  if (rate === null)
+    anomalies.unshift(`No token pricing found in /v1/models for ${route.resolvedModel}.`);
   return {
     route,
     n: rows.length,
@@ -559,8 +598,14 @@ function summarizeRoute(
     avgPromptTokens: avg(rows.map((row) => row.promptTokens)),
     avgCompletionTokens: avg(rows.map((row) => row.completionTokens)),
     avgCostUsd: avg(rows.map((row) => row.costUsd)),
-    p50LatencyMs: percentile(rows.map((row) => row.completeMs), 0.5),
-    p95LatencyMs: percentile(rows.map((row) => row.completeMs), 0.95),
+    p50LatencyMs: percentile(
+      rows.map((row) => row.completeMs),
+      0.5,
+    ),
+    p95LatencyMs: percentile(
+      rows.map((row) => row.completeMs),
+      0.95,
+    ),
     diffHashMatchRate: rateOf(rows, (row) => row.diffHashMatch),
     directParsedOkRate: rateOf(direct, (row) => row.parsedOk),
     directGitApplyOkRate: rateOf(direct, (row) => row.apply.ok),
@@ -668,7 +713,9 @@ function rateOf<T>(values: readonly T[], predicate: (value: T) => boolean): numb
 }
 
 function avg(values: ReadonlyArray<number | null>): number | null {
-  const present = values.filter((value): value is number => value !== null && Number.isFinite(value));
+  const present = values.filter(
+    (value): value is number => value !== null && Number.isFinite(value),
+  );
   if (present.length === 0) return null;
   return present.reduce((sum, value) => sum + value, 0) / present.length;
 }
