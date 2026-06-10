@@ -35,7 +35,10 @@ export const acpReviewRequestSchema = z
       .object({
         repo: repoTargetSchema,
         pr: z.number().int().min(1).optional(),
-        sha: z.string().regex(/^[0-9a-fA-F]{7,64}$/).optional(),
+        sha: z
+          .string()
+          .regex(/^[0-9a-fA-F]{7,64}$/)
+          .optional(),
       })
       .strict(),
     client: z
@@ -310,12 +313,11 @@ export function buildAcpReviewDeliverable(args: {
   const isReceiptPending = args.receiptPending === true || args.reviewReceiptUrl === null;
   const deliverable: AcpReviewDeliverable = {
     schema_version: ACP_REVIEW_DELIVERABLE_SCHEMA_VERSION,
-    status:
-      isReceiptPending
-        ? "receipt_pending"
-        : hasFindings
-          ? "complete"
-          : "complete_no_findings",
+    status: isReceiptPending
+      ? "receipt_pending"
+      : hasFindings
+        ? "complete"
+        : "complete_no_findings",
     job: {
       acp_job_id: args.acpJobId,
       antfleet_job_id: args.antfleetJobId,
@@ -328,7 +330,9 @@ export function buildAcpReviewDeliverable(args: {
       mode: "pr",
       ...(args.target.pr !== undefined ? { pr: args.target.pr } : {}),
       head_sha: args.target.headSha,
-      ...(args.target.filesReviewed !== undefined ? { files_reviewed: args.target.filesReviewed } : {}),
+      ...(args.target.filesReviewed !== undefined
+        ? { files_reviewed: args.target.filesReviewed }
+        : {}),
     },
     review: {
       review_id: args.review.reviewId,

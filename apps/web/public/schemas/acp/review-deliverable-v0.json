@@ -59,12 +59,7 @@
       "properties": {
         "state": {
           "type": "string",
-          "enum": [
-            "review_receipt_ready",
-            "finding_receipts_pending",
-            "no_findings",
-            "unavailable"
-          ]
+          "enum": ["review_receipt_ready", "finding_receipts_pending", "no_findings", "unavailable"]
         },
         "review_receipt_url": { "type": ["string", "null"], "format": "uri" },
         "finding_receipt_urls": {

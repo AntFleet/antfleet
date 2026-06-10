@@ -82,7 +82,10 @@ export default function AcpOfferingPage() {
           </h2>
           <ul className="divide-y divide-[var(--color-line)] rounded-md border border-[var(--color-line)]">
             <SchemaLink href={ACP_REVIEW_REQUEST_SCHEMA_ID} label="review-request-v0.json" />
-            <SchemaLink href={ACP_REVIEW_DELIVERABLE_SCHEMA_ID} label="review-deliverable-v0.json" />
+            <SchemaLink
+              href={ACP_REVIEW_DELIVERABLE_SCHEMA_ID}
+              label="review-deliverable-v0.json"
+            />
             <SchemaLink href={ACP_REVIEW_ERROR_SCHEMA_ID} label="review-error-v0.json" />
           </ul>
           <p className="mt-5 max-w-2xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
