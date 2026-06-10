@@ -69,19 +69,20 @@ export type PatchDecision = {
   // model id the provider actually used.
   patch: string | null;
   modelId: string | null;
-  // Non-null exactly when patch is null.
-  skipReason: PatchSkipReason | null;
-  // Eval Phase 0 — dual-candidate persistence. These fields are additive;
-  // existing callers that only read patch/modelId/skipReason are unaffected.
+  // Gate-level verdict. Null when a patch shipped. When no patch shipped, the
+  // aggregate reason: models_disagreed when sides disagreed, or the shared
+  // structural reason (outside_diff_hunk / generation_error / size_cap / disabled)
+  // when all providers declined for the same reason. Distinct from `skipReasons`
+  // (per-provider mechanism) — this is the gate's output, those are provider inputs.
+  gateOutcome: PatchSkipReason | null;
+  // Eval Phase 0 — dual-candidate persistence. These fields are additive.
   candidates: { opus: string | null; gpt5: string | null };
   // Provider-side explanation returned by proposePatch. This is operator
   // observability only: rendered comments still show only shipped patches.
   rationales?: { opus: string | null; gpt5: string | null };
   // Per-provider raw orchestrator skip reason captured from each side's
-  // ProviderPatchProposal. The top-level `skipReason` field above carries
-  // the GATE'S decision (models_disagreed when one side declined, etc.) —
-  // these carry the unaggregated truth. A side that proposed a patch has
-  // null here; a side that didn't carries the orchestrator reason
+  // ProviderPatchProposal. A side that proposed a patch has null here; a
+  // side that didn't carries the orchestrator reason
   // (generation_error / outside_diff_hunk / size_cap) or null if it
   // returned patch=null with a clean rationale (the "policy decline" case).
   skipReasons: { opus: PatchSkipReason | null; gpt5: PatchSkipReason | null };
@@ -148,7 +149,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       // bug in the provider, not the gate, but we still emit a non-
       // null value so the receipt comment doesn't say "(model: null)".
       modelId: anthropic.modelId ?? WINNING_PROVIDER,
-      skipReason: null,
+      gateOutcome: null,
       candidates,
       rationales,
       skipReasons,
@@ -167,7 +168,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       findingId,
       patch: null,
       modelId: null,
-      skipReason: "models_disagreed",
+      gateOutcome: "models_disagreed",
       candidates,
       rationales,
       skipReasons,
@@ -183,7 +184,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     findingId,
     patch: null,
     modelId: null,
-    skipReason: reason,
+    gateOutcome: reason,
     candidates,
     rationales,
     skipReasons,

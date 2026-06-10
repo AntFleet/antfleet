@@ -469,7 +469,7 @@ async function processClaimedRow(
             findingId: d.findingId,
             suggestedPatch: d.patch,
             patchModelId: d.modelId,
-            patchSkipReason: d.skipReason,
+            patchSkipReason: d.gateOutcome,
             proposedAt: deps.now(),
             candidates: d.candidates,
             rationales: d.rationales ?? { opus: null, gpt5: null },
