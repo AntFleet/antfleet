@@ -8,6 +8,15 @@ export const metadata: Metadata = {
 
 const CASES = [
   {
+    slug: "n8n-workflows-api-server-2025-08",
+    title: "n8n-workflows CVE-2025-55526 — api_server.py path traversal",
+    subtitle:
+      "Neutral-label Virtuals scan — Opus and GPT-5 both caught the path traversal, with $0 direct inference spend.",
+    date: "June 2026",
+    severity: "high",
+    category: "security",
+  },
+  {
     slug: "zcash-orchard-counterfeit-2026-05",
     title: "Zcash Orchard counterfeiting bug",
     subtitle:
