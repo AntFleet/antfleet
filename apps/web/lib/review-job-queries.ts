@@ -35,8 +35,13 @@ export type ReviewJobRow = {
   x402SettlementResponse?: unknown;
   acpJobId?: string | null;
   acpClientWallet?: string | null;
+  acpTargetKey?: string | null;
   acpRequestPayload?: unknown;
   acpReviewId?: string | null;
+  acpBudgetStatus?: AcpBudgetStatus | null;
+  acpBudgetResponse?: unknown;
+  acpBudgetAttempts?: number;
+  acpBudgetUpdatedAt?: Date | null;
   acpSubmitStatus?: AcpSubmitStatus | null;
   acpSubmitResponse?: unknown;
   acpSubmittedAt?: Date | null;
@@ -47,7 +52,8 @@ export type ReviewJobRow = {
 };
 
 export type X402SettlementStatus = "pending" | "settled" | "not_settled" | "settlement_failed";
-export type AcpSubmitStatus = "pending" | "submitted" | "submit_failed";
+export type AcpBudgetStatus = "pending" | "setting" | "set" | "set_failed" | "set_reconcile";
+export type AcpSubmitStatus = "pending" | "submitting" | "submitted" | "submit_failed";
 
 export type ReviewJobInitialStatus = "billing_pending" | "queued";
 export type CreateReviewJobResult = { row: ReviewJobRow; created: boolean };
@@ -78,8 +84,13 @@ const JOB_SELECT = sql`
   x402_settlement_response AS "x402SettlementResponse",
   acp_job_id AS "acpJobId",
   acp_client_wallet AS "acpClientWallet",
+  acp_target_key AS "acpTargetKey",
   acp_request_payload AS "acpRequestPayload",
   acp_review_id AS "acpReviewId",
+  acp_budget_status AS "acpBudgetStatus",
+  acp_budget_response AS "acpBudgetResponse",
+  acp_budget_attempts AS "acpBudgetAttempts",
+  acp_budget_updated_at AS "acpBudgetUpdatedAt",
   acp_submit_status AS "acpSubmitStatus",
   acp_submit_response AS "acpSubmitResponse",
   acp_submitted_at AS "acpSubmittedAt",
@@ -176,41 +187,52 @@ export async function createAcpReviewJob(
   q: Queryable,
   args: {
     acpJobId: string;
-    clientAgentWallet: string | null;
+    clientAgentWallet: string;
     repoOwner: string;
     repoName: string;
     prNumber: number | null;
     sha: string | null;
     requestPayload: AcpReviewRequest;
+    targetKey?: string | null;
     idempotencyKey?: string | null;
     initialStatus?: ReviewJobInitialStatus;
   },
 ): Promise<CreateReviewJobResult> {
+  const existingAcpJob = await findAcpJobByAcpJobId(q, args.acpJobId);
+  if (existingAcpJob !== null) return { row: existingAcpJob, created: false };
+  if (args.targetKey !== null && args.targetKey !== undefined) {
+    const existingTarget = await findAcpJobByTargetKey(q, args.targetKey);
+    if (existingTarget !== null) return { row: existingTarget, created: false };
+  }
   const jobId = nanoid(21);
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const status = args.initialStatus ?? "billing_pending";
   const idempotencyKey = args.idempotencyKey ?? `acp:${args.acpJobId}`;
-  const clientWallet = args.clientAgentWallet?.toLowerCase() ?? null;
+  const clientWallet = args.clientAgentWallet.toLowerCase();
   const result = await q.execute(sql`
     INSERT INTO review_jobs (
       job_id, installation_id, wallet_address, repo_owner, repo_name,
       pr_number, sha, idempotency_key, status, expires_at,
       caller_wallet, payment_rail, acp_job_id, acp_client_wallet,
-      acp_request_payload, acp_submit_status
+      acp_target_key, acp_request_payload, acp_budget_status, acp_submit_status
     ) VALUES (
-      ${jobId}, 'acp', ${clientWallet ?? "acp"},
+      ${jobId}, 'acp', ${clientWallet},
       ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
       ${idempotencyKey}, ${status}, ${expiresAt},
       ${clientWallet}, 'acp', ${args.acpJobId}, ${clientWallet},
-      ${JSON.stringify(args.requestPayload)}::jsonb, 'pending'
+      ${args.targetKey ?? null}, ${JSON.stringify(args.requestPayload)}::jsonb, 'pending', 'pending'
     )
-    ON CONFLICT (payment_rail, installation_id, idempotency_key) DO NOTHING
+    ON CONFLICT DO NOTHING
     RETURNING ${JOB_SELECT}
   `);
   const row = firstRow<ReviewJobRow>(result);
   if (row !== null) return { row: normalizeRow(row), created: true };
   const existing = await findAcpJobByIdempotencyKey(q, idempotencyKey);
   if (existing !== null) return { row: existing, created: false };
+  if (args.targetKey !== null && args.targetKey !== undefined) {
+    const existingTarget = await findAcpJobByTargetKey(q, args.targetKey);
+    if (existingTarget !== null) return { row: existingTarget, created: false };
+  }
   throw new Error("createAcpReviewJob: idempotency conflict returned no existing row");
 }
 
@@ -219,6 +241,19 @@ export async function markJobQueued(q: Queryable, jobId: string): Promise<boolea
     UPDATE review_jobs
     SET status = 'queued'
     WHERE job_id = ${jobId} AND status = 'billing_pending'
+    RETURNING job_id
+  `);
+  return firstRow<{ job_id: string }>(result) !== null;
+}
+
+export async function markAcpJobFundedAndQueued(q: Queryable, jobId: string): Promise<boolean> {
+  const result = await q.execute(sql`
+    UPDATE review_jobs
+    SET status = 'queued'
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'acp'
+      AND status = 'billing_pending'
+      AND acp_budget_status = 'set'
     RETURNING job_id
   `);
   return firstRow<{ job_id: string }>(result) !== null;
@@ -312,6 +347,21 @@ export async function findAcpJobByIdempotencyKey(
   return row === null ? null : normalizeRow(row);
 }
 
+export async function findAcpJobByTargetKey(
+  q: Queryable,
+  targetKey: string,
+): Promise<ReviewJobRow | null> {
+  const result = await q.execute(sql`
+    SELECT ${JOB_SELECT}
+    FROM review_jobs
+    WHERE payment_rail = 'acp'
+      AND acp_target_key = ${targetKey}
+    LIMIT 1
+  `);
+  const row = firstRow<ReviewJobRow>(result);
+  return row === null ? null : normalizeRow(row);
+}
+
 // State-machine transition: queued → running. Returns false if the row
 // is not in 'queued' (lost claim race or already running).
 export async function markJobRunning(q: Queryable, jobId: string, now: Date): Promise<boolean> {
@@ -330,12 +380,14 @@ export async function markJobComplete(
   jobId: string,
   jobResult: unknown,
   now: Date,
-): Promise<void> {
-  await q.execute(sql`
+): Promise<boolean> {
+  const result = await q.execute(sql`
     UPDATE review_jobs
     SET status = 'complete', result = ${JSON.stringify(jobResult)}::jsonb, completed_at = ${now}
     WHERE job_id = ${jobId} AND status = 'running'
+    RETURNING job_id
   `);
+  return firstRow<{ job_id: string }>(result) !== null;
 }
 
 export async function markX402JobCompleteSettled(
@@ -450,18 +502,116 @@ export async function markAcpJobReviewLinked(
   `);
 }
 
+export async function markAcpJobBudgetSet(
+  q: Queryable,
+  jobId: string,
+  budgetResponse: unknown,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_budget_status = 'set',
+        acp_budget_response = ${JSON.stringify(budgetResponse)}::jsonb,
+        acp_budget_attempts = acp_budget_attempts + 1,
+        acp_budget_updated_at = ${now}
+    WHERE job_id = ${jobId} AND payment_rail = 'acp'
+  `);
+}
+
+export async function claimAcpJobBudgetSetting(
+  q: Queryable,
+  jobId: string,
+  now: Date,
+): Promise<boolean> {
+  const result = await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_budget_status = 'setting',
+        acp_budget_updated_at = ${now}
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'acp'
+      AND status = 'billing_pending'
+      AND (
+        acp_budget_status IS NULL
+        OR acp_budget_status IN ('pending','set_failed')
+      )
+    RETURNING job_id
+  `);
+  return firstRow<{ job_id: string }>(result) !== null;
+}
+
+export async function markAcpJobBudgetFailed(
+  q: Queryable,
+  jobId: string,
+  budgetResponse: unknown,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_budget_status = 'set_failed',
+        acp_budget_response = ${JSON.stringify(budgetResponse)}::jsonb,
+        acp_budget_attempts = acp_budget_attempts + 1,
+        acp_budget_updated_at = ${now}
+    WHERE job_id = ${jobId} AND payment_rail = 'acp'
+  `);
+}
+
+export async function markAcpJobBudgetReconciliationRequired(
+  q: Queryable,
+  jobId: string,
+  budgetResponse: unknown,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_budget_status = 'set_reconcile',
+        acp_budget_response = ${JSON.stringify(budgetResponse)}::jsonb,
+        acp_budget_attempts = acp_budget_attempts + 1,
+        acp_budget_updated_at = ${now}
+    WHERE job_id = ${jobId} AND payment_rail = 'acp'
+  `);
+}
+
+export async function markAcpJobSubmitting(
+  q: Queryable,
+  jobId: string,
+  deliverable: unknown,
+  now: Date,
+): Promise<boolean> {
+  const result = await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_submit_status = 'submitting',
+        acp_submit_response = ${JSON.stringify({ state: "submitting", deliverable })}::jsonb,
+        acp_submitted_at = ${now}
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'acp'
+      AND status = 'running'
+      AND (acp_submit_status IS NULL OR acp_submit_status IN ('pending','submit_failed'))
+    RETURNING job_id
+  `);
+  return firstRow<{ job_id: string }>(result) !== null;
+}
+
 export async function markAcpJobSubmitted(
   q: Queryable,
   jobId: string,
   submitResponse: unknown,
   now: Date,
 ): Promise<void> {
+  const responseJson =
+    typeof submitResponse === "object" && submitResponse !== null
+      ? { ...(submitResponse as Record<string, unknown>) }
+      : { response: submitResponse };
   await q.execute(sql`
     UPDATE review_jobs
     SET acp_submit_status = 'submitted',
-        acp_submit_response = ${JSON.stringify(submitResponse)}::jsonb,
+        acp_submit_response = jsonb_strip_nulls(
+          COALESCE(acp_submit_response, '{}'::jsonb)
+          || ${JSON.stringify({ state: "submitted", response: responseJson })}::jsonb
+        ),
         acp_submitted_at = ${now}
-    WHERE job_id = ${jobId} AND payment_rail = 'acp'
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'acp'
+      AND (acp_submit_status IS NULL OR acp_submit_status <> 'submitted')
   `);
 }
 
@@ -476,7 +626,9 @@ export async function markAcpJobSubmitFailed(
     SET acp_submit_status = 'submit_failed',
         acp_submit_response = ${JSON.stringify(submitResponse)}::jsonb,
         acp_submitted_at = ${now}
-    WHERE job_id = ${jobId} AND payment_rail = 'acp'
+    WHERE job_id = ${jobId}
+      AND payment_rail = 'acp'
+      AND (acp_submit_status IS NULL OR acp_submit_status <> 'submitted')
   `);
 }
 

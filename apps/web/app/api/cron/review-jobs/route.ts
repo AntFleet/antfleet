@@ -22,7 +22,7 @@ import {
   type ReviewJobRow,
   type X402SettlementStatus,
 } from "@/lib/review-job-queries";
-import { processReviewJob } from "@/lib/review-job-worker";
+import { processReviewJob, terminalizeAcpJobFailure } from "@/lib/review-job-worker";
 import { refundJobChannelDebit } from "@/lib/paywall/refund";
 import { x402FailureMessage, x402FailureResultPayload } from "@/lib/x402/review-job-result";
 
@@ -53,6 +53,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const orphanThreshold = new Date(now.getTime() - ORPHAN_THRESHOLD_MS);
     const orphans = await findStaleQueuedJobs(db, orphanThreshold);
     for (const orphan of orphans) {
+      if (orphan.paymentRail === "acp" && !shouldProcessAcpJobsInWebCron()) {
+        logInfo("review_jobs_cron.acp_orphan_skipped", { jobId: orphan.jobId });
+        continue;
+      }
       after(async () => {
         try {
           await processReviewJob(orphan.jobId);
@@ -74,6 +78,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const stuckThreshold = new Date(now.getTime() - STUCK_THRESHOLD_MS);
     const stuck = await findStuckRunningJobs(db, stuckThreshold);
     for (const job of stuck) {
+      if (job.paymentRail === "acp" && !shouldProcessAcpJobsInWebCron()) {
+        logInfo("review_jobs_cron.acp_stuck_skipped", { jobId: job.jobId });
+        continue;
+      }
       try {
         await timeoutStuckReviewJob(job, now);
         stuckTimedOut++;
@@ -120,6 +128,16 @@ export async function timeoutStuckReviewJob(job: ReviewJobRow, now: Date): Promi
     );
     return;
   }
+  if (job.paymentRail === "acp") {
+    await terminalizeAcpJobFailure({
+      job,
+      jobId: job.jobId,
+      failureMode: "timeout",
+      publicMessage: "review exceeded 10-minute timeout",
+      rawMessage: "review_jobs cron timed out a stuck ACP job",
+    });
+    return;
+  }
 
   await markJobFailed(db, job.jobId, "timeout", "review exceeded 10-minute timeout", now);
   try {
@@ -138,4 +156,10 @@ function terminalX402SettlementStatus(
 ): X402SettlementStatus {
   if (current === "settled" || current === "settlement_failed") return current;
   return "not_settled";
+}
+
+function shouldProcessAcpJobsInWebCron(): boolean {
+  return (
+    process.env["ACP_WEB_CRON_ENABLED"] === "1" || process.env["ACP_WEB_CRON_ENABLED"] === "true"
+  );
 }

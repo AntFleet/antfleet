@@ -16,6 +16,7 @@ import {
   getReviewJob,
   markAcpJobReviewLinked,
   markAcpJobSubmitFailed,
+  markAcpJobSubmitting,
   markAcpJobSubmitted,
   markJobComplete,
   markJobFailed,
@@ -32,7 +33,7 @@ import {
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { runReviewWorker } from "@/lib/review-worker";
-import { getPublicChangedFiles } from "@/lib/github-files-public";
+import { getPublicChangedFiles, makePublicOctokit } from "@/lib/github-files-public";
 import { reviewPR } from "@/lib/review-pipeline";
 import { getReviewPriceUsdc } from "@/lib/paywall/env";
 import {
@@ -96,11 +97,20 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
     if (job.paymentRail === "acp") {
       const deliverable = result as AcpReviewDeliverable;
       const acpJobId = readRequiredAcpJobId(job);
-      const submitted = await submitAcpDeliverable({ acpJobId, deliverable });
       capturedAcpDeliverable = deliverable;
+      const submitClaimed = await markAcpJobSubmitting(db, jobId, deliverable, new Date());
+      if (!submitClaimed) {
+        return { kind: "skipped", jobId, reason: "acp_submit_not_claimed" };
+      }
+      const submitted = await submitAcpDeliverable({ acpJobId, deliverable });
       capturedAcpSubmission = submitted.json ?? submitted.stdout;
       await markAcpJobSubmitted(db, jobId, capturedAcpSubmission, new Date());
-      await markJobComplete(db, jobId, deliverable, new Date());
+      const completed = await markJobComplete(db, jobId, deliverable, new Date());
+      if (!completed) {
+        throw Object.assign(new Error("ACP complete transition was not claimed"), {
+          failureModeTag: "provider_error",
+        });
+      }
     } else if (job.paymentRail === "x402") {
       const settlement = await settleX402Job(job, readRequiredAuthorization(job));
       capturedX402Settlement = settlement;
@@ -121,18 +131,30 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
     // Store a static safe message for the public API; log the raw error internally
     const publicMessage = safeFailureMessage(failureMode);
 
-    logError("review_job", {
-      jobId,
-      event: "failed",
-      installationId: job.installationId,
-      failureMode,
-      rawMessage,
-    });
+    logError(
+      "review_job",
+      job.paymentRail === "acp"
+        ? {
+            jobId,
+            event: "failed",
+            installationId: job.installationId,
+            paymentRail: "acp",
+            failureMode,
+            message: safeAcpWorkerLogMessage(rawMessage),
+          }
+        : {
+            jobId,
+            event: "failed",
+            installationId: job.installationId,
+            failureMode,
+            rawMessage,
+          },
+    );
 
     let outcomeFailureMode = failureMode;
     let outcomeFailureMessage = publicMessage;
     if (job.paymentRail === "acp") {
-      const acpFailure = await handleAcpJobFailure({
+      const acpFailure = await terminalizeAcpJobFailure({
         job,
         jobId,
         failureMode,
@@ -478,7 +500,9 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
       providerResponses: { status: "skipped", reason: "no reviewable files", rail: "acp" },
       agreementDecision: { status: "skipped" },
     });
-    await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
+    throw Object.assign(new Error("no reviewable files"), {
+      failureModeTag: "no_reviewable_files",
+    });
   } else {
     const bundle = await withX402WallClockTimeout((signal) =>
       reviewPR({ files, owner, repo, prNumber: target.prNumber, signal }),
@@ -545,7 +569,17 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
 async function resolveAcpReviewTarget(
   job: ReviewJobRow,
 ): Promise<{ prNumber: number; sha: string }> {
-  const octokit = new Octokit();
+  const octokit = makePublicOctokit();
+  const publicRepo = await isPublicRepo(
+    octokit as Parameters<typeof isPublicRepo>[0],
+    job.repoOwner,
+    job.repoName,
+  );
+  if (!publicRepo) {
+    throw Object.assign(new Error("ACP target repository is not publicly accessible"), {
+      failureModeTag: "repo_not_accessible",
+    });
+  }
   if (job.prNumber !== null) {
     try {
       const pr = await octokit.rest.pulls.get({
@@ -561,8 +595,17 @@ async function resolveAcpReviewTarget(
       return { prNumber: job.prNumber, sha: pr.data.head.sha };
     } catch (err) {
       if ((err as { failureModeTag?: string }).failureModeTag) throw err;
+      const status = (err as { status?: number })?.status;
+      if (status === 403 || status === 404) {
+        throw Object.assign(
+          new Error(`ACP target PR is not publicly accessible: ${messageOf(err)}`),
+          {
+            failureModeTag: "repo_not_accessible",
+          },
+        );
+      }
       throw Object.assign(new Error(`Failed to resolve ACP PR target: ${messageOf(err)}`), {
-        failureModeTag: "pr_not_found",
+        failureModeTag: "provider_error",
       });
     }
   }
@@ -713,7 +756,7 @@ function reviewResultPayload(
   };
 }
 
-async function handleAcpJobFailure(args: {
+export async function terminalizeAcpJobFailure(args: {
   job: ReviewJobRow;
   jobId: string;
   failureMode: string;
@@ -722,6 +765,9 @@ async function handleAcpJobFailure(args: {
   capturedDeliverable?: AcpReviewDeliverable | null;
   capturedSubmission?: unknown;
 }): Promise<{ failureMode: string; failureMessage: string }> {
+  if (args.job.acpSubmitStatus === "submitting" || args.job.acpSubmitStatus === "submitted") {
+    return preserveSubmittedOrSubmittingAcpJob(args.jobId, args.job);
+  }
   if (args.capturedDeliverable !== null && args.capturedDeliverable !== undefined) {
     const preservedMessage =
       "An internal error occurred after ACP deliverable submission. The ACP submission is preserved.";
@@ -730,6 +776,24 @@ async function handleAcpJobFailure(args: {
         await markAcpJobSubmitted(db, args.jobId, args.capturedSubmission, new Date());
       } catch (markErr) {
         logError("review_job_worker.acp_submission_preserve_failed", {
+          jobId: args.jobId,
+          message: messageOf(markErr),
+        });
+      }
+    } else {
+      try {
+        await markAcpJobSubmitFailed(
+          db,
+          args.jobId,
+          {
+            message:
+              "ACP success deliverable submission is ambiguous; operator reconciliation required",
+            originalFailure: args.rawMessage,
+          },
+          new Date(),
+        );
+      } catch (markErr) {
+        logError("review_job_worker.acp_submission_ambiguous_mark_failed", {
           jobId: args.jobId,
           message: messageOf(markErr),
         });
@@ -753,6 +817,19 @@ async function handleAcpJobFailure(args: {
     settlement: acpSettlementForFailureMode(args.failureMode),
     details: { antfleet_job_id: args.jobId },
   });
+  const submitClaimed = await markAcpJobSubmitting(db, args.jobId, errorPayload, new Date());
+  if (!submitClaimed) {
+    const current = await getReviewJob(db, args.jobId);
+    if (
+      current?.paymentRail === "acp" &&
+      (current.acpSubmitStatus === "submitting" || current.acpSubmitStatus === "submitted")
+    ) {
+      return preserveSubmittedOrSubmittingAcpJob(args.jobId, current);
+    }
+    throw Object.assign(new Error("ACP error deliverable submission was not claimed"), {
+      failureModeTag: "provider_error",
+    });
+  }
   try {
     const submitted = await submitAcpDeliverable({
       acpJobId: readRequiredAcpJobId(args.job),
@@ -778,6 +855,47 @@ async function handleAcpJobFailure(args: {
   return { failureMode: args.failureMode, failureMessage: args.publicMessage };
 }
 
+async function preserveSubmittedOrSubmittingAcpJob(
+  jobId: string,
+  job: ReviewJobRow,
+): Promise<{ failureMode: string; failureMessage: string }> {
+  const preservedMessage =
+    job.acpSubmitStatus === "submitted"
+      ? "ACP deliverable was already submitted. Operator reconciliation is required."
+      : "ACP deliverable submission is already in progress. Operator reconciliation is required.";
+  await markJobFailedWithResult(
+    db,
+    jobId,
+    "internal",
+    preservedMessage,
+    submittedOrSubmittingAcpDeliverable(job.acpSubmitResponse),
+    new Date(),
+  );
+  return { failureMode: "internal", failureMessage: preservedMessage };
+}
+
+function submittedOrSubmittingAcpDeliverable(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  const record = value as Record<string, unknown>;
+  return record["deliverable"] ?? value;
+}
+
+function safeAcpWorkerLogMessage(message: string): string {
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("stdout") ||
+    lower.includes("stderr") ||
+    lower.includes("--deliverable") ||
+    lower.includes("token") ||
+    lower.includes("secret") ||
+    lower.includes("private") ||
+    lower.includes("authorization")
+  ) {
+    return "ACP worker failed; details redacted";
+  }
+  return message.slice(0, 200);
+}
+
 function acpErrorCodeForFailureMode(failureMode: string): AcpReviewErrorCode {
   switch (failureMode) {
     case "invalid_input":
@@ -793,6 +911,8 @@ function acpErrorCodeForFailureMode(failureMode: string): AcpReviewErrorCode {
       return "sha_not_in_open_pr";
     case "sha_ambiguous":
       return "sha_ambiguous";
+    case "no_reviewable_files":
+      return "no_reviewable_files";
     case "cost_cap_exceeded":
       return "cost_cap_exceeded";
     case "timeout":

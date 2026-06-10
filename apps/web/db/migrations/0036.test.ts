@@ -12,8 +12,19 @@ describe("migration 0036 static shape", () => {
 
     expect(joined).toContain("CHECK (payment_rail IN ('channel','x402','acp'))");
     expect(joined).toContain("ADD COLUMN IF NOT EXISTS acp_job_id text");
+    expect(joined).toContain("ADD COLUMN IF NOT EXISTS acp_target_key text");
     expect(joined).toContain("ADD COLUMN IF NOT EXISTS acp_request_payload jsonb");
+    expect(joined).toContain("ADD COLUMN IF NOT EXISTS acp_budget_status text");
     expect(joined).toContain("review_jobs_acp_submit_status_check");
+    expect(joined).toContain("review_jobs_acp_budget_status_check");
+    expect(joined).toContain("review_jobs_acp_wallet_check");
+    expect(joined).toContain("'processing'");
+    expect(joined).toContain("'dead_lettered'");
+    expect(joined).toContain("'submitting'");
+    expect(joined).toContain("'set_reconcile'");
     expect(joined).toContain("idx_review_jobs_acp_job_id_unique");
+    expect(joined).toContain("idx_review_jobs_acp_target_key_unique");
+    expect(joined).toContain("CREATE TABLE IF NOT EXISTS acp_provider_events");
+    expect(joined).toContain("idx_acp_provider_events_event_key_unique");
   });
 });

@@ -1,13 +1,19 @@
 import { db } from "@/db";
 import {
+  claimAcpJobBudgetSetting,
   createAcpReviewJob,
   findAcpJobByAcpJobId,
-  markJobQueued,
+  markAcpJobBudgetFailed,
+  markAcpJobBudgetReconciliationRequired,
+  markAcpJobBudgetSet,
+  markAcpJobFundedAndQueued,
   type CreateReviewJobResult,
   type ReviewJobRow,
 } from "@/lib/review-job-queries";
+import { makePublicOctokit } from "@/lib/github-files-public";
+import { isPublicRepo } from "@/lib/repo-visibility";
 import { getReviewPriceUsdc } from "@/lib/paywall/env";
-import { logInfo } from "@/lib/log";
+import { logInfo, messageOf } from "@/lib/log";
 import { processReviewJob } from "@/lib/review-job-worker";
 import { setAcpJobBudget, type AcpProviderCliOptions, type AcpCliResponse } from "./provider-cli";
 import {
@@ -17,6 +23,8 @@ import {
 } from "./review-contract";
 
 type Queryable = Parameters<typeof createAcpReviewJob>[0];
+type PublicOctokit = ReturnType<typeof makePublicOctokit>;
+type AcpResolvedTarget = { owner: string; repo: string; prNumber: number; sha: string };
 
 export type AcpProviderEvent =
   | {
@@ -57,10 +65,12 @@ export function parseAcpProviderEvent(value: unknown): AcpProviderEvent {
       acpJobId,
       request,
       clientAgentWallet:
-        request.client?.agent_wallet ??
         readStringPath(value, ["clientAgentWallet"]) ??
         readStringPath(value, ["client_agent_wallet"]) ??
-        readStringPath(value, ["client", "agent_wallet"]),
+        readStringPath(value, ["client", "agent_wallet"]) ??
+        readStringPath(value, ["client", "wallet"]) ??
+        readStringPath(value, ["job", "client_agent_wallet"]) ??
+        readStringPath(value, ["job", "client", "agent_wallet"]),
       raw: value,
     };
   }
@@ -77,9 +87,14 @@ export async function handleAcpProviderEvent(
   deps: {
     createJob?: typeof createAcpReviewJob;
     findJob?: typeof findAcpJobByAcpJobId;
-    markQueued?: typeof markJobQueued;
+    markAcpFundedAndQueued?: typeof markAcpJobFundedAndQueued;
     processJob?: typeof processReviewJob;
     setBudget?: typeof setAcpJobBudget;
+    claimBudgetSetting?: typeof claimAcpJobBudgetSetting;
+    markBudgetSet?: typeof markAcpJobBudgetSet;
+    markBudgetFailed?: typeof markAcpJobBudgetFailed;
+    markBudgetReconciliationRequired?: typeof markAcpJobBudgetReconciliationRequired;
+    validateTarget?: typeof validateAcpReviewTarget;
     q?: Queryable;
     cliOptions?: AcpProviderCliOptions;
   } = {},
@@ -91,13 +106,19 @@ export async function handleAcpProviderEvent(
     return createBudgetedAcpReviewJob(event, {
       createJob: deps.createJob ?? createAcpReviewJob,
       setBudget: deps.setBudget ?? setAcpJobBudget,
+      claimBudgetSetting: deps.claimBudgetSetting ?? claimAcpJobBudgetSetting,
+      markBudgetSet: deps.markBudgetSet ?? markAcpJobBudgetSet,
+      markBudgetFailed: deps.markBudgetFailed ?? markAcpJobBudgetFailed,
+      markBudgetReconciliationRequired:
+        deps.markBudgetReconciliationRequired ?? markAcpJobBudgetReconciliationRequired,
+      validateTarget: deps.validateTarget ?? validateAcpReviewTarget,
       q,
       cliOptions: deps.cliOptions,
     });
   }
   return runFundedAcpReviewJob(event.acpJobId, {
     findJob: deps.findJob ?? findAcpJobByAcpJobId,
-    markQueued: deps.markQueued ?? markJobQueued,
+    markAcpFundedAndQueued: deps.markAcpFundedAndQueued ?? markAcpJobFundedAndQueued,
     processJob: deps.processJob ?? processReviewJob,
     q,
   });
@@ -108,31 +129,112 @@ export async function createBudgetedAcpReviewJob(
   deps: {
     createJob?: typeof createAcpReviewJob;
     setBudget?: typeof setAcpJobBudget;
+    claimBudgetSetting?: typeof claimAcpJobBudgetSetting;
+    markBudgetSet?: typeof markAcpJobBudgetSet;
+    markBudgetFailed?: typeof markAcpJobBudgetFailed;
+    markBudgetReconciliationRequired?: typeof markAcpJobBudgetReconciliationRequired;
+    validateTarget?: typeof validateAcpReviewTarget;
     q?: Queryable;
     cliOptions?: AcpProviderCliOptions;
   } = {},
 ): Promise<AcpCreatedJobOutcome> {
   const q = deps.q ?? db;
   const createJob = deps.createJob ?? createAcpReviewJob;
-  const target = normalizeAcpTargetRepo(event.request.target.repo);
+  const clientAgentWallet = requireAcpClientWallet(event.clientAgentWallet);
+  const target = await (deps.validateTarget ?? validateAcpReviewTarget)(event.request);
+  const targetKey = acpTargetIdempotencyKey(clientAgentWallet, target);
   const result: CreateReviewJobResult = await createJob(q, {
     acpJobId: event.acpJobId,
-    clientAgentWallet: event.clientAgentWallet,
+    clientAgentWallet,
     repoOwner: target.owner,
     repoName: target.repo,
-    prNumber: event.request.target.pr ?? null,
-    sha: event.request.target.sha ?? null,
+    prNumber: target.prNumber,
+    sha: target.sha,
     requestPayload: event.request,
+    targetKey,
     idempotencyKey: `acp:${event.acpJobId}`,
     initialStatus: "billing_pending",
   });
-  const budget = result.created
-    ? await (deps.setBudget ?? setAcpJobBudget)({
+  let budget: AcpCliResponse | null = null;
+  if (shouldSetAcpBudget(result.row)) {
+    const budgetClaimed = await (deps.claimBudgetSetting ?? claimAcpJobBudgetSetting)(
+      q,
+      result.row.jobId,
+      new Date(),
+    );
+    if (!budgetClaimed) {
+      if (result.row.acpBudgetStatus === "setting") {
+        throw Object.assign(new Error("ACP budget setup requires operator reconciliation"), {
+          failureModeTag: "provider_error",
+        });
+      }
+      logInfo("acp.job_created_budget_claim_skipped", {
+        acpJobId: event.acpJobId,
+        antfleetJobId: result.row.jobId,
+      });
+      return { job: result.row, created: result.created, budget: null };
+    }
+    try {
+      budget = await (deps.setBudget ?? setAcpJobBudget)({
         acpJobId: event.acpJobId,
         amountUsdc: getReviewPriceUsdc(),
         options: deps.cliOptions,
-      })
-    : null;
+      });
+    } catch (err) {
+      try {
+        await (deps.markBudgetFailed ?? markAcpJobBudgetFailed)(
+          q,
+          result.row.jobId,
+          {
+            message: messageOf(err),
+          },
+          new Date(),
+        );
+      } catch (markErr) {
+        logInfo("acp.job_created_budget_mark_failed_failed", {
+          acpJobId: event.acpJobId,
+          antfleetJobId: result.row.jobId,
+          message: messageOf(markErr),
+        });
+      }
+      throw err;
+    }
+
+    try {
+      await (deps.markBudgetSet ?? markAcpJobBudgetSet)(
+        q,
+        result.row.jobId,
+        budget.json ?? budget.stdout,
+        new Date(),
+      );
+    } catch (err) {
+      try {
+        await (deps.markBudgetReconciliationRequired ?? markAcpJobBudgetReconciliationRequired)(
+          q,
+          result.row.jobId,
+          {
+            message:
+              "ACP budget was set externally but local persistence failed; operator reconciliation required",
+            budget: budget.json ?? budget.stdout,
+            persistenceError: messageOf(err),
+          },
+          new Date(),
+        );
+      } catch (markErr) {
+        logInfo("acp.job_created_budget_mark_reconcile_failed", {
+          acpJobId: event.acpJobId,
+          antfleetJobId: result.row.jobId,
+          message: messageOf(markErr),
+        });
+      }
+      logInfo("acp.job_created_budget_mark_set_failed", {
+        acpJobId: event.acpJobId,
+        antfleetJobId: result.row.jobId,
+        message: messageOf(err),
+      });
+      throw err;
+    }
+  }
   logInfo("acp.job_created", {
     acpJobId: event.acpJobId,
     antfleetJobId: result.row.jobId,
@@ -145,7 +247,7 @@ export async function runFundedAcpReviewJob(
   acpJobId: string,
   deps: {
     findJob?: typeof findAcpJobByAcpJobId;
-    markQueued?: typeof markJobQueued;
+    markAcpFundedAndQueued?: typeof markAcpJobFundedAndQueued;
     processJob?: typeof processReviewJob;
     q?: Queryable;
   } = {},
@@ -157,14 +259,124 @@ export async function runFundedAcpReviewJob(
   }
   const queued =
     job.status === "billing_pending"
-      ? await (deps.markQueued ?? markJobQueued)(q, job.jobId)
+      ? await (deps.markAcpFundedAndQueued ?? markAcpJobFundedAndQueued)(q, job.jobId)
       : false;
+  if (job.status === "billing_pending" && !queued) {
+    throw Object.assign(new Error("ACP funded job is not ready to queue"), {
+      failureModeTag: "provider_error",
+    });
+  }
   const worker =
     job.status === "complete" || job.status === "failed"
       ? null
       : await (deps.processJob ?? processReviewJob)(job.jobId);
+  if (worker?.kind === "skipped") {
+    throw Object.assign(new Error(`ACP review job worker skipped: ${worker.reason}`), {
+      failureModeTag: "provider_error",
+    });
+  }
   logInfo("acp.job_funded", { acpJobId, antfleetJobId: job.jobId, queued });
   return { job, queued, worker };
+}
+
+export async function validateAcpReviewTarget(
+  request: AcpReviewRequest,
+  octokit: PublicOctokit = makePublicOctokit(),
+): Promise<AcpResolvedTarget> {
+  const target = normalizeAcpTargetRepo(request.target.repo);
+  const publicRepo = await isPublicRepo(
+    octokit as Parameters<typeof isPublicRepo>[0],
+    target.owner,
+    target.repo,
+  );
+  if (!publicRepo) {
+    throw Object.assign(new Error("ACP target repository is not publicly accessible"), {
+      failureModeTag: "repo_not_accessible",
+    });
+  }
+
+  if (request.target.pr !== undefined) {
+    try {
+      const pr = await octokit.rest.pulls.get({
+        owner: target.owner,
+        repo: target.repo,
+        pull_number: request.target.pr,
+      });
+      if (pr.data.state !== "open") {
+        throw Object.assign(new Error(`PR #${request.target.pr} is ${pr.data.state}`), {
+          failureModeTag: "pr_not_open",
+        });
+      }
+      return { ...target, prNumber: request.target.pr, sha: pr.data.head.sha };
+    } catch (err) {
+      if ((err as { failureModeTag?: string }).failureModeTag) throw err;
+      const status = (err as { status?: number })?.status;
+      const mode = status === 403 || status === 404 ? "repo_not_accessible" : "provider_error";
+      throw Object.assign(new Error(`Failed to resolve ACP PR target: ${messageOf(err)}`), {
+        failureModeTag: mode,
+      });
+    }
+  }
+
+  if (request.target.sha === undefined) {
+    throw Object.assign(new Error("ACP job requires target.pr or target.sha"), {
+      failureModeTag: "invalid_input",
+    });
+  }
+
+  const matches: Array<{ prNumber: number; sha: string }> = [];
+  try {
+    const pulls = await octokit.paginate(octokit.rest.pulls.list, {
+      owner: target.owner,
+      repo: target.repo,
+      state: "open",
+      per_page: 100,
+    });
+    for (const pr of pulls) {
+      if (pr.head.sha.toLowerCase().startsWith(request.target.sha.toLowerCase())) {
+        matches.push({ prNumber: pr.number, sha: pr.head.sha });
+      }
+    }
+  } catch (err) {
+    throw Object.assign(new Error(`Failed to resolve ACP SHA target: ${messageOf(err)}`), {
+      failureModeTag: "repo_not_accessible",
+    });
+  }
+  if (matches.length === 0) {
+    throw Object.assign(new Error("ACP SHA target is not the head of an open PR"), {
+      failureModeTag: "sha_not_in_open_pr",
+    });
+  }
+  if (matches.length > 1) {
+    throw Object.assign(new Error("ACP SHA target matches multiple open PRs"), {
+      failureModeTag: "sha_ambiguous",
+    });
+  }
+  const match = matches[0] as { prNumber: number; sha: string };
+  return { ...target, prNumber: match.prNumber, sha: match.sha };
+}
+
+function shouldSetAcpBudget(job: ReviewJobRow): boolean {
+  return (
+    job.status === "billing_pending" &&
+    job.acpBudgetStatus !== "set" &&
+    job.acpBudgetStatus !== "set_reconcile"
+  );
+}
+
+function requireAcpClientWallet(value: string | null): string {
+  if (value === null || !/^0x[a-fA-F0-9]{40}$/.test(value)) {
+    throw Object.assign(new Error("ACP client wallet missing from authenticated event metadata"), {
+      failureModeTag: "invalid_input",
+    });
+  }
+  return value.toLowerCase();
+}
+
+function acpTargetIdempotencyKey(wallet: string, target: AcpResolvedTarget): string {
+  return `acp-target:${wallet}:${target.owner.toLowerCase()}/${target.repo.toLowerCase()}:${
+    target.prNumber
+  }:${target.sha.toLowerCase()}`;
 }
 
 function readEventType(value: unknown): string | null {

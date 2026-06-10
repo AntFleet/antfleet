@@ -39,18 +39,17 @@ export async function handleAcpJobStatusRequest(
 
     const body: Record<string, unknown> = {
       jobId: job.jobId,
-      acpJobId: job.acpJobId,
       status: job.status,
       submitStatus: job.acpSubmitStatus ?? "pending",
       retrievedAt: deps.now().toISOString(),
     };
     if (job.status === "complete") {
-      body.result = job.result;
+      body.result = publicAcpResultSummary(job.result);
     }
     if (job.status === "failed") {
       body.failureMode = job.failureMode;
       body.failureMessage = job.failureMessage;
-      body.result = job.result;
+      body.result = publicAcpResultSummary(job.result);
     }
     return jsonOk(body, { cacheControl: NO_STORE });
   } catch (err) {
@@ -59,4 +58,47 @@ export async function handleAcpJobStatusRequest(
     });
     return jsonError(500, "internal", "internal error");
   }
+}
+
+function publicAcpResultSummary(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const review =
+    typeof record["review"] === "object" && record["review"] !== null
+      ? (record["review"] as Record<string, unknown>)
+      : null;
+  const job =
+    typeof record["job"] === "object" && record["job"] !== null
+      ? (record["job"] as Record<string, unknown>)
+      : null;
+  const receipt =
+    typeof record["receipt"] === "object" && record["receipt"] !== null
+      ? (record["receipt"] as Record<string, unknown>)
+      : null;
+  const findings = Array.isArray(record["findings"]) ? record["findings"] : null;
+  return {
+    schema_version: record["schema_version"],
+    status: record["status"],
+    review_id: review?.["review_id"],
+    review_receipt_url: receipt?.["review_receipt_url"] ?? record["review_receipt_url"],
+    status_url: job?.["status_url"],
+    findings_count: findings?.length,
+    error: publicAcpErrorSummary(record["error"]),
+  };
+}
+
+function publicAcpErrorSummary(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const details =
+    typeof record["details"] === "object" && record["details"] !== null
+      ? (record["details"] as Record<string, unknown>)
+      : null;
+  return {
+    code: record["code"],
+    message: record["message"],
+    retryable: record["retryable"],
+    settlement: record["settlement"],
+    details: details === null ? null : { antfleet_job_id: details["antfleet_job_id"] },
+  };
 }

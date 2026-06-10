@@ -4,6 +4,7 @@ const queryMocks = vi.hoisted(() => ({
   getReviewJob: vi.fn(),
   markAcpJobReviewLinked: vi.fn(),
   markAcpJobSubmitFailed: vi.fn(),
+  markAcpJobSubmitting: vi.fn(),
   markAcpJobSubmitted: vi.fn(),
   markJobComplete: vi.fn(),
   markJobFailed: vi.fn(),
@@ -33,10 +34,23 @@ const acpCliMocks = vi.hoisted(() => ({
   submitAcpDeliverable: vi.fn(),
 }));
 
+const repoVisibilityMocks = vi.hoisted(() => ({
+  isPublicRepo: vi.fn(),
+}));
+
 const octokitMocks = vi.hoisted(() => ({
   pullsGet: vi.fn(),
   pullsList: vi.fn(),
   paginate: vi.fn(),
+}));
+
+const githubFileMocks = vi.hoisted(() => ({
+  getPublicChangedFiles: vi.fn(),
+}));
+
+const logMocks = vi.hoisted(() => ({
+  logError: vi.fn(),
+  logInfo: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({ db: {} }));
@@ -44,16 +58,22 @@ vi.mock("@/lib/review-job-queries", () => queryMocks);
 vi.mock("@/db/queries", () => dbQueryMocks);
 vi.mock("@/lib/paywall/queries", () => paywallQueryMocks);
 vi.mock("@/lib/acp/provider-cli", () => acpCliMocks);
-vi.mock("@/lib/github-files-public", () => ({ getPublicChangedFiles: vi.fn() }));
+vi.mock("@/lib/github-files-public", () => ({
+  getPublicChangedFiles: githubFileMocks.getPublicChangedFiles,
+  makePublicOctokit: () => ({
+    rest: { pulls: { get: octokitMocks.pullsGet, list: octokitMocks.pullsList } },
+    paginate: octokitMocks.paginate,
+  }),
+}));
 vi.mock("@/lib/review-pipeline", () => ({ reviewPR: vi.fn() }));
 vi.mock("@/lib/paywall/env", () => ({ getReviewPriceUsdc: () => "1.00" }));
 vi.mock("@/lib/github-app", () => ({ getInstallationToken: vi.fn() }));
-vi.mock("@/lib/repo-visibility", () => ({ isPublicRepo: vi.fn() }));
+vi.mock("@/lib/repo-visibility", () => repoVisibilityMocks);
 vi.mock("@/lib/repo-benchmark", () => ({ isBenchmarkRepo: vi.fn() }));
 vi.mock("@/lib/review-worker", () => ({ runReviewWorker: vi.fn() }));
 vi.mock("@/lib/log", () => ({
-  logError: vi.fn(),
-  logInfo: vi.fn(),
+  logError: logMocks.logError,
+  logInfo: logMocks.logInfo,
   messageOf: (err: unknown) => (err instanceof Error ? err.message : String(err)),
 }));
 vi.mock("@/lib/paywall/refund", () => ({
@@ -122,6 +142,9 @@ describe("processReviewJob ACP rail", () => {
     vi.clearAllMocks();
     queryMocks.getReviewJob.mockResolvedValue(acpJob);
     queryMocks.markJobRunning.mockResolvedValue(true);
+    queryMocks.markJobComplete.mockResolvedValue(true);
+    queryMocks.markAcpJobSubmitting.mockResolvedValue(true);
+    repoVisibilityMocks.isPublicRepo.mockResolvedValue(true);
     dbQueryMocks.hashRepo.mockReturnValue("repo-hash");
     dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: false });
     octokitMocks.pullsGet.mockResolvedValue({
@@ -168,6 +191,12 @@ describe("processReviewJob ACP rail", () => {
         }),
       }),
     });
+    expect(queryMocks.markAcpJobSubmitting).toHaveBeenCalledWith(
+      {},
+      "af-acp-job",
+      expect.objectContaining({ status: "complete_no_findings" }),
+      expect.any(Date),
+    );
     expect(queryMocks.markAcpJobSubmitted).toHaveBeenCalledWith(
       {},
       "af-acp-job",
@@ -183,7 +212,7 @@ describe("processReviewJob ACP rail", () => {
   });
 
   it("submits ACP error payloads and preserves them on failed jobs", async () => {
-    octokitMocks.pullsGet.mockRejectedValue(new Error("not found"));
+    octokitMocks.pullsGet.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
 
     const { processReviewJob } = await import("./review-job-worker");
     const outcome = await processReviewJob("af-acp-job");
@@ -194,15 +223,197 @@ describe("processReviewJob ACP rail", () => {
       deliverable: expect.objectContaining({
         schema_version: "antfleet.acp.review.error.v0",
         status: "failed",
-        error: expect.objectContaining({ code: "pr_not_found" }),
+        error: expect.objectContaining({ code: "repo_not_accessible" }),
       }),
     });
     expect(queryMocks.markJobFailedWithResult).toHaveBeenCalledWith(
       {},
       "af-acp-job",
-      "pr_not_found",
-      "safe:pr_not_found",
+      "repo_not_accessible",
+      "safe:repo_not_accessible",
       expect.objectContaining({ status: "failed" }),
+      expect.any(Date),
+    );
+  });
+
+  it("does not submit ACP error payloads unless the submit claim is won", async () => {
+    queryMocks.markAcpJobSubmitting.mockResolvedValueOnce(false);
+
+    const { terminalizeAcpJobFailure } = await import("./review-job-worker");
+    await expect(
+      terminalizeAcpJobFailure({
+        job: acpJob,
+        jobId: "af-acp-job",
+        failureMode: "timeout",
+        publicMessage: "review exceeded 10-minute timeout",
+        rawMessage: "cron timeout",
+      }),
+    ).rejects.toThrow("ACP error deliverable submission was not claimed");
+
+    expect(acpCliMocks.submitAcpDeliverable).not.toHaveBeenCalled();
+    expect(queryMocks.markJobFailedWithResult).not.toHaveBeenCalled();
+  });
+
+  it("submits ACP no_reviewable_files errors instead of success semantics", async () => {
+    dbQueryMocks.enqueueReview.mockResolvedValueOnce({ reviewId: "review-empty", isNew: true });
+    githubFileMocks.getPublicChangedFiles.mockResolvedValueOnce([]);
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("af-acp-job");
+
+    expect(outcome).toMatchObject({
+      kind: "failed",
+      failureMode: "no_reviewable_files",
+    });
+    expect(dbQueryMocks.markReviewSucceeded).not.toHaveBeenCalled();
+    expect(acpCliMocks.submitAcpDeliverable).toHaveBeenCalledWith({
+      acpJobId: "43868",
+      deliverable: expect.objectContaining({
+        schema_version: "antfleet.acp.review.error.v0",
+        status: "failed",
+        error: expect.objectContaining({ code: "no_reviewable_files" }),
+      }),
+    });
+  });
+
+  it("marks ambiguous ACP success submit failures without sending a second error", async () => {
+    acpCliMocks.submitAcpDeliverable.mockRejectedValue(new Error("CLI submitted but lost receipt"));
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("af-acp-job");
+
+    expect(outcome).toMatchObject({
+      kind: "failed",
+      jobId: "af-acp-job",
+      failureMode: "internal",
+    });
+    expect(acpCliMocks.submitAcpDeliverable).toHaveBeenCalledTimes(1);
+    expect(queryMocks.markAcpJobSubmitFailed).toHaveBeenCalledWith(
+      {},
+      "af-acp-job",
+      expect.objectContaining({
+        message:
+          "ACP success deliverable submission is ambiguous; operator reconciliation required",
+        originalFailure: "CLI submitted but lost receipt",
+      }),
+      expect.any(Date),
+    );
+    expect(queryMocks.markJobFailedWithResult).toHaveBeenCalledWith(
+      {},
+      "af-acp-job",
+      "internal",
+      "An internal error occurred after ACP deliverable submission. The ACP submission is preserved.",
+      expect.objectContaining({ status: "complete_no_findings" }),
+      expect.any(Date),
+    );
+  });
+
+  it("redacts raw ACP CLI failure text from worker logs", async () => {
+    acpCliMocks.submitAcpDeliverable.mockRejectedValue(
+      new Error("Command failed: acp provider submit --deliverable secret stdout=token stderr=key"),
+    );
+
+    const { processReviewJob } = await import("./review-job-worker");
+    await processReviewJob("af-acp-job");
+
+    const failedLog = logMocks.logError.mock.calls.find(
+      ([event, fields]) =>
+        event === "review_job" &&
+        typeof fields === "object" &&
+        fields !== null &&
+        (fields as Record<string, unknown>)["event"] === "failed",
+    );
+    expect(failedLog).toBeDefined();
+    expect(JSON.stringify(failedLog)).not.toContain("secret");
+    expect(JSON.stringify(failedLog)).not.toContain("stdout");
+    expect(JSON.stringify(failedLog)).not.toContain("stderr");
+    expect(JSON.stringify(failedLog)).not.toContain("--deliverable");
+  });
+
+  it("does not report ACP success when the guarded complete write is a no-op", async () => {
+    queryMocks.markJobComplete.mockResolvedValueOnce(false);
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("af-acp-job");
+
+    expect(outcome).toMatchObject({
+      kind: "failed",
+      jobId: "af-acp-job",
+      failureMode: "internal",
+    });
+    expect(queryMocks.markJobFailedWithResult).toHaveBeenCalledWith(
+      {},
+      "af-acp-job",
+      "internal",
+      "An internal error occurred after ACP deliverable submission. The ACP submission is preserved.",
+      expect.objectContaining({ status: "complete_no_findings" }),
+      expect.any(Date),
+    );
+  });
+
+  it("does not submit timeout errors when a prior ACP submit is in progress", async () => {
+    const submittingJob = {
+      ...acpJob,
+      acpSubmitStatus: "submitting" as const,
+      acpSubmitResponse: {
+        state: "submitting",
+        deliverable: { schema_version: "antfleet.acp.review.deliverable.v0", status: "complete" },
+      },
+    };
+
+    const { terminalizeAcpJobFailure } = await import("./review-job-worker");
+    const outcome = await terminalizeAcpJobFailure({
+      job: submittingJob,
+      jobId: "af-acp-job",
+      failureMode: "timeout",
+      publicMessage: "review exceeded 10-minute timeout",
+      rawMessage: "cron timeout",
+    });
+
+    expect(outcome).toMatchObject({
+      failureMode: "internal",
+    });
+    expect(acpCliMocks.submitAcpDeliverable).not.toHaveBeenCalled();
+    expect(queryMocks.markJobFailedWithResult).toHaveBeenCalledWith(
+      {},
+      "af-acp-job",
+      "internal",
+      "ACP deliverable submission is already in progress. Operator reconciliation is required.",
+      { schema_version: "antfleet.acp.review.deliverable.v0", status: "complete" },
+      expect.any(Date),
+    );
+  });
+
+  it("does not submit timeout errors when a prior ACP submit was persisted", async () => {
+    const submittedJob = {
+      ...acpJob,
+      acpSubmitStatus: "submitted" as const,
+      acpSubmitResponse: {
+        state: "submitted",
+        deliverable: { schema_version: "antfleet.acp.review.deliverable.v0", status: "complete" },
+        response: { txHash: "0xacp" },
+      },
+    };
+
+    const { terminalizeAcpJobFailure } = await import("./review-job-worker");
+    const outcome = await terminalizeAcpJobFailure({
+      job: submittedJob,
+      jobId: "af-acp-job",
+      failureMode: "timeout",
+      publicMessage: "review exceeded 10-minute timeout",
+      rawMessage: "cron timeout",
+    });
+
+    expect(outcome).toMatchObject({
+      failureMode: "internal",
+    });
+    expect(acpCliMocks.submitAcpDeliverable).not.toHaveBeenCalled();
+    expect(queryMocks.markJobFailedWithResult).toHaveBeenCalledWith(
+      {},
+      "af-acp-job",
+      "internal",
+      "ACP deliverable was already submitted. Operator reconciliation is required.",
+      { schema_version: "antfleet.acp.review.deliverable.v0", status: "complete" },
       expect.any(Date),
     );
   });

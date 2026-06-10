@@ -54,7 +54,11 @@ export async function applyMigration0036(sql: MigrationSql, sqlText = sqlFile): 
 export async function verifyMigration0036(sql: MigrationSql): Promise<{
   columns: string[];
   indexes: string[];
+  eventIndexes: string[];
   hasSubmitStatusConstraint: boolean;
+  hasBudgetStatusConstraint: boolean;
+  hasWalletConstraint: boolean;
+  hasEventStatusConstraint: boolean;
 }> {
   const columns = await sql`
     SELECT column_name
@@ -63,8 +67,13 @@ export async function verifyMigration0036(sql: MigrationSql): Promise<{
       AND column_name IN (
         'acp_job_id',
         'acp_client_wallet',
+        'acp_target_key',
         'acp_request_payload',
         'acp_review_id',
+        'acp_budget_status',
+        'acp_budget_response',
+        'acp_budget_attempts',
+        'acp_budget_updated_at',
         'acp_submit_status',
         'acp_submit_response',
         'acp_submitted_at'
@@ -77,21 +86,44 @@ export async function verifyMigration0036(sql: MigrationSql): Promise<{
     WHERE tablename = 'review_jobs'
       AND indexname IN (
         'idx_review_jobs_acp_job_id_unique',
+        'idx_review_jobs_acp_target_key_unique',
         'idx_review_jobs_acp_review_id',
+        'idx_review_jobs_acp_budget_status',
         'idx_review_jobs_acp_submit_status'
+      )
+    ORDER BY indexname
+  `;
+  const eventIndexes = await sql`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE tablename = 'acp_provider_events'
+      AND indexname IN (
+        'idx_acp_provider_events_event_key_unique',
+        'idx_acp_provider_events_status_next_retry',
+        'idx_acp_provider_events_acp_job'
       )
     ORDER BY indexname
   `;
   const constraints = await sql`
     SELECT constraint_name
     FROM information_schema.table_constraints
-    WHERE table_name = 'review_jobs'
-      AND constraint_name = 'review_jobs_acp_submit_status_check'
+    WHERE table_name IN ('review_jobs', 'acp_provider_events')
+      AND constraint_name IN (
+        'review_jobs_acp_submit_status_check',
+        'review_jobs_acp_budget_status_check',
+        'review_jobs_acp_wallet_check',
+        'acp_provider_events_status_check'
+      )
   `;
+  const constraintNames = new Set(constraints.map((r) => String(r["constraint_name"])));
   return {
     columns: columns.map((r) => String(r["column_name"])),
     indexes: indexes.map((r) => String(r["indexname"])),
-    hasSubmitStatusConstraint: constraints.length === 1,
+    eventIndexes: eventIndexes.map((r) => String(r["indexname"])),
+    hasSubmitStatusConstraint: constraintNames.has("review_jobs_acp_submit_status_check"),
+    hasBudgetStatusConstraint: constraintNames.has("review_jobs_acp_budget_status_check"),
+    hasWalletConstraint: constraintNames.has("review_jobs_acp_wallet_check"),
+    hasEventStatusConstraint: constraintNames.has("acp_provider_events_status_check"),
   };
 }
 
@@ -132,10 +164,15 @@ async function main() {
   const verification = await verifyMigration0036(sql);
   console.log("Columns present:", verification.columns.join(", "));
   console.log("Indexes present:", verification.indexes.join(", "));
+  console.log("ACP event indexes present:", verification.eventIndexes.join(", "));
   if (
-    verification.columns.length !== 7 ||
-    verification.indexes.length !== 3 ||
-    !verification.hasSubmitStatusConstraint
+    verification.columns.length !== 12 ||
+    verification.indexes.length !== 5 ||
+    verification.eventIndexes.length !== 3 ||
+    !verification.hasSubmitStatusConstraint ||
+    !verification.hasBudgetStatusConstraint ||
+    !verification.hasWalletConstraint ||
+    !verification.hasEventStatusConstraint
   ) {
     throw new Error("Migration 0036 post-apply verification failed");
   }

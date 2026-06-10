@@ -8,13 +8,18 @@ const queryMocks = vi.hoisted(() => ({
   purgeExpiredJobResults: vi.fn(),
 }));
 
+const workerMocks = vi.hoisted(() => ({
+  processReviewJob: vi.fn(),
+  terminalizeAcpJobFailure: vi.fn(),
+}));
+
 const refundMocks = vi.hoisted(() => ({
   refundJobChannelDebit: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({ db: {} }));
 vi.mock("@/lib/review-job-queries", () => queryMocks);
-vi.mock("@/lib/review-job-worker", () => ({ processReviewJob: vi.fn() }));
+vi.mock("@/lib/review-job-worker", () => workerMocks);
 vi.mock("@/lib/paywall/refund", () => refundMocks);
 vi.mock("@/lib/log", () => ({
   logError: vi.fn(),
@@ -56,6 +61,8 @@ const baseJob = {
 describe("review jobs cron timeout terminalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env["CRON_SECRET"] = "test-cron-secret";
+    delete process.env["ACP_WEB_CRON_ENABLED"];
   });
 
   it("marks stuck x402 jobs not_settled without invoking channel refund", async () => {
@@ -108,5 +115,82 @@ describe("review jobs cron timeout terminalization", () => {
       settlementResponse,
       expect.any(Date),
     );
+  });
+
+  it("submits ACP timeout failures through the ACP deliverable contract", async () => {
+    const { timeoutStuckReviewJob } = await import("./route");
+    const acpJob = {
+      ...baseJob,
+      jobId: "job-acp",
+      installationId: "acp",
+      paymentRail: "acp" as const,
+      acpJobId: "43868",
+      acpClientWallet: "0x0000000000000000000000000000000000000001",
+      acpRequestPayload: {},
+      acpReviewId: "review-acp",
+      acpBudgetStatus: "set" as const,
+      acpBudgetResponse: null,
+      acpBudgetAttempts: 1,
+      acpBudgetUpdatedAt: null,
+      acpSubmitStatus: "pending" as const,
+      acpSubmitResponse: null,
+      acpSubmittedAt: null,
+    };
+
+    await timeoutStuckReviewJob(acpJob, new Date("2026-05-29T00:12:00Z"));
+
+    expect(queryMocks.markJobFailed).not.toHaveBeenCalled();
+    expect(refundMocks.refundJobChannelDebit).not.toHaveBeenCalled();
+    expect(workerMocks.terminalizeAcpJobFailure).toHaveBeenCalledWith({
+      job: acpJob,
+      jobId: "job-acp",
+      failureMode: "timeout",
+      publicMessage: "review exceeded 10-minute timeout",
+      rawMessage: "review_jobs cron timed out a stuck ACP job",
+    });
+  });
+
+  it("skips ACP orphan and stuck jobs in web cron unless explicitly enabled", async () => {
+    const { GET } = await import("./route");
+    const acpQueuedJob = {
+      ...baseJob,
+      jobId: "job-acp-queued",
+      status: "queued",
+      paymentRail: "acp" as const,
+    };
+    const acpStuckJob = {
+      ...baseJob,
+      jobId: "job-acp-stuck",
+      paymentRail: "acp" as const,
+      acpJobId: "43868",
+      acpClientWallet: "0x0000000000000000000000000000000000000001",
+      acpRequestPayload: {},
+      acpReviewId: "review-acp",
+      acpBudgetStatus: "set" as const,
+      acpBudgetResponse: null,
+      acpBudgetAttempts: 1,
+      acpBudgetUpdatedAt: null,
+      acpSubmitStatus: "pending" as const,
+      acpSubmitResponse: null,
+      acpSubmittedAt: null,
+    };
+    queryMocks.findStaleQueuedJobs.mockResolvedValue([acpQueuedJob]);
+    queryMocks.findStuckRunningJobs.mockResolvedValue([acpStuckJob]);
+    queryMocks.purgeExpiredJobResults.mockResolvedValue(0);
+
+    const response = await GET(
+      new Request("https://example.test/api/cron/review-jobs", {
+        headers: { authorization: "Bearer test-cron-secret" },
+      }) as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(workerMocks.processReviewJob).not.toHaveBeenCalled();
+    expect(workerMocks.terminalizeAcpJobFailure).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      orphansRetriggered: 0,
+      stuckTimedOut: 0,
+      expiredPurged: 0,
+    });
   });
 });
