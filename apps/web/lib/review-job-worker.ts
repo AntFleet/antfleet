@@ -35,7 +35,7 @@ import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { runReviewWorker } from "@/lib/review-worker";
 import { getPublicChangedFiles, makePublicOctokit } from "@/lib/github-files-public";
 import { reviewPR } from "@/lib/review-pipeline";
-import { getReviewPriceUsdc } from "@/lib/paywall/env";
+import { getAcpReviewPriceUsdc, getReviewPriceUsdc } from "@/lib/paywall/env";
 import {
   readAuthorizationState,
   settlePayment,
@@ -507,7 +507,7 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
     const bundle = await withX402WallClockTimeout((signal) =>
       reviewPR({ files, owner, repo, prNumber: target.prNumber, signal }),
     );
-    const price = Number(getReviewPriceUsdc());
+    const price = Number(getAcpReviewPriceUsdc());
     if (Number.isFinite(price) && bundle.estimatedCostUsd > price * 3) {
       await updateReview(enqueued.reviewId, {
         filesReviewed: files.map((f) => f.filename),

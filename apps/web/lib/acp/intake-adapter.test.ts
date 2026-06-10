@@ -4,6 +4,7 @@ import {
   handleAcpProviderEvent,
   parseAcpProviderEvent,
   runFundedAcpReviewJob,
+  validateAcpReviewTarget,
 } from "./intake-adapter";
 
 const validRequest = {
@@ -16,6 +17,7 @@ const validRequest = {
 describe("ACP intake adapter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env["ACP_REVIEW_PRICE_USDC"];
   });
 
   it("parses job.created events with stringified requirements", () => {
@@ -89,7 +91,7 @@ describe("ACP intake adapter", () => {
     );
     expect(claimBudgetSetting).toHaveBeenCalledWith({}, "af-acp-job", expect.any(Date));
     expect(setBudget).toHaveBeenCalledWith(
-      expect.objectContaining({ acpJobId: "43868", amountUsdc: expect.any(String) }),
+      expect.objectContaining({ acpJobId: "43868", amountUsdc: "1.00" }),
     );
     expect(markBudgetSet).toHaveBeenCalledWith({}, "af-acp-job", { ok: true }, expect.any(Date));
     expect(markBudgetFailed).not.toHaveBeenCalled();
@@ -272,6 +274,37 @@ describe("ACP intake adapter", () => {
     ).rejects.toThrow("ACP client wallet missing");
   });
 
+  it("rejects trading-code targets without the not-financial-advice acknowledgment", async () => {
+    const octokit = fakeTargetOctokit({
+      files: ["src/trading/orders.ts", "src/acp-handler.ts"],
+    });
+
+    await expect(validateAcpReviewTarget(validRequest, octokit)).rejects.toMatchObject({
+      message: "ACP trading-code request requires options.acknowledge_not_financial_advice=true",
+      failureModeTag: "invalid_input",
+    });
+  });
+
+  it("accepts trading-code targets when the request acknowledges the review boundary", async () => {
+    const octokit = fakeTargetOctokit({
+      files: ["src/strategy/execution.ts"],
+    });
+    const request = {
+      ...validRequest,
+      options: {
+        ...validRequest.options,
+        acknowledge_not_financial_advice: true,
+      },
+    };
+
+    await expect(validateAcpReviewTarget(request, octokit)).resolves.toMatchObject({
+      owner: "AntFleet",
+      repo: "acp-fixture",
+      prNumber: 7,
+      sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+    });
+  });
+
   it("passes top-level job.created dependency overrides into budgeted creation", async () => {
     const createJob = vi.fn().mockResolvedValue({
       row: {
@@ -380,3 +413,44 @@ describe("ACP intake adapter", () => {
     expect(processJob).toHaveBeenCalledWith("af-acp-job");
   });
 });
+
+function fakeTargetOctokit(args: {
+  files?: string[];
+  repoDescription?: string | null;
+  repoTopics?: string[];
+}) {
+  const pullsListFiles = vi.fn();
+  return {
+    rest: {
+      repos: {
+        get: vi
+          .fn()
+          .mockResolvedValueOnce({ data: { private: false } })
+          .mockResolvedValueOnce({
+            data: {
+              private: false,
+              name: "acp-fixture",
+              description: args.repoDescription ?? null,
+              topics: args.repoTopics ?? [],
+            },
+          }),
+      },
+      pulls: {
+        get: vi.fn().mockResolvedValue({
+          data: {
+            state: "open",
+            head: { sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001" },
+          },
+        }),
+        list: vi.fn(),
+        listFiles: pullsListFiles,
+      },
+    },
+    paginate: vi.fn(async (endpoint: unknown) => {
+      if (endpoint === pullsListFiles) {
+        return (args.files ?? ["src/acp-handler.ts"]).map((filename) => ({ filename }));
+      }
+      return [];
+    }),
+  } as never;
+}

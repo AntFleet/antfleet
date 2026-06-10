@@ -12,13 +12,14 @@ import {
 } from "@/lib/review-job-queries";
 import { makePublicOctokit } from "@/lib/github-files-public";
 import { isPublicRepo } from "@/lib/repo-visibility";
-import { getReviewPriceUsdc } from "@/lib/paywall/env";
+import { getAcpReviewPriceUsdc } from "@/lib/paywall/env";
 import { logInfo, messageOf } from "@/lib/log";
 import { processReviewJob } from "@/lib/review-job-worker";
 import { setAcpJobBudget, type AcpProviderCliOptions, type AcpCliResponse } from "./provider-cli";
 import {
   normalizeAcpTargetRepo,
   parseAcpReviewRequest,
+  validateTradingAcknowledgment,
   type AcpReviewRequest,
 } from "./review-contract";
 
@@ -177,7 +178,7 @@ export async function createBudgetedAcpReviewJob(
     try {
       budget = await (deps.setBudget ?? setAcpJobBudget)({
         acpJobId: event.acpJobId,
-        amountUsdc: getReviewPriceUsdc(),
+        amountUsdc: getAcpReviewPriceUsdc(),
         options: deps.cliOptions,
       });
     } catch (err) {
@@ -307,6 +308,13 @@ export async function validateAcpReviewTarget(
           failureModeTag: "pr_not_open",
         });
       }
+      await assertAcpTradingAcknowledgment({
+        request,
+        target,
+        prNumber: request.target.pr,
+        sha: pr.data.head.sha,
+        octokit,
+      });
       return { ...target, prNumber: request.target.pr, sha: pr.data.head.sha };
     } catch (err) {
       if ((err as { failureModeTag?: string }).failureModeTag) throw err;
@@ -353,6 +361,13 @@ export async function validateAcpReviewTarget(
     });
   }
   const match = matches[0] as { prNumber: number; sha: string };
+  await assertAcpTradingAcknowledgment({
+    request,
+    target,
+    prNumber: match.prNumber,
+    sha: match.sha,
+    octokit,
+  });
   return { ...target, prNumber: match.prNumber, sha: match.sha };
 }
 
@@ -377,6 +392,91 @@ function acpTargetIdempotencyKey(wallet: string, target: AcpResolvedTarget): str
   return `acp-target:${wallet}:${target.owner.toLowerCase()}/${target.repo.toLowerCase()}:${
     target.prNumber
   }:${target.sha.toLowerCase()}`;
+}
+
+async function assertAcpTradingAcknowledgment(args: {
+  request: AcpReviewRequest;
+  target: ReturnType<typeof normalizeAcpTargetRepo>;
+  prNumber: number;
+  sha: string;
+  octokit: PublicOctokit;
+}): Promise<void> {
+  const [repoMetadata, changedFilePaths] = await Promise.all([
+    readAcpRepoMetadata(args.octokit, args.target.owner, args.target.repo),
+    readAcpPrChangedFilePaths({
+      octokit: args.octokit,
+      owner: args.target.owner,
+      repo: args.target.repo,
+      prNumber: args.prNumber,
+    }),
+  ]);
+  const acknowledged = validateTradingAcknowledgment({
+    request: args.request,
+    repoName: repoMetadata.repoName ?? args.target.repo,
+    repoDescription: repoMetadata.repoDescription,
+    repoTopics: repoMetadata.repoTopics,
+    changedFilePaths,
+  });
+  if (!acknowledged) {
+    throw Object.assign(
+      new Error(
+        "ACP trading-code request requires options.acknowledge_not_financial_advice=true",
+      ),
+      { failureModeTag: "invalid_input" },
+    );
+  }
+}
+
+async function readAcpRepoMetadata(
+  octokit: PublicOctokit,
+  owner: string,
+  repo: string,
+): Promise<{
+  repoName: string | null;
+  repoDescription: string | null;
+  repoTopics: string[];
+}> {
+  try {
+    const { data } = await octokit.rest.repos.get({ owner, repo });
+    return {
+      repoName: typeof data.name === "string" ? data.name : repo,
+      repoDescription: typeof data.description === "string" ? data.description : null,
+      repoTopics: Array.isArray(data.topics)
+        ? data.topics.filter((topic): topic is string => typeof topic === "string")
+        : [],
+    };
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    const mode = status === 403 || status === 404 ? "repo_not_accessible" : "provider_error";
+    throw Object.assign(new Error(`Failed to read ACP repo metadata: ${messageOf(err)}`), {
+      failureModeTag: mode,
+    });
+  }
+}
+
+async function readAcpPrChangedFilePaths(args: {
+  octokit: PublicOctokit;
+  owner: string;
+  repo: string;
+  prNumber: number;
+}): Promise<string[]> {
+  try {
+    const files = await args.octokit.paginate(args.octokit.rest.pulls.listFiles, {
+      owner: args.owner,
+      repo: args.repo,
+      pull_number: args.prNumber,
+      per_page: 100,
+    });
+    return files
+      .map((file) => (typeof file.filename === "string" ? file.filename : null))
+      .filter((filename): filename is string => filename !== null);
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    const mode = status === 403 || status === 404 ? "repo_not_accessible" : "provider_error";
+    throw Object.assign(new Error(`Failed to read ACP PR files: ${messageOf(err)}`), {
+      failureModeTag: mode,
+    });
+  }
 }
 
 function readEventType(value: unknown): string | null {
