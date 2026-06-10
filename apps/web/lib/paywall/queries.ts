@@ -495,6 +495,7 @@ export type ReviewResponsePayload = {
   repo: string | null;
   prNumber: number;
   commitSha: string;
+  providerModelIds: unknown;
   agreementDecision: unknown;
   publicReceipt: boolean;
   isBenchmark: boolean;
@@ -518,6 +519,7 @@ export async function loadReviewForResponse(
       r.repo,
       r.pr_number AS "prNumber",
       r.commit_sha AS "commitSha",
+      r.provider_model_ids AS "providerModelIds",
       r.agreement_decision AS "agreementDecision",
       r.public_receipt AS "publicReceipt",
       r.is_benchmark AS "isBenchmark",

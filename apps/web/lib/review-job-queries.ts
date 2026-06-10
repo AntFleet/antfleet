@@ -5,6 +5,7 @@
 import { nanoid } from "nanoid";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
+import type { AcpReviewRequest } from "@/lib/acp/review-contract";
 
 type Queryable = Pick<typeof db, "execute">;
 
@@ -24,7 +25,7 @@ export type ReviewJobRow = {
   debitPaymentId: string | null;
   refundPaymentId: string | null;
   callerWallet?: string | null;
-  paymentRail?: "channel" | "x402";
+  paymentRail?: "channel" | "x402" | "acp";
   x402PayTo?: string | null;
   x402PaymentPayload?: unknown;
   x402ValidAfter?: Date | null;
@@ -32,6 +33,13 @@ export type ReviewJobRow = {
   x402ReviewId?: string | null;
   x402SettlementStatus?: X402SettlementStatus | null;
   x402SettlementResponse?: unknown;
+  acpJobId?: string | null;
+  acpClientWallet?: string | null;
+  acpRequestPayload?: unknown;
+  acpReviewId?: string | null;
+  acpSubmitStatus?: AcpSubmitStatus | null;
+  acpSubmitResponse?: unknown;
+  acpSubmittedAt?: Date | null;
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -39,6 +47,7 @@ export type ReviewJobRow = {
 };
 
 export type X402SettlementStatus = "pending" | "settled" | "not_settled" | "settlement_failed";
+export type AcpSubmitStatus = "pending" | "submitted" | "submit_failed";
 
 export type ReviewJobInitialStatus = "billing_pending" | "queued";
 export type CreateReviewJobResult = { row: ReviewJobRow; created: boolean };
@@ -67,6 +76,13 @@ const JOB_SELECT = sql`
   x402_review_id AS "x402ReviewId",
   x402_settlement_status AS "x402SettlementStatus",
   x402_settlement_response AS "x402SettlementResponse",
+  acp_job_id AS "acpJobId",
+  acp_client_wallet AS "acpClientWallet",
+  acp_request_payload AS "acpRequestPayload",
+  acp_review_id AS "acpReviewId",
+  acp_submit_status AS "acpSubmitStatus",
+  acp_submit_response AS "acpSubmitResponse",
+  acp_submitted_at AS "acpSubmittedAt",
   created_at AS "createdAt",
   started_at AS "startedAt",
   completed_at AS "completedAt",
@@ -156,6 +172,48 @@ export async function createX402ReviewJob(
   return normalizeRow(row);
 }
 
+export async function createAcpReviewJob(
+  q: Queryable,
+  args: {
+    acpJobId: string;
+    clientAgentWallet: string | null;
+    repoOwner: string;
+    repoName: string;
+    prNumber: number | null;
+    sha: string | null;
+    requestPayload: AcpReviewRequest;
+    idempotencyKey?: string | null;
+    initialStatus?: ReviewJobInitialStatus;
+  },
+): Promise<CreateReviewJobResult> {
+  const jobId = nanoid(21);
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const status = args.initialStatus ?? "billing_pending";
+  const idempotencyKey = args.idempotencyKey ?? `acp:${args.acpJobId}`;
+  const clientWallet = args.clientAgentWallet?.toLowerCase() ?? null;
+  const result = await q.execute(sql`
+    INSERT INTO review_jobs (
+      job_id, installation_id, wallet_address, repo_owner, repo_name,
+      pr_number, sha, idempotency_key, status, expires_at,
+      caller_wallet, payment_rail, acp_job_id, acp_client_wallet,
+      acp_request_payload, acp_submit_status
+    ) VALUES (
+      ${jobId}, 'acp', ${clientWallet ?? "acp"},
+      ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
+      ${idempotencyKey}, ${status}, ${expiresAt},
+      ${clientWallet}, 'acp', ${args.acpJobId}, ${clientWallet},
+      ${JSON.stringify(args.requestPayload)}::jsonb, 'pending'
+    )
+    ON CONFLICT (payment_rail, installation_id, idempotency_key) DO NOTHING
+    RETURNING ${JOB_SELECT}
+  `);
+  const row = firstRow<ReviewJobRow>(result);
+  if (row !== null) return { row: normalizeRow(row), created: true };
+  const existing = await findAcpJobByIdempotencyKey(q, idempotencyKey);
+  if (existing !== null) return { row: existing, created: false };
+  throw new Error("createAcpReviewJob: idempotency conflict returned no existing row");
+}
+
 export async function markJobQueued(q: Queryable, jobId: string): Promise<boolean> {
   const result = await q.execute(sql`
     UPDATE review_jobs
@@ -216,6 +274,37 @@ export async function findX402JobByIdempotencyKey(
     SELECT ${JOB_SELECT}
     FROM review_jobs
     WHERE payment_rail = 'x402'
+      AND idempotency_key = ${idempotencyKey}
+    LIMIT 1
+  `);
+  const row = firstRow<ReviewJobRow>(result);
+  return row === null ? null : normalizeRow(row);
+}
+
+export async function findAcpJobByAcpJobId(
+  q: Queryable,
+  acpJobId: string,
+): Promise<ReviewJobRow | null> {
+  const result = await q.execute(sql`
+    SELECT ${JOB_SELECT}
+    FROM review_jobs
+    WHERE payment_rail = 'acp'
+      AND acp_job_id = ${acpJobId}
+    LIMIT 1
+  `);
+  const row = firstRow<ReviewJobRow>(result);
+  return row === null ? null : normalizeRow(row);
+}
+
+export async function findAcpJobByIdempotencyKey(
+  q: Queryable,
+  idempotencyKey: string,
+): Promise<ReviewJobRow | null> {
+  const result = await q.execute(sql`
+    SELECT ${JOB_SELECT}
+    FROM review_jobs
+    WHERE payment_rail = 'acp'
+      AND installation_id = 'acp'
       AND idempotency_key = ${idempotencyKey}
     LIMIT 1
   `);
@@ -346,6 +435,48 @@ export async function markX402JobReviewLinked(
     UPDATE review_jobs
     SET x402_review_id = ${reviewId}
     WHERE job_id = ${jobId} AND payment_rail = 'x402'
+  `);
+}
+
+export async function markAcpJobReviewLinked(
+  q: Queryable,
+  jobId: string,
+  reviewId: string,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_review_id = ${reviewId}
+    WHERE job_id = ${jobId} AND payment_rail = 'acp'
+  `);
+}
+
+export async function markAcpJobSubmitted(
+  q: Queryable,
+  jobId: string,
+  submitResponse: unknown,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_submit_status = 'submitted',
+        acp_submit_response = ${JSON.stringify(submitResponse)}::jsonb,
+        acp_submitted_at = ${now}
+    WHERE job_id = ${jobId} AND payment_rail = 'acp'
+  `);
+}
+
+export async function markAcpJobSubmitFailed(
+  q: Queryable,
+  jobId: string,
+  submitResponse: unknown,
+  now: Date,
+): Promise<void> {
+  await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_submit_status = 'submit_failed',
+        acp_submit_response = ${JSON.stringify(submitResponse)}::jsonb,
+        acp_submitted_at = ${now}
+    WHERE job_id = ${jobId} AND payment_rail = 'acp'
   `);
 }
 
@@ -480,6 +611,7 @@ function normalizeRow(row: ReviewJobRow): ReviewJobRow {
     ...row,
     x402ValidAfter: row.x402ValidAfter ? parseDate(row.x402ValidAfter) : null,
     x402ValidBefore: row.x402ValidBefore ? parseDate(row.x402ValidBefore) : null,
+    acpSubmittedAt: row.acpSubmittedAt ? parseDate(row.acpSubmittedAt) : null,
     createdAt: parseDate(row.createdAt),
     startedAt: row.startedAt ? parseDate(row.startedAt) : null,
     completedAt: row.completedAt ? parseDate(row.completedAt) : null,

@@ -14,8 +14,12 @@ import { getInstallationToken } from "@/lib/github-app";
 import { logError, logInfo, messageOf } from "@/lib/log";
 import {
   getReviewJob,
+  markAcpJobReviewLinked,
+  markAcpJobSubmitFailed,
+  markAcpJobSubmitted,
   markJobComplete,
   markJobFailed,
+  markJobFailedWithResult,
   markJobRunning,
   markX402JobReviewLinked,
   markX402JobCompleteSettled,
@@ -45,6 +49,15 @@ import {
   x402FailureMessage,
   x402FailureResultPayload,
 } from "@/lib/x402/review-job-result";
+import {
+  buildAcpReviewDeliverable,
+  buildAcpReviewError,
+  mapFindingToAcpFinding,
+  type AcpReviewDeliverable,
+  type AcpReviewErrorCode,
+} from "@/lib/acp/review-contract";
+import { submitAcpDeliverable } from "@/lib/acp/provider-cli";
+import type { ReviewResponsePayload } from "@/lib/paywall/queries";
 import {
   refundJobChannelDebit,
   isRefundableFailureMode,
@@ -76,9 +89,19 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
   logInfo("review_job", { jobId, event: "started", installationId: job.installationId });
 
   let capturedX402Settlement: SettlementResult | null = null;
+  let capturedAcpDeliverable: AcpReviewDeliverable | null = null;
+  let capturedAcpSubmission: unknown = null;
   try {
     const result = await runJobPipeline(job);
-    if (job.paymentRail === "x402") {
+    if (job.paymentRail === "acp") {
+      const deliverable = result as AcpReviewDeliverable;
+      const acpJobId = readRequiredAcpJobId(job);
+      const submitted = await submitAcpDeliverable({ acpJobId, deliverable });
+      capturedAcpDeliverable = deliverable;
+      capturedAcpSubmission = submitted.json ?? submitted.stdout;
+      await markAcpJobSubmitted(db, jobId, capturedAcpSubmission, new Date());
+      await markJobComplete(db, jobId, deliverable, new Date());
+    } else if (job.paymentRail === "x402") {
       const settlement = await settleX402Job(job, readRequiredAuthorization(job));
       capturedX402Settlement = settlement;
       await markX402SettlementSettled(db, jobId, settlement.response);
@@ -108,7 +131,19 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
 
     let outcomeFailureMode = failureMode;
     let outcomeFailureMessage = publicMessage;
-    if (job.paymentRail === "x402") {
+    if (job.paymentRail === "acp") {
+      const acpFailure = await handleAcpJobFailure({
+        job,
+        jobId,
+        failureMode,
+        publicMessage,
+        rawMessage,
+        capturedDeliverable: capturedAcpDeliverable,
+        capturedSubmission: capturedAcpSubmission,
+      });
+      outcomeFailureMode = acpFailure.failureMode;
+      outcomeFailureMessage = acpFailure.failureMessage;
+    } else if (job.paymentRail === "x402") {
       const x402Failure = await handleX402JobFailure({
         job,
         jobId,
@@ -144,6 +179,9 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
 }
 
 async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
+  if (job.paymentRail === "acp") {
+    return runAcpJobPipeline(job);
+  }
   if (job.paymentRail === "x402") {
     return runX402JobPipeline(job);
   }
@@ -384,6 +422,284 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
   return reviewResultPayload(payload, false);
 }
 
+async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverable> {
+  const owner = job.repoOwner;
+  const repo = job.repoName;
+  const target = await resolveAcpReviewTarget(job);
+  const repoHash = hashRepo(owner, repo);
+  const enqueued = await enqueueReview({
+    repoHash,
+    prNumber: target.prNumber,
+    commitSha: target.sha,
+    filesReviewed: [],
+    promptVersion: "spike-v1",
+    providerModelIds: {},
+    providerResponses: { status: "pending", rail: "acp" },
+    agreementDecision: { status: "pending" },
+    timingMs: 0,
+    costEstimatedUsd: 0,
+    schemaVersion: 1,
+    installationId: null,
+    owner,
+    repo,
+    publicReceipt: true,
+    isBenchmark: false,
+  });
+  await markAcpJobReviewLinked(db, job.jobId, enqueued.reviewId);
+
+  if (!enqueued.isNew) {
+    const { loadReviewForResponse } = await import("@/lib/paywall/queries");
+    const cached = await loadReviewForResponse(db, enqueued.reviewId);
+    if (cached === null) {
+      throw Object.assign(new Error(`cached review ${enqueued.reviewId} not found`), {
+        failureModeTag: "internal",
+      });
+    }
+    return acpDeliverableFromReviewPayload(job, cached);
+  }
+
+  const files = await getPublicChangedFiles({
+    owner,
+    repo,
+    prNumber: target.prNumber,
+    headSha: target.sha,
+  });
+  logInfo("review.files_fetched", {
+    jobId: job.jobId,
+    reviewId: enqueued.reviewId,
+    rail: "acp",
+    fileCount: files.length,
+    filenames: files.map((f) => f.filename),
+  });
+
+  if (files.length === 0) {
+    await updateReview(enqueued.reviewId, {
+      filesReviewed: [],
+      providerResponses: { status: "skipped", reason: "no reviewable files", rail: "acp" },
+      agreementDecision: { status: "skipped" },
+    });
+    await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
+  } else {
+    const bundle = await withX402WallClockTimeout((signal) =>
+      reviewPR({ files, owner, repo, prNumber: target.prNumber, signal }),
+    );
+    const price = Number(getReviewPriceUsdc());
+    if (Number.isFinite(price) && bundle.estimatedCostUsd > price * 3) {
+      await updateReview(enqueued.reviewId, {
+        filesReviewed: files.map((f) => f.filename),
+        providerModelIds: bundle.modelIds,
+        providerResponses: { perProvider: bundle.perProvider, rail: "acp" },
+        agreementDecision: {
+          mode: bundle.agreementMode,
+          agreed: bundle.agreed,
+          disagreements: bundle.disagreements,
+          degraded: bundle.degraded,
+          degradedReason: bundle.degradedReason,
+          triage: bundle.triage,
+        },
+        timingMs: bundle.totalMs,
+        costEstimatedUsd: bundle.estimatedCostUsd,
+      });
+      throw Object.assign(new Error("ACP review exceeded inference cost cap"), {
+        failureModeTag: "cost_cap_exceeded",
+      });
+    }
+
+    await updateReview(enqueued.reviewId, {
+      filesReviewed: files.map((f) => f.filename),
+      providerModelIds: bundle.modelIds,
+      providerResponses: { perProvider: bundle.perProvider, rail: "acp" },
+      agreementDecision: {
+        mode: bundle.agreementMode,
+        agreed: bundle.agreed,
+        disagreements: bundle.disagreements,
+        degraded: bundle.degraded,
+        degradedReason: bundle.degradedReason,
+      },
+      timingMs: bundle.totalMs,
+      costEstimatedUsd: bundle.estimatedCostUsd,
+    });
+    if (!bundle.degraded && bundle.agreed.length > 0) {
+      await recordFindingStatuses(
+        enqueued.reviewId,
+        bundle.agreed.map((f) => ({
+          title: f.title,
+          severity: f.severity,
+          category: f.category,
+        })),
+      );
+    }
+    await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
+  }
+
+  const { loadReviewForResponse } = await import("@/lib/paywall/queries");
+  const payload = await loadReviewForResponse(db, enqueued.reviewId);
+  if (payload === null) {
+    throw Object.assign(new Error(`review ${enqueued.reviewId} not found after ACP run`), {
+      failureModeTag: "internal",
+    });
+  }
+  return acpDeliverableFromReviewPayload(job, payload);
+}
+
+async function resolveAcpReviewTarget(
+  job: ReviewJobRow,
+): Promise<{ prNumber: number; sha: string }> {
+  const octokit = new Octokit();
+  if (job.prNumber !== null) {
+    try {
+      const pr = await octokit.rest.pulls.get({
+        owner: job.repoOwner,
+        repo: job.repoName,
+        pull_number: job.prNumber,
+      });
+      if (pr.data.state !== "open") {
+        throw Object.assign(new Error(`PR #${job.prNumber} is ${pr.data.state}`), {
+          failureModeTag: "pr_not_open",
+        });
+      }
+      return { prNumber: job.prNumber, sha: pr.data.head.sha };
+    } catch (err) {
+      if ((err as { failureModeTag?: string }).failureModeTag) throw err;
+      throw Object.assign(new Error(`Failed to resolve ACP PR target: ${messageOf(err)}`), {
+        failureModeTag: "pr_not_found",
+      });
+    }
+  }
+  if (job.sha === null) {
+    throw Object.assign(new Error("ACP job requires target.pr or target.sha"), {
+      failureModeTag: "invalid_input",
+    });
+  }
+
+  const matches: Array<{ prNumber: number; sha: string }> = [];
+  try {
+    const pulls = await octokit.paginate(octokit.rest.pulls.list, {
+      owner: job.repoOwner,
+      repo: job.repoName,
+      state: "open",
+      per_page: 100,
+    });
+    for (const pr of pulls) {
+      if (pr.head.sha.toLowerCase().startsWith(job.sha.toLowerCase())) {
+        matches.push({ prNumber: pr.number, sha: pr.head.sha });
+      }
+    }
+  } catch (err) {
+    throw Object.assign(new Error(`Failed to resolve ACP SHA target: ${messageOf(err)}`), {
+      failureModeTag: "repo_not_accessible",
+    });
+  }
+
+  if (matches.length === 0) {
+    throw Object.assign(new Error("ACP SHA target is not the head of an open PR"), {
+      failureModeTag: "sha_not_in_open_pr",
+    });
+  }
+  if (matches.length > 1) {
+    throw Object.assign(new Error("ACP SHA target matches multiple open PRs"), {
+      failureModeTag: "sha_ambiguous",
+    });
+  }
+  return matches[0] as { prNumber: number; sha: string };
+}
+
+function acpDeliverableFromReviewPayload(
+  job: ReviewJobRow,
+  payload: ReviewResponsePayload,
+): AcpReviewDeliverable {
+  const agreement = readAgreementDecision(payload.agreementDecision);
+  if (agreement.degraded) {
+    throw Object.assign(new Error("ACP review degraded below two-model consensus"), {
+      failureModeTag: "provider_degraded",
+    });
+  }
+  if (agreement.mode !== "unanimous" && agreement.agreed.length > 0) {
+    throw Object.assign(new Error("ACP review did not produce unanimous findings"), {
+      failureModeTag: "provider_degraded",
+    });
+  }
+  const reviewReceiptUrl = absoluteAntfleetUrl(`/receipts/review/${payload.reviewId}`);
+  return buildAcpReviewDeliverable({
+    acpJobId: readRequiredAcpJobId(job),
+    antfleetJobId: job.jobId,
+    clientAgentWallet: job.acpClientWallet ?? null,
+    statusUrl: absoluteAntfleetUrl(`/api/v1/acp/review-jobs/${job.jobId}`),
+    target: {
+      repo: `${job.repoOwner}/${job.repoName}`,
+      pr: payload.prNumber,
+      headSha: payload.commitSha,
+    },
+    review: {
+      reviewId: payload.reviewId,
+      modelIds: readModelIds(payload.providerModelIds),
+      durationMs: payload.timingMs,
+    },
+    findings: agreement.agreed.map((finding, index) =>
+      mapFindingToAcpFinding({
+        reviewId: payload.reviewId,
+        index,
+        finding,
+        receiptUrl: null,
+      }),
+    ),
+    reviewReceiptUrl,
+    includeTradingDisclaimer: shouldIncludeAcpTradingDisclaimer(job),
+  });
+}
+
+function readAgreementDecision(value: unknown): {
+  mode: string | null;
+  agreed: Parameters<typeof mapFindingToAcpFinding>[0]["finding"][];
+  degraded: boolean;
+} {
+  if (typeof value !== "object" || value === null) {
+    return { mode: null, agreed: [], degraded: false };
+  }
+  const record = value as Record<string, unknown>;
+  const agreed = Array.isArray(record["agreed"])
+    ? (record["agreed"] as Parameters<typeof mapFindingToAcpFinding>[0]["finding"][])
+    : [];
+  return {
+    mode: typeof record["mode"] === "string" ? record["mode"] : null,
+    agreed,
+    degraded: record["degraded"] === true,
+  };
+}
+
+function readModelIds(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null) return {};
+  const result: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === "string") result[key] = raw;
+  }
+  return result;
+}
+
+function shouldIncludeAcpTradingDisclaimer(job: ReviewJobRow): boolean {
+  const request = job.acpRequestPayload;
+  if (typeof request !== "object" || request === null) return false;
+  const options = (request as { options?: { focus?: unknown } }).options;
+  return Array.isArray(options?.focus) && options.focus.includes("trading-risk");
+}
+
+function absoluteAntfleetUrl(path: string): string {
+  const base =
+    process.env["ANTFLEET_PUBLIC_BASE_URL"] ??
+    process.env["NEXT_PUBLIC_SITE_URL"] ??
+    "https://www.antfleet.dev";
+  return new URL(path, base).toString();
+}
+
+function readRequiredAcpJobId(job: ReviewJobRow): string {
+  if (job.acpJobId === null || job.acpJobId === undefined || job.acpJobId.trim() === "") {
+    throw Object.assign(new Error("ACP job id missing from review_jobs row"), {
+      failureModeTag: "internal",
+    });
+  }
+  return job.acpJobId;
+}
+
 function reviewResultPayload(
   payload: Record<string, unknown>,
   cached: boolean,
@@ -395,6 +711,111 @@ function reviewResultPayload(
     paid_via: "x402",
     receipt_url: `/receipts/review/${reviewId}`,
   };
+}
+
+async function handleAcpJobFailure(args: {
+  job: ReviewJobRow;
+  jobId: string;
+  failureMode: string;
+  publicMessage: string;
+  rawMessage: string;
+  capturedDeliverable?: AcpReviewDeliverable | null;
+  capturedSubmission?: unknown;
+}): Promise<{ failureMode: string; failureMessage: string }> {
+  if (args.capturedDeliverable !== null && args.capturedDeliverable !== undefined) {
+    const preservedMessage =
+      "An internal error occurred after ACP deliverable submission. The ACP submission is preserved.";
+    if (args.capturedSubmission !== null && args.capturedSubmission !== undefined) {
+      try {
+        await markAcpJobSubmitted(db, args.jobId, args.capturedSubmission, new Date());
+      } catch (markErr) {
+        logError("review_job_worker.acp_submission_preserve_failed", {
+          jobId: args.jobId,
+          message: messageOf(markErr),
+        });
+      }
+    }
+    await markJobFailedWithResult(
+      db,
+      args.jobId,
+      "internal",
+      preservedMessage,
+      args.capturedDeliverable,
+      new Date(),
+    );
+    return { failureMode: "internal", failureMessage: preservedMessage };
+  }
+
+  const errorPayload = buildAcpReviewError({
+    code: acpErrorCodeForFailureMode(args.failureMode),
+    message: args.publicMessage,
+    retryable: isTransientAcpFailure(args.failureMode),
+    settlement: acpSettlementForFailureMode(args.failureMode),
+    details: { antfleet_job_id: args.jobId },
+  });
+  try {
+    const submitted = await submitAcpDeliverable({
+      acpJobId: readRequiredAcpJobId(args.job),
+      deliverable: errorPayload,
+    });
+    await markAcpJobSubmitted(db, args.jobId, submitted.json ?? submitted.stdout, new Date());
+  } catch (submitErr) {
+    await markAcpJobSubmitFailed(
+      db,
+      args.jobId,
+      { message: messageOf(submitErr), originalFailure: args.rawMessage },
+      new Date(),
+    );
+  }
+  await markJobFailedWithResult(
+    db,
+    args.jobId,
+    args.failureMode,
+    args.publicMessage,
+    errorPayload,
+    new Date(),
+  );
+  return { failureMode: args.failureMode, failureMessage: args.publicMessage };
+}
+
+function acpErrorCodeForFailureMode(failureMode: string): AcpReviewErrorCode {
+  switch (failureMode) {
+    case "invalid_input":
+    case "user_input":
+      return "invalid_input";
+    case "repo_not_accessible":
+      return "repo_not_accessible";
+    case "pr_not_found":
+      return "pr_not_found";
+    case "pr_not_open":
+      return "pr_not_open";
+    case "sha_not_in_open_pr":
+      return "sha_not_in_open_pr";
+    case "sha_ambiguous":
+      return "sha_ambiguous";
+    case "cost_cap_exceeded":
+      return "cost_cap_exceeded";
+    case "timeout":
+      return "timeout";
+    case "provider_degraded":
+      return "provider_degraded";
+    case "provider_error":
+      return "provider_error";
+    default:
+      return "internal";
+  }
+}
+
+function isTransientAcpFailure(failureMode: string): boolean {
+  return ["provider_error", "provider_degraded", "timeout", "internal"].includes(failureMode);
+}
+
+function acpSettlementForFailureMode(
+  failureMode: string,
+): ReturnType<typeof buildAcpReviewError>["error"]["settlement"] {
+  if (failureMode === "invalid_input" || failureMode === "user_input") return "not_charged";
+  if (failureMode === "internal") return "operator_review";
+  return "escrow_refundable";
 }
 
 async function settleX402Job(

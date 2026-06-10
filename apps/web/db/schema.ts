@@ -635,6 +635,13 @@ export const reviewJobs = pgTable(
     x402ReviewId: text("x402_review_id"),
     x402SettlementStatus: text("x402_settlement_status"),
     x402SettlementResponse: jsonb("x402_settlement_response"),
+    acpJobId: text("acp_job_id"),
+    acpClientWallet: text("acp_client_wallet"),
+    acpRequestPayload: jsonb("acp_request_payload"),
+    acpReviewId: text("acp_review_id"),
+    acpSubmitStatus: text("acp_submit_status"),
+    acpSubmitResponse: jsonb("acp_submit_response"),
+    acpSubmittedAt: timestamp("acp_submitted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -653,6 +660,9 @@ export const reviewJobs = pgTable(
     index("idx_review_jobs_x402_pay_to").on(t.x402PayTo),
     index("idx_review_jobs_x402_review_id").on(t.x402ReviewId),
     index("idx_review_jobs_x402_settlement_status").on(t.x402SettlementStatus),
+    unique("idx_review_jobs_acp_job_id_unique").on(t.acpJobId),
+    index("idx_review_jobs_acp_review_id").on(t.acpReviewId),
+    index("idx_review_jobs_acp_submit_status").on(t.acpSubmitStatus),
   ],
 );
 
