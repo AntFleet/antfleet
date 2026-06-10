@@ -46,7 +46,11 @@
           "pattern": "^0x[a-fA-F0-9]{40}$",
           "description": "Optional client agent wallet hint; ACP authenticated wallet is authoritative."
         },
-        "agent_name": { "type": "string", "maxLength": 120, "description": "Optional client agent name." },
+        "agent_name": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Optional client agent name."
+        },
         "contact_email": {
           "type": "string",
           "format": "email",

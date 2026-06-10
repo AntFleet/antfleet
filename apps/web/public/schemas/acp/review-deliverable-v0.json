@@ -23,19 +23,31 @@
       "additionalProperties": false,
       "required": ["acp_job_id", "antfleet_job_id", "provider_agent", "status_url"],
       "properties": {
-        "acp_job_id": { "type": "string", "maxLength": 160, "description": "Virtuals ACP job identifier." },
+        "acp_job_id": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Virtuals ACP job identifier."
+        },
         "antfleet_job_id": {
           "type": "string",
           "maxLength": 160,
           "description": "Internal AntFleet review job identifier."
         },
-        "provider_agent": { "type": "string", "maxLength": 120, "description": "Provider agent name." },
+        "provider_agent": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Provider agent name."
+        },
         "client_agent_wallet": {
           "type": "string",
           "pattern": "^0x[a-fA-F0-9]{40}$",
           "description": "Authenticated ACP client wallet when included."
         },
-        "status_url": { "type": "string", "format": "uri", "description": "Public AntFleet job status URL." }
+        "status_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Public AntFleet job status URL."
+        }
       }
     },
     "target": {
@@ -44,8 +56,16 @@
       "additionalProperties": false,
       "required": ["repo", "mode", "head_sha"],
       "properties": {
-        "repo": { "type": "string", "maxLength": 260, "description": "GitHub repository in owner/name form." },
-        "mode": { "type": "string", "const": "pr", "description": "Review mode; v0 reviews pull requests." },
+        "repo": {
+          "type": "string",
+          "maxLength": 260,
+          "description": "GitHub repository in owner/name form."
+        },
+        "mode": {
+          "type": "string",
+          "const": "pr",
+          "description": "Review mode; v0 reviews pull requests."
+        },
         "pr": { "type": "integer", "minimum": 1, "description": "Pull request number." },
         "head_sha": {
           "type": "string",
@@ -65,21 +85,40 @@
       "additionalProperties": false,
       "required": ["review_id", "agreement_mode", "reviewer_count", "degraded", "model_ids"],
       "properties": {
-        "review_id": { "type": "string", "maxLength": 160, "description": "AntFleet review identifier." },
+        "review_id": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "AntFleet review identifier."
+        },
         "agreement_mode": {
           "type": "string",
           "const": "unanimous",
           "description": "Consensus mode used for posted findings."
         },
-        "reviewer_count": { "type": "integer", "const": 2, "description": "Number of independent reviewers." },
-        "degraded": { "type": "boolean", "const": false, "description": "Success deliverables are never degraded." },
-        "degraded_reason": { "type": "null", "description": "Always null for success deliverables." },
+        "reviewer_count": {
+          "type": "integer",
+          "const": 2,
+          "description": "Number of independent reviewers."
+        },
+        "degraded": {
+          "type": "boolean",
+          "const": false,
+          "description": "Success deliverables are never degraded."
+        },
+        "degraded_reason": {
+          "type": "null",
+          "description": "Always null for success deliverables."
+        },
         "model_ids": {
           "type": "object",
           "description": "Model identifiers used by each reviewer.",
           "additionalProperties": { "type": "string", "maxLength": 160 }
         },
-        "duration_ms": { "type": "integer", "minimum": 0, "description": "Review runtime in milliseconds." }
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Review runtime in milliseconds."
+        }
       }
     },
     "receipt": {
@@ -103,7 +142,11 @@
           "description": "Closure receipt URLs for findings when available.",
           "items": { "type": "string", "format": "uri" }
         },
-        "receipt_note": { "type": "string", "maxLength": 500, "description": "Human-readable receipt state note." }
+        "receipt_note": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Human-readable receipt state note."
+        }
       }
     },
     "findings": {

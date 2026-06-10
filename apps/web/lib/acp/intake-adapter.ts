@@ -501,9 +501,7 @@ async function assertAcpTradingAcknowledgment(args: {
   });
   if (!acknowledged) {
     throw Object.assign(
-      new Error(
-        "ACP trading-code request requires options.acknowledge_not_financial_advice=true",
-      ),
+      new Error("ACP trading-code request requires options.acknowledge_not_financial_advice=true"),
       { failureModeTag: "invalid_input" },
     );
   }
