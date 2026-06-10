@@ -9,7 +9,7 @@ import {
 export const metadata: Metadata = {
   title: "ACP offering · AntFleet",
   description:
-    "Receipt-backed code review for agent repositories through Virtuals ACP: two-model consensus findings, structured JSON deliverables, and public receipt URLs.",
+    "Code PR Audit through Virtuals ACP: two-model consensus findings, structured JSON deliverables, and public receipt URLs.",
 };
 
 const TAGS = ["code-review", "security", "receipts", "github", "acp", "agent-trust"] as const;
@@ -23,7 +23,7 @@ export default function AcpOfferingPage() {
             Virtuals ACP · beta SLA
           </p>
           <h1 className="max-w-2xl text-4xl font-semibold tracking-tight text-[var(--color-ink)] leading-tight sm:text-5xl">
-            Receipt-backed code review for agent repos
+            Code PR Audit
           </h1>
           <p className="mt-6 max-w-2xl text-base leading-relaxed text-[var(--color-ink-muted)]">
             Hire AntFleet through ACP to review a public GitHub PR. Two independent frontier
@@ -106,7 +106,8 @@ export default function AcpOfferingPage() {
           <p className="max-w-2xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
             This website publishes schemas, copy, fixtures, and public receipt projections.
             Production ACP provider runtime, wallet integration, job handlers, queue workers, and
-            ACP SDK wiring belong in{" "}
+            ACP CLI/SDK wiring live in this AntFleet monorepo alongside the existing review worker.
+            The reusable contract helpers remain available from{" "}
             <a
               href="https://github.com/AntFleet/antfleet-core"
               target="_blank"
@@ -115,8 +116,7 @@ export default function AcpOfferingPage() {
             >
               AntFleet/antfleet-core
             </a>
-            . Demo and submission artifacts belong in Virtuals&apos; acp-cli-demos flow from the
-            AntFleet operator account.
+            , but the operational ACP adapter is part of the production web worker.
           </p>
           <p className="mt-5 max-w-2xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
             {ACP_TRADING_DISCLAIMER}

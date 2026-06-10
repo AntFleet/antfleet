@@ -3,21 +3,28 @@
 **Status:** Draft for v0 implementation
 **Date:** 2026-06-10
 **Owner:** AntFleet
-**Offering:** Receipt-backed code review for agent repos
+**Offering:** Code PR Audit
 **External context checked:** Virtuals ACP commerce docs, `@virtuals-protocol/acp-cli`, x402 docs, x402 Foundation repo
 
 ## 0. Implementation and Submission Boundary
 
-This repository is the product/spec reference for the ACP provider. All production Virtuals ACP provider work for this offering must be implemented in [`AntFleet/antfleet-core`](https://github.com/AntFleet/antfleet-core), not in this public web/product repo.
+This repository is the product/spec reference for the ACP provider.
+
+**PR #82 architecture pivot:** the v0 launch adapter intentionally runs in this
+repo (`AntFleet/antfleet`) because the existing receipt, review job, ACP status,
+and public schema surfaces already live here. The original plan to put all
+production provider runtime in [`AntFleet/antfleet-core`](https://github.com/AntFleet/antfleet-core)
+is now a future extraction path, not a prerequisite for registering the first
+Virtuals ACP Reviewer offering.
 
 Submissions, demo wiring, and marketplace-facing examples must be prepared through [`Virtual-Protocol/acp-cli-demos`](https://github.com/Virtual-Protocol/acp-cli-demos) from the AntFleet operator account `antfleet-ops`.
 
 Practical boundary for v0:
 
 - This spec may define schemas, copy, receipt behavior, and acceptance criteria.
-- `antfleet-core` owns ACP runtime code, job handlers, provider wallet integration, queue workers, and SDK wiring.
+- `AntFleet/antfleet` owns the v0 ACP intake adapter, durable inbox, budget/funded transitions, provider worker, guarded ACP submit state, receipts, status projection, schemas, docs, and validation fixtures.
+- `antfleet-core` remains the preferred extraction target if the runtime grows beyond the narrow v0 adapter.
 - `acp-cli-demos` owns Virtuals demo/submission artifacts, demo scripts, and any required upstream example PR.
-- `www.antfleet.dev` / this repo may expose receipts, product pages, docs, and validation fixtures, but must not be treated as the production ACP provider runtime.
 
 ## 1. Product Positioning
 
@@ -42,7 +49,7 @@ This fits the Virtuals economy because:
 - EconomyOS gives agents wallets, email, compute, cards, and marketplace access, so agents can buy security review without human account setup.
 - AntFleet's output is machine-readable enough for agent workflows and public enough for marketplace reputation.
 - Receipts create durable proof that can be reused in listings, Showcase submissions, changelogs, and evaluator decisions.
-- The implementation path is compatible with Virtuals submission expectations because provider code lives in `AntFleet/antfleet-core` and demo/submission artifacts live in `Virtual-Protocol/acp-cli-demos`.
+- The implementation path is compatible with Virtuals submission expectations because v0 provider code lives in `AntFleet/antfleet`, with `antfleet-core` documented as the extraction target and demo/submission artifacts in `Virtual-Protocol/acp-cli-demos`.
 
 ### Explicit non-claims
 
@@ -59,7 +66,7 @@ AntFleet must not claim:
 
 ### Offering
 
-**Name:** Receipt-backed code review for agent repos
+**Name:** Code PR Audit
 
 **Marketplace description:**
 
@@ -625,15 +632,20 @@ If the client rejects:
 
 ### Repository ownership
 
-Production ACP implementation must land in `AntFleet/antfleet-core`.
+Production ACP implementation for PR #82 lands in `AntFleet/antfleet`.
+`AntFleet/antfleet-core` remains the intended extraction target after the v0
+marketplace path is proven.
 
 This spec assumes the following repo split:
 
-- `AntFleet/antfleet-core`: provider runtime, ACP SDK integration, job state machine, validation, review pipeline adapter, storage migrations, queue workers, and tests.
-- This repo / `www.antfleet.dev`: public receipt pages, product docs, schema publication, read-only status/deliverable projections, and any web UI copy needed to support the offering.
+- This repo / `www.antfleet.dev`: v0 provider adapter, ACP CLI integration, job state machine, validation, review pipeline adapter, storage migrations, queue worker, public receipt pages, product docs, schema publication, read-only status/deliverable projections, and any web UI copy needed to support the offering.
+- `AntFleet/antfleet-core`: future provider-runtime extraction target if the adapter needs isolation from the public web app.
 - `Virtual-Protocol/acp-cli-demos`: demo provider/client scripts, submission fixtures, and marketplace/showcase artifacts submitted from `antfleet-ops`.
 
-No v0 implementation task should require this repo to host the live ACP provider process or ACP intake handler. If `www.antfleet.dev` exposes `/api/v1/acp/...` URLs, they must be read-only projections backed by `antfleet-core` state, not the provider runtime.
+The v0 provider process is `apps/web/scripts/acp-provider-worker.ts`; it drains
+ACP CLI events into `review_jobs` and `acp_provider_events`. Keep it narrow:
+ACP-specific runtime growth beyond intake, review execution, submit guarding,
+and recovery should trigger the `antfleet-core` extraction discussion.
 
 ### Repo anchors to adapt
 
@@ -774,10 +786,11 @@ ACP and x402 are complementary, not substitutes:
 - v0 ACP provider may internally reuse validation and worker code from x402 routes, but should not require x402 payment signatures. ACP escrow is the payment rail.
 - Public listing copy can mention x402 as an alternate direct API only after the ACP path is stable.
 
-Runtime intake endpoint example, hosted by `AntFleet/antfleet-core`:
+Runtime intake shape, currently represented by ACP CLI events drained into
+`apps/web/scripts/acp-provider-worker.ts`:
 
 ```http
-POST {ANTFLEET_CORE_ACP_BASE_URL}/review-jobs
+POST {ANTFLEET_ACP_PROVIDER_BASE_URL}/review-jobs
 Content-Type: application/json
 X-AntFleet-ACP-Signature: ...
 
@@ -792,7 +805,7 @@ X-AntFleet-ACP-Signature: ...
 }
 ```
 
-Read-only projection/status response, which may be exposed through `www.antfleet.dev` after `antfleet-core` persists job state:
+Read-only projection/status response, exposed through `www.antfleet.dev` from the v0 `review_jobs` ACP state:
 
 ```json
 {
@@ -830,9 +843,12 @@ Read-only projection/status response, which may be exposed through `www.antfleet
 
 ### Abuse prevention
 
-- Per client wallet: max 10 jobs/hour in v0.
-- Per repo: max 1 fresh review per 10 minutes; repeated identical `(repo, pr, sha)` returns cached deliverable.
-- Per target: idempotency by `acp_job_id` and target tuple.
+- Per client wallet: max 10 accepted ACP jobs/hour in v0.
+- Per repo: max 1 fresh accepted ACP review per 10 minutes.
+- Per target: same-`acp_job_id` replays are idempotent; a different
+  `acp_job_id` for an already accepted `(wallet, repo, PR, SHA)` target is
+  rejected before budget setup. v0 does not submit one review result to multiple
+  marketplace jobs.
 - File caps: keep existing `MAX_FILE_BYTES`, `MAX_FILES`, `MAX_TOTAL_PROMPT_BYTES`, `MAX_CHUNKS=10`.
 - Reject binary, vendored, generated, lockfile-heavy, and oversized files through existing reviewable-path filters.
 - Log but do not deliver raw provider disagreements.
@@ -894,7 +910,7 @@ For trading-agent repos, include:
 - Replace ACP escrow/payment.
 - Build a new review engine.
 - Build a new receipt system.
-- Host the production ACP provider runtime in this repo.
+- Expand the v0 adapter into a broad provider platform inside this repo without revisiting the `antfleet-core` extraction boundary.
 - Submit Virtuals ACP demo artifacts directly from this repo.
 - Promise correctness/security.
 - Tokenize AntFleet before usefulness.
@@ -915,7 +931,8 @@ For trading-agent repos, include:
 - Rate limit test covers wallet and repo cooldowns.
 - Trading-agent request requires or emits the no-financial-advice disclaimer.
 - Optional evaluator can verify schema and receipt URL without private data.
-- Production ACP runtime changes are implemented in `AntFleet/antfleet-core`.
+- Production ACP runtime changes are implemented in `AntFleet/antfleet` for v0,
+  with `antfleet-core` documented as the future extraction target.
 - Virtuals demo/submission artifacts are prepared in `Virtual-Protocol/acp-cli-demos` from `antfleet-ops`.
 
 ### Test plan
@@ -995,20 +1012,21 @@ Package AntFleet as "agent-to-agent trust infrastructure":
 
 - Link to `https://www.antfleet.dev/receipts`.
 - Link to `https://www.antfleet.dev/architecture`.
-- Link to the `AntFleet/antfleet-core` implementation commit or PR.
+- Link to PR #82 in `AntFleet/antfleet`.
+- Link to the future `AntFleet/antfleet-core` extraction PR only if/when that happens.
 - Link to the `Virtual-Protocol/acp-cli-demos` submission/demo PR from `antfleet-ops`.
 - Example ACP job ID on testnet/mainnet.
 - Example deliverable JSON.
 - Example review receipt URL.
 - Example finding closure receipt URL if available.
 - Test output from schema/idempotency/rate-limit tests.
-- Public commit SHA of the ACP provider implementation in `AntFleet/antfleet-core`.
+- Public commit SHA of the ACP provider implementation in `AntFleet/antfleet`.
 
 ### Suggested landing-page copy
 
 Headline:
 
-> Receipt-backed code review for agent repos
+> Code PR Audit
 
 Subhead:
 
@@ -1028,9 +1046,9 @@ CTA:
 
 ### Suggested ACP marketplace listing copy
 
-**Title:** Receipt-backed code review for agent repos
+**Title:** Code PR Audit
 
-**Short description:** Two-model consensus review for public GitHub PRs, with structured findings and SHA-pinned receipt URLs.
+**Short description:** Two-model consensus review for public GitHub pull requests, with structured findings and SHA-pinned receipt URLs.
 
 **Long description:**
 
@@ -1076,13 +1094,13 @@ Trust:
 - At least one optional evaluator acceptance.
 - No unresolved dispute older than 72 hours.
 - No private repo/name leakage in public receipts.
-- Public implementation and submission provenance are clear: `AntFleet/antfleet-core` for provider code, `Virtual-Protocol/acp-cli-demos` for demo/submission.
+- Public implementation and submission provenance are clear: `AntFleet/antfleet` for v0 provider code, `AntFleet/antfleet-core` as future extraction target, and `Virtual-Protocol/acp-cli-demos` for demo/submission.
 
 ## 9. Seven-Day Implementation Plan
 
 ### Day 1 - ACP provider skeleton
 
-- Work in `AntFleet/antfleet-core`; do not implement the provider runtime in this repo.
+- Work in `AntFleet/antfleet` for the PR #82 v0 provider adapter.
 - Create ACP provider runtime process using `@virtuals-protocol/acp-cli` or SDK v2.
 - Register offering metadata, fixed prices, SLA, and schemas.
 - Add environment contract for provider wallet, signer, and AntFleet API base URL.
@@ -1099,7 +1117,8 @@ Trust:
 
 - Add `acp_review_jobs` migration and query helpers.
 - Store ACP job IDs, wallets, target tuple, status, result, and linked review ID.
-- Enforce wallet/repo cooldown and target idempotency.
+- Enforce wallet/repo cooldown, same-`acp_job_id` idempotency, and duplicate
+  target rejection for different `acp_job_id` values.
 - Assert `acp_client_wallet` is non-null before inserting target-idempotency rows.
 
 ### Day 4 - Pipeline adapter
@@ -1137,4 +1156,4 @@ Trust:
 - `@virtuals-protocol/acp-cli` documents offerings with price, SLA, requirements, deliverable, escrowed job lifecycle, and EconomyOS primitives including wallet, email, card, compute, and marketplace access.
 - x402 docs and the x402 Foundation repo describe HTTP 402 direct-payment flows; AntFleet should treat x402 as a direct API rail, while ACP remains the marketplace/escrow rail.
 - AntFleet repo already implements the review and scan primitives this spec depends on; v0 should adapt them rather than inventing new review machinery.
-- Virtuals ACP production work for this offering belongs in `AntFleet/antfleet-core`; demo and submission artifacts belong in `Virtual-Protocol/acp-cli-demos`.
+- Virtuals ACP v0 production work for this offering belongs in `AntFleet/antfleet`; `AntFleet/antfleet-core` remains the future extraction target, and demo/submission artifacts belong in `Virtual-Protocol/acp-cli-demos`.

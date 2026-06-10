@@ -635,6 +635,18 @@ export const reviewJobs = pgTable(
     x402ReviewId: text("x402_review_id"),
     x402SettlementStatus: text("x402_settlement_status"),
     x402SettlementResponse: jsonb("x402_settlement_response"),
+    acpJobId: text("acp_job_id"),
+    acpClientWallet: text("acp_client_wallet"),
+    acpTargetKey: text("acp_target_key"),
+    acpRequestPayload: jsonb("acp_request_payload"),
+    acpReviewId: text("acp_review_id"),
+    acpBudgetStatus: text("acp_budget_status"),
+    acpBudgetResponse: jsonb("acp_budget_response"),
+    acpBudgetAttempts: integer("acp_budget_attempts").notNull().default(0),
+    acpBudgetUpdatedAt: timestamp("acp_budget_updated_at", { withTimezone: true }),
+    acpSubmitStatus: text("acp_submit_status"),
+    acpSubmitResponse: jsonb("acp_submit_response"),
+    acpSubmittedAt: timestamp("acp_submitted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -653,6 +665,43 @@ export const reviewJobs = pgTable(
     index("idx_review_jobs_x402_pay_to").on(t.x402PayTo),
     index("idx_review_jobs_x402_review_id").on(t.x402ReviewId),
     index("idx_review_jobs_x402_settlement_status").on(t.x402SettlementStatus),
+    uniqueIndex("idx_review_jobs_acp_job_id_unique")
+      .on(t.acpJobId)
+      .where(sql`${t.paymentRail} = 'acp' AND ${t.acpJobId} IS NOT NULL`),
+    uniqueIndex("idx_review_jobs_acp_target_key_unique")
+      .on(t.acpTargetKey)
+      .where(sql`${t.paymentRail} = 'acp' AND ${t.acpTargetKey} IS NOT NULL`),
+    index("idx_review_jobs_acp_review_id")
+      .on(t.acpReviewId)
+      .where(sql`${t.paymentRail} = 'acp' AND ${t.acpReviewId} IS NOT NULL`),
+    index("idx_review_jobs_acp_budget_status")
+      .on(t.acpBudgetStatus)
+      .where(sql`${t.paymentRail} = 'acp'`),
+    index("idx_review_jobs_acp_submit_status")
+      .on(t.acpSubmitStatus)
+      .where(sql`${t.paymentRail} = 'acp'`),
+  ],
+);
+
+export const acpProviderEvents = pgTable(
+  "acp_provider_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventKey: text("event_key").notNull(),
+    acpJobId: text("acp_job_id"),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").notNull(),
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    failureMessage: text("failure_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("idx_acp_provider_events_event_key_unique").on(t.eventKey),
+    index("idx_acp_provider_events_status_next_retry").on(t.status, t.nextRetryAt),
+    index("idx_acp_provider_events_acp_job").on(t.acpJobId),
   ],
 );
 
