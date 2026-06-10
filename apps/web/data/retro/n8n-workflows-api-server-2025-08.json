@@ -1,0 +1,496 @@
+{
+  "caseId": "n8n-workflows-api-server-2025-08",
+  "label": "n8n-workflows api_server.py file download fix",
+  "incidentDate": "2025-08-15",
+  "lossesUsd": 0,
+  "repo": "Zie619/n8n-workflows",
+  "parentSha": "0d321e0abaf2b346bb5c7442a4705268dcff10af",
+  "introducingPrSha": "ee254131c189fb49005aef3edc9a07226eaebf47",
+  "promptSha": "c2a18bc692d5f2327f1bfc5caaad6d12fbf482be00c8e3c6d41301b9cf53ccda",
+  "promptFiles": [
+    "apps/web/lib/review-pipeline.ts",
+    "apps/web/scripts/run-retro-scan.ts",
+    "src/spike/build-prompt.ts",
+    "src/types.ts"
+  ],
+  "pipelineVersion": "0.1.0",
+  "pipelineCommitSha": "7e7e21b",
+  "modelIds": {
+    "anthropic": "claude-opus-4-7",
+    "openai": "openai-gpt-55"
+  },
+  "scannedAt": "2026-06-10T01:34:54.933Z",
+  "anthropicRawFindings": [
+    {
+      "title": "CORS configured with wildcard origin AND credentials, defeating browser protection",
+      "category": "security",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 28,
+          "endLine": 34,
+          "symbol": "CORSMiddleware",
+          "quote": "app.add_middleware(\n    CORSMiddleware,\n    allow_origins=[\"*\"],\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)"
+        }
+      ],
+      "reasoning": "Setting allow_origins=['*'] together with allow_credentials=True is an explicitly insecure pattern per the CORS spec. Starlette's CORSMiddleware will, when credentials are present, reflect the request's Origin header into Access-Control-Allow-Origin (rather than literal '*'), effectively granting any origin the ability to make authenticated cross-origin requests. If/when authentication is added to this API (e.g., cookies, basic auth via a reverse proxy), any third-party site can impersonate the user's session and exfiltrate workflow data via /api/workflows endpoints.",
+      "reproduction": "Add cookie-based auth (or rely on a future proxy that injects auth headers); from any malicious origin, fetch('http://target/api/workflows', {credentials:'include'}) succeeds because Starlette reflects the Origin when credentials are enabled with a '*' allowlist.",
+      "recommendation": "Either set allow_credentials=False (since the API exposes no credentials today), or replace allow_origins with an explicit list of trusted origins. Do not combine '*' with credentials.",
+      "whyTestsDoNotAlreadyCoverThis": "There are no tests in the inspected files exercising CORS preflight behavior or asserting Access-Control-Allow-Origin against credentialed requests.",
+      "suggestedRegressionTest": "Send an OPTIONS preflight with Origin: https://evil.example and verify the response either omits Access-Control-Allow-Credentials or only allows pre-approved origins; assert the server does not reflect arbitrary origins when credentials are enabled.",
+      "minimumFixScope": "api_server.py CORSMiddleware configuration.",
+      "requiresPolicyReview": true,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Filename path parameter used in os.path.join without containment check (path traversal risk)",
+      "category": "security",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 206,
+          "endLine": 219,
+          "symbol": "download_workflow",
+          "quote": "file_path = os.path.join(\"workflows\", filename)\n        if not os.path.exists(file_path):\n            print(f\"Warning: Download requested for missing file: {file_path}\")\n            raise HTTPException(status_code=404, detail=f\"Workflow file '{filename}' not found on filesystem\")\n        \n        return FileResponse(\n            file_path,\n            media_type=\"application/json\",\n            filename=filename\n        )"
+        },
+        {
+          "path": "api_server.py",
+          "startLine": 182,
+          "endLine": 195,
+          "symbol": "get_workflow_detail",
+          "quote": "file_path = os.path.join(\"workflows\", filename)\n        if not os.path.exists(file_path):\n            ...\n        with open(file_path, 'r', encoding='utf-8') as f:\n            raw_json = json.load(f)"
+        },
+        {
+          "path": "api_server.py",
+          "startLine": 225,
+          "endLine": 236,
+          "symbol": "get_workflow_diagram",
+          "quote": "file_path = os.path.join(\"workflows\", filename)\n        if not os.path.exists(file_path):\n            ...\n        with open(file_path, 'r', encoding='utf-8') as f:\n            data = json.load(f)"
+        }
+      ],
+      "reasoning": "The download/detail/diagram endpoints take {filename} from the URL and concatenate it directly into a filesystem path with no validation that the resolved path lives inside the workflows/ directory and no allow-list against the database. While Starlette path parameters won't capture an un-encoded '/', os.path.join still gives an attacker control over the leaf name (e.g., dotfiles, symlinks placed inside workflows/, or platform-specific quirks like backslashes on Windows) and over the Content-Disposition filename echoed back to the browser. The 'file download fix' commit (ee254131) referenced in the feature title is precisely the area to harden; today there is no Path.resolve() containment check and no validation that the filename was returned by the database before opening it.",
+      "reproduction": "On Windows: GET /api/workflows/..%5Csomefile/download – os.path.join('workflows', '..\\\\somefile') resolves outside the directory. On any OS, a symlink inside workflows/ pointing elsewhere is followed without question. Also, the filename reflected into Content-Disposition is attacker-controlled.",
+      "recommendation": "Resolve the candidate path via Path('workflows').resolve() and Path(file_path).resolve(); reject if the resolved path is not a child of the workflows root. Additionally verify the filename exists in the indexed database before opening, and sanitize the filename used in the Content-Disposition header (e.g., os.path.basename + allow-list of characters).",
+      "whyTestsDoNotAlreadyCoverThis": "No tests in the inspected files exercise traversal or symlink inputs against the download/detail/diagram endpoints.",
+      "suggestedRegressionTest": "Parametrized test sending filenames like '../api_server.py', '..\\\\api_server.py', 'subdir/x.json', and a symlink file inside workflows/; assert 400/404 and that no file outside workflows/ is returned.",
+      "minimumFixScope": "Add a single _safe_workflow_path(filename) helper used by all three endpoints; perform Path.resolve() containment check.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "FTS5 query built via f-string with raw filename allows query corruption",
+      "category": "bug",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 176,
+          "endLine": 180,
+          "symbol": "get_workflow_detail",
+          "quote": "workflows, _ = db.search_workflows(f'filename:\"{filename}\"', limit=1)\n        if not workflows:\n            raise HTTPException(status_code=404, detail=\"Workflow not found in database\")"
+        }
+      ],
+      "reasoning": "The filename is interpolated unescaped into an FTS5 query string. A filename containing a double-quote, asterisk, colon, or FTS5 operator will either silently break the lookup (returning 404 even when the workflow exists in the DB) or, depending on how search_workflows constructs the SQL, raise an FTS5 syntax error that the global handler converts into a generic 500. This makes the endpoint unreliable for any filename containing FTS5-special characters and also means a 404 in get_workflow_detail does not actually prove the workflow is missing — it may merely prove the filename couldn't be safely expressed as FTS.",
+      "reproduction": "GET /api/workflows/some\"file.json — the f-string produces filename:\"some\"file.json\" which is invalid FTS syntax.",
+      "recommendation": "Look up workflows by filename through a parameterized exact-match SQL query (WHERE filename = ?) rather than through FTS5. If FTS must be used, escape embedded quotes by doubling them and reject characters that are FTS operators.",
+      "whyTestsDoNotAlreadyCoverThis": "No tests cover non-alphanumeric filenames against the detail endpoint.",
+      "suggestedRegressionTest": "Insert a fixture workflow with a quote/colon in its name and assert GET /api/workflows/<name> returns 200 with metadata.",
+      "minimumFixScope": "get_workflow_detail (and any other callers that look up by filename) should call a dedicated db.get_by_filename(filename) using a parameterized query.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Global exception handler leaks internal error details",
+      "category": "security",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 325,
+          "endLine": 330,
+          "symbol": "global_exception_handler",
+          "quote": "@app.exception_handler(Exception)\nasync def global_exception_handler(request, exc):\n    return JSONResponse(\n        status_code=500,\n        content={\"detail\": f\"Internal server error: {str(exc)}\"}\n    )"
+        },
+        {
+          "path": "api_server.py",
+          "startLine": 113,
+          "endLine": 114,
+          "symbol": "get_stats",
+          "quote": "raise HTTPException(status_code=500, detail=f\"Error fetching stats: {str(e)}\")"
+        }
+      ],
+      "reasoning": "Every uncaught exception's message is returned to the client verbatim. SQLite/sqlalchemy errors, filesystem errors, and JSON parse errors typically embed absolute paths, table names, and stack-relevant strings — information useful to an attacker mapping the deployment. Several endpoints also propagate str(e) into HTTPException details, compounding the disclosure. This is straightforward to fix and unrelated to legitimate observability needs (logs already capture detail server-side).",
+      "reproduction": "Request a workflow whose row exists but file is on a path that triggers a PermissionError; the response body discloses the absolute path from the OSError message.",
+      "recommendation": "In the global handler and per-endpoint handlers, log the exception with traceback and return a generic 'Internal server error' message without str(exc). Reserve detailed messages for validation errors that are safe to disclose.",
+      "whyTestsDoNotAlreadyCoverThis": "No tests assert that 500 responses are scrubbed of internal details.",
+      "suggestedRegressionTest": "Force a controlled exception (e.g., monkeypatch db.get_stats to raise RuntimeError('secret /etc/x')) and assert the response body does not contain the exception text.",
+      "minimumFixScope": "global_exception_handler and the half-dozen 'raise HTTPException(..., detail=f\"...{str(e)}\")' sites.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Overly aggressive substring matching mis-categorizes many workflows",
+      "category": "bug",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "create_categories.py",
+          "startLine": 31,
+          "endLine": 41,
+          "symbol": "find_matching_category",
+          "quote": "# Try partial matches for common variations\n    for token in tokens:\n        for integration in integration_to_category:\n            if token in integration or integration in token:\n                return integration_to_category[integration]\n    \n    return \"\""
+        }
+      ],
+      "reasoning": "The fallback partial-match performs a bidirectional substring test (`token in integration or integration in token`) and returns the first hit from dict iteration order. Short or common tokens trivially match the wrong integration: e.g., token 'a' is a substring of 'asana', 'agent', 'paypal', etc.; token 'http' matches but so does 'mq' matching 'mqtt' the wrong way; token 'git' matches 'gitlab' or 'github' non-deterministically; token 'the' matches 'thehive'. Filenames are tokenized to include ID numerics and generic words ('manual', 'scheduled', 'webhook', 'send', 'create'), all of which can substring-match an integration. Because the README documents this script as the source of truth for the category filter shown to end users, the result is silently incorrect labelling propagated to context/search_categories.json and surfaced in the UI.",
+      "reproduction": "Run create_categories.py against a filename like '0001_Manual_Send_Email.json' — token 'a' (from a sub-token if generated) or 'send' may substring-match an unintended integration and assign a misleading category.",
+      "recommendation": "Drop the bidirectional substring fallback. Either require exact (case-folded) token equality, or implement a vetted alias map (e.g., 'gdrive'->'GoogleDrive'). Also filter out generic stop-tokens (numeric IDs, 'manual', 'webhook', 'scheduled', 'create', 'send', etc.) before matching.",
+      "whyTestsDoNotAlreadyCoverThis": "There are no unit tests for find_matching_category; the script is run ad-hoc and its output is consumed silently by the API.",
+      "suggestedRegressionTest": "Unit test find_matching_category with tokens=['a'] and tokens=['the','hook'] asserting it returns '' rather than an unrelated integration's category.",
+      "minimumFixScope": "create_categories.find_matching_category — remove the partial-match block or replace with an explicit alias dictionary.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Filename echoed into Content-Disposition without sanitization",
+      "category": "security",
+      "severity": "low",
+      "label": "blocking",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 210,
+          "endLine": 219,
+          "symbol": "download_workflow",
+          "quote": "return FileResponse(\n            file_path,\n            media_type=\"application/json\",\n            filename=filename\n        )"
+        }
+      ],
+      "reasoning": "FileResponse's `filename` parameter is placed into the Content-Disposition header. Starlette quotes/encodes it, but the value still originates from user-controlled URL input that was never validated to be a real workflow filename. Combined with the lack of containment check above, a request for a non-existent file (or one resolved by symlink) would still echo the attacker-chosen filename to the browser, encouraging users to save attacker-named files. Low severity on its own because Starlette does header-encode the value.",
+      "reproduction": "GET /api/workflows/innocuous.json/download where innocuous.json is a symlink: the user is prompted to save 'innocuous.json' regardless of actual content.",
+      "recommendation": "Use os.path.basename of the database-verified filename for both the disk path and the Content-Disposition filename; reject any filename not present in the workflows table.",
+      "whyTestsDoNotAlreadyCoverThis": "No tests assert Content-Disposition matches a vetted set of filenames.",
+      "suggestedRegressionTest": "After validating the filename against the DB, assert Content-Disposition contains exactly the DB-recorded filename.",
+      "minimumFixScope": "download_workflow.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "@app.on_event('startup') is deprecated in current FastAPI/Starlette",
+      "category": "maintainability",
+      "severity": "low",
+      "label": "blocking",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 37,
+          "endLine": 47,
+          "symbol": "startup_event",
+          "quote": "@app.on_event(\"startup\")\nasync def startup_event():\n    \"\"\"Verify database connectivity on startup.\"\"\"\n    try:\n        stats = db.get_stats()\n        ..."
+        }
+      ],
+      "reasoning": "`on_event` is deprecated in favor of the lifespan context manager. The handler also raises on database failure (intended), which under the deprecated path still works but emits deprecation warnings and may be removed in future Starlette versions, breaking startup health checks silently.",
+      "reproduction": "pip install latest FastAPI and observe DeprecationWarning at boot.",
+      "recommendation": "Migrate to a lifespan async context manager passed to FastAPI(lifespan=...).",
+      "whyTestsDoNotAlreadyCoverThis": "No test exercises startup lifecycle.",
+      "suggestedRegressionTest": "None practical beyond a smoke test that the app starts without DeprecationWarning.",
+      "minimumFixScope": "api_server.py startup wiring.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    }
+  ],
+  "openaiRawFindings": [
+    {
+      "title": "Workflow download joins untrusted filename paths, enabling Windows path traversal",
+      "category": "security",
+      "severity": "high",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 225,
+          "endLine": 237,
+          "symbol": "download_workflow",
+          "quote": "file_path = os.path.join(\"workflows\", filename)\nif not os.path.exists(file_path):\n...\nreturn FileResponse(\n    file_path,\n    media_type=\"application/json\",\n    filename=filename\n)"
+        },
+        {
+          "path": "api_server.py",
+          "startLine": 245,
+          "endLine": 255,
+          "symbol": "get_workflow_diagram",
+          "quote": "file_path = os.path.join(\"workflows\", filename)\nif not os.path.exists(file_path):\n...\nwith open(file_path, 'r', encoding='utf-8') as f:\n    data = json.load(f)"
+        }
+      ],
+      "reasoning": "The route parameter is used directly in filesystem paths. FastAPI's default path segment prevents literal forward slashes, but it does not reject backslashes or Windows absolute paths. On Windows, backslash is a path separator and a value such as `..\\README.md` resolves outside `workflows`; an absolute value such as `C:\\Windows\\win.ini` can also discard the intended base path. The download endpoint then serves the file with FileResponse without checking that the resolved path is still inside the workflows directory or that it is a workflow JSON file.",
+      "reproduction": "On Windows, run the server from the repository root and request `GET /api/workflows/..%5CREADME.md/download`. `os.path.join(\"workflows\", \"..\\\\README.md\")` resolves to a file outside the workflows directory and FileResponse serves it if readable.",
+      "recommendation": "Resolve paths against a fixed base directory and enforce containment before opening or serving files. Reject empty names, `..`, absolute paths, and both `/` and `\\` separators; require `.json` and `is_file()`. For example, resolve `(base / filename)` and ensure `candidate.relative_to(base)` succeeds before returning FileResponse. Prefer also checking that the filename exists in the workflow database.",
+      "whyTestsDoNotAlreadyCoverThis": "The inspected files include no tests exercising malicious filename values or Windows path separators for the download/diagram endpoints.",
+      "suggestedRegressionTest": "Add endpoint tests that request filenames containing `%5C`, `..%5C`, and Windows absolute paths and assert 400/404, plus a valid workflow filename that still downloads successfully.",
+      "minimumFixScope": "Harden all endpoints that construct paths from `filename`, especially `/api/workflows/{filename}/download` and `/api/workflows/{filename}/diagram`.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Unauthenticated reindex endpoint can be triggered cross-origin",
+      "category": "security",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 31,
+          "endLine": 37,
+          "symbol": null,
+          "quote": "app.add_middleware(\n    CORSMiddleware,\n    allow_origins=[\"*\"],\n    allow_credentials=True,\n    allow_methods=[\"*\"],\n    allow_headers=[\"*\"],\n)"
+        },
+        {
+          "path": "api_server.py",
+          "startLine": 343,
+          "endLine": 350,
+          "symbol": "reindex_workflows",
+          "quote": "@app.post(\"/api/reindex\")\nasync def reindex_workflows(background_tasks: BackgroundTasks, force: bool = False):\n    \"\"\"Trigger workflow reindexing in the background.\"\"\"\n    def run_indexing():\n        db.index_all_workflows(force_reindex=force)\n    \n    background_tasks.add_task(run_indexing)\n    return {\"message\": \"Reindexing started in background\"}"
+        }
+      ],
+      "reasoning": "`POST /api/reindex` starts a database indexing job, optionally forced, without authentication, authorization, CSRF protection, or rate limiting. Because CORS permits all origins and methods, any website can issue the request from a browser that can reach the server, causing repeated CPU/disk-intensive background work and database writes. This may be an intentional local-admin convenience endpoint, so severity is capped pending policy confirmation.",
+      "reproduction": "From an unauthenticated client, run `curl -X POST 'http://127.0.0.1:8000/api/reindex?force=true'`. The server accepts the request and starts background indexing.",
+      "recommendation": "Require an admin token or other authentication for reindexing, disable the endpoint by default in production, and add rate limiting or a single-flight lock so repeated requests cannot enqueue overlapping indexing jobs. If the endpoint is intentionally public, document that policy explicitly and constrain deployment to localhost-only.",
+      "whyTestsDoNotAlreadyCoverThis": "The inspected files show no authorization or abuse-case tests for mutating API endpoints.",
+      "suggestedRegressionTest": "Add tests that unauthenticated `POST /api/reindex` is rejected when admin protection is enabled, and that authenticated requests enqueue at most one reindex job at a time.",
+      "minimumFixScope": "Protect `/api/reindex` and document/deploy it consistently with the intended admin policy.",
+      "requiresPolicyReview": true,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Integrations endpoint advertises a list but always returns an empty list",
+      "category": "api-contract",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 352,
+          "endLine": 358,
+          "symbol": "get_integrations",
+          "quote": "@app.get(\"/api/integrations\")\nasync def get_integrations():\n    \"\"\"Get list of all unique integrations.\"\"\"\n    try:\n        stats = db.get_stats()\n        # For now, return basic info. Could be enhanced to return detailed integration stats\n        return {\"integrations\": [], \"count\": stats['unique_integrations']}"
+        },
+        {
+          "path": "README.md",
+          "startLine": 346,
+          "endLine": 350,
+          "symbol": null,
+          "quote": "- `GET /api/workflows/category/{category}` - Search by service category\n- `GET /api/categories` - List all available categories\n- `GET /api/integrations` - Get integration statistics\n- `POST /api/reindex` - Trigger background reindexing"
+        }
+      ],
+      "reasoning": "The endpoint docstring and README promise integration data, and the database statistics include a unique integration count, but the handler hard-codes `integrations` to an empty array. API consumers cannot obtain the advertised integration list/statistics, and the response is internally inconsistent when `count` is nonzero.",
+      "reproduction": "With an indexed database where `/api/stats` reports nonzero `unique_integrations`, request `GET /api/integrations`; the response still contains `\"integrations\": []`.",
+      "recommendation": "Implement the endpoint using database-backed integration aggregation, returning the actual integration names and counts. If detailed integrations are not supported, change the endpoint name/docs and response model so clients do not rely on a missing list.",
+      "whyTestsDoNotAlreadyCoverThis": "No inspected test or contract assertion verifies that `/api/integrations` returns actual integration entries when the database reports integrations.",
+      "suggestedRegressionTest": "Seed/index workflows with known integrations, call `/api/integrations`, and assert that the response contains those integration names with a count matching `/api/stats`.",
+      "minimumFixScope": "Implement or remove the hard-coded placeholder in `get_integrations` and align the README contract.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "Category generator misclassifies short tokens through unrestricted substring matching",
+      "category": "bug",
+      "severity": "medium",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "create_categories.py",
+          "startLine": 39,
+          "endLine": 43,
+          "symbol": "find_matching_category",
+          "quote": "# Try partial matches for common variations\nfor token in tokens:\n    for integration in integration_to_category:\n        if token in integration or integration in token:\n            return integration_to_category[integration]"
+        },
+        {
+          "path": "context/def_categories.json",
+          "startLine": 38,
+          "endLine": 41,
+          "symbol": null,
+          "quote": "{\n  \"integration\": \"ActiveCampaign\",\n  \"category\": \"Marketing & Advertising Automation\"\n},"
+        }
+      ],
+      "reasoning": "After exact matching fails, any substring match in either direction is accepted. This is too broad for filename tokens: a token like `AI` becomes `ai`, matches the substring `ai` inside `activecampaign`, and is categorized as `Marketing & Advertising Automation` instead of remaining uncategorized or being mapped deliberately to an AI category. Similar false positives can occur with other short/common tokens, polluting `search_categories.json` and making category filters unreliable.",
+      "reproduction": "Run: `python - <<'PY'\\nfrom create_categories import load_def_categories, find_matching_category\\nprint(find_matching_category(['ai'], load_def_categories()))\\nPY` from the repository root. It returns `Marketing & Advertising Automation` because `ai` is a substring of `activecampaign`.",
+      "recommendation": "Replace unrestricted substring matching with explicit aliases and safer normalization. At minimum, ignore very short tokens for partial matching, prefer longest/word-boundary matches, handle camel-case/service aliases intentionally, and add a specific mapping for common tokens such as `ai` if desired.",
+      "whyTestsDoNotAlreadyCoverThis": "The inspected files contain no unit tests for category matching edge cases or short generic filename tokens.",
+      "suggestedRegressionTest": "Add tests for `find_matching_category` showing that `['ai']`, generic words, and unrelated substrings do not match integrations accidentally, while intended variants such as `onedrive` still map correctly.",
+      "minimumFixScope": "Update `find_matching_category` and regenerate `context/search_categories.json`/`context/unique_categories.json` after the matcher changes.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    },
+    {
+      "title": "README points contributors to a non-existent category definitions file",
+      "category": "docs-gap",
+      "severity": "low",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "README.md",
+          "startLine": 108,
+          "endLine": 110,
+          "symbol": null,
+          "quote": "### Contribute Categories\n\nYou can help expand the categorization by adding more service-to-category mappings (e.g., Twilio → Communication & Messaging) in context/defs_categories.json."
+        },
+        {
+          "path": "create_categories.py",
+          "startLine": 5,
+          "endLine": 8,
+          "symbol": "load_def_categories",
+          "quote": "def load_def_categories():\n    \"\"\"Load the definition categories from def_categories.json\"\"\"\n    def_categories_path = Path(\"context/def_categories.json\")"
+        }
+      ],
+      "reasoning": "The contributor instructions use `context/defs_categories.json` with an extra `s`, but the script reads `context/def_categories.json` and the owned file is named that way. Following the README would cause contributors to edit or create the wrong file, so their mappings would not be used.",
+      "reproduction": null,
+      "recommendation": "Change the README path to `context/def_categories.json` everywhere category definitions are referenced.",
+      "whyTestsDoNotAlreadyCoverThis": "Documentation link/path correctness is not validated by any inspected test.",
+      "suggestedRegressionTest": "Add a lightweight documentation check that referenced repository paths in the README exist, at least for code/config files mentioned in setup instructions.",
+      "minimumFixScope": "Fix the typo in `README.md`.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    }
+  ],
+  "anthropicError": null,
+  "openaiError": null,
+  "unanimousFindings": [
+    {
+      "title": "Workflow download joins untrusted filename paths, enabling Windows path traversal",
+      "category": "security",
+      "severity": "high",
+      "label": "blocking",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "api_server.py",
+          "startLine": 225,
+          "endLine": 237,
+          "symbol": "download_workflow",
+          "quote": "file_path = os.path.join(\"workflows\", filename)\nif not os.path.exists(file_path):\n...\nreturn FileResponse(\n    file_path,\n    media_type=\"application/json\",\n    filename=filename\n)"
+        },
+        {
+          "path": "api_server.py",
+          "startLine": 245,
+          "endLine": 255,
+          "symbol": "get_workflow_diagram",
+          "quote": "file_path = os.path.join(\"workflows\", filename)\nif not os.path.exists(file_path):\n...\nwith open(file_path, 'r', encoding='utf-8') as f:\n    data = json.load(f)"
+        }
+      ],
+      "reasoning": "The route parameter is used directly in filesystem paths. FastAPI's default path segment prevents literal forward slashes, but it does not reject backslashes or Windows absolute paths. On Windows, backslash is a path separator and a value such as `..\\README.md` resolves outside `workflows`; an absolute value such as `C:\\Windows\\win.ini` can also discard the intended base path. The download endpoint then serves the file with FileResponse without checking that the resolved path is still inside the workflows directory or that it is a workflow JSON file.",
+      "reproduction": "On Windows, run the server from the repository root and request `GET /api/workflows/..%5CREADME.md/download`. `os.path.join(\"workflows\", \"..\\\\README.md\")` resolves to a file outside the workflows directory and FileResponse serves it if readable.",
+      "recommendation": "Resolve paths against a fixed base directory and enforce containment before opening or serving files. Reject empty names, `..`, absolute paths, and both `/` and `\\` separators; require `.json` and `is_file()`. For example, resolve `(base / filename)` and ensure `candidate.relative_to(base)` succeeds before returning FileResponse. Prefer also checking that the filename exists in the workflow database.",
+      "whyTestsDoNotAlreadyCoverThis": "The inspected files include no tests exercising malicious filename values or Windows path separators for the download/diagram endpoints.",
+      "suggestedRegressionTest": "Add endpoint tests that request filenames containing `%5C`, `..%5C`, and Windows absolute paths and assert 400/404, plus a valid workflow filename that still downloads successfully.",
+      "minimumFixScope": "Harden all endpoints that construct paths from `filename`, especially `/api/workflows/{filename}/download` and `/api/workflows/{filename}/diagram`.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null
+    }
+  ],
+  "introducingFiles": [
+    "README.md",
+    "api_server.py",
+    "context/def_categories.json",
+    "create_categories.py"
+  ],
+  "introducingHunks": [
+    {
+      "path": "README.md",
+      "lineStart": 25,
+      "lineEnd": 31
+    },
+    {
+      "path": "README.md",
+      "lineStart": 57,
+      "lineEnd": 117
+    },
+    {
+      "path": "api_server.py",
+      "lineStart": 361,
+      "lineEnd": 423
+    },
+    {
+      "path": "context/def_categories.json",
+      "lineStart": 1,
+      "lineEnd": 726
+    },
+    {
+      "path": "create_categories.py",
+      "lineStart": 1,
+      "lineEnd": 139
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 302,
+      "lineEnd": 317
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 633,
+      "lineEnd": 646
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 765,
+      "lineEnd": 782
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 861,
+      "lineEnd": 876
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 974,
+      "lineEnd": 1069
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 1073,
+      "lineEnd": 1138
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 1142,
+      "lineEnd": 1184
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 1212,
+      "lineEnd": 1230
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 1242,
+      "lineEnd": 1248
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 1259,
+      "lineEnd": 1265
+    },
+    {
+      "path": "static/index.html",
+      "lineStart": 1286,
+      "lineEnd": 1299
+    }
+  ],
+  "outcome": "A",
+  "outcomeRationale": "Both Claude Opus 4.7 and GPT-5 produced findings in the introducing commit's files. AntFleet's unanimous gate would have fired."
+}
