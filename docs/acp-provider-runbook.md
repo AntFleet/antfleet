@@ -248,8 +248,9 @@ group by acp_target_key
 having count(*) > 1;
 ```
 
-This should return zero rows because PR #82 links duplicate `(wallet, repo, PR,
-SHA)` ACP requests to the existing local row instead of creating a second review.
+This should return zero rows. PR #82 rejects a duplicate `(wallet, repo, PR,
+SHA)` request with a different `acp_job_id` before budget setup. Replays with
+the same `acp_job_id` stay idempotent and reuse the existing local row.
 
 ## Demo And Smoke
 

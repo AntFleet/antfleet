@@ -274,6 +274,179 @@ describe("ACP intake adapter", () => {
     ).rejects.toThrow("ACP client wallet missing");
   });
 
+  it("rejects fresh ACP jobs when the client wallet is over the ACP limit", async () => {
+    const createJob = vi.fn();
+    const setBudget = vi.fn();
+    const findExistingJob = vi.fn().mockResolvedValue(null);
+    const checkWalletRateLimit = vi
+      .fn()
+      .mockResolvedValue({ ok: false, retryAfterSeconds: 60, limit: 10 });
+    const checkRepoCooldown = vi.fn();
+    const validateTarget = vi.fn().mockResolvedValue({
+      owner: "AntFleet",
+      repo: "acp-fixture",
+      prNumber: 7,
+      sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+    });
+
+    await expect(
+      createBudgetedAcpReviewJob(
+        {
+          kind: "job_created",
+          acpJobId: "43868",
+          request: validRequest,
+          clientAgentWallet: "0x1111111111111111111111111111111111111111",
+          raw: {},
+        },
+        {
+          createJob,
+          setBudget,
+          findExistingJob,
+          checkWalletRateLimit,
+          checkRepoCooldown,
+          validateTarget,
+          q: {} as never,
+        },
+      ),
+    ).rejects.toMatchObject({ failureModeTag: "rate_limited", retryAfterSeconds: 60 });
+
+    expect(createJob).not.toHaveBeenCalled();
+    expect(setBudget).not.toHaveBeenCalled();
+    expect(checkRepoCooldown).not.toHaveBeenCalled();
+  });
+
+  it("rejects fresh ACP jobs during the repo cooldown before creating a paid row", async () => {
+    const createJob = vi.fn();
+    const setBudget = vi.fn();
+    const findExistingJob = vi.fn().mockResolvedValue(null);
+    const checkWalletRateLimit = vi.fn().mockResolvedValue({ ok: true });
+    const checkRepoCooldown = vi
+      .fn()
+      .mockResolvedValue({ ok: false, retryAfterSeconds: 300, cooldownSeconds: 600 });
+    const validateTarget = vi.fn().mockResolvedValue({
+      owner: "AntFleet",
+      repo: "acp-fixture",
+      prNumber: 7,
+      sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+    });
+
+    await expect(
+      createBudgetedAcpReviewJob(
+        {
+          kind: "job_created",
+          acpJobId: "43868",
+          request: validRequest,
+          clientAgentWallet: "0x1111111111111111111111111111111111111111",
+          raw: {},
+        },
+        {
+          createJob,
+          setBudget,
+          findExistingJob,
+          checkWalletRateLimit,
+          checkRepoCooldown,
+          validateTarget,
+          q: {} as never,
+        },
+      ),
+    ).rejects.toMatchObject({ failureModeTag: "rate_limited", retryAfterSeconds: 300 });
+
+    expect(createJob).not.toHaveBeenCalled();
+    expect(setBudget).not.toHaveBeenCalled();
+  });
+
+  it("preserves same-acp-job idempotency without consuming wallet or repo cooldown checks", async () => {
+    const existing = {
+      jobId: "af-acp-job",
+      status: "billing_pending",
+      paymentRail: "acp",
+      acpJobId: "43868",
+      acpBudgetStatus: "set",
+    };
+    const createJob = vi.fn().mockResolvedValue({ row: existing, created: false });
+    const setBudget = vi.fn();
+    const findExistingJob = vi.fn().mockResolvedValue(existing);
+    const checkWalletRateLimit = vi.fn();
+    const checkRepoCooldown = vi.fn();
+    const validateTarget = vi.fn().mockResolvedValue({
+      owner: "AntFleet",
+      repo: "acp-fixture",
+      prNumber: 7,
+      sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+    });
+
+    const outcome = await createBudgetedAcpReviewJob(
+      {
+        kind: "job_created",
+        acpJobId: "43868",
+        request: validRequest,
+        clientAgentWallet: "0x1111111111111111111111111111111111111111",
+        raw: {},
+      },
+      {
+        createJob,
+        setBudget,
+        findExistingJob,
+        checkWalletRateLimit,
+        checkRepoCooldown,
+        validateTarget,
+        q: {} as never,
+      },
+    );
+
+    expect(outcome.created).toBe(false);
+    expect(checkWalletRateLimit).not.toHaveBeenCalled();
+    expect(checkRepoCooldown).not.toHaveBeenCalled();
+    expect(setBudget).not.toHaveBeenCalled();
+  });
+
+  it("rejects a different ACP job id for an already accepted target without setting budget", async () => {
+    const createJob = vi.fn().mockResolvedValue({
+      row: {
+        jobId: "af-existing-target",
+        status: "billing_pending",
+        paymentRail: "acp",
+        acpJobId: "old-marketplace-job",
+        acpBudgetStatus: "pending",
+      },
+      created: false,
+    });
+    const setBudget = vi.fn();
+    const claimBudgetSetting = vi.fn();
+    const validateTarget = vi.fn().mockResolvedValue({
+      owner: "AntFleet",
+      repo: "acp-fixture",
+      prNumber: 7,
+      sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+    });
+
+    await expect(
+      createBudgetedAcpReviewJob(
+        {
+          kind: "job_created",
+          acpJobId: "new-marketplace-job",
+          request: validRequest,
+          clientAgentWallet: "0x1111111111111111111111111111111111111111",
+          raw: {},
+        },
+        {
+          createJob,
+          setBudget,
+          claimBudgetSetting,
+          validateTarget,
+          q: {} as never,
+        },
+      ),
+    ).rejects.toMatchObject({
+      failureModeTag: "invalid_input",
+      existingAcpJobId: "old-marketplace-job",
+      incomingAcpJobId: "new-marketplace-job",
+    });
+
+    expect(claimBudgetSetting).not.toHaveBeenCalled();
+    expect(setBudget).not.toHaveBeenCalled();
+  });
+
   it("rejects trading-code targets without the not-financial-advice acknowledgment", async () => {
     const octokit = fakeTargetOctokit({
       files: ["src/trading/orders.ts", "src/acp-handler.ts"],

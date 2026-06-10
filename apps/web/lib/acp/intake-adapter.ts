@@ -15,6 +15,7 @@ import { isPublicRepo } from "@/lib/repo-visibility";
 import { getAcpReviewPriceUsdc } from "@/lib/paywall/env";
 import { logInfo, messageOf } from "@/lib/log";
 import { processReviewJob } from "@/lib/review-job-worker";
+import { checkAcpRepoCooldown, checkAcpWalletRateLimit } from "./rate-limit";
 import { setAcpJobBudget, type AcpProviderCliOptions, type AcpCliResponse } from "./provider-cli";
 import {
   normalizeAcpTargetRepo,
@@ -91,6 +92,9 @@ export async function handleAcpProviderEvent(
     markAcpFundedAndQueued?: typeof markAcpJobFundedAndQueued;
     processJob?: typeof processReviewJob;
     setBudget?: typeof setAcpJobBudget;
+    findExistingJob?: typeof findAcpJobByAcpJobId;
+    checkWalletRateLimit?: typeof checkAcpWalletRateLimit;
+    checkRepoCooldown?: typeof checkAcpRepoCooldown;
     claimBudgetSetting?: typeof claimAcpJobBudgetSetting;
     markBudgetSet?: typeof markAcpJobBudgetSet;
     markBudgetFailed?: typeof markAcpJobBudgetFailed;
@@ -105,14 +109,16 @@ export async function handleAcpProviderEvent(
   if (event.kind === "ignored") return { ignored: event.reason };
   if (event.kind === "job_created") {
     return createBudgetedAcpReviewJob(event, {
-      createJob: deps.createJob ?? createAcpReviewJob,
-      setBudget: deps.setBudget ?? setAcpJobBudget,
-      claimBudgetSetting: deps.claimBudgetSetting ?? claimAcpJobBudgetSetting,
-      markBudgetSet: deps.markBudgetSet ?? markAcpJobBudgetSet,
-      markBudgetFailed: deps.markBudgetFailed ?? markAcpJobBudgetFailed,
-      markBudgetReconciliationRequired:
-        deps.markBudgetReconciliationRequired ?? markAcpJobBudgetReconciliationRequired,
-      validateTarget: deps.validateTarget ?? validateAcpReviewTarget,
+      createJob: deps.createJob,
+      setBudget: deps.setBudget,
+      findExistingJob: deps.findExistingJob,
+      checkWalletRateLimit: deps.checkWalletRateLimit,
+      checkRepoCooldown: deps.checkRepoCooldown,
+      claimBudgetSetting: deps.claimBudgetSetting,
+      markBudgetSet: deps.markBudgetSet,
+      markBudgetFailed: deps.markBudgetFailed,
+      markBudgetReconciliationRequired: deps.markBudgetReconciliationRequired,
+      validateTarget: deps.validateTarget,
       q,
       cliOptions: deps.cliOptions,
     });
@@ -130,6 +136,9 @@ export async function createBudgetedAcpReviewJob(
   deps: {
     createJob?: typeof createAcpReviewJob;
     setBudget?: typeof setAcpJobBudget;
+    findExistingJob?: typeof findAcpJobByAcpJobId;
+    checkWalletRateLimit?: typeof checkAcpWalletRateLimit;
+    checkRepoCooldown?: typeof checkAcpRepoCooldown;
     claimBudgetSetting?: typeof claimAcpJobBudgetSetting;
     markBudgetSet?: typeof markAcpJobBudgetSet;
     markBudgetFailed?: typeof markAcpJobBudgetFailed;
@@ -144,6 +153,18 @@ export async function createBudgetedAcpReviewJob(
   const clientAgentWallet = requireAcpClientWallet(event.clientAgentWallet);
   const target = await (deps.validateTarget ?? validateAcpReviewTarget)(event.request);
   const targetKey = acpTargetIdempotencyKey(clientAgentWallet, target);
+  if (shouldRunPreCreateAcpAbuseChecks(deps)) {
+    const existingJob = await (deps.findExistingJob ?? findAcpJobByAcpJobId)(q, event.acpJobId);
+    if (existingJob === null) {
+      await assertAcpWalletAndRepoAllowed({
+        q,
+        clientAgentWallet,
+        target,
+        checkWalletRateLimit: deps.checkWalletRateLimit ?? checkAcpWalletRateLimit,
+        checkRepoCooldown: deps.checkRepoCooldown ?? checkAcpRepoCooldown,
+      });
+    }
+  }
   const result: CreateReviewJobResult = await createJob(q, {
     acpJobId: event.acpJobId,
     clientAgentWallet,
@@ -156,6 +177,7 @@ export async function createBudgetedAcpReviewJob(
     idempotencyKey: `acp:${event.acpJobId}`,
     initialStatus: "billing_pending",
   });
+  assertAcpDuplicateTargetPolicy(event.acpJobId, result.row);
   let budget: AcpCliResponse | null = null;
   if (shouldSetAcpBudget(result.row)) {
     const budgetClaimed = await (deps.claimBudgetSetting ?? claimAcpJobBudgetSetting)(
@@ -386,6 +408,66 @@ function requireAcpClientWallet(value: string | null): string {
     });
   }
   return value.toLowerCase();
+}
+
+function shouldRunPreCreateAcpAbuseChecks(deps: {
+  createJob?: typeof createAcpReviewJob;
+  findExistingJob?: typeof findAcpJobByAcpJobId;
+  checkWalletRateLimit?: typeof checkAcpWalletRateLimit;
+  checkRepoCooldown?: typeof checkAcpRepoCooldown;
+}): boolean {
+  return (
+    deps.createJob === undefined ||
+    deps.findExistingJob !== undefined ||
+    deps.checkWalletRateLimit !== undefined ||
+    deps.checkRepoCooldown !== undefined
+  );
+}
+
+async function assertAcpWalletAndRepoAllowed(args: {
+  q: Queryable;
+  clientAgentWallet: string;
+  target: AcpResolvedTarget;
+  checkWalletRateLimit: typeof checkAcpWalletRateLimit;
+  checkRepoCooldown: typeof checkAcpRepoCooldown;
+}): Promise<void> {
+  const now = new Date();
+  const walletLimit = await args.checkWalletRateLimit(args.q, {
+    clientWallet: args.clientAgentWallet,
+    now,
+  });
+  if (!walletLimit.ok) {
+    throw Object.assign(
+      new Error(`ACP wallet rate limit exceeded; retry after ${walletLimit.retryAfterSeconds}s`),
+      { failureModeTag: "rate_limited", retryAfterSeconds: walletLimit.retryAfterSeconds },
+    );
+  }
+  const repoCooldown = await args.checkRepoCooldown(args.q, {
+    owner: args.target.owner,
+    repo: args.target.repo,
+    now,
+  });
+  if (!repoCooldown.ok) {
+    throw Object.assign(
+      new Error(`ACP repo cooldown active; retry after ${repoCooldown.retryAfterSeconds}s`),
+      { failureModeTag: "rate_limited", retryAfterSeconds: repoCooldown.retryAfterSeconds },
+    );
+  }
+}
+
+function assertAcpDuplicateTargetPolicy(incomingAcpJobId: string, row: ReviewJobRow): void {
+  if (row.acpJobId === null || row.acpJobId === undefined) return;
+  if (row.acpJobId === incomingAcpJobId) return;
+  throw Object.assign(
+    new Error(
+      "ACP duplicate target already accepted for this wallet/repo/PR/SHA; create a fresh target after cooldown or wait for the existing ACP job",
+    ),
+    {
+      failureModeTag: "invalid_input",
+      existingAcpJobId: row.acpJobId ?? null,
+      incomingAcpJobId,
+    },
+  );
 }
 
 function acpTargetIdempotencyKey(wallet: string, target: AcpResolvedTarget): string {

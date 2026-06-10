@@ -843,9 +843,12 @@ Read-only projection/status response, exposed through `www.antfleet.dev` from th
 
 ### Abuse prevention
 
-- Per client wallet: max 10 jobs/hour in v0.
-- Per repo: max 1 fresh review per 10 minutes; repeated identical `(repo, pr, sha)` returns cached deliverable.
-- Per target: idempotency by `acp_job_id` and target tuple.
+- Per client wallet: max 10 accepted ACP jobs/hour in v0.
+- Per repo: max 1 fresh accepted ACP review per 10 minutes.
+- Per target: same-`acp_job_id` replays are idempotent; a different
+  `acp_job_id` for an already accepted `(wallet, repo, PR, SHA)` target is
+  rejected before budget setup. v0 does not submit one review result to multiple
+  marketplace jobs.
 - File caps: keep existing `MAX_FILE_BYTES`, `MAX_FILES`, `MAX_TOTAL_PROMPT_BYTES`, `MAX_CHUNKS=10`.
 - Reject binary, vendored, generated, lockfile-heavy, and oversized files through existing reviewable-path filters.
 - Log but do not deliver raw provider disagreements.
@@ -1114,7 +1117,8 @@ Trust:
 
 - Add `acp_review_jobs` migration and query helpers.
 - Store ACP job IDs, wallets, target tuple, status, result, and linked review ID.
-- Enforce wallet/repo cooldown and target idempotency.
+- Enforce wallet/repo cooldown, same-`acp_job_id` idempotency, and duplicate
+  target rejection for different `acp_job_id` values.
 - Assert `acp_client_wallet` is non-null before inserting target-idempotency rows.
 
 ### Day 4 - Pipeline adapter
