@@ -68,7 +68,8 @@ Current local status on 2026-06-10:
 
 - mainnet ACP CLI auth exists for agent `AntFleet`
   (`0x9add64c65ed3ba1b06a068c18332ec95cf6a60d4`);
-- no offering is registered on that agent yet;
+- hidden mainnet offering `Public PR Code Review` is registered as
+  `019eb022-15ec-78c1-b605-a3b85a890886`;
 - `IS_TESTNET=true acp agent whoami --json` is not authenticated, so testnet
   smoke was not run.
 
@@ -82,8 +83,8 @@ REQ_SCHEMA="$(jq -c . apps/web/public/schemas/acp/review-request-v0.json)"
 DELIVERABLE_SCHEMA="$(jq -c . apps/web/public/schemas/acp/review-deliverable-v0.json)"
 
 acp offering create \
-  --name "Receipt-backed code review for agent repos" \
-  --description "Two-model consensus review for public GitHub PRs, with structured findings and SHA-pinned receipt URLs." \
+  --name "Public PR Code Review" \
+  --description "Two-model consensus review for public GitHub pull requests, with structured findings and SHA-pinned receipt URLs." \
   --price-type fixed \
   --price-value "${ACP_REVIEW_PRICE_USDC:-1.00}" \
   --sla-minutes 30 \
@@ -105,10 +106,10 @@ acp offering update \
 
 ## Listing Copy
 
-Title: Receipt-backed code review for agent repos
+Title: Public PR Code Review
 
-Short description: Two-model consensus review for public GitHub PRs, with
-structured findings and SHA-pinned receipt URLs.
+Short description: Two-model consensus review for public GitHub pull requests,
+with structured findings and SHA-pinned receipt URLs.
 
 Long description:
 
@@ -275,7 +276,7 @@ export REQUIREMENTS='{"mode":"pr","target":{"repo":"AntFleet/acp-fixture","pr":1
 
 acp client create-job \
   --provider "$PROVIDER_WALLET" \
-  --offering-name "Receipt-backed code review for agent repos" \
+  --offering-name "Public PR Code Review" \
   --requirements "$REQUIREMENTS" \
   --chain-id "$ACP_CHAIN_ID" \
   --json

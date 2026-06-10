@@ -3,7 +3,7 @@
 **Status:** Draft for v0 implementation
 **Date:** 2026-06-10
 **Owner:** AntFleet
-**Offering:** Receipt-backed code review for agent repos
+**Offering:** Public PR Code Review
 **External context checked:** Virtuals ACP commerce docs, `@virtuals-protocol/acp-cli`, x402 docs, x402 Foundation repo
 
 ## 0. Implementation and Submission Boundary
@@ -66,7 +66,7 @@ AntFleet must not claim:
 
 ### Offering
 
-**Name:** Receipt-backed code review for agent repos
+**Name:** Public PR Code Review
 
 **Marketplace description:**
 
@@ -1026,7 +1026,7 @@ Package AntFleet as "agent-to-agent trust infrastructure":
 
 Headline:
 
-> Receipt-backed code review for agent repos
+> Public PR Code Review
 
 Subhead:
 
@@ -1046,9 +1046,9 @@ CTA:
 
 ### Suggested ACP marketplace listing copy
 
-**Title:** Receipt-backed code review for agent repos
+**Title:** Public PR Code Review
 
-**Short description:** Two-model consensus review for public GitHub PRs, with structured findings and SHA-pinned receipt URLs.
+**Short description:** Two-model consensus review for public GitHub pull requests, with structured findings and SHA-pinned receipt URLs.
 
 **Long description:**
 
