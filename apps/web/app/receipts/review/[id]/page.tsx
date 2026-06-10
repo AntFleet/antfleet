@@ -27,6 +27,7 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
   const row = await loadPublicReviewReceipt(id);
   if (row === null) notFound();
   const isX402 = row.paymentRail === "x402";
+  const paymentRailLabel = row.paymentRail ?? "not recorded";
 
   return (
     <>
@@ -39,7 +40,7 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
             {repoLabel(row)} PR #{row.prNumber}
           </h1>
           <div className="mt-5 flex flex-wrap items-center gap-2">
-            <Badge>{row.paymentRail ?? "channel"}</Badge>
+            <Badge>{paymentRailLabel}</Badge>
             <Badge>{row.jobStatus ?? row.processingStatus}</Badge>
             {row.failureMode !== null && <Badge>{row.failureMode}</Badge>}
             {isX402 && <Badge>{settlementLabel(row)}</Badge>}
@@ -47,7 +48,7 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
           <div className="mt-6 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1">
             <span>SHA {shortenSha(row.commitSha)}</span>
             <span className="text-[var(--color-line-strong)]">·</span>
-            <span>paid_via: {row.paymentRail ?? "channel"}</span>
+            <span>paid_via: {paymentRailLabel}</span>
             {row.jobId !== null && (
               <>
                 <span className="text-[var(--color-line-strong)]">·</span>
@@ -67,7 +68,9 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
           </h2>
           {row.findings.length === 0 ? (
             <p className="text-sm text-[var(--color-ink-muted)]">
-              {row.failureMode === null ? "No findings — clean review." : failureNotice(row)}
+              {row.failureMode === null
+                ? "No two-model consensus findings were emitted for this scope."
+                : failureNotice(row)}
             </p>
           ) : (
             <div className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)] divide-y divide-[var(--color-line)]">
@@ -120,7 +123,7 @@ export default async function ReviewReceiptPage({ params }: { params: Promise<Ro
                 <dt className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
                   Rail
                 </dt>
-                <dd>channel</dd>
+                <dd>{paymentRailLabel}</dd>
               </>
             )}
           </dl>

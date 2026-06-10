@@ -160,7 +160,7 @@ describe("runPatchAgent — happy path", () => {
       enabled: () => true,
     });
     expect(out!.byIndex.size).toBe(0);
-    expect(out!.decisions[0]?.skipReason).toBe("models_disagreed");
+    expect(out!.decisions[0]?.gateOutcome).toBe("models_disagreed");
     expect(out!.decisions[0]?.rationales).toEqual({ opus: null, gpt5: null });
   });
 });

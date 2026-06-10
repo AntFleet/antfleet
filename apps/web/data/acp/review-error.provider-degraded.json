@@ -1,0 +1,14 @@
+{
+  "schema_version": "antfleet.acp.review.error.v0",
+  "status": "failed",
+  "error": {
+    "code": "provider_degraded",
+    "message": "Fewer than two independent reviewer outputs were available; no consensus deliverable was emitted.",
+    "retryable": true,
+    "settlement": "escrow_refundable",
+    "details": {
+      "successful_reviewers": 1,
+      "required_reviewers": 2
+    }
+  }
+}
