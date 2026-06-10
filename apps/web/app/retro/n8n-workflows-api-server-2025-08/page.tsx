@@ -17,7 +17,7 @@ const caveatLong = readFileSync(
 ).trim();
 
 const CAVEAT_SHORT =
-  "Blind Virtuals scan: Opus and GPT-5 both caught CVE-2025-55526; $0 inference, second-hand AI attribution.";
+  "Blind neutral-label scan: Opus and GPT-5 both caught CVE-2025-55526; second-hand AI attribution.";
 
 const CAVEAT_MEDIUM =
   "A neutral-label scan of n8n-workflows' api_server.py fix made the unanimous gate fire on CVE-2025-55526. GPT-5 graded the Windows backslash traversal high/high; Opus found the same path class plus CORS, FTS5, and leakage issues. Attribution is second-hand CSA Lab Space, not a commit trailer.";

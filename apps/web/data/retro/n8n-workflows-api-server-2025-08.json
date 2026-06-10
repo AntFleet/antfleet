@@ -9,8 +9,7 @@
   "promptSha": "c2a18bc692d5f2327f1bfc5caaad6d12fbf482be00c8e3c6d41301b9cf53ccda",
   "promptFiles": [
     "apps/web/lib/review-pipeline.ts",
-    "apps/web/lib/virtuals-client.ts",
-    "apps/web/scripts/run-retro-scan-virtuals.ts",
+    "apps/web/scripts/run-retro-scan.ts",
     "src/spike/build-prompt.ts",
     "src/types.ts"
   ],
@@ -493,5 +492,5 @@
     }
   ],
   "outcome": "A",
-  "outcomeRationale": "Both opus-virtuals and gpt5-virtuals produced findings in the introducing commit's files. AntFleet's unanimous gate would have fired."
+  "outcomeRationale": "Both Claude Opus 4.7 and GPT-5 produced findings in the introducing commit's files. AntFleet's unanimous gate would have fired."
 }
