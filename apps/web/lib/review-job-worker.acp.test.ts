@@ -284,10 +284,44 @@ describe("processReviewJob ACP rail", () => {
       {},
       "af-acp-job",
       "repo_not_accessible",
-      "safe:repo_not_accessible",
+      "The target repository is not publicly accessible.",
       expect.objectContaining({ status: "failed" }),
       expect.any(Date),
     );
+  });
+
+  it("uses ACP-specific public failure messages instead of channel refund wording", async () => {
+    octokitMocks.pullsGet.mockRejectedValue(
+      Object.assign(new Error("github 500"), { status: 500 }),
+    );
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("af-acp-job");
+
+    expect(outcome).toMatchObject({
+      kind: "failed",
+      jobId: "af-acp-job",
+      failureMode: "provider_error",
+      failureMessage:
+        "The ACP review provider returned an error before a successful deliverable could be submitted.",
+    });
+    expect(acpCliMocks.submitAcpDeliverable).toHaveBeenCalledWith({
+      acpJobId: "43868",
+      deliverable: expect.objectContaining({
+        schema_version: "antfleet.acp.review.error.v0",
+        status: "failed",
+        error: expect.objectContaining({
+          code: "provider_error",
+          message:
+            "The ACP review provider returned an error before a successful deliverable could be submitted.",
+          settlement: "escrow_refundable",
+        }),
+      }),
+    });
+    const submitted = acpCliMocks.submitAcpDeliverable.mock.calls[0]?.[0] as
+      | { deliverable?: unknown }
+      | undefined;
+    expect(JSON.stringify(submitted?.deliverable)).not.toMatch(/channel|refunded/i);
   });
 
   it("does not submit ACP error payloads unless the submit claim is won", async () => {

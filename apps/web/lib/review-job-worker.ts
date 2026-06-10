@@ -129,7 +129,10 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
     const failureMode = classifyError(err);
     const rawMessage = messageOf(err);
     // Store a static safe message for the public API; log the raw error internally
-    const publicMessage = safeFailureMessage(failureMode);
+    const publicMessage =
+      job.paymentRail === "acp"
+        ? safeAcpFailureMessage(failureMode)
+        : safeFailureMessage(failureMode);
 
     logError(
       "review_job",
@@ -906,6 +909,38 @@ function safeAcpWorkerLogMessage(message: string): string {
     return "ACP worker failed; details redacted";
   }
   return message.slice(0, 200);
+}
+
+function safeAcpFailureMessage(failureMode: string): string {
+  switch (failureMode) {
+    case "invalid_input":
+    case "user_input":
+      return "The ACP review could not proceed due to invalid input.";
+    case "repo_not_accessible":
+      return "The target repository is not publicly accessible.";
+    case "pr_not_found":
+      return "The target pull request was not found.";
+    case "pr_not_open":
+      return "The target pull request is not open.";
+    case "sha_not_in_open_pr":
+      return "The requested SHA is not the current head of an open pull request.";
+    case "sha_ambiguous":
+      return "The requested SHA matches multiple open pull requests.";
+    case "no_reviewable_files":
+      return "The target pull request has no reviewable files.";
+    case "cost_cap_exceeded":
+      return "The ACP review exceeded the provider cost cap before completion.";
+    case "timeout":
+      return "The ACP review timed out before a successful deliverable could be submitted.";
+    case "provider_degraded":
+      return "The ACP review did not meet the two-model consensus quality bar.";
+    case "provider_error":
+      return "The ACP review provider returned an error before a successful deliverable could be submitted.";
+    case "internal":
+      return "An internal ACP review error occurred. Operator reconciliation may be required.";
+    default:
+      return "The ACP review failed before a successful deliverable could be submitted.";
+  }
 }
 
 function acpErrorCodeForFailureMode(failureMode: string): AcpReviewErrorCode {

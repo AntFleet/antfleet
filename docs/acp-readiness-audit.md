@@ -98,6 +98,14 @@ Fix: ACP deliverables now include the disclaimer whenever the stored request has
 
 Regression: `apps/web/lib/review-job-worker.acp.test.ts` now asserts acknowledged trading-code boundary requests include the disclaimer in the submitted deliverable.
 
+### Medium - fixed - ACP failure payloads could reuse channel-refund wording
+
+Security review of PR #83 found that the ACP worker reused the channel payment helper `safeFailureMessage()`. That helper says provider, timeout, and internal failures refunded the user's channel, but ACP jobs use escrow/refundable/operator-review settlement semantics. A buyer, provider, or evaluator could receive an ACP error payload whose `settlement` field said `escrow_refundable` while the public message claimed a channel refund that did not happen.
+
+Fix: ACP failures now use ACP-specific public messages that avoid channel/refund claims and align with the ACP error settlement field.
+
+Regression: `apps/web/lib/review-job-worker.acp.test.ts` now asserts provider-error ACP payloads do not contain `channel` or `refunded` and preserve `settlement: "escrow_refundable"`.
+
 ## No additional code findings
 
 - Intake parsing and validation are strict through Zod and reject malformed request shape, dual `target.pr`/`target.sha`, unsupported modes, invalid wallets, and trading focus without acknowledgment.
@@ -129,7 +137,8 @@ Regression: `apps/web/lib/review-job-worker.acp.test.ts` now asserts acknowledge
 - Added funded-event replay idempotency for already-running ACP review jobs.
 - Added PR-head drift rejection before ACP worker enqueue/review.
 - Added trading disclaimer emission for requests that stored the no-financial-advice acknowledgment.
-- Added regression coverage for all three fixes.
+- Added ACP-specific public failure messages for ACP error payloads.
+- Added regression coverage for all four fixes.
 
 ## Verification
 
@@ -149,7 +158,7 @@ Passing checks after fixes:
 - `pnpm --dir apps/web typecheck`
 - `pnpm --dir apps/web test lib/review-job-worker.acp.test.ts`
 - `pnpm --dir apps/web test lib/acp/intake-adapter.test.ts`
-- `pnpm --dir apps/web test lib/acp/intake-adapter.test.ts lib/acp/rate-limit.test.ts lib/review-job-queries.acp.test.ts lib/acp/review-contract.test.ts lib/review-job-worker.acp.test.ts scripts/acp-provider-worker.test.ts app/api/cron/review-jobs/route.test.ts`
+- `pnpm --dir apps/web test lib/acp/intake-adapter.test.ts lib/acp/rate-limit.test.ts lib/review-job-queries.acp.test.ts lib/acp/review-contract.test.ts lib/review-job-worker.acp.test.ts scripts/acp-provider-worker.test.ts app/api/cron/review-jobs/route.test.ts` (57 tests)
 - `git diff --check`
 - `jq empty apps/web/public/schemas/acp/review-request-v0.json apps/web/public/schemas/acp/review-deliverable-v0.json apps/web/public/schemas/acp/review-error-v0.json apps/web/data/acp/review-request.valid-pr.json apps/web/data/acp/review-deliverable.no-findings.json apps/web/data/acp/review-deliverable.findings.json apps/web/data/acp/review-error.provider-degraded.json`
 - `gh pr view 82 --json title,url,mergedAt,mergeCommit,body`
