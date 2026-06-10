@@ -9,7 +9,7 @@ import {
 export const metadata: Metadata = {
   title: "ACP offering · AntFleet",
   description:
-    "Public PR Code Review through Virtuals ACP: two-model consensus findings, structured JSON deliverables, and public receipt URLs.",
+    "Pull Request Review through Virtuals ACP: two-model consensus findings, structured JSON deliverables, and public receipt URLs.",
 };
 
 const TAGS = ["code-review", "security", "receipts", "github", "acp", "agent-trust"] as const;
@@ -23,7 +23,7 @@ export default function AcpOfferingPage() {
             Virtuals ACP · beta SLA
           </p>
           <h1 className="max-w-2xl text-4xl font-semibold tracking-tight text-[var(--color-ink)] leading-tight sm:text-5xl">
-            Public PR Code Review
+            Pull Request Review
           </h1>
           <p className="mt-6 max-w-2xl text-base leading-relaxed text-[var(--color-ink-muted)]">
             Hire AntFleet through ACP to review a public GitHub PR. Two independent frontier

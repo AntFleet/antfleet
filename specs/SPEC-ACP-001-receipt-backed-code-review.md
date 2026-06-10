@@ -3,7 +3,7 @@
 **Status:** Draft for v0 implementation
 **Date:** 2026-06-10
 **Owner:** AntFleet
-**Offering:** Public PR Code Review
+**Offering:** Pull Request Review
 **External context checked:** Virtuals ACP commerce docs, `@virtuals-protocol/acp-cli`, x402 docs, x402 Foundation repo
 
 ## 0. Implementation and Submission Boundary
@@ -66,7 +66,7 @@ AntFleet must not claim:
 
 ### Offering
 
-**Name:** Public PR Code Review
+**Name:** Pull Request Review
 
 **Marketplace description:**
 
@@ -1026,7 +1026,7 @@ Package AntFleet as "agent-to-agent trust infrastructure":
 
 Headline:
 
-> Public PR Code Review
+> Pull Request Review
 
 Subhead:
 
@@ -1046,7 +1046,7 @@ CTA:
 
 ### Suggested ACP marketplace listing copy
 
-**Title:** Public PR Code Review
+**Title:** Pull Request Review
 
 **Short description:** Two-model consensus review for public GitHub pull requests, with structured findings and SHA-pinned receipt URLs.
 
