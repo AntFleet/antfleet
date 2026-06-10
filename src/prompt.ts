@@ -57,8 +57,11 @@ Label rules (required field):
 - "optional"  — improvement worth considering but genuinely optional
 - "fyi"       — informational only; no action expected
 
-When severity is critical or high, label must be "blocking".
-When category is docs-gap or maintainability and severity is low, prefer "nit" or "optional".
+Hard label rules — apply in order, first match wins:
+1. severity is critical or high → label MUST be "blocking". No exceptions.
+2. severity is low AND category is maintainability or docs-gap → label MUST be "nit" or "optional". Never "blocking".
+3. severity is medium AND category is maintainability, docs-gap, or test-gap → label SHOULD be "nit" or "optional" unless the gap directly enables a security or data-loss regression.
+4. Everything else → use judgment; default to "blocking" only when the finding is genuinely merge-blocking.
 
 Policy context: when a finding's severity hinges on whether the behavior is intentional design
 rather than a bug — e.g. a limit that can be exceeded but may be a documented feature, or an
