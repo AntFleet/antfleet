@@ -89,6 +89,7 @@ function SiteHeader() {
           <NavDropdown label="About">
             <DropdownLink href="/about" label="Architecture" />
             <DropdownLink href="/about/api" label="API" />
+            <DropdownLink href="/acp" label="ACP Offering" />
             <DropdownLink href="/about/methodology" label="Methodology" />
             <DropdownLink href="/about/changelog" label="Changelog" />
             <DropdownLink href="/about/roadmap" label="Roadmap" />

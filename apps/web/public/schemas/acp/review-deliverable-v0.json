@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.antfleet.dev/schemas/acp/review-deliverable-v0.json",
+  "title": "AntFleet ACP review deliverable",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "job", "target", "review", "receipt", "findings"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "antfleet.acp.review.deliverable.v0" },
+    "status": {
+      "type": "string",
+      "enum": ["complete", "complete_no_findings", "receipt_pending"]
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["acp_job_id", "antfleet_job_id", "provider_agent", "status_url"],
+      "properties": {
+        "acp_job_id": { "type": "string", "maxLength": 160 },
+        "antfleet_job_id": { "type": "string", "maxLength": 160 },
+        "provider_agent": { "type": "string", "maxLength": 120 },
+        "client_agent_wallet": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "status_url": { "type": "string", "format": "uri" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "mode", "head_sha"],
+      "properties": {
+        "repo": { "type": "string", "maxLength": 260 },
+        "mode": { "type": "string", "const": "pr" },
+        "pr": { "type": "integer", "minimum": 1 },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{7,64}$" },
+        "files_reviewed": { "type": "array", "items": { "type": "string", "maxLength": 512 } }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_id", "agreement_mode", "reviewer_count", "degraded", "model_ids"],
+      "properties": {
+        "review_id": { "type": "string", "maxLength": 160 },
+        "agreement_mode": { "type": "string", "const": "unanimous" },
+        "reviewer_count": { "type": "integer", "const": 2 },
+        "degraded": { "type": "boolean", "const": false },
+        "degraded_reason": { "type": "null" },
+        "model_ids": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 160 }
+        },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "review_receipt_url", "finding_receipt_urls"],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["review_receipt_ready", "finding_receipts_pending", "no_findings", "unavailable"]
+        },
+        "review_receipt_url": { "type": ["string", "null"], "format": "uri" },
+        "finding_receipt_urls": {
+          "type": "array",
+          "items": { "type": "string", "format": "uri" }
+        },
+        "receipt_note": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "title",
+          "severity",
+          "category",
+          "confidence",
+          "evidence",
+          "reasoning",
+          "reproduction",
+          "recommendation",
+          "whyTestsDoNotAlreadyCoverThis",
+          "suggestedRegressionTest",
+          "minimumFixScope",
+          "requiresPolicyReview",
+          "upstreamOrigin",
+          "status"
+        ],
+        "properties": {
+          "finding_id": { "type": "string", "maxLength": 160 },
+          "title": { "type": "string", "maxLength": 240 },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "category": {
+            "type": "string",
+            "enum": [
+              "bug",
+              "security",
+              "performance",
+              "concurrency",
+              "api-contract",
+              "data-loss",
+              "test-gap",
+              "docs-gap",
+              "build-release",
+              "maintainability"
+            ]
+          },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "evidence": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "startLine", "endLine", "symbol", "quote"],
+              "properties": {
+                "path": { "type": "string", "maxLength": 512 },
+                "startLine": { "type": ["integer", "null"], "minimum": 1 },
+                "endLine": { "type": ["integer", "null"], "minimum": 1 },
+                "symbol": { "type": ["string", "null"], "maxLength": 160 },
+                "quote": { "type": ["string", "null"], "maxLength": 600 }
+              }
+            }
+          },
+          "reasoning": { "type": "string", "maxLength": 4000 },
+          "reproduction": { "type": ["string", "null"], "maxLength": 4000 },
+          "recommendation": { "type": "string", "maxLength": 4000 },
+          "whyTestsDoNotAlreadyCoverThis": { "type": "string", "maxLength": 2000 },
+          "suggestedRegressionTest": { "type": ["string", "null"], "maxLength": 2000 },
+          "minimumFixScope": { "type": "string", "maxLength": 2000 },
+          "requiresPolicyReview": { "type": "boolean" },
+          "upstreamOrigin": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["package", "reason"],
+                "properties": {
+                  "package": { "type": "string", "maxLength": 200 },
+                  "reason": { "type": "string", "maxLength": 1000 }
+                }
+              },
+              { "type": "null" }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["open", "closed", "superseded", "not_posted"]
+          },
+          "receipt_url": { "type": ["string", "null"], "format": "uri" }
+        }
+      }
+    },
+    "disclaimer": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "Required when reviewing trading-agent or financial workflow code."
+    }
+  }
+}

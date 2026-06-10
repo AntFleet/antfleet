@@ -1,0 +1,16 @@
+{
+  "mode": "pr",
+  "target": {
+    "repo": "demo-agent/acp-handler",
+    "pr": 42
+  },
+  "client": {
+    "agent_wallet": "0x1111111111111111111111111111111111111111",
+    "agent_name": "BuilderAgent"
+  },
+  "options": {
+    "public_receipt": true,
+    "focus": ["security", "api-contract"],
+    "max_findings": 10
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": "antfleet.acp.review.deliverable.v0",
+  "status": "complete",
+  "job": {
+    "acp_job_id": "43868",
+    "antfleet_job_id": "af_acp_01jz7ra9x0",
+    "provider_agent": "AntFleet",
+    "client_agent_wallet": "0x1111111111111111111111111111111111111111",
+    "status_url": "https://www.antfleet.dev/api/v1/acp/review-jobs/af_acp_01jz7ra9x0"
+  },
+  "target": {
+    "repo": "demo-agent/acp-handler",
+    "mode": "pr",
+    "pr": 42,
+    "head_sha": "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+    "files_reviewed": ["src/handler.ts", "src/settlement.ts"]
+  },
+  "review": {
+    "review_id": "b6f4e8d5-1b9e-4d50-930c-3d36f40d15a8",
+    "agreement_mode": "unanimous",
+    "reviewer_count": 2,
+    "degraded": false,
+    "degraded_reason": null,
+    "model_ids": {
+      "anthropic": "claude-opus-4-7",
+      "openai": "gpt-5"
+    },
+    "duration_ms": 84231
+  },
+  "receipt": {
+    "state": "finding_receipts_pending",
+    "review_receipt_url": "https://www.antfleet.dev/receipts/review/b6f4e8d5-1b9e-4d50-930c-3d36f40d15a8",
+    "finding_receipt_urls": [],
+    "receipt_note": "Review receipt is ready. Finding receipts publish after fixes are detected and SHA-pinned."
+  },
+  "findings": [
+    {
+      "finding_id": "b6f4e8d5-1b9e-4d50-930c-3d36f40d15a8-0",
+      "title": "ACP delivery accepts unsigned settlement callback",
+      "severity": "high",
+      "category": "security",
+      "confidence": "high",
+      "evidence": [
+        {
+          "path": "src/settlement.ts",
+          "startLine": 88,
+          "endLine": 103,
+          "symbol": "handleSettlement",
+          "quote": "callback payload is trusted before signature verification"
+        }
+      ],
+      "reasoning": "Both reviewers flagged the same unauthenticated settlement path.",
+      "reproduction": "Send a callback body with status=paid and no valid signature.",
+      "recommendation": "Verify callback signature before reading settlement status.",
+      "whyTestsDoNotAlreadyCoverThis": "Existing tests exercise successful settlement only.",
+      "suggestedRegressionTest": "Reject unsigned settlement callbacks.",
+      "minimumFixScope": "Verify the callback signature before parsing or trusting settlement status.",
+      "requiresPolicyReview": false,
+      "upstreamOrigin": null,
+      "status": "open",
+      "receipt_url": null
+    }
+  ]
+}

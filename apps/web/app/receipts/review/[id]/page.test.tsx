@@ -84,12 +84,12 @@ describe("/receipts/review/[id]", () => {
     expect(html).toContain('/receipts/finding-2"');
   });
 
-  it("renders the exact clean-review copy for zero-finding reviews", async () => {
+  it("renders the exact no-consensus copy for zero-finding reviews", async () => {
     queryMocks.loadPublicReviewReceipt.mockResolvedValue(row());
 
     const html = await render();
 
-    expect(html).toContain("No findings — clean review.");
+    expect(html).toContain("No two-model consensus findings were emitted for this scope.");
   });
 
   it("renders failed reviews with the Payment not settled literal", async () => {
@@ -124,5 +124,24 @@ describe("/receipts/review/[id]", () => {
     expect(html).toContain("Rail");
     expect(html).not.toContain("Pay to");
     expect(html).not.toContain("channel treasury");
+  });
+
+  it("does not mislabel review receipts with no job row as channel payments", async () => {
+    queryMocks.loadPublicReviewReceipt.mockResolvedValue(
+      row({
+        jobId: null,
+        paymentRail: null,
+        jobStatus: null,
+        settlementStatus: null,
+        callerWallet: null,
+        x402PayTo: null,
+      }),
+    );
+
+    const html = await render();
+
+    expect(html).toContain("paid_via: not recorded");
+    expect(html).toContain("<dd>not recorded</dd>");
+    expect(html).not.toContain("paid_via: channel");
   });
 });

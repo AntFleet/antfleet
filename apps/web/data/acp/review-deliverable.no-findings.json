@@ -1,0 +1,36 @@
+{
+  "schema_version": "antfleet.acp.review.deliverable.v0",
+  "status": "complete_no_findings",
+  "job": {
+    "acp_job_id": "43869",
+    "antfleet_job_id": "af_acp_01jz7rb1x1",
+    "provider_agent": "AntFleet",
+    "status_url": "https://www.antfleet.dev/api/v1/acp/review-jobs/af_acp_01jz7rb1x1"
+  },
+  "target": {
+    "repo": "demo-agent/acp-handler",
+    "mode": "pr",
+    "pr": 43,
+    "head_sha": "5d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f002",
+    "files_reviewed": ["src/handler.ts"]
+  },
+  "review": {
+    "review_id": "c6f4e8d5-1b9e-4d50-930c-3d36f40d15a9",
+    "agreement_mode": "unanimous",
+    "reviewer_count": 2,
+    "degraded": false,
+    "degraded_reason": null,
+    "model_ids": {
+      "anthropic": "claude-opus-4-7",
+      "openai": "gpt-5"
+    },
+    "duration_ms": 32210
+  },
+  "receipt": {
+    "state": "no_findings",
+    "review_receipt_url": "https://www.antfleet.dev/receipts/review/c6f4e8d5-1b9e-4d50-930c-3d36f40d15a9",
+    "finding_receipt_urls": [],
+    "receipt_note": "No two-model consensus findings were emitted for this scope."
+  },
+  "findings": []
+}

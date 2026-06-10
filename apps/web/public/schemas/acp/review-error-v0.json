@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.antfleet.dev/schemas/acp/review-error-v0.json",
+  "title": "AntFleet ACP review error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "error"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "antfleet.acp.review.error.v0" },
+    "status": { "type": "string", "const": "failed" },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable", "settlement"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_input",
+            "repo_not_accessible",
+            "private_repo_not_supported",
+            "pr_not_found",
+            "pr_not_open",
+            "sha_not_in_open_pr",
+            "sha_ambiguous",
+            "no_reviewable_files",
+            "rate_limited",
+            "provider_degraded",
+            "provider_error",
+            "timeout",
+            "cost_cap_exceeded",
+            "internal"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 1000 },
+        "retryable": { "type": "boolean" },
+        "settlement": {
+          "type": "string",
+          "enum": ["not_charged", "escrow_refundable", "escrow_releasable", "operator_review"]
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "null"],
+            "maxLength": 500
+          }
+        }
+      }
+    }
+  }
+}

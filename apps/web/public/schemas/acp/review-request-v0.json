@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.antfleet.dev/schemas/acp/review-request-v0.json",
+  "title": "AntFleet ACP review request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "mode"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "const": "pr",
+      "description": "v0 reviews one public pull request."
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo"],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "examples": ["virtuals-agent/acp-handler"]
+        },
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Required when mode=pr unless sha is supplied and resolves to exactly one open PR head."
+        },
+        "sha": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{7,64}$",
+          "description": "Optional PR head SHA. For PR reviews, SHA must resolve to exactly one open PR head."
+        }
+      }
+    },
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent_wallet": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "agent_name": { "type": "string", "maxLength": 120 },
+        "contact_email": { "type": "string", "format": "email" }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public_receipt": {
+          "type": "boolean",
+          "const": true,
+          "default": true,
+          "description": "v0 requires public receipts for public PR reviews."
+        },
+        "focus": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "string",
+            "enum": [
+              "security",
+              "api-contract",
+              "data-loss",
+              "concurrency",
+              "trading-risk",
+              "build-release"
+            ]
+          }
+        },
+        "max_findings": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "default": 10
+        },
+        "acknowledge_not_financial_advice": {
+          "type": "boolean",
+          "description": "Required true when focus includes trading-risk."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "target": {
+              "required": ["pr"],
+              "not": { "required": ["sha"] }
+            }
+          }
+        },
+        {
+          "properties": {
+            "target": {
+              "required": ["sha"],
+              "not": { "required": ["pr"] }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "options": {
+            "properties": {
+              "focus": {
+                "contains": { "const": "trading-risk" }
+              }
+            },
+            "required": ["focus"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "options": {
+            "required": ["acknowledge_not_financial_advice"],
+            "properties": {
+              "acknowledge_not_financial_advice": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
