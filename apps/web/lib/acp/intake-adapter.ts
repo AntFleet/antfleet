@@ -290,7 +290,7 @@ export async function runFundedAcpReviewJob(
     });
   }
   const worker =
-    job.status === "complete" || job.status === "failed"
+    job.status === "complete" || job.status === "failed" || job.status === "running"
       ? null
       : await (deps.processJob ?? processReviewJob)(job.jobId);
   if (worker?.kind === "skipped") {

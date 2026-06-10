@@ -592,7 +592,14 @@ async function resolveAcpReviewTarget(
           failureModeTag: "pr_not_open",
         });
       }
-      return { prNumber: job.prNumber, sha: pr.data.head.sha };
+      const currentHeadSha = pr.data.head.sha;
+      if (job.sha !== null && currentHeadSha.toLowerCase() !== job.sha.toLowerCase()) {
+        throw Object.assign(
+          new Error("ACP PR head changed after intake; create a new ACP job for the new SHA"),
+          { failureModeTag: "sha_not_in_open_pr" },
+        );
+      }
+      return { prNumber: job.prNumber, sha: job.sha ?? currentHeadSha };
     } catch (err) {
       if ((err as { failureModeTag?: string }).failureModeTag) throw err;
       const status = (err as { status?: number })?.status;
@@ -722,8 +729,13 @@ function readModelIds(value: unknown): Record<string, string> {
 function shouldIncludeAcpTradingDisclaimer(job: ReviewJobRow): boolean {
   const request = job.acpRequestPayload;
   if (typeof request !== "object" || request === null) return false;
-  const options = (request as { options?: { focus?: unknown } }).options;
-  return Array.isArray(options?.focus) && options.focus.includes("trading-risk");
+  const options = (
+    request as { options?: { acknowledge_not_financial_advice?: unknown; focus?: unknown } }
+  ).options;
+  return (
+    options?.acknowledge_not_financial_advice === true ||
+    (Array.isArray(options?.focus) && options.focus.includes("trading-risk"))
+  );
 }
 
 function absoluteAntfleetUrl(path: string): string {

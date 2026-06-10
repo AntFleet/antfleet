@@ -211,6 +211,60 @@ describe("processReviewJob ACP rail", () => {
     );
   });
 
+  it("includes the trading disclaimer when the buyer acknowledged trading-code boundaries", async () => {
+    queryMocks.getReviewJob.mockResolvedValueOnce({
+      ...acpJob,
+      acpRequestPayload: {
+        options: {
+          public_receipt: true,
+          max_findings: 10,
+          acknowledge_not_financial_advice: true,
+        },
+      },
+    });
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("af-acp-job");
+
+    expect(outcome).toEqual({ kind: "complete", jobId: "af-acp-job" });
+    expect(acpCliMocks.submitAcpDeliverable).toHaveBeenCalledWith({
+      acpJobId: "43868",
+      deliverable: expect.objectContaining({
+        disclaimer:
+          "AntFleet reviews code structure and implementation risks. It does not evaluate trading profitability, market strategy, regulatory suitability, portfolio risk, or whether an autonomous agent should trade. Findings are not financial advice.",
+      }),
+    });
+  });
+
+  it("fails instead of reviewing a moved PR head after ACP intake resolved a SHA", async () => {
+    queryMocks.getReviewJob.mockResolvedValueOnce({
+      ...acpJob,
+      sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+    });
+    octokitMocks.pullsGet.mockResolvedValueOnce({
+      data: { state: "open", head: { sha: "99999f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f999" } },
+    });
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("af-acp-job");
+
+    expect(outcome).toMatchObject({
+      kind: "failed",
+      jobId: "af-acp-job",
+      failureMode: "sha_not_in_open_pr",
+    });
+    expect(dbQueryMocks.enqueueReview).not.toHaveBeenCalled();
+    expect(githubFileMocks.getPublicChangedFiles).not.toHaveBeenCalled();
+    expect(acpCliMocks.submitAcpDeliverable).toHaveBeenCalledWith({
+      acpJobId: "43868",
+      deliverable: expect.objectContaining({
+        schema_version: "antfleet.acp.review.error.v0",
+        status: "failed",
+        error: expect.objectContaining({ code: "sha_not_in_open_pr" }),
+      }),
+    });
+  });
+
   it("submits ACP error payloads and preserves them on failed jobs", async () => {
     octokitMocks.pullsGet.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
 

@@ -562,28 +562,25 @@ describe("ACP intake adapter", () => {
     expect(processJob).not.toHaveBeenCalled();
   });
 
-  it("keeps funded events retryable when the review job is already running", async () => {
+  it("treats funded events as idempotent once the review job is already running", async () => {
     const findJob = vi.fn().mockResolvedValue({
       jobId: "af-acp-job",
       status: "running",
       paymentRail: "acp",
     });
     const markAcpFundedAndQueued = vi.fn();
-    const processJob = vi
-      .fn()
-      .mockResolvedValue({ kind: "skipped", jobId: "af-acp-job", reason: "status_is_running" });
+    const processJob = vi.fn();
 
-    await expect(
-      runFundedAcpReviewJob("43868", {
-        findJob,
-        markAcpFundedAndQueued,
-        processJob,
-        q: {} as never,
-      }),
-    ).rejects.toThrow("ACP review job worker skipped: status_is_running");
+    const outcome = await runFundedAcpReviewJob("43868", {
+      findJob,
+      markAcpFundedAndQueued,
+      processJob,
+      q: {} as never,
+    });
 
+    expect(outcome).toMatchObject({ queued: false, worker: null });
     expect(markAcpFundedAndQueued).not.toHaveBeenCalled();
-    expect(processJob).toHaveBeenCalledWith("af-acp-job");
+    expect(processJob).not.toHaveBeenCalled();
   });
 });
 
