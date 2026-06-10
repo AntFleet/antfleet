@@ -144,7 +144,23 @@ export function extractOpenAIContent(response: OpenAI.Chat.Completions.ChatCompl
   }
   const content = choice.message.content;
   if (content === null || content === undefined || content.length === 0) {
-    throw new FleetError("openai provider returned empty message content", 8, "malformed-output");
+    // Include finish_reason and reasoning_tokens so operators can distinguish
+    // a reasoning_tokens budget OOM (finish_reason=length) from a real refusal
+    // or transport-side empty response. Without these fields every failure
+    // looks identical in the persisted PerProviderResult.error string.
+    const u = response.usage;
+    const reasoningTokens =
+      (u as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined)
+        ?.completion_tokens_details?.reasoning_tokens ?? null;
+    const refusal = choice.message.refusal ?? null;
+    throw new FleetError(
+      `openai provider returned empty message content ` +
+        `(finish_reason=${choice.finish_reason}, reasoning_tokens=${reasoningTokens}, ` +
+        `prompt_tokens=${u?.prompt_tokens ?? null}, completion_tokens=${u?.completion_tokens ?? null}, ` +
+        `refusal=${refusal === null ? "null" : "set"})`,
+      8,
+      "malformed-output",
+    );
   }
   try {
     return JSON.parse(content);
