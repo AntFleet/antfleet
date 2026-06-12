@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/cron/review-retry",
-      "schedule": "*/2 * * * *"
+      "schedule": "*/30 * * * *"
     },
     {
       "path": "/api/cron/drift",
@@ -19,11 +19,11 @@
     },
     {
       "path": "/api/cron/scan-deposits",
-      "schedule": "* * * * *"
+      "schedule": "*/30 * * * *"
     },
     {
       "path": "/api/cron/review-jobs",
-      "schedule": "*/5 * * * *"
+      "schedule": "*/30 * * * *"
     },
     {
       "path": "/api/cron/scorecard-snapshot",
