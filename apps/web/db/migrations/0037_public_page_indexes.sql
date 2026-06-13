@@ -3,10 +3,9 @@
 -- /receipts and /receipts.rss join finding_status -> reviews filtering on
 -- status='closed' AND public_receipt=true. Without these indexes the joins
 -- fall back to seq scans as the corpus grows. Operator applies via
--- apps/web/db/migrations/apply-migration-0037.ts (NOT YET CREATED; this
--- migration is data-only and uses IF NOT EXISTS so it can be applied via
--- psql or the standard drizzle-kit migrate flow). All three CREATE INDEX
--- statements are idempotent.
+-- `pnpm exec tsx db/migrations/apply-migration-0037.ts --apply` (with
+-- ALLOW_PROD_APPLY=1 set). All three CREATE INDEX statements are
+-- idempotent, so reruns are safe.
 
 CREATE INDEX IF NOT EXISTS finding_status_review_id_idx
   ON finding_status (review_id);
