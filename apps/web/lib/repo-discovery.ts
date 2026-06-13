@@ -155,13 +155,25 @@ function isPublicIPv4(address: string): boolean {
   if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
     return false;
   }
-  const [a, b] = parts as [number, number, number, number];
+  const [a, b, c, d] = parts as [number, number, number, number];
+  // RFC6890 denylist. Covers loopback, link-local, RFC1918, CGNAT,
+  // multicast, future-use, broadcast, and IANA-reserved documentation
+  // ranges that should never originate from an attacker-controlled URL.
+  if (a === 0) return false; // 0.0.0.0/8
   if (a === 10) return false; // 10/8
+  if (a === 100 && b >= 64 && b <= 127) return false; // 100.64/10 CGNAT
   if (a === 127) return false; // 127/8 loopback
   if (a === 169 && b === 254) return false; // 169.254/16 link-local
   if (a === 172 && b >= 16 && b <= 31) return false; // 172.16/12
+  if (a === 192 && b === 0 && c === 0) return false; // 192.0.0/24 IETF protocol
+  if (a === 192 && b === 0 && c === 2) return false; // 192.0.2/24 TEST-NET-1
   if (a === 192 && b === 168) return false; // 192.168/16
-  if (a === 0) return false; // 0.0.0.0/8
+  if (a === 198 && (b === 18 || b === 19)) return false; // 198.18/15 benchmarking
+  if (a === 198 && b === 51 && c === 100) return false; // 198.51.100/24 TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return false; // 203.0.113/24 TEST-NET-3
+  if (a >= 224 && a <= 239) return false; // 224/4 multicast
+  if (a >= 240 && a <= 255) return false; // 240/4 future-use + 255.255.255.255 broadcast
+  void d;
   return true;
 }
 
@@ -171,21 +183,61 @@ function isPublicIPv6(address: string): boolean {
   if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return false; // link-local
   // fc00::/7 (unique local): first byte 0xfc or 0xfd.
   if (lower.startsWith("fc") || lower.startsWith("fd")) return false;
-  // ::ffff:<ipv4> tunnels delegate to the v4 check.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped !== null) return isPublicIPv4(mapped[1] as string);
+  // IPv4-mapped IPv6: delegate to the v4 check. Node normalizes
+  // bracketed IPv4-in-IPv6 hostnames (e.g. [::ffff:127.0.0.1]) to the
+  // hex form (::ffff:7f00:1) inside URL.hostname; accept both forms.
+  const mapped = ipv4FromMappedIPv6(lower);
+  if (mapped !== null) return isPublicIPv4(mapped);
   return true;
 }
 
-async function fetchMetadataJson(url: string): Promise<unknown> {
+function ipv4FromMappedIPv6(value: string): string | null {
+  const dotted = /^(?:::ffff:|0:0:0:0:0:ffff:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(value);
+  if (dotted !== null) return dotted[1] ?? null;
+  const hex = /^(?:::ffff:|0:0:0:0:0:ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(value);
+  if (hex !== null) {
+    const hi = Number.parseInt(hex[1] as string, 16);
+    const lo = Number.parseInt(hex[2] as string, 16);
+    if (
+      !Number.isInteger(hi) ||
+      !Number.isInteger(lo) ||
+      hi < 0 ||
+      hi > 0xffff ||
+      lo < 0 ||
+      lo > 0xffff
+    ) {
+      return null;
+    }
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  }
+  return null;
+}
+
+// Manual redirect handling: fetch with redirect:"manual" so we can revalidate
+// the Location target against isPublicHttpUrl before following. Bounded depth
+// prevents redirect loops. Without this, an attacker could publish a tokenURI
+// at a public host that 302s into 169.254.169.254 and bypass the allowlist.
+const MAX_REDIRECT_HOPS = 5;
+
+async function fetchMetadataJson(url: string, hops = 0): Promise<unknown> {
   if (!(await isPublicHttpUrl(url))) {
-    logInfo("repo_discovery.fetch_blocked", { url });
+    logInfo("repo_discovery.fetch_blocked", { url, hops });
     return null;
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal, redirect: "manual" });
+    if (response.status >= 300 && response.status < 400) {
+      if (hops >= MAX_REDIRECT_HOPS) {
+        logInfo("repo_discovery.redirect_cap_exceeded", { url, hops });
+        return null;
+      }
+      const location = response.headers.get("location");
+      if (location === null) return null;
+      const next = new URL(location, url).toString();
+      return fetchMetadataJson(next, hops + 1);
+    }
     if (!response.ok) return null;
     return await response.json();
   } finally {

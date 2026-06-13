@@ -87,6 +87,27 @@ describe("discoverRepoForAgent", () => {
     });
   });
 
+  it("blocks tokenURI metadata that 302s into a private address (SSRF redirect)", async () => {
+    // Attacker publishes a tokenURI at a public IP that redirects into the
+    // Vercel/AWS instance-metadata service. Manual redirect handling +
+    // isPublicHttpUrl on the Location target must refuse to follow.
+    // Use 1.1.1.1 so the initial allowlist check doesn't depend on DNS.
+    readContract.mockResolvedValue("https://1.1.1.1/meta");
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+      status: 302,
+      headers: new Headers({ location: "http://169.254.169.254/latest/meta-data/" }),
+      ok: false,
+    } as unknown as Response);
+
+    await expect(discoverRepoForAgent(launch())).resolves.toEqual({
+      repo: null,
+      method: null,
+    });
+    // Only the initial fetch should fire; the redirect target is rejected
+    // before any second fetch is issued.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("falls through when tokenURI points at a private repo", async () => {
     readContract.mockResolvedValue("https://example.com/meta.json");
     mockFetchJson({ repository: "https://github.com/foo/private-agent" });
@@ -177,6 +198,37 @@ describe("isPublicHttpUrl (SSRF allowlist for tokenURI fetch)", () => {
   it("rejects fc00::/7 unique-local IPv6", async () => {
     expect(await isPublicHttpUrl("http://[fc00::1]/")).toBe(false);
     expect(await isPublicHttpUrl("http://[fd00::1]/")).toBe(false);
+  });
+
+  it("rejects IPv4-mapped IPv6 pointing at loopback (dotted + hex)", async () => {
+    // node URL normalizes [::ffff:127.0.0.1] to [::ffff:7f00:1]; both shapes
+    // must denylist via the IPv4 path.
+    expect(await isPublicHttpUrl("http://[::ffff:127.0.0.1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[::ffff:7f00:1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[::ffff:169.254.169.254]/")).toBe(false);
+  });
+
+  it("rejects 100.64/10 CGNAT", async () => {
+    expect(await isPublicHttpUrl("http://100.64.0.1/")).toBe(false);
+    expect(await isPublicHttpUrl("http://100.127.255.255/")).toBe(false);
+  });
+
+  it("rejects 198.18/15 benchmarking range", async () => {
+    expect(await isPublicHttpUrl("http://198.18.0.1/")).toBe(false);
+    expect(await isPublicHttpUrl("http://198.19.255.254/")).toBe(false);
+  });
+
+  it("rejects IANA TEST-NET documentation ranges", async () => {
+    expect(await isPublicHttpUrl("http://192.0.2.1/")).toBe(false);
+    expect(await isPublicHttpUrl("http://198.51.100.1/")).toBe(false);
+    expect(await isPublicHttpUrl("http://203.0.113.1/")).toBe(false);
+  });
+
+  it("rejects 224/4 multicast and 240/4 future-use + broadcast", async () => {
+    expect(await isPublicHttpUrl("http://224.0.0.1/")).toBe(false);
+    expect(await isPublicHttpUrl("http://239.255.255.250/")).toBe(false);
+    expect(await isPublicHttpUrl("http://240.0.0.1/")).toBe(false);
+    expect(await isPublicHttpUrl("http://255.255.255.255/")).toBe(false);
   });
 
   it("permits public IPv4 literals (e.g. an ipfs.io address)", async () => {
