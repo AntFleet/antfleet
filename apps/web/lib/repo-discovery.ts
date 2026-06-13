@@ -368,7 +368,7 @@ export async function fetchWithPinnedTargetInternal(
 // Internal test seam — NOT a production export. Named so a grep for
 // "fetchWithPinnedTarget" in production code finds nothing; the
 // integration suite imports from this internal namespace.
-export const __internalForTests = { fetchWithPinnedTarget: fetchWithPinnedTargetInternal };
+export const internalTestSeam = { fetchWithPinnedTarget: fetchWithPinnedTargetInternal };
 
 function repoRefFromMetadata(metadata: unknown): RepoRef | null {
   if (metadata === null || typeof metadata !== "object") return null;

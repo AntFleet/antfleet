@@ -8,9 +8,9 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Agent, fetch as undiciFetch } from "undici";
-import { __internalForTests } from "./repo-discovery";
+import { internalTestSeam } from "./repo-discovery";
 
-const { fetchWithPinnedTarget } = __internalForTests;
+const { fetchWithPinnedTarget } = internalTestSeam;
 
 let server: Server;
 let port: number;
