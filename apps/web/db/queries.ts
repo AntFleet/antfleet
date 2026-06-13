@@ -38,6 +38,7 @@ import {
   scorecardSnapshots,
 } from "./schema";
 import { writePostDraft } from "@/lib/post-drafts";
+import { reconcilableTrailingRows } from "./finding-lifecycle";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -477,24 +478,11 @@ export async function recordFindingStatuses(
         });
     }
     // Delete trailing rows beyond the new length, but only when they
-    // are still "untouched" — open, no closure metadata, no patch
-    // lane artefacts, no retraction. A row outside this gate has real
-    // history and must be preserved even if it's no longer in the
-    // posted PR comment.
-    await tx
-      .delete(findingStatus)
-      .where(
-        and(
-          eq(findingStatus.reviewId, reviewId),
-          gte(findingStatus.findingIndex, rows.length),
-          eq(findingStatus.status, "open"),
-          isNull(findingStatus.closureSha),
-          isNull(findingStatus.closureCommentId),
-          isNull(findingStatus.patchReviewCommentId),
-          isNull(findingStatus.patchAcceptedSha),
-          isNull(findingStatus.retractedAt),
-        ),
-      );
+    // are still "untouched". The preserve predicate is owned by
+    // ./finding-lifecycle so the LIFECYCLE_PRESERVE_COLUMNS list stays
+    // beside the schema and is a single audit point when a new
+    // lifecycle column is added.
+    await tx.delete(findingStatus).where(reconcilableTrailingRows(reviewId, rows.length));
     if (rows.length === 0) return [];
     const out = await tx
       .select({ findingId: findingStatus.findingId })

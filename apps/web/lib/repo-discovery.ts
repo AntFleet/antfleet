@@ -128,7 +128,7 @@ export async function isPublicHttpUrl(url: string): Promise<boolean> {
   return target !== null;
 }
 
-type PinnedTarget = { parsed: URL; address: string; family: 4 | 6 };
+export type PinnedTarget = { parsed: URL; address: string; family: 4 | 6 };
 
 // Validate the URL + DNS resolution, return the address we will pin into
 // the fetch. Returning the address (instead of just a boolean) lets the
@@ -198,15 +198,56 @@ function isPublicIPv4(address: string): boolean {
 function isPublicIPv6(address: string): boolean {
   const lower = address.toLowerCase();
   if (lower === "::1" || lower === "::") return false;
-  if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return false; // link-local
-  // fc00::/7 (unique local): first byte 0xfc or 0xfd.
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return false;
+  // Strip optional zone id (%eth0 etc) for prefix matching.
+  const bare = (lower.split("%")[0] ?? lower).trim();
+
+  // Round-3 string-prefix check missed fe80::/10 — `fe80:` only matches the
+  // first 16 bits exactly, while link-local extends through febf::. Parse
+  // the first 16-bit hextet and apply RFC-correct prefix masks.
+  const firstHex = parseFirstIPv6Hextet(bare);
+  if (firstHex === null) return false; // Unparseable → conservative deny.
+
+  // fe80::/10 link-local: first 10 bits 1111111010 → first hextet 0xfe80..0xfebf
+  if ((firstHex & 0xffc0) === 0xfe80) return false;
+  // fec0::/10 site-local (deprecated by RFC3879, defensive): 0xfec0..0xfeff
+  if ((firstHex & 0xffc0) === 0xfec0) return false;
+  // fc00::/7 unique-local: first byte 0xfc or 0xfd → first hextet 0xfc00..0xfdff
+  if ((firstHex & 0xfe00) === 0xfc00) return false;
+  // ff00::/8 multicast (covers ff02::1 all-nodes etc).
+  if ((firstHex & 0xff00) === 0xff00) return false;
+
+  // 2001:db8::/32 documentation range.
+  if (firstHex === 0x2001 && parseSecondIPv6Hextet(bare) === 0x0db8) return false;
+
   // IPv4-mapped IPv6: delegate to the v4 check. Node normalizes
   // bracketed IPv4-in-IPv6 hostnames (e.g. [::ffff:127.0.0.1]) to the
   // hex form (::ffff:7f00:1) inside URL.hostname; accept both forms.
-  const mapped = ipv4FromMappedIPv6(lower);
+  const mapped = ipv4FromMappedIPv6(bare);
   if (mapped !== null) return isPublicIPv4(mapped);
   return true;
+}
+
+function parseFirstIPv6Hextet(addr: string): number | null {
+  // `::xxx` → leading hextet is implicitly 0.
+  if (addr.startsWith("::")) return 0;
+  const colon = addr.indexOf(":");
+  const first = colon === -1 ? addr : addr.slice(0, colon);
+  if (first.length === 0) return 0;
+  const n = Number.parseInt(first, 16);
+  if (!Number.isFinite(n) || n < 0 || n > 0xffff) return null;
+  return n;
+}
+
+function parseSecondIPv6Hextet(addr: string): number | null {
+  // Pull the second hextet for documentation-range check. We only need
+  // exact equality so don't try to expand `::` shortcuts here.
+  const parts = addr.split(":");
+  if (parts.length < 2) return null;
+  const second = parts[1];
+  if (second === undefined || second.length === 0) return null;
+  const n = Number.parseInt(second, 16);
+  if (!Number.isFinite(n) || n < 0 || n > 0xffff) return null;
+  return n;
 }
 
 function ipv4FromMappedIPv6(value: string): string | null {
@@ -248,6 +289,20 @@ async function fetchMetadataJson(url: string, hops = 0): Promise<unknown> {
     logInfo("repo_discovery.fetch_blocked", { url, hops });
     return null;
   }
+  return fetchWithPinnedTarget(url, target, hops);
+}
+
+// Exported for integration tests: takes a pre-validated PinnedTarget and
+// builds the real undici Agent + dispatcher to fetch against it. The
+// production caller (fetchMetadataJson) supplies the target from
+// resolvePublicHttpTarget; tests can construct one directly to exercise
+// the dispatcher against a local socket without monkey-patching the
+// allowlist.
+export async function fetchWithPinnedTarget(
+  url: string,
+  target: PinnedTarget,
+  hops = 0,
+): Promise<unknown> {
   const dispatcher = new Agent({
     connect: {
       // Pin the resolved address into the dispatcher so undici does not

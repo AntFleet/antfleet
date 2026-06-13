@@ -12,7 +12,15 @@ export default defineConfig({
   },
   test: {
     include: ["**/*.test.ts", "**/*.test.tsx"],
-    exclude: ["**/node_modules/**", "**/.next/**"],
+    // Exclude *.integration.test.ts from the default unit run — those tests
+    // touch real sockets / processes and run under the separate
+    // `test:integration` script (also wired into CI).
+    exclude: [
+      "**/node_modules/**",
+      "**/.next/**",
+      "**/*.integration.test.ts",
+      "**/*.integration.test.tsx",
+    ],
     restoreMocks: true,
     testTimeout: 30_000,
     // db/index.ts throws at import-time if DATABASE_URL is missing — and the

@@ -227,6 +227,36 @@ describe("isPublicHttpUrl (SSRF allowlist for tokenURI fetch)", () => {
     expect(await isPublicHttpUrl("http://[fd00::1]/")).toBe(false);
   });
 
+  it("rejects the FULL fe80::/10 link-local range (not just fe80::)", async () => {
+    // Regression: round-4 audit probe found fe90, febf, fec0 all returned
+    // true under the old `lower.startsWith('fe80:')` check.
+    expect(await isPublicHttpUrl("http://[fe80::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[fe90::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[febf::1]/")).toBe(false);
+  });
+
+  it("rejects fec0::/10 deprecated site-local", async () => {
+    expect(await isPublicHttpUrl("http://[fec0::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[feff::1]/")).toBe(false);
+  });
+
+  it("rejects ff00::/8 IPv6 multicast", async () => {
+    expect(await isPublicHttpUrl("http://[ff02::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[ff00::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[ffff::1]/")).toBe(false);
+  });
+
+  it("rejects 2001:db8::/32 documentation range", async () => {
+    expect(await isPublicHttpUrl("http://[2001:db8::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[2001:0db8::1]/")).toBe(false);
+  });
+
+  it("permits a global-unicast IPv6 literal", async () => {
+    // 2001:4860:4860::8888 is one of Google's public DNS servers — a
+    // canonical public IPv6.
+    expect(await isPublicHttpUrl("http://[2001:4860:4860::8888]/")).toBe(true);
+  });
+
   it("rejects IPv4-mapped IPv6 pointing at loopback (dotted + hex)", async () => {
     // node URL normalizes [::ffff:127.0.0.1] to [::ffff:7f00:1]; both shapes
     // must denylist via the IPv4 path.
