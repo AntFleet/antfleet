@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { shortenReviewId } from "../lib/short-id";
 import {
   and,
   count,
@@ -38,6 +37,7 @@ import {
   scorecardSnapshots,
 } from "./schema";
 import { writePostDraft } from "@/lib/post-drafts";
+import { LIFECYCLE_PRESERVE_COLUMNS, reconcilableTrailingRows } from "./finding-lifecycle";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -132,16 +132,36 @@ export type ReviewProcessingStatus = (typeof REVIEW_PROCESSING_STATUSES)[number]
 
 // Atomic claim. Caller specifies which prior states are valid to claim from
 // — webhook after() passes ["pending"], the retry cron passes
-// ["pending", "pending_retry", "in_progress"] (the last only when the row
-// looks stuck; cron applies an age filter on processingStartedAt itself).
+// ["pending", "pending_retry", "in_progress"]. When `in_progress` is in
+// fromStatuses, stuckBefore MUST be supplied; the claim then requires
+// processingStartedAt < stuckBefore so a second overlapping cron tick
+// cannot steal a row that a faster cron tick just freshly claimed.
 // Returns true iff the row transitioned to in_progress. False means another
 // worker beat us to it — caller should move on without processing.
 export async function claimReviewForProcessing(args: {
   reviewId: string;
   fromStatuses: ReadonlyArray<ReviewProcessingStatus>;
   now: Date;
+  stuckBefore?: Date;
 }): Promise<boolean> {
   if (args.fromStatuses.length === 0) return false;
+  // Build the staleness gate. For in_progress claims it's mandatory: the
+  // worker reads the row, computes stuckBefore from STUCK_AFTER_MS, and
+  // passes it down. The atomic UPDATE then guards against a competing
+  // claim that refreshed processing_started_at.
+  const includesInProgress = args.fromStatuses.includes("in_progress");
+  if (includesInProgress && args.stuckBefore === undefined) {
+    throw new Error(
+      "claimReviewForProcessing: stuckBefore is required when fromStatuses includes 'in_progress'",
+    );
+  }
+  const stalePredicate =
+    args.stuckBefore !== undefined
+      ? or(
+          ne(reviews.processingStatus, "in_progress"),
+          lt(reviews.processingStartedAt, args.stuckBefore),
+        )
+      : undefined;
   const updated = await db
     .update(reviews)
     .set({
@@ -154,6 +174,7 @@ export async function claimReviewForProcessing(args: {
       and(
         eq(reviews.reviewId, args.reviewId),
         inArray(reviews.processingStatus, args.fromStatuses as ReviewProcessingStatus[]),
+        ...(stalePredicate !== undefined ? [stalePredicate] : []),
       ),
     )
     .returning({ reviewId: reviews.reviewId });
@@ -211,16 +232,27 @@ export async function loadReviewQueueRow(reviewId: string): Promise<ReviewQueueR
 // Rows missing installation_id/owner/repo (M3-1 smoke rows) are excluded —
 // the worker has no way to act on them. Rows already terminal ('done' or
 // 'failed') are excluded by construction.
+// `kind` discriminates the two lifecycle intents that select rows for
+// the worker: `due_retry` is a pending or pending_retry row below the
+// attempts cap (worker re-runs the pipeline); `stuck_recovery` is an
+// in_progress row whose claim has aged past stuckBefore (worker retries
+// if below cap, terminalizes if at cap). Returning the intent up to the
+// cron layer keeps the two paths legible even though both end up
+// dispatched through runReviewWorker.
+export type RetryCandidateKind = "due_retry" | "stuck_recovery";
+
 export type RetryCandidate = {
   reviewId: string;
   processingStatus: string;
   processingAttempts: number;
+  kind: RetryCandidateKind;
 };
 
 export async function loadReviewsReadyForRetry(args: {
   now: Date;
   stuckBefore: Date;
   limit: number;
+  maxAttempts: number;
 }): Promise<RetryCandidate[]> {
   const rows = await db
     .select({
@@ -236,8 +268,24 @@ export async function loadReviewsReadyForRetry(args: {
         isNotNull(reviews.owner),
         isNotNull(reviews.repo),
         or(
-          eq(reviews.processingStatus, "pending"),
-          and(eq(reviews.processingStatus, "pending_retry"), lte(reviews.nextRetryAt, args.now)),
+          // Below the attempts cap: eligible for normal retry. Without
+          // this bound, a function killed at maxDuration would re-claim
+          // forever; with it, only fresh attempts proceed past the cron.
+          and(
+            lt(reviews.processingAttempts, args.maxAttempts),
+            or(
+              eq(reviews.processingStatus, "pending"),
+              and(
+                eq(reviews.processingStatus, "pending_retry"),
+                lte(reviews.nextRetryAt, args.now),
+              ),
+            ),
+          ),
+          // Stuck in_progress at any attempts count: the worker pre-claim
+          // path either retries (if below cap) or terminalizes (if at
+          // cap). Without this branch, a row killed mid-attempt at the
+          // cap stays in_progress forever, blocking public-API pollers
+          // from ever seeing a terminal state.
           and(
             eq(reviews.processingStatus, "in_progress"),
             lt(reviews.processingStartedAt, args.stuckBefore),
@@ -247,7 +295,10 @@ export async function loadReviewsReadyForRetry(args: {
     )
     .orderBy(reviews.createdAt)
     .limit(args.limit);
-  return rows;
+  return rows.map((r) => ({
+    ...r,
+    kind: r.processingStatus === "in_progress" ? "stuck_recovery" : "due_retry",
+  }));
 }
 
 export async function markReviewSucceeded(args: { reviewId: string; now: Date }): Promise<void> {
@@ -291,6 +342,42 @@ export async function markReviewTerminallyFailed(args: {
       processingError: args.error,
     })
     .where(eq(reviews.reviewId, args.reviewId));
+}
+
+// Atomic terminalize for the attempts-exhausted path. Only marks the row
+// failed when it is still genuinely stuck (in_progress + processingStartedAt
+// older than stuckBefore + no posted comment + attempts at cap). Returns
+// true iff the UPDATE matched. The stuck predicate closes the race where
+// overlapping cron ticks observe the same candidate from the loader but
+// one of them claims it before the other gets to terminalize: the fresh
+// claim resets processingStartedAt, so this UPDATE no longer matches and
+// the slower worker correctly backs off.
+export async function markReviewExhaustedIfStale(args: {
+  reviewId: string;
+  maxAttempts: number;
+  stuckBefore: Date;
+  now: Date;
+  error: string;
+}): Promise<boolean> {
+  const result = await db
+    .update(reviews)
+    .set({
+      processingStatus: "failed",
+      processingFinishedAt: args.now,
+      nextRetryAt: null,
+      processingError: args.error,
+    })
+    .where(
+      and(
+        eq(reviews.reviewId, args.reviewId),
+        eq(reviews.processingStatus, "in_progress"),
+        gte(reviews.processingAttempts, args.maxAttempts),
+        lt(reviews.processingStartedAt, args.stuckBefore),
+        isNull(reviews.prCommentId),
+      ),
+    )
+    .returning({ reviewId: reviews.reviewId });
+  return result.length > 0;
 }
 
 // Observability for /api/activity — current queue depth + recent failures.
@@ -345,9 +432,23 @@ export async function updateReview(reviewId: string, input: UpdateReviewInput): 
 // the right reviewId + findingIndex + denormalized title/severity is enough
 // for the reconciliation loop to find work later.
 
-/** Stable id format: `<first-8-of-reviewId>-<findingIndex>`. */
+/**
+ * Stable id format: `<reviewId>-<findingIndex>`.
+ *
+ * Round-5 audit caught that the previous 8-character-prefix shape (~32
+ * bits of entropy from a UUIDv4) admits birthday collisions at ~65k
+ * reviews. recordFindingStatuses uses onConflictDoUpdate on this column,
+ * so a collision would silently overwrite the FIRST review's lifecycle
+ * row when the SECOND review's worker upserts. Embed the full reviewId
+ * to make the unique key collision-proof.
+ *
+ * Existing rows (written under the old format) stay valid as text; new
+ * rows are forward-only in the longer form. Downstream consumers parse
+ * trailing `-<digits>` for the index (e.g. cleanup scripts) so both
+ * shapes split correctly.
+ */
 export function makeFindingId(reviewId: string, findingIndex: number): string {
-  return `${shortenReviewId(reviewId)}-${findingIndex}`;
+  return `${reviewId}-${findingIndex}`;
 }
 
 export async function setReviewComment(args: {
@@ -372,7 +473,6 @@ export async function recordFindingStatuses(
   reviewId: string,
   agreed: FindingLifecycleInput[],
 ): Promise<string[]> {
-  if (agreed.length === 0) return [];
   const rows = agreed.map((f, index) => ({
     reviewId,
     findingIndex: index,
@@ -382,10 +482,82 @@ export async function recordFindingStatuses(
     label: f.label ?? "blocking",
     category: f.category,
   }));
-  const inserted = await db.insert(findingStatus).values(rows).returning({
-    findingId: findingStatus.findingId,
+  // Reconcile carefully on retry. Three constraints:
+  //   1. Idempotent for identical replays — same input must yield the
+  //      same returned findingIds.
+  //   2. Honour a changed retried bundle — if the second LLM attempt
+  //      produced different titles at the same (reviewId, index), the
+  //      PR comment now shows the new text, so the DB must too.
+  //   3. NEVER erase lifecycle state another worker already mutated.
+  //      The sweeper writes closure_sha / closure_comment_id; the patch
+  //      lane writes patch_review_comment_id / patch_accepted_sha. A
+  //      blunt delete-then-insert (round-2 shape) would lose those if
+  //      the worker re-entered recordFindingStatuses after the sweeper
+  //      had acted (e.g. postPRComment succeeded but setReviewComment
+  //      failed, the row stayed in_progress, and a retry re-ran the
+  //      pre-comment write).
+  return await db.transaction(async (tx) => {
+    // Preselect every existing row for this reviewId so we can REUSE
+    // each row's existing finding_id text in the insert. This:
+    //   - Lets the upsert target finding_id (already UNIQUE pre-0038)
+    //     without depending on the natural-key migration being applied
+    //     before this code ships.
+    //   - Keeps legacy short-format finding_ids stable across a retry
+    //     so downstream tables that FK by finding_id text
+    //     (maintainer_reactions, patch decisions, patch review comment)
+    //     continue to match.
+    const existing = await tx
+      .select({
+        findingIndex: findingStatus.findingIndex,
+        findingId: findingStatus.findingId,
+        status: findingStatus.status,
+      })
+      .from(findingStatus)
+      .where(eq(findingStatus.reviewId, reviewId));
+    const existingByIndex = new Map(existing.map((r) => [r.findingIndex, r]));
+    const reconciledRows = rows.map((r) => ({
+      ...r,
+      findingId: existingByIndex.get(r.findingIndex)?.findingId ?? r.findingId,
+    }));
+    if (reconciledRows.length > 0) {
+      // Only update identity (title/severity/label/category) when the
+      // existing row is still untouched. A row that has lifecycle
+      // history (closure, patch artefacts, retraction) keeps its
+      // current identity so a retry can't attach old closure metadata
+      // to a different LLM finding at the same index. The preserve
+      // predicate is the same one used by reconcilableTrailingRows so
+      // the two paths agree on what "untouched" means.
+      await tx
+        .insert(findingStatus)
+        .values(reconciledRows)
+        .onConflictDoUpdate({
+          target: findingStatus.findingId,
+          set: {
+            title: sql`excluded.title`,
+            severity: sql`excluded.severity`,
+            label: sql`excluded.label`,
+            category: sql`excluded.category`,
+          },
+          where: and(
+            eq(findingStatus.status, "open"),
+            ...LIFECYCLE_PRESERVE_COLUMNS.map((c) => isNull(c)),
+          ),
+        });
+    }
+    // Delete trailing rows beyond the new length, but only when they
+    // are still "untouched". The preserve predicate is owned by
+    // ./finding-lifecycle so the LIFECYCLE_PRESERVE_COLUMNS list stays
+    // beside the schema and is a single audit point when a new
+    // lifecycle column is added.
+    await tx.delete(findingStatus).where(reconcilableTrailingRows(reviewId, rows.length));
+    if (rows.length === 0) return [];
+    const out = await tx
+      .select({ findingId: findingStatus.findingId })
+      .from(findingStatus)
+      .where(and(eq(findingStatus.reviewId, reviewId), lt(findingStatus.findingIndex, rows.length)))
+      .orderBy(findingStatus.findingIndex);
+    return out.map((r) => r.findingId);
   });
-  return inserted.map((r) => r.findingId);
 }
 
 // Patch Agent v1.5 — persist the per-finding patch decision into
@@ -916,7 +1088,20 @@ export async function loadSweepWork(): Promise<SweepReviewBatch[]> {
     })
     .from(findingStatus)
     .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(eq(findingStatus.status, "open"));
+    .where(
+      and(
+        eq(findingStatus.status, "open"),
+        // Only sweep findings whose parent review has actually posted its
+        // PR comment. Without this gate, the sweeper races the worker: a
+        // worker that wrote finding_status before postPRComment then died
+        // (setReviewComment never persisted prCommentId) would leave
+        // findings the sweeper can pick up and close — even though the
+        // worker is about to retry and overwrite the identity. Closing
+        // a stale-identity finding then attaches closure metadata to a
+        // different LLM finding when the retry lands.
+        isNotNull(reviews.prCommentId),
+      ),
+    );
 
   const byReview = new Map<string, SweepReviewBatch>();
   for (const r of rows) {

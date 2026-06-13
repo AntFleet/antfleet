@@ -25,4 +25,11 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test
       - run: pnpm --dir apps/web test
+      - run: pnpm --dir apps/web test:integration
+      - run: pnpm --dir apps/web typecheck
+      # `pnpm --dir apps/web exec next build` is intentionally NOT a gate
+      # yet: the /disagreements/opengraph-image route prerenders via Satori
+      # and fails on a pre-existing flex-display issue (reproduces on main).
+      # Reintroduce this step once that route is fixed; until then,
+      # typecheck above is the deployability proxy.
       - run: pnpm --dir apps/web exec tsx scripts/x402-live-smoke.ts --mode verify --skip-on-missing-creds

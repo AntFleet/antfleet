@@ -8,37 +8,26 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
+import { assertSafeToApply } from "../db/migrations/safety";
 
 const selfPath = fileURLToPath(import.meta.url);
 const selfDir = dirname(selfPath);
 
 dotenv.config({ path: join(selfDir, "../.env.local") });
 
-const url = process.env["DATABASE_URL"];
-if (!url) {
-  console.error("DATABASE_URL not set");
-  process.exit(1);
-}
-
-const host = url.replace(/^postgresql:\/\/[^@]+@([^/?]+).*/, "$1");
-console.log("Target host:", host);
-
 const sqlFile = readFileSync(
   join(selfDir, "../db/migrations/0025_scorecard_snapshots.sql"),
   "utf-8",
 );
 
-const dryRun = !process.argv.includes("--apply");
-
-if (dryRun) {
-  console.log("\n--- DRY RUN (pass --apply to execute) ---\n");
-  console.log(sqlFile);
-  process.exit(0);
-}
-
-const sql = neon(url);
-
 async function main() {
+  const { url, apply } = await assertSafeToApply();
+  if (!apply) {
+    console.log("\n--- DRY RUN (pass --apply to execute) ---\n");
+    console.log(sqlFile);
+    return;
+  }
+  const sql = neon(url);
   console.log("Applying migration 0025_scorecard_snapshots...");
   const statements = sqlFile
     .split(";")

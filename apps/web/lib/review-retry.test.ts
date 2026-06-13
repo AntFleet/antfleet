@@ -44,7 +44,7 @@ describe("runReviewRetryTick", () => {
     expect(deps.runReviewWorker).not.toHaveBeenCalled();
   });
 
-  it("uses 5-minute stuck-after window when loading candidates", async () => {
+  it("uses 5-minute stuck-after window + maxAttempts when loading candidates", async () => {
     const loadFn = vi.fn().mockResolvedValue([]);
     const deps = mkDeps({ loadReviewsReadyForRetry: loadFn });
     await runReviewRetryTick(deps);
@@ -52,6 +52,7 @@ describe("runReviewRetryTick", () => {
     expect(args.now).toEqual(NOW);
     expect(args.stuckBefore.getTime()).toBe(NOW.getTime() - 5 * 60 * 1000);
     expect(args.limit).toBe(10);
+    expect(args.maxAttempts).toBe(6); // MAX_PROCESSING_ATTEMPTS — 6 backoff steps
   });
 
   it("counts outcomes by kind", async () => {

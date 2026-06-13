@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
-// Apply migration 0035 (Patch Agent patch skip reason per side) to the DB.
-// Usage: pnpm exec tsx db/migrations/apply-migration-0035.ts [--apply]
+// Apply migration 0038 (UNIQUE(review_id, finding_index)) to the DB.
+// Usage: pnpm exec tsx db/migrations/apply-migration-0038.ts [--apply]
 // Without --apply, prints the SQL and exits (dry run).
 
 import { readFileSync } from "node:fs";
@@ -17,7 +17,7 @@ const selfDir = dirname(selfPath);
 
 dotenv.config({ path: join(selfDir, "../../.env.local") });
 
-const sqlFile = readFileSync(join(selfDir, "0035_patch_skip_reason_per_side.sql"), "utf-8");
+const sqlFile = readFileSync(join(selfDir, "0038_finding_status_natural_key.sql"), "utf-8");
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
@@ -25,7 +25,7 @@ type MigrationSql = {
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
 };
 
-export function migration0035Statements(sqlText = sqlFile): string[] {
+export function migration0038Statements(sqlText = sqlFile): string[] {
   const uncommented = sqlText
     .split("\n")
     .filter((line) => !line.trimStart().startsWith("--"))
@@ -33,18 +33,8 @@ export function migration0035Statements(sqlText = sqlFile): string[] {
 
   const statements: string[] = [];
   let current = "";
-  let inDollarQuote = false;
-
-  for (let i = 0; i < uncommented.length; i += 1) {
-    if (uncommented.startsWith("$$", i)) {
-      inDollarQuote = !inDollarQuote;
-      current += "$$";
-      i += 1;
-      continue;
-    }
-
-    const char = uncommented.charAt(i);
-    if (char === ";" && !inDollarQuote) {
+  for (const char of uncommented) {
+    if (char === ";") {
       const statement = current.trim();
       if (statement.length > 0) statements.push(statement);
       current = "";
@@ -52,28 +42,26 @@ export function migration0035Statements(sqlText = sqlFile): string[] {
     }
     current += char;
   }
-
   const statement = current.trim();
   if (statement.length > 0) statements.push(statement);
   return statements;
 }
 
-export async function applyMigration0035(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
-  for (const stmt of migration0035Statements(sqlText)) {
+export async function applyMigration0038(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
+  for (const stmt of migration0038Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
     await sql(stmt);
   }
 }
 
-export async function verifyMigration0035(sql: MigrationSql): Promise<{ columns: string[] }> {
-  const columns = await sql`
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_name = 'finding_status'
-      AND column_name IN ('patch_skip_reason_opus', 'patch_skip_reason_gpt5')
-    ORDER BY column_name
+export async function verifyMigration0038(sql: MigrationSql): Promise<{ indexes: string[] }> {
+  const indexes = await sql`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = 'finding_status_review_index_uniq'
   `;
-  return { columns: columns.map((r) => String(r["column_name"])) };
+  return { indexes: indexes.map((r) => String(r["indexname"])) };
 }
 
 async function main() {
@@ -85,15 +73,15 @@ async function main() {
   }
 
   const sql = neon(url) as MigrationSql;
-  console.log("Applying migration 0035_patch_skip_reason_per_side...");
-  await applyMigration0035(sql);
-  const verification = await verifyMigration0035(sql);
+  console.log("Applying migration 0038_finding_status_natural_key...");
+  await applyMigration0038(sql);
+  const verification = await verifyMigration0038(sql);
 
-  console.log("Columns present:", verification.columns.join(", "));
-  if (verification.columns.length !== 2) {
-    throw new Error("Migration 0035 post-apply verification failed");
+  console.log("Indexes present:", verification.indexes.join(", "));
+  if (verification.indexes.length !== 1) {
+    throw new Error("Migration 0038 post-apply verification failed");
   }
-  console.log("Migration 0035 applied successfully.");
+  console.log("Migration 0038 applied successfully.");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

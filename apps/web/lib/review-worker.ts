@@ -30,6 +30,7 @@ import {
   claimReviewForProcessing as realClaimReviewForProcessing,
   loadReviewQueueRow as realLoadReviewQueueRow,
   makeFindingId,
+  markReviewExhaustedIfStale as realMarkReviewExhaustedIfStale,
   markReviewFailedForRetry as realMarkReviewFailedForRetry,
   markReviewSucceeded as realMarkReviewSucceeded,
   markReviewTerminallyFailed as realMarkReviewTerminallyFailed,
@@ -43,20 +44,10 @@ import {
   type ReviewQueueRow,
 } from "@/db/queries";
 
-// Backoff sequence. Indexed by the attempts counter AFTER the failure
-// (so a 1st-attempt failure picks index 0 → 60s, 2nd → 120s, …). 6 is
-// the terminal threshold: after the 6th failure we mark the row failed
-// rather than schedule another retry. Total wall-clock from first
-// failure to terminal ≈ 60+120+240+480+960+1800 ≈ 62 minutes.
-const BACKOFF_SECONDS = [60, 120, 240, 480, 960, 1800] as const;
-export const MAX_PROCESSING_ATTEMPTS = BACKOFF_SECONDS.length;
-
-// A row that has been claimed and stuck in in_progress for longer than
-// this is considered abandoned — the cron re-claims it. Picked to be
-// well above a normal review's runtime (Pro plan maxDuration is 300s);
-// 5 minutes gives the worker headroom to finish the slowest observed
-// PRs without the cron stomping on a still-running attempt.
-export const STUCK_AFTER_MS = 5 * 60 * 1000;
+import { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS } from "./review-worker-config";
+// Re-exported so existing call sites (./review-retry.ts, tests) keep working
+// without an import path churn.
+export { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS };
 
 export type WorkerOutcome =
   | { kind: "done"; reviewId: string; agreedCount: number; degraded: boolean }
@@ -92,6 +83,7 @@ export type WorkerDeps = {
   markReviewSucceeded: typeof realMarkReviewSucceeded;
   markReviewFailedForRetry: typeof realMarkReviewFailedForRetry;
   markReviewTerminallyFailed: typeof realMarkReviewTerminallyFailed;
+  markReviewExhaustedIfStale: typeof realMarkReviewExhaustedIfStale;
   loadReviewSettlement: (reviewId: string) => Promise<ReviewSettlement | null>;
   now: () => Date;
 };
@@ -118,6 +110,7 @@ export function realWorkerDeps(): WorkerDeps {
     markReviewSucceeded: realMarkReviewSucceeded,
     markReviewFailedForRetry: realMarkReviewFailedForRetry,
     markReviewTerminallyFailed: realMarkReviewTerminallyFailed,
+    markReviewExhaustedIfStale: realMarkReviewExhaustedIfStale,
     loadReviewSettlement: (reviewId) => realLoadReviewSettlement(db, reviewId),
     now: () => new Date(),
   };
@@ -149,6 +142,39 @@ export async function runReviewWorker(
     await deps.markReviewSucceeded({ reviewId, now: deps.now() });
     return { kind: "skipped", reviewId, reason: "comment_already_posted" };
   }
+  // Attempts cap pre-claim. A worker killed at maxDuration leaves the row
+  // in_progress without reaching its catch; the next cron tick re-claims
+  // and bumps attempts. Once attempts has hit the cap, terminalize before
+  // running the pipeline again — otherwise public-API pollers see this row
+  // in_progress forever even though it is dead.
+  //
+  // markReviewExhaustedIfStale is an atomic UPDATE gated on the same stuck
+  // predicate the loader uses (in_progress + processingStartedAt older than
+  // stuckBefore). If a competing worker claimed the row between the loader
+  // tick and this check, its claim refreshed processingStartedAt and the
+  // UPDATE matches nothing — we skip rather than racing the live claim.
+  if (row.processingAttempts >= MAX_PROCESSING_ATTEMPTS) {
+    const now = deps.now();
+    const stuckBefore = new Date(now.getTime() - STUCK_AFTER_MS);
+    const error = `processing attempts exhausted (>=${MAX_PROCESSING_ATTEMPTS})`;
+    const terminalized = await deps.markReviewExhaustedIfStale({
+      reviewId,
+      maxAttempts: MAX_PROCESSING_ATTEMPTS,
+      stuckBefore,
+      now,
+      error,
+    });
+    if (terminalized) {
+      logError("worker.attempts_exhausted", {
+        reviewId,
+        source,
+        attempts: row.processingAttempts,
+      });
+      return { kind: "failed", reviewId, attempts: row.processingAttempts, error };
+    }
+    // Another worker freshly claimed it before us; back off.
+    return { kind: "skipped", reviewId, reason: "exhausted_but_freshly_claimed" };
+  }
   const { installationId, owner, repo } = row;
   if (installationId === null || owner === null || repo === null) {
     logError("worker.missing_dispatch_context", { reviewId, source });
@@ -167,10 +193,17 @@ export async function runReviewWorker(
   const dispatchRow = { ...row, installationId, owner, repo };
 
   const fromStatuses = allowedClaimSources(source);
+  const claimNow = deps.now();
+  // stuckBefore gates the in_progress claim path against a competing
+  // cron tick that already refreshed processingStartedAt. For
+  // webhook/api sources the in_progress branch isn't legal, but we still
+  // pass it to keep the claim API call-shape uniform.
+  const stuckBefore = new Date(claimNow.getTime() - STUCK_AFTER_MS);
   const claimed = await deps.claimReviewForProcessing({
     reviewId,
     fromStatuses,
-    now: deps.now(),
+    now: claimNow,
+    stuckBefore,
   });
   if (!claimed) {
     // Another worker beat us. This is the expected race outcome when the
@@ -457,6 +490,20 @@ async function processClaimedRow(
   // finding_status rows exist (recordPatchDecisions is an UPDATE). A
   // throw here is logged but never blocks comment success; the
   // suggestion block is already on the PR even if the DB write fails.
+  //
+  // patch-agent generates its own finding_id strings via makeFindingId
+  // (always the round-5+ long form). recordFindingStatuses, on retry of
+  // a pre-deploy review, intentionally preserves the existing short
+  // finding_id text. Translate the patch-decision's finding_id through
+  // findingIds[index] so the WHERE finding_id = X clause in
+  // recordPatchDecisions / recordPatchProposedEvent / etc. matches the
+  // actual finding_status row even when its id is legacy short form.
+  const canonicalFindingId = (decisionFindingId: string): string => {
+    const m = /-(\d+)$/.exec(decisionFindingId);
+    if (m === null) return decisionFindingId;
+    const index = Number(m[1]);
+    return findingIds[index] ?? decisionFindingId;
+  };
   if (patchOutcome !== null && patchOutcome.decisions.length > 0) {
     try {
       await deps.recordPatchDecisions(
@@ -466,7 +513,7 @@ async function processClaimedRow(
           // that omit the field. A missing split → all-null token columns.
           const split = patchOutcome.tokensByFindingId?.get(d.findingId);
           return {
-            findingId: d.findingId,
+            findingId: canonicalFindingId(d.findingId),
             suggestedPatch: d.patch,
             patchModelId: d.modelId,
             patchSkipReason: d.gateOutcome,
@@ -521,7 +568,9 @@ async function processClaimedRow(
           // useful via GitHub's start_line review comments).
           const isSingleLine = ev.endLine === null || ev.endLine === ev.startLine;
           if (!isSingleLine) continue;
-          const findingId = makeFindingId(reviewId, findingIndex);
+          // Canonical id from recordFindingStatuses (preserves legacy
+          // short-form text on retry of a pre-deploy review).
+          const findingId = findingIds[findingIndex] ?? makeFindingId(reviewId, findingIndex);
           try {
             const reviewCommentPost = await deps.postPatchReviewComment({
               installationId: row.installationId,
@@ -568,13 +617,14 @@ async function processClaimedRow(
       // for that finding (else null, matching pre-v1.6 shape).
       for (const d of patchOutcome.decisions) {
         if (d.patch === null || d.modelId === null) continue;
-        const linkedComment = reviewCommentByFindingId.get(d.findingId);
+        const canonicalId = canonicalFindingId(d.findingId);
+        const linkedComment = reviewCommentByFindingId.get(canonicalId);
         await deps.recordPatchProposedEvent({
           installationId: row.installationId,
           owner: row.owner,
           repo: row.repo,
           reviewId,
-          findingId: d.findingId,
+          findingId: canonicalId,
           modelId: d.modelId,
           suggestedPatch: d.patch,
           reviewCommentId: linkedComment?.id ?? null,

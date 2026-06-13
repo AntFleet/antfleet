@@ -10,6 +10,7 @@
     "start": "next start",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "x402:smoke": "tsx scripts/x402-live-smoke.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
@@ -30,6 +31,7 @@
     "next": "^16.2.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "undici": "^8.4.1",
     "viem": "^2.51.3",
     "zod": "^4.4.3"
   },

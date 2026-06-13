@@ -8,6 +8,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
+import { assertSafeToApply, databaseHostForLog } from "./safety";
+
+export { databaseHostForLog };
 
 const selfPath = fileURLToPath(import.meta.url);
 const selfDir = dirname(selfPath);
@@ -15,8 +18,6 @@ const selfDir = dirname(selfPath);
 dotenv.config({ path: join(selfDir, "../../.env.local") });
 
 const sqlFile = readFileSync(join(selfDir, "0034_finding_status_label.sql"), "utf-8");
-
-const PROD_PATTERNS = ["neon-fulvous-zebra", "solitary-dew-96858656"];
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
@@ -52,34 +53,11 @@ export async function verifyMigration0034(sql: MigrationSql): Promise<{ columns:
   return { columns: columns.map((r) => String(r["column_name"])) };
 }
 
-export function databaseHostForLog(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return "(unparseable DATABASE_URL)";
-  }
-}
-
 async function main() {
-  const dryRun = !process.argv.includes("--apply");
-  if (dryRun) {
+  const { url, apply } = await assertSafeToApply();
+  if (!apply) {
     console.log("\n--- DRY RUN (pass --apply to execute) ---\n");
     console.log(sqlFile);
-    return;
-  }
-
-  const url = process.env["DATABASE_URL"];
-  if (!url) {
-    console.error("DATABASE_URL not set");
-    process.exitCode = 1;
-    return;
-  }
-
-  const host = databaseHostForLog(url);
-  console.log("Target host:", host);
-  if (PROD_PATTERNS.some((p) => host.includes(p))) {
-    console.error("REFUSING to run against prod-looking host:", host);
-    process.exitCode = 1;
     return;
   }
 

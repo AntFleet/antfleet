@@ -109,6 +109,7 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     markReviewSucceeded: vi.fn().mockResolvedValue(undefined),
     markReviewFailedForRetry: vi.fn().mockResolvedValue(undefined),
     markReviewTerminallyFailed: vi.fn().mockResolvedValue(undefined),
+    markReviewExhaustedIfStale: vi.fn().mockResolvedValue(true),
     loadReviewSettlement: vi.fn().mockResolvedValue(null),
     now: () => NOW,
     ...overrides,
@@ -124,6 +125,7 @@ describe("runReviewWorker", () => {
       reviewId: "rev-1",
       fromStatuses: ["pending"],
       now: NOW,
+      stuckBefore: new Date(NOW.getTime() - 5 * 60 * 1000),
     });
     expect(deps.reviewPR).toHaveBeenCalledTimes(1);
     expect(deps.postPRComment).toHaveBeenCalledTimes(1);
@@ -163,6 +165,38 @@ describe("runReviewWorker", () => {
     expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
   });
 
+  it("retries a transient postPRComment failure and reaches done on the second attempt", async () => {
+    // Regression: recordFindingStatuses used to do a plain insert. On retry,
+    // the duplicate finding_id rows raised 23505 and the worker marked the
+    // review terminally failed. The query is now onConflictDoNothing + a
+    // follow-up select that returns the same ids on both first run and replay.
+    const findingIds = ["rev-1-0"];
+    const recordFindingStatuses = vi.fn().mockResolvedValue(findingIds);
+    const postPRComment = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 503 service unavailable"))
+      .mockResolvedValueOnce({ id: 9001, htmlUrl: "https://gh/c/9001" });
+    let processingAttempts = 0;
+    const loadReviewQueueRow = vi.fn(async () => mkRow({ processingAttempts }));
+    const deps = mkDeps({
+      loadReviewQueueRow,
+      recordFindingStatuses,
+      postPRComment,
+    });
+
+    const first = await runReviewWorker("rev-1", "webhook", deps);
+    expect(first.kind).toBe("retried");
+    expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
+    processingAttempts = 1;
+
+    const second = await runReviewWorker("rev-1", "cron", deps);
+    expect(second.kind).toBe("done");
+    expect(recordFindingStatuses).toHaveBeenCalledTimes(2);
+    expect(postPRComment).toHaveBeenCalledTimes(2);
+    expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+    expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+  });
+
   it("cron source may claim from pending, pending_retry, and in_progress", async () => {
     const deps = mkDeps({
       loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow({ processingStatus: "pending_retry" })),
@@ -172,6 +206,7 @@ describe("runReviewWorker", () => {
       reviewId: "rev-1",
       fromStatuses: ["pending", "pending_retry", "in_progress"],
       now: NOW,
+      stuckBefore: new Date(NOW.getTime() - 5 * 60 * 1000),
     });
   });
 
@@ -234,6 +269,50 @@ describe("runReviewWorker", () => {
     expect(args.nextRetryAt.getTime() - NOW.getTime()).toBe(60_000);
     expect(args.error).toContain("429");
     expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+  });
+
+  it("terminally fails a row already at MAX_PROCESSING_ATTEMPTS without claiming or running the pipeline", async () => {
+    // Regression: a worker killed at maxDuration leaves the row in_progress
+    // with attempts == MAX; the cron loader still returns it as stuck, but
+    // the worker would previously re-claim and re-run the pipeline. Now the
+    // attempts check fires at pre-claim and the row is terminalized.
+    const deps = mkDeps({
+      loadReviewQueueRow: vi
+        .fn()
+        .mockResolvedValue(
+          mkRow({ processingAttempts: MAX_PROCESSING_ATTEMPTS, processingStatus: "in_progress" }),
+        ),
+      markReviewExhaustedIfStale: vi.fn().mockResolvedValue(true),
+    });
+    const outcome = await runReviewWorker("rev-1", "cron", deps);
+    expect(outcome.kind).toBe("failed");
+    expect(deps.markReviewExhaustedIfStale).toHaveBeenCalledTimes(1);
+    expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+    expect(deps.claimReviewForProcessing).not.toHaveBeenCalled();
+    expect(deps.reviewPR).not.toHaveBeenCalled();
+  });
+
+  it("skips terminalize when another worker freshly claimed the cap-reached row", async () => {
+    // Regression: the round-2 audit caught a race where two overlapping
+    // cron ticks both loaded the same stale candidate; one claimed it,
+    // bumping attempts to MAX, and the other terminalized it mid-flight.
+    // markReviewExhaustedIfStale's atomic stuck predicate now returns
+    // false when the row was refreshed; the worker backs off.
+    const deps = mkDeps({
+      loadReviewQueueRow: vi
+        .fn()
+        .mockResolvedValue(
+          mkRow({ processingAttempts: MAX_PROCESSING_ATTEMPTS, processingStatus: "in_progress" }),
+        ),
+      markReviewExhaustedIfStale: vi.fn().mockResolvedValue(false),
+    });
+    const outcome = await runReviewWorker("rev-1", "cron", deps);
+    expect(outcome.kind).toBe("skipped");
+    if (outcome.kind === "skipped") {
+      expect(outcome.reason).toBe("exhausted_but_freshly_claimed");
+    }
+    expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+    expect(deps.claimReviewForProcessing).not.toHaveBeenCalled();
   });
 
   it("terminally fails after MAX_PROCESSING_ATTEMPTS even on transient errors", async () => {

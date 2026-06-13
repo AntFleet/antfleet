@@ -108,105 +108,123 @@ export const reviews = pgTable(
     // Index on the retry cron's hot path: scanning for non-terminal rows
     // whose nextRetryAt is due. Partial index keeps it tight.
     index("reviews_processing_lookup_idx").on(t.processingStatus, t.nextRetryAt),
+    // /receipts and /receipts.rss filter on public_receipt=true before
+    // joining finding_status. Migration 0037.
+    index("reviews_public_receipt_idx").on(t.publicReceipt),
   ],
 );
 
 // One row per agreed finding. Sweeper updates status when reconciliation
 // detects the file has changed; reaction polling stamps last_polled_at.
 // Per-finding granularity matches maintainer_reactions.finding_id below.
-export const findingStatus = pgTable("finding_status", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  reviewId: uuid("review_id")
-    .notNull()
-    .references(() => reviews.reviewId, { onDelete: "cascade" }),
-  // Position in reviews.agreement_decision.agreed[] at the moment of posting.
-  findingIndex: integer("finding_index").notNull(),
-  // Synthetic stable id: `${reviewIdShort}-${findingIndex}`. Used in closure
-  // comments ("closed <findingId> in <sha>") and in maintainer_reactions.
-  findingId: text("finding_id").notNull().unique(),
-  title: text("title").notNull(),
-  severity: text("severity").notNull(),
-  label: text("label").default("blocking"),
-  category: text("category").notNull(),
-  // open | closed | superseded
-  status: text("status").notNull().default("open"),
-  closureSha: text("closure_sha"),
-  closureCommentId: bigint("closure_comment_id", { mode: "number" }),
-  closureCommentUrl: text("closure_comment_url"),
-  closureDetectedAt: timestamp("closure_detected_at", { withTimezone: true }),
-  lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  // Patch Agent v1.5 — suggested-patch lifecycle. All fields nullable so the
-  // flag-off path produces byte-identical rows to pre-sprint behavior.
-  // suggestedPatch holds the unified-diff text that was rendered inside the
-  // ```suggestion block; capped at 20 lines pre-persist. patchModelId names
-  // the provider whose patch shipped (always Opus in v1 — patch-gate.ts
-  // hard-codes the deterministic winner). patchSkipReason explains why no
-  // patch shipped: one of models_disagreed | outside_diff_hunk |
-  // generation_error | disabled | size_cap. patchAcceptedAt + Sha land
-  // when the sweeper's patch-acceptance pass detects the suggestion in HEAD.
-  suggestedPatch: text("suggested_patch"),
-  patchProposedAt: timestamp("patch_proposed_at", { withTimezone: true }),
-  patchModelId: text("patch_model_id"),
-  patchAcceptedAt: timestamp("patch_accepted_at", { withTimezone: true }),
-  patchAcceptedSha: text("patch_accepted_sha"),
-  patchSkipReason: text("patch_skip_reason"),
-  // Patch Agent v1.6 — click-to-apply lane. patchReviewCommentId / Url
-  // track the PR review-comment artifact posted alongside the issue
-  // comment when PATCH_AGENT_CLICK_APPLY_ENABLED is on. Idempotency on
-  // review-worker retry is enforced via `WHERE patch_review_comment_id
-  // IS NULL`. patchApplyClickedAt is set by the sweeper's
-  // runPatchReviewCommentAcceptancePass when GitHub's "Commit suggestion"
-  // button fires (distinct from patchAcceptedAt, which also covers
-  // manual commits whose content happens to match the suggestion).
-  patchReviewCommentId: bigint("patch_review_comment_id", { mode: "number" }),
-  patchReviewCommentUrl: text("patch_review_comment_url"),
-  patchReviewProposedAt: timestamp("patch_review_proposed_at", { withTimezone: true }),
-  patchApplyClickedAt: timestamp("patch_apply_clicked_at", { withTimezone: true }),
-  // Eval Phase 0 — dual-candidate persistence. Per-provider patch candidates
-  // so eval-harness step 3 can ETL (category x severity x proposing_model x
-  // accepted). Original suggested_patch + patch_model_id columns preserved for
-  // backward compat; new writes populate BOTH old + new.
-  suggestedPatchOpus: text("suggested_patch_opus"),
-  suggestedPatchGpt5: text("suggested_patch_gpt5"),
-  patchShipped: text("patch_shipped"),
-  patchSelector: text("patch_selector"),
-  // Patch Agent cost instrumentation (migration 0029) — per-finding token
-  // spend for the two patch-proposal calls, split by provider. Captured from
-  // the SDK usage blocks and written by recordPatchDecisions alongside the
-  // patch candidates. Nullable: a finding whose providers made no billable
-  // call (precheck skip, generation error) leaves the relevant side NULL,
-  // which the reconciliation cron treats as "measure via heuristic". The
-  // aggregate USD cost lives on reviews.cost_patch_usd, not here.
-  inputTokensOpus: integer("input_tokens_opus"),
-  outputTokensOpus: integer("output_tokens_opus"),
-  inputTokensGpt5: integer("input_tokens_gpt5"),
-  outputTokensGpt5: integer("output_tokens_gpt5"),
-  // Patch Agent observability (migration 0031). Provider rationale is
-  // debug/operator data only; public comments continue to render patches,
-  // not decline explanations.
-  patchRationaleOpus: text("patch_rationale_opus"),
-  patchRationaleGpt5: text("patch_rationale_gpt5"),
-  // Patch Agent diagnostic surface (migration 0035). Per-side orchestrator
-  // skip reason, mirroring ProviderPatchProposal.skipReason. Lets operators
-  // distinguish a silent throw/timeout (generation_error) from a clean
-  // policy decline (model returned patch=null with a rationale) without
-  // cross-referencing token + rationale columns. The aggregate
-  // patch_skip_reason column above continues to record the gate-level
-  // outcome (models_disagreed etc.); these record the per-side raw reason.
-  patchSkipReasonOpus: text("patch_skip_reason_opus"),
-  patchSkipReasonGpt5: text("patch_skip_reason_gpt5"),
-  // Retraction surface (migration 0030). When the unanimous gate produces a
-  // false positive, the operator retracts the finding: the /anatomy page drops
-  // its JSON-LD + adds noindex and renders a retraction notice instead. All
-  // nullable — retractedAt IS NULL is the normal (non-retracted) state and
-  // renders exactly as before. retractionReason is shown on the notice when
-  // set; retractionEmail records the requestor (if a maintainer asked) for the
-  // audit trail and is never rendered publicly.
-  retractedAt: timestamp("retracted_at", { withTimezone: true }),
-  retractionReason: text("retraction_reason"),
-  retractionEmail: text("retraction_email"),
-});
+export const findingStatus = pgTable(
+  "finding_status",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => reviews.reviewId, { onDelete: "cascade" }),
+    // Position in reviews.agreement_decision.agreed[] at the moment of posting.
+    findingIndex: integer("finding_index").notNull(),
+    // Synthetic stable id: `${reviewIdShort}-${findingIndex}`. Used in closure
+    // comments ("closed <findingId> in <sha>") and in maintainer_reactions.
+    findingId: text("finding_id").notNull().unique(),
+    title: text("title").notNull(),
+    severity: text("severity").notNull(),
+    label: text("label").default("blocking"),
+    category: text("category").notNull(),
+    // open | closed | superseded
+    status: text("status").notNull().default("open"),
+    closureSha: text("closure_sha"),
+    closureCommentId: bigint("closure_comment_id", { mode: "number" }),
+    closureCommentUrl: text("closure_comment_url"),
+    closureDetectedAt: timestamp("closure_detected_at", { withTimezone: true }),
+    lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Patch Agent v1.5 — suggested-patch lifecycle. All fields nullable so the
+    // flag-off path produces byte-identical rows to pre-sprint behavior.
+    // suggestedPatch holds the unified-diff text that was rendered inside the
+    // ```suggestion block; capped at 20 lines pre-persist. patchModelId names
+    // the provider whose patch shipped (always Opus in v1 — patch-gate.ts
+    // hard-codes the deterministic winner). patchSkipReason explains why no
+    // patch shipped: one of models_disagreed | outside_diff_hunk |
+    // generation_error | disabled | size_cap. patchAcceptedAt + Sha land
+    // when the sweeper's patch-acceptance pass detects the suggestion in HEAD.
+    suggestedPatch: text("suggested_patch"),
+    patchProposedAt: timestamp("patch_proposed_at", { withTimezone: true }),
+    patchModelId: text("patch_model_id"),
+    patchAcceptedAt: timestamp("patch_accepted_at", { withTimezone: true }),
+    patchAcceptedSha: text("patch_accepted_sha"),
+    patchSkipReason: text("patch_skip_reason"),
+    // Patch Agent v1.6 — click-to-apply lane. patchReviewCommentId / Url
+    // track the PR review-comment artifact posted alongside the issue
+    // comment when PATCH_AGENT_CLICK_APPLY_ENABLED is on. Idempotency on
+    // review-worker retry is enforced via `WHERE patch_review_comment_id
+    // IS NULL`. patchApplyClickedAt is set by the sweeper's
+    // runPatchReviewCommentAcceptancePass when GitHub's "Commit suggestion"
+    // button fires (distinct from patchAcceptedAt, which also covers
+    // manual commits whose content happens to match the suggestion).
+    patchReviewCommentId: bigint("patch_review_comment_id", { mode: "number" }),
+    patchReviewCommentUrl: text("patch_review_comment_url"),
+    patchReviewProposedAt: timestamp("patch_review_proposed_at", { withTimezone: true }),
+    patchApplyClickedAt: timestamp("patch_apply_clicked_at", { withTimezone: true }),
+    // Eval Phase 0 — dual-candidate persistence. Per-provider patch candidates
+    // so eval-harness step 3 can ETL (category x severity x proposing_model x
+    // accepted). Original suggested_patch + patch_model_id columns preserved for
+    // backward compat; new writes populate BOTH old + new.
+    suggestedPatchOpus: text("suggested_patch_opus"),
+    suggestedPatchGpt5: text("suggested_patch_gpt5"),
+    patchShipped: text("patch_shipped"),
+    patchSelector: text("patch_selector"),
+    // Patch Agent cost instrumentation (migration 0029) — per-finding token
+    // spend for the two patch-proposal calls, split by provider. Captured from
+    // the SDK usage blocks and written by recordPatchDecisions alongside the
+    // patch candidates. Nullable: a finding whose providers made no billable
+    // call (precheck skip, generation error) leaves the relevant side NULL,
+    // which the reconciliation cron treats as "measure via heuristic". The
+    // aggregate USD cost lives on reviews.cost_patch_usd, not here.
+    inputTokensOpus: integer("input_tokens_opus"),
+    outputTokensOpus: integer("output_tokens_opus"),
+    inputTokensGpt5: integer("input_tokens_gpt5"),
+    outputTokensGpt5: integer("output_tokens_gpt5"),
+    // Patch Agent observability (migration 0031). Provider rationale is
+    // debug/operator data only; public comments continue to render patches,
+    // not decline explanations.
+    patchRationaleOpus: text("patch_rationale_opus"),
+    patchRationaleGpt5: text("patch_rationale_gpt5"),
+    // Patch Agent diagnostic surface (migration 0035). Per-side orchestrator
+    // skip reason, mirroring ProviderPatchProposal.skipReason. Lets operators
+    // distinguish a silent throw/timeout (generation_error) from a clean
+    // policy decline (model returned patch=null with a rationale) without
+    // cross-referencing token + rationale columns. The aggregate
+    // patch_skip_reason column above continues to record the gate-level
+    // outcome (models_disagreed etc.); these record the per-side raw reason.
+    patchSkipReasonOpus: text("patch_skip_reason_opus"),
+    patchSkipReasonGpt5: text("patch_skip_reason_gpt5"),
+    // Retraction surface (migration 0030). When the unanimous gate produces a
+    // false positive, the operator retracts the finding: the /anatomy page drops
+    // its JSON-LD + adds noindex and renders a retraction notice instead. All
+    // nullable — retractedAt IS NULL is the normal (non-retracted) state and
+    // renders exactly as before. retractionReason is shown on the notice when
+    // set; retractionEmail records the requestor (if a maintainer asked) for the
+    // audit trail and is never rendered publicly.
+    retractedAt: timestamp("retracted_at", { withTimezone: true }),
+    retractionReason: text("retraction_reason"),
+    retractionEmail: text("retraction_email"),
+  },
+  (t) => [
+    // /receipts page joins finding_status -> reviews filtering on
+    // status='closed' AND public_receipt=true. The review_id FK is the
+    // join key; status + closure_detected_at indexes the order-by used
+    // for closed-finding feeds. Migration 0037.
+    index("finding_status_review_id_idx").on(t.reviewId),
+    index("finding_status_status_closure_idx").on(t.status, t.closureDetectedAt),
+    // Natural-key uniqueness (migration 0038, optional hardening — the
+    // runtime path uses preselect-then-conflict-on-finding_id so it
+    // does NOT depend on this constraint being applied).
+    uniqueIndex("finding_status_review_index_uniq").on(t.reviewId, t.findingIndex),
+  ],
+);
 
 export const maintainerReactions = pgTable(
   "maintainer_reactions",
