@@ -140,4 +140,50 @@ describe("api v1 rate-limit proxy", () => {
 
     expect(res?.status).not.toBe(429);
   });
+
+  it("rate-limits POST /api/v1 requests from the same IP (not just GET)", () => {
+    let res: ReturnType<typeof proxy> | null = null;
+
+    for (let i = 0; i < 61; i += 1) {
+      res = proxy(
+        makeReq("/api/v1/review/x402", {
+          method: "POST",
+          headers: { "x-forwarded-for": "203.0.113.42" },
+        }),
+      );
+    }
+
+    expect(res?.status).toBe(429);
+    expect(res?.headers.get("Retry-After")).toMatch(/^[1-9]\d*$/);
+  });
+
+  it("counts GET and POST from the same IP against a shared bucket", () => {
+    // 59 GET requests — still under the limit
+    for (let i = 0; i < 59; i += 1) {
+      proxy(
+        makeReq("/api/v1/findings", {
+          method: "GET",
+          headers: { "x-forwarded-for": "203.0.113.55" },
+        }),
+      );
+    }
+
+    // 60th request is a POST — should be allowed (count hits exactly 60)
+    const allowed = proxy(
+      makeReq("/api/v1/review/x402", {
+        method: "POST",
+        headers: { "x-forwarded-for": "203.0.113.55" },
+      }),
+    );
+    expect(allowed.status).not.toBe(429);
+
+    // 61st request triggers the limit
+    const limited = proxy(
+      makeReq("/api/v1/findings", {
+        method: "GET",
+        headers: { "x-forwarded-for": "203.0.113.55" },
+      }),
+    );
+    expect(limited.status).toBe(429);
+  });
 });

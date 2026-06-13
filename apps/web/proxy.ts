@@ -53,8 +53,21 @@ export function proxy(req: NextRequest): NextResponse {
   return withSecurityHeaders(NextResponse.next());
 }
 
+// LIMITATION: checkRateLimit uses an in-memory Map that resets on every cold
+// start and is NOT shared across concurrent isolates/workers. In a multi-instance
+// deployment a determined caller can exceed the limit by spreading requests
+// across instances. For a durable, shared limit on the paid POST endpoints
+// (review, scan, bind, deposit) the x402 rail's DB-backed wallet limiter in
+// lib/x402/rate-limit.ts is the right primitive — it persists in Neon and is
+// visible to every instance. The in-memory limiter here is a best-effort
+// defence suitable for simple GET enumeration bursts in single-instance or
+// low-traffic deployments.
 function maybeRateLimitApiV1(req: NextRequest): NextResponse | null {
-  if (!req.nextUrl.pathname.startsWith("/api/v1/") || req.method !== "GET") {
+  // Skip rate-limiting only for OPTIONS preflight requests — CORS preflights
+  // must never be counted against the limit because they are browser-injected
+  // and do not carry credentials or trigger real work.
+  // All other methods (GET, POST, PUT, PATCH, DELETE) on /api/v1/* are counted.
+  if (!req.nextUrl.pathname.startsWith("/api/v1/") || req.method === "OPTIONS") {
     return null;
   }
 
