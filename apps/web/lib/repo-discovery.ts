@@ -251,9 +251,12 @@ async function fetchMetadataJson(url: string, hops = 0): Promise<unknown> {
   const dispatcher = new Agent({
     connect: {
       // Pin the resolved address into the dispatcher so undici does not
-      // re-resolve the hostname during socket creation.
+      // re-resolve the hostname during socket creation. undici 8.x calls
+      // lookup with `opts.all: true` and expects the addresses-array form
+      // of the callback (NOT dns.lookup's `cb(null, address, family)`
+      // shape — round-3 auditor probe caught this).
       lookup: (_hostname, _opts, cb) => {
-        cb(null, target.address, target.family);
+        cb(null, [{ address: target.address, family: target.family }]);
       },
     },
   });

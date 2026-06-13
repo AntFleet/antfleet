@@ -12,6 +12,7 @@ import {
 } from "@/db/queries";
 import { logError, logInfo, messageOf } from "./log";
 import {
+  MAX_PROCESSING_ATTEMPTS,
   realWorkerDeps,
   runReviewWorker as realRunReviewWorker,
   STUCK_AFTER_MS,
@@ -70,6 +71,7 @@ export async function runReviewRetryTick(
     now,
     stuckBefore,
     limit: RETRY_BATCH_LIMIT,
+    maxAttempts: MAX_PROCESSING_ATTEMPTS,
   });
 
   const result: RetryCronResult = {

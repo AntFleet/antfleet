@@ -187,7 +187,12 @@ describe("recordPatchDecisions", () => {
 describe("loadReviewsReadyForRetry", () => {
   it("filters out rows that have hit the attempts cap", async () => {
     dbMocks.selectWhereCalls.length = 0;
-    await loadReviewsReadyForRetry({ now: NOW, stuckBefore: NOW, limit: 10 });
+    await loadReviewsReadyForRetry({
+      now: NOW,
+      stuckBefore: NOW,
+      limit: 10,
+      maxAttempts: MAX_PROCESSING_ATTEMPTS,
+    });
     expect(dbMocks.selectWhereCalls).toHaveLength(1);
     // The composed `and(...)` predicate exposes its children via queryChunks.
     // We walk it for a chunk that references the processing_attempts column

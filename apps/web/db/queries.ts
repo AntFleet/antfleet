@@ -38,7 +38,6 @@ import {
   scorecardSnapshots,
 } from "./schema";
 import { writePostDraft } from "@/lib/post-drafts";
-import { MAX_PROCESSING_ATTEMPTS } from "@/lib/review-worker-config";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -232,6 +231,7 @@ export async function loadReviewsReadyForRetry(args: {
   now: Date;
   stuckBefore: Date;
   limit: number;
+  maxAttempts: number;
 }): Promise<RetryCandidate[]> {
   const rows = await db
     .select({
@@ -251,7 +251,7 @@ export async function loadReviewsReadyForRetry(args: {
           // this bound, a function killed at maxDuration would re-claim
           // forever; with it, only fresh attempts proceed past the cron.
           and(
-            lt(reviews.processingAttempts, MAX_PROCESSING_ATTEMPTS),
+            lt(reviews.processingAttempts, args.maxAttempts),
             or(
               eq(reviews.processingStatus, "pending"),
               and(
@@ -447,24 +447,61 @@ export async function recordFindingStatuses(
     label: f.label ?? "blocking",
     category: f.category,
   }));
-  // Reconcile rather than ignore-on-conflict. recordFindingStatuses runs
-  // strictly before postPRComment in the worker, so a retry after a
-  // transient comment failure may carry a different agreed set than the
-  // first attempt. onConflictDoNothing would silently drop a changed
-  // finding at the same (reviewId, index) and leave stale rows beyond
-  // the new length. Wrap the whole thing in a transaction: delete all
-  // existing rows for this reviewId, then insert the current set. The
-  // findingIds remain deterministic from (reviewId, index), so the
-  // common "identical retry" case still returns the same list.
+  // Reconcile carefully on retry. Three constraints:
+  //   1. Idempotent for identical replays — same input must yield the
+  //      same returned findingIds.
+  //   2. Honour a changed retried bundle — if the second LLM attempt
+  //      produced different titles at the same (reviewId, index), the
+  //      PR comment now shows the new text, so the DB must too.
+  //   3. NEVER erase lifecycle state another worker already mutated.
+  //      The sweeper writes closure_sha / closure_comment_id; the patch
+  //      lane writes patch_review_comment_id / patch_accepted_sha. A
+  //      blunt delete-then-insert (round-2 shape) would lose those if
+  //      the worker re-entered recordFindingStatuses after the sweeper
+  //      had acted (e.g. postPRComment succeeded but setReviewComment
+  //      failed, the row stayed in_progress, and a retry re-ran the
+  //      pre-comment write).
   return await db.transaction(async (tx) => {
-    await tx.delete(findingStatus).where(eq(findingStatus.reviewId, reviewId));
+    if (rows.length > 0) {
+      await tx
+        .insert(findingStatus)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: findingStatus.findingId,
+          set: {
+            title: sql`excluded.title`,
+            severity: sql`excluded.severity`,
+            label: sql`excluded.label`,
+            category: sql`excluded.category`,
+          },
+        });
+    }
+    // Delete trailing rows beyond the new length, but only when they
+    // are still "untouched" — open, no closure metadata, no patch
+    // lane artefacts, no retraction. A row outside this gate has real
+    // history and must be preserved even if it's no longer in the
+    // posted PR comment.
+    await tx
+      .delete(findingStatus)
+      .where(
+        and(
+          eq(findingStatus.reviewId, reviewId),
+          gte(findingStatus.findingIndex, rows.length),
+          eq(findingStatus.status, "open"),
+          isNull(findingStatus.closureSha),
+          isNull(findingStatus.closureCommentId),
+          isNull(findingStatus.patchReviewCommentId),
+          isNull(findingStatus.patchAcceptedSha),
+          isNull(findingStatus.retractedAt),
+        ),
+      );
     if (rows.length === 0) return [];
-    const inserted = await tx
-      .insert(findingStatus)
-      .values(rows)
-      .returning({ findingId: findingStatus.findingId, findingIndex: findingStatus.findingIndex });
-    inserted.sort((a, b) => a.findingIndex - b.findingIndex);
-    return inserted.map((r) => r.findingId);
+    const out = await tx
+      .select({ findingId: findingStatus.findingId })
+      .from(findingStatus)
+      .where(and(eq(findingStatus.reviewId, reviewId), lt(findingStatus.findingIndex, rows.length)))
+      .orderBy(findingStatus.findingIndex);
+    return out.map((r) => r.findingId);
   });
 }
 
