@@ -11,6 +11,7 @@ import {
   updateReview,
 } from "@/db/queries";
 import { getInstallationToken } from "@/lib/github-app";
+import { alertCritical } from "@/lib/alert";
 import { logError, logInfo, messageOf } from "@/lib/log";
 import {
   getReviewJob,
@@ -189,6 +190,17 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
       }
     } else {
       await markJobFailed(db, jobId, failureMode, publicMessage, new Date());
+    }
+
+    // Alert on terminal infrastructure failures only — not user-input errors
+    // (those are caller mistakes, not operator-actionable). settlement errors
+    // are always terminal, so outcomeFailureMode "internal" covers them.
+    if (outcomeFailureMode !== "user_input" && outcomeFailureMode !== "invalid_input") {
+      alertCritical("review_job.failed", {
+        jobId,
+        paymentRail: job.paymentRail ?? "unknown",
+        failureMode: outcomeFailureMode,
+      });
     }
 
     return {

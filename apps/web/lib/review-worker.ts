@@ -20,6 +20,7 @@ import {
 import { runPatchAgent as realRunPatchAgent } from "./patch-agent";
 import { isPatchAgentClickApplyEnabledForInstall as realIsPatchAgentClickApplyEnabledForInstall } from "./patch-agent-env";
 import { postPatchReviewComment as realPostPatchReviewComment } from "./patch-review-comment";
+import { alertCritical } from "./alert";
 import { logError, logInfo, messageOf } from "./log";
 import { db } from "@/db";
 import {
@@ -170,6 +171,13 @@ export async function runReviewWorker(
         source,
         attempts: row.processingAttempts,
       });
+      alertCritical("worker.failed", {
+        reviewId,
+        source,
+        attempts: row.processingAttempts,
+        reason: "attempts_exhausted",
+        error,
+      });
       return { kind: "failed", reviewId, attempts: row.processingAttempts, error };
     }
     // Another worker freshly claimed it before us; back off.
@@ -181,6 +189,12 @@ export async function runReviewWorker(
     await deps.markReviewTerminallyFailed({
       reviewId,
       now: deps.now(),
+      error: "missing installation/owner/repo on row",
+    });
+    alertCritical("worker.failed", {
+      reviewId,
+      source,
+      reason: "missing_dispatch_context",
       error: "missing installation/owner/repo on row",
     });
     return {
@@ -238,6 +252,13 @@ export async function runReviewWorker(
       await deps.markReviewTerminallyFailed({
         reviewId,
         now: deps.now(),
+        error: message,
+      });
+      alertCritical("worker.failed", {
+        reviewId,
+        source,
+        attempts: attemptsAfterClaim,
+        retryable,
         error: message,
       });
       return { kind: "failed", reviewId, attempts: attemptsAfterClaim, error: message };
