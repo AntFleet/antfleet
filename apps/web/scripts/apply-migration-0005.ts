@@ -22,6 +22,7 @@ loadDotenv({ path: ".env.local", quiet: true });
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { assertSafeToApply } from "../db/migrations/safety";
 
 const MIGRATIONS = [
   "0000_wet_butterfly",
@@ -39,6 +40,7 @@ type JournalEntry = { idx: number; tag: string; when: number };
 
 async function main() {
   const apply = process.argv.includes("--apply");
+  if (apply) await assertSafeToApply();
 
   // Drizzle hashes the SQL content (split by --> statement-breakpoint, then
   // concatenated) to identify a migration. We compute the same hash so the

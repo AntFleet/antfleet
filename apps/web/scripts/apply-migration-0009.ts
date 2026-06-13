@@ -22,6 +22,7 @@ loadDotenv({ path: ".env.local", quiet: true });
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { assertSafeToApply } from "../db/migrations/safety";
 
 const TAG = "0009_bright_radioactive_man";
 const JOURNAL_PATH = resolve("db/migrations/meta/_journal.json");
@@ -31,6 +32,7 @@ type JournalEntry = { idx: number; tag: string; when: number };
 
 async function main() {
   const apply = process.argv.includes("--apply");
+  if (apply) await assertSafeToApply();
 
   const journal = JSON.parse(readFileSync(JOURNAL_PATH, "utf-8")) as {
     entries: JournalEntry[];
