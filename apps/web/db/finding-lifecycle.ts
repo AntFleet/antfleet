@@ -1,43 +1,90 @@
-// Finding lifecycle state — which finding_status columns mark a row as
-// "already mutated by another worker" and therefore must be preserved
-// when recordFindingStatuses reconciles on retry.
+// Finding lifecycle state — every finding_status column needed for the
+// reconciliation guard lives here as one classified map. The
+// reconciliation path in queries.ts.recordFindingStatuses deletes
+// trailing rows beyond the new agreed-length only when the row is still
+// "untouched"; this module is the single source of truth for what
+// "untouched" means.
 //
-// The reconciliation path in queries.ts.recordFindingStatuses deletes
-// trailing rows beyond the new agreed-length when the row is still
-// "untouched". This module is the single source of truth for that
-// definition, kept beside the schema declarations so that adding a new
-// lifecycle column without updating the preserve predicate is a visible
-// audit point.
-//
-// When you add a new lifecycle column to finding_status (sweeper output,
-// patch lane state, retraction, etc.) decide:
+// When a new finding_status column is added to schema.ts:
 //   • If the column being set implies "this row has real history" →
-//     add it to LIFECYCLE_PRESERVE_COLUMNS so the reconciliation guard
-//     keeps the row.
+//     add it to the map below with reconciliation: "preserve" so the
+//     reconciliation guard keeps the row.
 //   • If the column is purely descriptive / identity-style (title,
-//     severity, category) it does NOT belong here.
-//
-// The helper itself is a structural record so that a future
-// schema-introspection test can verify every nullable lifecycle column
-// is classified.
+//     severity, label, category) → reconciliation: "identity".
+//   • If the column is metadata that does not affect reconciliation
+//     intent (created_at, last_polled_at, patch_proposed_at,
+//     suggested_patch payloads, token counts, rationales) →
+//     reconciliation: "metadata".
 
 import { and, eq, gte, isNull } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { findingStatus } from "./schema";
 
-// Each entry is a column whose non-null value signals the row should
-// survive reconciliation. The current write paths:
-//   closureSha            sweeper.ts (Mission 3)
-//   closureCommentId      sweeper.ts
-//   patchReviewCommentId  patch-review-comment.ts (Patch Agent v1.6)
-//   patchAcceptedSha      sweeper.ts patch-acceptance pass
-//   retractedAt           apps/web/app/api/admin/retract/[findingId]/route.ts
-export const LIFECYCLE_PRESERVE_COLUMNS = [
-  findingStatus.closureSha,
-  findingStatus.closureCommentId,
-  findingStatus.patchReviewCommentId,
-  findingStatus.patchAcceptedSha,
-  findingStatus.retractedAt,
-] as const;
+type ReconciliationRole = "identity" | "preserve" | "metadata";
+
+type LifecycleClassification = {
+  column: PgColumn;
+  reconciliation: ReconciliationRole;
+};
+
+// Authoritative classification keyed by drizzle column reference. Order
+// mirrors the schema declarations in apps/web/db/schema.ts so a future
+// reader can scan top-to-bottom against the table definition.
+export const FINDING_LIFECYCLE_CLASSIFICATION: ReadonlyArray<LifecycleClassification> = [
+  // Identity columns — overwritten on retry from the new agreed bundle.
+  { column: findingStatus.title, reconciliation: "identity" },
+  { column: findingStatus.severity, reconciliation: "identity" },
+  { column: findingStatus.label, reconciliation: "identity" },
+  { column: findingStatus.category, reconciliation: "identity" },
+  // Lifecycle status driver. Changing 'open' → 'closed' is what marks
+  // a row as preserve-worthy.
+  { column: findingStatus.status, reconciliation: "preserve" },
+  // Sweeper closure metadata.
+  { column: findingStatus.closureSha, reconciliation: "preserve" },
+  { column: findingStatus.closureCommentId, reconciliation: "preserve" },
+  { column: findingStatus.closureCommentUrl, reconciliation: "metadata" },
+  { column: findingStatus.closureDetectedAt, reconciliation: "metadata" },
+  { column: findingStatus.lastPolledAt, reconciliation: "metadata" },
+  // Patch Agent v1.5 — suggested patch payloads + per-side fields are
+  // descriptive metadata; the load-bearing preserve anchor is
+  // patchAcceptedSha (sweeper detected the patch landed) and
+  // patchReviewCommentId (v1.6 click-apply lane posted a review comment).
+  { column: findingStatus.suggestedPatch, reconciliation: "metadata" },
+  { column: findingStatus.patchProposedAt, reconciliation: "metadata" },
+  { column: findingStatus.patchModelId, reconciliation: "metadata" },
+  { column: findingStatus.patchAcceptedAt, reconciliation: "preserve" },
+  { column: findingStatus.patchAcceptedSha, reconciliation: "preserve" },
+  { column: findingStatus.patchSkipReason, reconciliation: "metadata" },
+  // Patch Agent v1.6.
+  { column: findingStatus.patchReviewCommentId, reconciliation: "preserve" },
+  { column: findingStatus.patchReviewCommentUrl, reconciliation: "metadata" },
+  { column: findingStatus.patchReviewProposedAt, reconciliation: "metadata" },
+  { column: findingStatus.patchApplyClickedAt, reconciliation: "preserve" },
+  // Eval Phase 0 dual-candidate persistence — recorded for analytics,
+  // not load-bearing for reconciliation.
+  { column: findingStatus.suggestedPatchOpus, reconciliation: "metadata" },
+  { column: findingStatus.suggestedPatchGpt5, reconciliation: "metadata" },
+  { column: findingStatus.patchShipped, reconciliation: "metadata" },
+  { column: findingStatus.patchSelector, reconciliation: "metadata" },
+  // Token instrumentation.
+  { column: findingStatus.inputTokensOpus, reconciliation: "metadata" },
+  { column: findingStatus.outputTokensOpus, reconciliation: "metadata" },
+  { column: findingStatus.inputTokensGpt5, reconciliation: "metadata" },
+  { column: findingStatus.outputTokensGpt5, reconciliation: "metadata" },
+  // Patch rationales / per-side skip reasons.
+  { column: findingStatus.patchRationaleOpus, reconciliation: "metadata" },
+  { column: findingStatus.patchRationaleGpt5, reconciliation: "metadata" },
+  { column: findingStatus.patchSkipReasonOpus, reconciliation: "metadata" },
+  { column: findingStatus.patchSkipReasonGpt5, reconciliation: "metadata" },
+  // Operator retraction surface.
+  { column: findingStatus.retractedAt, reconciliation: "preserve" },
+  { column: findingStatus.retractionReason, reconciliation: "metadata" },
+  { column: findingStatus.retractionEmail, reconciliation: "metadata" },
+];
+
+export const LIFECYCLE_PRESERVE_COLUMNS = FINDING_LIFECYCLE_CLASSIFICATION.filter(
+  (c) => c.reconciliation === "preserve" && c.column !== findingStatus.status,
+).map((c) => c.column);
 
 // Build the drizzle predicate the reconciliation transaction uses to
 // identify trailing rows safe to delete: same reviewId, beyond the new

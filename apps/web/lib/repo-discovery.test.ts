@@ -251,6 +251,22 @@ describe("isPublicHttpUrl (SSRF allowlist for tokenURI fetch)", () => {
     expect(await isPublicHttpUrl("http://[2001:0db8::1]/")).toBe(false);
   });
 
+  it("rejects 64:ff9b::/96 NAT64 (so it can't be used as an IPv4-mapping bypass)", async () => {
+    // Round-5 audit: 64:ff9b::a9fe:a9fe translates to 169.254.169.254
+    // in NAT64-capable environments.
+    expect(await isPublicHttpUrl("http://[64:ff9b::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[64:ff9b::a9fe:a9fe]/")).toBe(false);
+  });
+
+  it("rejects 100::/64 discard-only range", async () => {
+    expect(await isPublicHttpUrl("http://[100::1]/")).toBe(false);
+  });
+
+  it("rejects 2002::/16 deprecated 6to4 anycast", async () => {
+    expect(await isPublicHttpUrl("http://[2002::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[2002:c0a8:0101::1]/")).toBe(false);
+  });
+
   it("permits a global-unicast IPv6 literal", async () => {
     // 2001:4860:4860::8888 is one of Google's public DNS servers — a
     // canonical public IPv6.

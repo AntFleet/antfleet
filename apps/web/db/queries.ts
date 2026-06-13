@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { shortenReviewId } from "../lib/short-id";
 import {
   and,
   count,
@@ -412,9 +411,23 @@ export async function updateReview(reviewId: string, input: UpdateReviewInput): 
 // the right reviewId + findingIndex + denormalized title/severity is enough
 // for the reconciliation loop to find work later.
 
-/** Stable id format: `<first-8-of-reviewId>-<findingIndex>`. */
+/**
+ * Stable id format: `<reviewId>-<findingIndex>`.
+ *
+ * Round-5 audit caught that the previous 8-character-prefix shape (~32
+ * bits of entropy from a UUIDv4) admits birthday collisions at ~65k
+ * reviews. recordFindingStatuses uses onConflictDoUpdate on this column,
+ * so a collision would silently overwrite the FIRST review's lifecycle
+ * row when the SECOND review's worker upserts. Embed the full reviewId
+ * to make the unique key collision-proof.
+ *
+ * Existing rows (written under the old format) stay valid as text; new
+ * rows are forward-only in the longer form. Downstream consumers parse
+ * trailing `-<digits>` for the index (e.g. cleanup scripts) so both
+ * shapes split correctly.
+ */
 export function makeFindingId(reviewId: string, findingIndex: number): string {
-  return `${shortenReviewId(reviewId)}-${findingIndex}`;
+  return `${reviewId}-${findingIndex}`;
 }
 
 export async function setReviewComment(args: {

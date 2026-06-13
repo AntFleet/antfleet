@@ -38,6 +38,7 @@ import {
   isMissingPatchRationaleColumnError,
   isMissingPatchSkipReasonColumnError,
   loadReviewsReadyForRetry,
+  makeFindingId,
   normalizeActivityWindow,
   recordPatchDecisions,
   summarizeRoastFindings,
@@ -181,6 +182,19 @@ describe("recordPatchDecisions", () => {
         }),
       ]),
     );
+  });
+});
+
+describe("makeFindingId (round-5 collision resistance)", () => {
+  it("two reviewIds sharing the first 8 characters produce distinct findingIds", async () => {
+    // Round-5 audit caught: the old format `<shortenReviewId>-<index>`
+    // only had ~32 bits of entropy, so onConflictDoUpdate could silently
+    // overwrite a different review's lifecycle row. The new format
+    // embeds the full reviewId — UUIDs that collide on the first 8
+    // chars no longer collide on the finding_id.
+    const idA = makeFindingId("12345678-aaaa-4111-8000-000000000001", 0);
+    const idB = makeFindingId("12345678-bbbb-4222-8000-000000000002", 0);
+    expect(idA).not.toBe(idB);
   });
 });
 

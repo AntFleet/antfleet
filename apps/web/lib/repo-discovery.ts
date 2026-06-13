@@ -219,6 +219,18 @@ function isPublicIPv6(address: string): boolean {
   // 2001:db8::/32 documentation range.
   if (firstHex === 0x2001 && parseSecondIPv6Hextet(bare) === 0x0db8) return false;
 
+  // 64:ff9b::/96 NAT64 + 64:ff9b:1::/48 local NAT64 (RFC6052/RFC8215).
+  // In NAT64-capable environments an attacker can express any IPv4
+  // target — including 169.254.169.254 — as the lower bits of this
+  // prefix, e.g. 64:ff9b::a9fe:a9fe.
+  if (firstHex === 0x0064 && parseSecondIPv6Hextet(bare) === 0xff9b) return false;
+
+  // 100::/64 discard-only address block (RFC6666).
+  if (firstHex === 0x0100 && parseSecondIPv6Hextet(bare) === 0x0000) return false;
+
+  // 2002::/16 deprecated 6to4 anycast (RFC7526).
+  if (firstHex === 0x2002) return false;
+
   // IPv4-mapped IPv6: delegate to the v4 check. Node normalizes
   // bracketed IPv4-in-IPv6 hostnames (e.g. [::ffff:127.0.0.1]) to the
   // hex form (::ffff:7f00:1) inside URL.hostname; accept both forms.
@@ -239,12 +251,15 @@ function parseFirstIPv6Hextet(addr: string): number | null {
 }
 
 function parseSecondIPv6Hextet(addr: string): number | null {
-  // Pull the second hextet for documentation-range check. We only need
-  // exact equality so don't try to expand `::` shortcuts here.
   const parts = addr.split(":");
   if (parts.length < 2) return null;
   const second = parts[1];
-  if (second === undefined || second.length === 0) return null;
+  if (second === undefined) return null;
+  // Empty second part means we hit `::` immediately after the first
+  // hextet (e.g. "100::1" or "64:ff9b::" → second hextet of "100::1"
+  // is implicitly 0). The :: shortcut always pads from this position
+  // with zeros, so empty == 0.
+  if (second.length === 0) return 0;
   const n = Number.parseInt(second, 16);
   if (!Number.isFinite(n) || n < 0 || n > 0xffff) return null;
   return n;
@@ -289,16 +304,16 @@ async function fetchMetadataJson(url: string, hops = 0): Promise<unknown> {
     logInfo("repo_discovery.fetch_blocked", { url, hops });
     return null;
   }
-  return fetchWithPinnedTarget(url, target, hops);
+  return fetchWithPinnedTargetInternal(url, target, hops);
 }
 
-// Exported for integration tests: takes a pre-validated PinnedTarget and
-// builds the real undici Agent + dispatcher to fetch against it. The
-// production caller (fetchMetadataJson) supplies the target from
-// resolvePublicHttpTarget; tests can construct one directly to exercise
-// the dispatcher against a local socket without monkey-patching the
-// allowlist.
-export async function fetchWithPinnedTarget(
+// Test-only seam (see ./repo-discovery-internal-for-tests). The exported
+// name in that adjacent module routes here; production callers go through
+// fetchMetadataJson, which always validates via resolvePublicHttpTarget
+// first. Keeping the export off the public surface of repo-discovery
+// avoids accidentally giving the rest of apps/web a way to fetch with
+// the privileged pinned dispatcher but skip the allowlist.
+export async function fetchWithPinnedTargetInternal(
   url: string,
   target: PinnedTarget,
   hops = 0,
@@ -331,6 +346,8 @@ export async function fetchWithPinnedTarget(
       const location = response.headers.get("location");
       if (location === null) return null;
       const next = new URL(location, url).toString();
+      // Re-enter the validator: every redirect target has to pass
+      // resolvePublicHttpTarget again before we build a new dispatcher.
       return fetchMetadataJson(next, hops + 1);
     }
     if (!response.ok) return null;
@@ -340,6 +357,11 @@ export async function fetchWithPinnedTarget(
     await dispatcher.close().catch(() => undefined);
   }
 }
+
+// Internal test seam — NOT a production export. Named so a grep for
+// "fetchWithPinnedTarget" in production code finds nothing; the
+// integration suite imports from this internal namespace.
+export const __internalForTests = { fetchWithPinnedTarget: fetchWithPinnedTargetInternal };
 
 function repoRefFromMetadata(metadata: unknown): RepoRef | null {
   if (metadata === null || typeof metadata !== "object") return null;
