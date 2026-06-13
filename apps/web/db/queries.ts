@@ -236,14 +236,25 @@ export async function loadReviewsReadyForRetry(args: {
         isNotNull(reviews.installationId),
         isNotNull(reviews.owner),
         isNotNull(reviews.repo),
-        // Don't hand the worker rows that have already hit the attempts
-        // cap. The worker's catch checks the same bound, but a function
-        // killed mid-attempt at maxDuration never reaches catch — so
-        // without this filter the same dead row gets re-claimed forever.
-        lt(reviews.processingAttempts, MAX_PROCESSING_ATTEMPTS),
         or(
-          eq(reviews.processingStatus, "pending"),
-          and(eq(reviews.processingStatus, "pending_retry"), lte(reviews.nextRetryAt, args.now)),
+          // Below the attempts cap: eligible for normal retry. Without
+          // this bound, a function killed at maxDuration would re-claim
+          // forever; with it, only fresh attempts proceed past the cron.
+          and(
+            lt(reviews.processingAttempts, MAX_PROCESSING_ATTEMPTS),
+            or(
+              eq(reviews.processingStatus, "pending"),
+              and(
+                eq(reviews.processingStatus, "pending_retry"),
+                lte(reviews.nextRetryAt, args.now),
+              ),
+            ),
+          ),
+          // Stuck in_progress at any attempts count: the worker pre-claim
+          // path either retries (if below cap) or terminalizes (if at
+          // cap). Without this branch, a row killed mid-attempt at the
+          // cap stays in_progress forever, blocking public-API pollers
+          // from ever seeing a terminal state.
           and(
             eq(reviews.processingStatus, "in_progress"),
             lt(reviews.processingStartedAt, args.stuckBefore),

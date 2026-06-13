@@ -139,6 +139,17 @@ export async function runReviewWorker(
     await deps.markReviewSucceeded({ reviewId, now: deps.now() });
     return { kind: "skipped", reviewId, reason: "comment_already_posted" };
   }
+  // Attempts cap pre-claim. A worker killed at maxDuration leaves the row
+  // in_progress without reaching its catch; the next cron tick re-claims
+  // and bumps attempts. Once attempts has hit the cap, terminalize before
+  // running the pipeline again — otherwise public-API pollers see this row
+  // in_progress forever even though it is dead.
+  if (row.processingAttempts >= MAX_PROCESSING_ATTEMPTS) {
+    const error = `processing attempts exhausted (>=${MAX_PROCESSING_ATTEMPTS})`;
+    logError("worker.attempts_exhausted", { reviewId, source, attempts: row.processingAttempts });
+    await deps.markReviewTerminallyFailed({ reviewId, now: deps.now(), error });
+    return { kind: "failed", reviewId, attempts: row.processingAttempts, error };
+  }
   const { installationId, owner, repo } = row;
   if (installationId === null || owner === null || repo === null) {
     logError("worker.missing_dispatch_context", { reviewId, source });

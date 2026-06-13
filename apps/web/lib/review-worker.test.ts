@@ -268,6 +268,25 @@ describe("runReviewWorker", () => {
     expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
   });
 
+  it("terminally fails a row already at MAX_PROCESSING_ATTEMPTS without claiming or running the pipeline", async () => {
+    // Regression: a worker killed at maxDuration leaves the row in_progress
+    // with attempts == MAX; the cron loader still returns it as stuck, but
+    // the worker would previously re-claim and re-run the pipeline. Now the
+    // attempts check fires at pre-claim and the row is terminalized.
+    const deps = mkDeps({
+      loadReviewQueueRow: vi
+        .fn()
+        .mockResolvedValue(
+          mkRow({ processingAttempts: MAX_PROCESSING_ATTEMPTS, processingStatus: "in_progress" }),
+        ),
+    });
+    const outcome = await runReviewWorker("rev-1", "cron", deps);
+    expect(outcome.kind).toBe("failed");
+    expect(deps.markReviewTerminallyFailed).toHaveBeenCalledTimes(1);
+    expect(deps.claimReviewForProcessing).not.toHaveBeenCalled();
+    expect(deps.reviewPR).not.toHaveBeenCalled();
+  });
+
   it("terminally fails after MAX_PROCESSING_ATTEMPTS even on transient errors", async () => {
     const deps = mkDeps({
       loadReviewQueueRow: vi
