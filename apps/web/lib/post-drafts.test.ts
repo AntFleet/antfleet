@@ -26,10 +26,12 @@ describe("writePostDraft (read-only FS guard)", () => {
   });
 
   it("does not throw when the target directory cannot be created (EROFS-like)", async () => {
-    // Point at a path under a non-existent root that would EROFS in prod.
-    // /proc/self is a directory but we can't write into a fresh subdir of
-    // it; mkdir surfaces ENOENT/EACCES. The helper must swallow either.
-    process.env[ENV_KEY] = "/proc/self/no-such/antfleet-drafts";
+    // Point at a child of an existing non-directory file (/etc/hosts is
+    // present on every CI platform we run). mkdir surfaces ENOTDIR fast;
+    // the helper must swallow it without raising. Earlier shape used
+    // /proc/self/... which timed out on some Linux runners because the
+    // kernel did not reject mkdir as quickly as on macOS.
+    process.env[ENV_KEY] = "/etc/hosts/no-such/antfleet-drafts";
     await expect(writePostDraft({ slug: "x", title: "t", body: "b" })).resolves.toBe(null);
   });
 
