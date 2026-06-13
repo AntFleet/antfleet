@@ -21,3 +21,10 @@ examples/antseed-corpus/apps/
 
 .vercel
 .env.vercel*
+
+# sting is a separate product repo (github.com/AntFleet/sting) that sometimes
+# sits side-by-side on operator laptops at ./sting. It must NEVER be vendored
+# into this repo. The historical `.git/info/exclude` entry is machine-local and
+# would not protect a teammate who runs `git add .` on a fresh clone. See
+# audit/DECISION-sting-home.md (T2.5).
+/sting/
