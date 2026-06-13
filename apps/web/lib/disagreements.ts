@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { and, count, desc, eq, lt, max, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import { reviews } from "@/db/schema";
 import { shortenReviewId } from "@/lib/short-id";
@@ -135,22 +135,50 @@ export async function loadDisagreementsPage(args: { limit: number; before?: Date
   totalCount: number;
   lastUpdatedAt: Date | null;
 }> {
-  const allPublicReviews = await loadPublicReviewSources();
-  const allRows = flattenDisagreements(allPublicReviews);
-  const lastUpdatedAt = allRows.reduce<Date | null>(
-    (latest, row) => (latest === null || row.createdAt > latest ? row.createdAt : latest),
-    null,
-  );
+  // H5 fix: use a cheap aggregate query (COUNT + MAX) to compute totalCount and
+  // lastUpdatedAt without selecting the heavy provider_responses JSONB column.
+  // The actual page rows still need provider_responses but only for the bounded
+  // slice, not the full table scan.
+  const [aggResult, pageReviewRows] = await Promise.all([
+    loadDisagreementsAggregate(),
+    loadPublicReviewSources({
+      before: args.before,
+      limit: Math.max(200, args.limit * 20 + 1),
+    }),
+  ]);
 
-  const batchSize = Math.max(200, args.limit * 20 + 1);
-  const pageReviewRows = await loadPublicReviewSources({ before: args.before, limit: batchSize });
   const pageRows = flattenDisagreements(pageReviewRows);
 
   return {
     rows: pageRows.slice(0, args.limit),
     hasMore: pageRows.length > args.limit,
-    totalCount: allRows.length,
-    lastUpdatedAt,
+    totalCount: aggResult.totalReviewCount,
+    lastUpdatedAt: aggResult.lastCreatedAt,
+  };
+}
+
+// Cheap aggregate: COUNT(*) + MAX(created_at) without fetching provider_responses.
+// Used for the totalCount and lastUpdatedAt fields shown in the OG image and
+// RSS feed. NOTE: totalCount counts reviews with provider_responses, not the
+// disagrement-row count which requires JSONB parsing — callers that previously
+// used allRows.length now get the raw review count instead. This is acceptable
+// because the OG image only displays the number for visual scale, not strict
+// disagrement accounting, and avoids a full-table JSONB scan on every request.
+export async function loadDisagreementsAggregate(): Promise<{
+  totalReviewCount: number;
+  lastCreatedAt: Date | null;
+}> {
+  const rows = await db
+    .select({
+      totalReviewCount: count(),
+      lastCreatedAt: max(reviews.createdAt),
+    })
+    .from(reviews)
+    .where(and(eq(reviews.publicReceipt, true), sql`${reviews.providerResponses} IS NOT NULL`));
+  const row = rows[0];
+  return {
+    totalReviewCount: row?.totalReviewCount ?? 0,
+    lastCreatedAt: row?.lastCreatedAt ?? null,
   };
 }
 

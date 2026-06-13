@@ -1,5 +1,5 @@
 import { ImageResponse } from "next/og";
-import { loadDisagreementsPage } from "@/lib/disagreements";
+import { loadDisagreementsAggregate } from "@/lib/disagreements";
 
 export const runtime = "nodejs";
 export const revalidate = 60;
@@ -18,7 +18,9 @@ const MONO = '"SFMono-Regular", Menlo, Monaco, "Courier New", monospace';
 
 export default async function Image(): Promise<ImageResponse> {
   try {
-    const { totalCount } = await loadDisagreementsPage({ limit: 1 });
+    // H5/M11: use the cheap aggregate (COUNT only, no provider_responses JSONB)
+    // instead of loadDisagreementsPage which always fetches up to 200 review rows.
+    const { totalReviewCount: totalCount } = await loadDisagreementsAggregate();
 
     return image(
       <div style={cardStyle}>
