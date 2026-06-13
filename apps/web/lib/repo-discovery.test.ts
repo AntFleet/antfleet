@@ -267,6 +267,15 @@ describe("isPublicHttpUrl (SSRF allowlist for tokenURI fetch)", () => {
     expect(await isPublicHttpUrl("http://[2002:c0a8:0101::1]/")).toBe(false);
   });
 
+  it("rejects deprecated IPv4-compatible IPv6 (::/96, RFC4291 §2.5.5.1)", async () => {
+    // Round-8 audit: ::127.0.0.1 and ::7f00:1 silently routed through
+    // the v6 path even though they're the deprecated IPv4-compatible
+    // shape pointing at loopback.
+    expect(await isPublicHttpUrl("http://[::127.0.0.1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[::7f00:1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[::a9fe:a9fe]/")).toBe(false);
+  });
+
   it("permits a global-unicast IPv6 literal", async () => {
     // 2001:4860:4860::8888 is one of Google's public DNS servers — a
     // canonical public IPv6.

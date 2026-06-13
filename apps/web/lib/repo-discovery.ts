@@ -236,6 +236,13 @@ function isPublicIPv6(address: string): boolean {
   // hex form (::ffff:7f00:1) inside URL.hostname; accept both forms.
   const mapped = ipv4FromMappedIPv6(bare);
   if (mapped !== null) return isPublicIPv4(mapped);
+
+  // ::/96 IPv4-compatible IPv6 (RFC4291 §2.5.5.1, deprecated). Modern
+  // stacks don't route these but the audit allowlist must still reject
+  // them — they are reserved and any future stack that does decode them
+  // would target IPv4 ranges we already deny. Anything starting with
+  // `::` that isn't ::1 / :: / ::ffff:... falls in this bucket.
+  if (bare.startsWith("::")) return false;
   return true;
 }
 
