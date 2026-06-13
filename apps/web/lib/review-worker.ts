@@ -30,6 +30,7 @@ import {
   claimReviewForProcessing as realClaimReviewForProcessing,
   loadReviewQueueRow as realLoadReviewQueueRow,
   makeFindingId,
+  markReviewExhaustedIfStale as realMarkReviewExhaustedIfStale,
   markReviewFailedForRetry as realMarkReviewFailedForRetry,
   markReviewSucceeded as realMarkReviewSucceeded,
   markReviewTerminallyFailed as realMarkReviewTerminallyFailed,
@@ -82,6 +83,7 @@ export type WorkerDeps = {
   markReviewSucceeded: typeof realMarkReviewSucceeded;
   markReviewFailedForRetry: typeof realMarkReviewFailedForRetry;
   markReviewTerminallyFailed: typeof realMarkReviewTerminallyFailed;
+  markReviewExhaustedIfStale: typeof realMarkReviewExhaustedIfStale;
   loadReviewSettlement: (reviewId: string) => Promise<ReviewSettlement | null>;
   now: () => Date;
 };
@@ -108,6 +110,7 @@ export function realWorkerDeps(): WorkerDeps {
     markReviewSucceeded: realMarkReviewSucceeded,
     markReviewFailedForRetry: realMarkReviewFailedForRetry,
     markReviewTerminallyFailed: realMarkReviewTerminallyFailed,
+    markReviewExhaustedIfStale: realMarkReviewExhaustedIfStale,
     loadReviewSettlement: (reviewId) => realLoadReviewSettlement(db, reviewId),
     now: () => new Date(),
   };
@@ -144,11 +147,33 @@ export async function runReviewWorker(
   // and bumps attempts. Once attempts has hit the cap, terminalize before
   // running the pipeline again — otherwise public-API pollers see this row
   // in_progress forever even though it is dead.
+  //
+  // markReviewExhaustedIfStale is an atomic UPDATE gated on the same stuck
+  // predicate the loader uses (in_progress + processingStartedAt older than
+  // stuckBefore). If a competing worker claimed the row between the loader
+  // tick and this check, its claim refreshed processingStartedAt and the
+  // UPDATE matches nothing — we skip rather than racing the live claim.
   if (row.processingAttempts >= MAX_PROCESSING_ATTEMPTS) {
+    const now = deps.now();
+    const stuckBefore = new Date(now.getTime() - STUCK_AFTER_MS);
     const error = `processing attempts exhausted (>=${MAX_PROCESSING_ATTEMPTS})`;
-    logError("worker.attempts_exhausted", { reviewId, source, attempts: row.processingAttempts });
-    await deps.markReviewTerminallyFailed({ reviewId, now: deps.now(), error });
-    return { kind: "failed", reviewId, attempts: row.processingAttempts, error };
+    const terminalized = await deps.markReviewExhaustedIfStale({
+      reviewId,
+      maxAttempts: MAX_PROCESSING_ATTEMPTS,
+      stuckBefore,
+      now,
+      error,
+    });
+    if (terminalized) {
+      logError("worker.attempts_exhausted", {
+        reviewId,
+        source,
+        attempts: row.processingAttempts,
+      });
+      return { kind: "failed", reviewId, attempts: row.processingAttempts, error };
+    }
+    // Another worker freshly claimed it before us; back off.
+    return { kind: "skipped", reviewId, reason: "exhausted_but_freshly_claimed" };
   }
   const { installationId, owner, repo } = row;
   if (installationId === null || owner === null || repo === null) {

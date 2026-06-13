@@ -310,6 +310,42 @@ export async function markReviewTerminallyFailed(args: {
     .where(eq(reviews.reviewId, args.reviewId));
 }
 
+// Atomic terminalize for the attempts-exhausted path. Only marks the row
+// failed when it is still genuinely stuck (in_progress + processingStartedAt
+// older than stuckBefore + no posted comment + attempts at cap). Returns
+// true iff the UPDATE matched. The stuck predicate closes the race where
+// overlapping cron ticks observe the same candidate from the loader but
+// one of them claims it before the other gets to terminalize: the fresh
+// claim resets processingStartedAt, so this UPDATE no longer matches and
+// the slower worker correctly backs off.
+export async function markReviewExhaustedIfStale(args: {
+  reviewId: string;
+  maxAttempts: number;
+  stuckBefore: Date;
+  now: Date;
+  error: string;
+}): Promise<boolean> {
+  const result = await db
+    .update(reviews)
+    .set({
+      processingStatus: "failed",
+      processingFinishedAt: args.now,
+      nextRetryAt: null,
+      processingError: args.error,
+    })
+    .where(
+      and(
+        eq(reviews.reviewId, args.reviewId),
+        eq(reviews.processingStatus, "in_progress"),
+        gte(reviews.processingAttempts, args.maxAttempts),
+        lt(reviews.processingStartedAt, args.stuckBefore),
+        isNull(reviews.prCommentId),
+      ),
+    )
+    .returning({ reviewId: reviews.reviewId });
+  return result.length > 0;
+}
+
 // Observability for /api/activity — current queue depth + recent failures.
 export type ReviewQueueDepth = {
   pending: number;
@@ -389,7 +425,6 @@ export async function recordFindingStatuses(
   reviewId: string,
   agreed: FindingLifecycleInput[],
 ): Promise<string[]> {
-  if (agreed.length === 0) return [];
   const rows = agreed.map((f, index) => ({
     reviewId,
     findingIndex: index,
@@ -399,21 +434,25 @@ export async function recordFindingStatuses(
     label: f.label ?? "blocking",
     category: f.category,
   }));
-  // finding_id is UNIQUE and deterministic from (reviewId, index); a worker
-  // retry after a transient postPRComment failure re-enters this path with
-  // the same rows. onConflictDoNothing makes the insert idempotent; the
-  // follow-up select returns ids on both first run and replay (returning()
-  // yields nothing for conflict-skipped rows).
-  await db
-    .insert(findingStatus)
-    .values(rows)
-    .onConflictDoNothing({ target: findingStatus.findingId });
-  const inserted = await db
-    .select({ findingId: findingStatus.findingId })
-    .from(findingStatus)
-    .where(eq(findingStatus.reviewId, reviewId))
-    .orderBy(findingStatus.findingIndex);
-  return inserted.map((r) => r.findingId);
+  // Reconcile rather than ignore-on-conflict. recordFindingStatuses runs
+  // strictly before postPRComment in the worker, so a retry after a
+  // transient comment failure may carry a different agreed set than the
+  // first attempt. onConflictDoNothing would silently drop a changed
+  // finding at the same (reviewId, index) and leave stale rows beyond
+  // the new length. Wrap the whole thing in a transaction: delete all
+  // existing rows for this reviewId, then insert the current set. The
+  // findingIds remain deterministic from (reviewId, index), so the
+  // common "identical retry" case still returns the same list.
+  return await db.transaction(async (tx) => {
+    await tx.delete(findingStatus).where(eq(findingStatus.reviewId, reviewId));
+    if (rows.length === 0) return [];
+    const inserted = await tx
+      .insert(findingStatus)
+      .values(rows)
+      .returning({ findingId: findingStatus.findingId, findingIndex: findingStatus.findingIndex });
+    inserted.sort((a, b) => a.findingIndex - b.findingIndex);
+    return inserted.map((r) => r.findingId);
+  });
 }
 
 // Patch Agent v1.5 — persist the per-finding patch decision into

@@ -109,6 +109,7 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     markReviewSucceeded: vi.fn().mockResolvedValue(undefined),
     markReviewFailedForRetry: vi.fn().mockResolvedValue(undefined),
     markReviewTerminallyFailed: vi.fn().mockResolvedValue(undefined),
+    markReviewExhaustedIfStale: vi.fn().mockResolvedValue(true),
     loadReviewSettlement: vi.fn().mockResolvedValue(null),
     now: () => NOW,
     ...overrides,
@@ -279,12 +280,37 @@ describe("runReviewWorker", () => {
         .mockResolvedValue(
           mkRow({ processingAttempts: MAX_PROCESSING_ATTEMPTS, processingStatus: "in_progress" }),
         ),
+      markReviewExhaustedIfStale: vi.fn().mockResolvedValue(true),
     });
     const outcome = await runReviewWorker("rev-1", "cron", deps);
     expect(outcome.kind).toBe("failed");
-    expect(deps.markReviewTerminallyFailed).toHaveBeenCalledTimes(1);
+    expect(deps.markReviewExhaustedIfStale).toHaveBeenCalledTimes(1);
+    expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
     expect(deps.claimReviewForProcessing).not.toHaveBeenCalled();
     expect(deps.reviewPR).not.toHaveBeenCalled();
+  });
+
+  it("skips terminalize when another worker freshly claimed the cap-reached row", async () => {
+    // Regression: the round-2 audit caught a race where two overlapping
+    // cron ticks both loaded the same stale candidate; one claimed it,
+    // bumping attempts to MAX, and the other terminalized it mid-flight.
+    // markReviewExhaustedIfStale's atomic stuck predicate now returns
+    // false when the row was refreshed; the worker backs off.
+    const deps = mkDeps({
+      loadReviewQueueRow: vi
+        .fn()
+        .mockResolvedValue(
+          mkRow({ processingAttempts: MAX_PROCESSING_ATTEMPTS, processingStatus: "in_progress" }),
+        ),
+      markReviewExhaustedIfStale: vi.fn().mockResolvedValue(false),
+    });
+    const outcome = await runReviewWorker("rev-1", "cron", deps);
+    expect(outcome.kind).toBe("skipped");
+    if (outcome.kind === "skipped") {
+      expect(outcome.reason).toBe("exhausted_but_freshly_claimed");
+    }
+    expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+    expect(deps.claimReviewForProcessing).not.toHaveBeenCalled();
   });
 
   it("terminally fails after MAX_PROCESSING_ATTEMPTS even on transient errors", async () => {
