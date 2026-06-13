@@ -48,7 +48,15 @@ vi.mock("@/lib/paywall/env", () => ({ getReviewPriceUsdc: () => "0.5" }));
 vi.mock("@/lib/github-app", () => ({ getInstallationToken: vi.fn() }));
 vi.mock("@/lib/repo-visibility", () => ({ isPublicRepo: vi.fn() }));
 vi.mock("@/lib/repo-benchmark", () => ({ isBenchmarkRepo: vi.fn() }));
-vi.mock("@/lib/review-worker", () => ({ runReviewWorker: vi.fn() }));
+// review-worker is the home of runReviewKernel (audit T2.3) — both the
+// installation lane (runReviewWorker) and the paid lanes call it. We
+// only mock runReviewWorker (the installation entry that the paid path
+// never invokes); runReviewKernel is the real implementation so the
+// kernel's persist + cost-cap + agreementDecision shape stay under test.
+vi.mock("@/lib/review-worker", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/review-worker")>();
+  return { ...actual, runReviewWorker: vi.fn() };
+});
 vi.mock("@/lib/log", () => ({
   logError: vi.fn(),
   logInfo: vi.fn(),

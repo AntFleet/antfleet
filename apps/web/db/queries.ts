@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { cache } from "react";
 import {
   and,
   count,
@@ -1343,40 +1344,43 @@ export type PublicReceiptDetailRow = PublicReceiptRow & {
   retractionReason: string | null;
 };
 
-export async function loadPublicReceiptDetail(
-  findingId: string,
-): Promise<PublicReceiptDetailRow | null> {
-  const rows = await db
-    .select({
-      findingId: findingStatus.findingId,
-      findingIndex: findingStatus.findingIndex,
-      severity: findingStatus.severity,
-      label: findingStatus.label,
-      category: findingStatus.category,
-      title: findingStatus.title,
-      closureSha: findingStatus.closureSha,
-      closureCommentUrl: findingStatus.closureCommentUrl,
-      closedAt: findingStatus.closureDetectedAt,
-      retractedAt: findingStatus.retractedAt,
-      retractionReason: findingStatus.retractionReason,
-      reviewId: reviews.reviewId,
-      repoHash: reviews.repoHash,
-      prNumber: reviews.prNumber,
-      prCommentUrl: reviews.prCommentUrl,
-      reviewCreatedAt: reviews.createdAt,
-      timingMs: reviews.timingMs,
-      costEstimatedUsd: reviews.costEstimatedUsd,
-      providerModelIds: reviews.providerModelIds,
-      providerResponses: reviews.providerResponses,
-      agreementDecision: reviews.agreementDecision,
-    })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(and(eq(findingStatus.findingId, findingId), eq(reviews.publicReceipt, true)))
-    .limit(1);
+// M12: cache() deduplicates identical calls within a single render pass
+// (generateMetadata + page + OG image all call the same loader with the same
+// argument — without cache() each issues a separate DB round-trip).
+export const loadPublicReceiptDetail = cache(
+  async (findingId: string): Promise<PublicReceiptDetailRow | null> => {
+    const rows = await db
+      .select({
+        findingId: findingStatus.findingId,
+        findingIndex: findingStatus.findingIndex,
+        severity: findingStatus.severity,
+        label: findingStatus.label,
+        category: findingStatus.category,
+        title: findingStatus.title,
+        closureSha: findingStatus.closureSha,
+        closureCommentUrl: findingStatus.closureCommentUrl,
+        closedAt: findingStatus.closureDetectedAt,
+        retractedAt: findingStatus.retractedAt,
+        retractionReason: findingStatus.retractionReason,
+        reviewId: reviews.reviewId,
+        repoHash: reviews.repoHash,
+        prNumber: reviews.prNumber,
+        prCommentUrl: reviews.prCommentUrl,
+        reviewCreatedAt: reviews.createdAt,
+        timingMs: reviews.timingMs,
+        costEstimatedUsd: reviews.costEstimatedUsd,
+        providerModelIds: reviews.providerModelIds,
+        providerResponses: reviews.providerResponses,
+        agreementDecision: reviews.agreementDecision,
+      })
+      .from(findingStatus)
+      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+      .where(and(eq(findingStatus.findingId, findingId), eq(reviews.publicReceipt, true)))
+      .limit(1);
 
-  return rows[0] ?? null;
-}
+    return rows[0] ?? null;
+  },
+);
 
 export type PublicReviewReceiptRow = {
   reviewId: string;
@@ -1610,6 +1614,11 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     activityWindow(since24h),
     activityWindow(since7d),
     activityWindow(null),
+    // M10 fix: removed the LEFT JOIN on finding_status — it multiplied rows
+    // by finding count, so LIMIT 20 could return only 1 review with 20
+    // findings. Zero-finding reviews still surface because the join was
+    // LEFT (they just added no value here). The dedup loop below is kept
+    // as a safety net but will now always be a no-op.
     db
       .select({
         ts: reviews.createdAt,
@@ -1619,9 +1628,6 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
         repo: reviews.repo,
       })
       .from(reviews)
-      // Left join so zero-finding reviews surface (the aggregate reviewsRun
-      // counter already counts them; the stream should match).
-      .leftJoin(findingStatus, eq(reviews.reviewId, findingStatus.reviewId))
       .where(eq(reviews.publicReceipt, true))
       .orderBy(desc(reviews.createdAt))
       .limit(EVENT_STREAM_LIMIT),
@@ -2293,7 +2299,9 @@ export type AgentCrossRepoMerge = {
   prUrl: string;
 };
 
-export async function loadAgentDetail(address: string): Promise<AgentDetail | null> {
+// M12: cache() deduplicates calls from generateMetadata + page + OG image
+// within a single render pass.
+export const loadAgentDetail = cache(async (address: string): Promise<AgentDetail | null> => {
   // The roast pipeline (Sprint 2) stores its findings in agent_findings under
   // the pseudo-key `roast:<submissionId>`. Those live at /roasts/[id]; they
   // must never resolve to an /agents/[address] page.
@@ -2392,7 +2400,7 @@ export async function loadAgentDetail(address: string): Promise<AgentDetail | nu
     benchmarkReviews: benchmarkRows,
     crossRepoMerges,
   };
-}
+});
 
 // Auto-stub agent shape for factory_launches rows that don't yet have any
 // agent_findings. The /agents/[address] page renders this when loadAgentDetail
@@ -2405,23 +2413,24 @@ export type FactoryLaunchAgentDetail = {
   launch: FactoryLaunch;
 };
 
-export async function loadFactoryLaunchDetail(
-  address: string,
-): Promise<FactoryLaunchAgentDetail | null> {
-  const normalized = address.toLowerCase();
-  const rows = await db
-    .select()
-    .from(factoryLaunches)
-    .where(sql`lower(${factoryLaunches.tokenAddress}) = ${normalized}`)
-    .limit(1);
-  const launch = rows[0];
-  if (launch === undefined) return null;
-  return {
-    agentTokenAddress: launch.tokenAddress,
-    agentName: launch.tokenSymbol ?? launch.tokenName ?? launch.tokenAddress.slice(0, 10),
-    launch,
-  };
-}
+// M12: cache() deduplicates calls within a single render pass.
+export const loadFactoryLaunchDetail = cache(
+  async (address: string): Promise<FactoryLaunchAgentDetail | null> => {
+    const normalized = address.toLowerCase();
+    const rows = await db
+      .select()
+      .from(factoryLaunches)
+      .where(sql`lower(${factoryLaunches.tokenAddress}) = ${normalized}`)
+      .limit(1);
+    const launch = rows[0];
+    if (launch === undefined) return null;
+    return {
+      agentTokenAddress: launch.tokenAddress,
+      agentName: launch.tokenSymbol ?? launch.tokenName ?? launch.tokenAddress.slice(0, 10),
+      launch,
+    };
+  },
+);
 
 export type FactoryLaunchIndexRow = {
   tokenAddress: string;

@@ -11,6 +11,7 @@
 import type { NextRequest } from "next/server";
 import { after, NextResponse } from "next/server";
 import { db } from "@/db";
+import { alertCritical } from "@/lib/alert";
 import { requireCronAuth } from "@/lib/cron-auth";
 import { logError, logInfo, messageOf } from "@/lib/log";
 import {
@@ -103,7 +104,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       logInfo("review_jobs_cron.expired_purged", { count: expiredPurged });
     }
   } catch (err) {
-    logError("review_jobs_cron.failed", { message: messageOf(err) });
+    const message = messageOf(err);
+    logError("review_jobs_cron.failed", { message });
+    alertCritical("review_jobs_cron.failed", { message });
     return new NextResponse("cron tick failed", { status: 500 });
   }
 

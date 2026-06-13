@@ -13,6 +13,13 @@ import { ActivityView, type FleetActivityJson } from "./ActivityView";
 // the public /receipts list (non-opted-in installs leaked into the
 // aggregate); after, the headline equals what /receipts can render.
 // Required for tweet-intent + /digest permalinks to stay truthful.
+//
+// M11: force-dynamic is kept for correctness (fresh counts on every render).
+// revalidate is intentionally omitted — Next.js treats force-dynamic as
+// revalidate=0 (no-store); adding a revalidate value alongside force-dynamic
+// is a no-op at best and a build warning at worst. Per-request freshness is
+// the right trade-off here; the client-side poll at 60s reduces the DB cost
+// for repeat visitors without a CDN layer needing to cache the HTML.
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {

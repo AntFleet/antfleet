@@ -11,6 +11,7 @@ import {
   updateReview,
 } from "@/db/queries";
 import { getInstallationToken } from "@/lib/github-app";
+import { alertCritical } from "@/lib/alert";
 import { logError, logInfo, messageOf } from "@/lib/log";
 import {
   getReviewJob,
@@ -32,7 +33,7 @@ import {
 } from "@/lib/review-job-queries";
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
-import { runReviewWorker } from "@/lib/review-worker";
+import { runReviewKernel, runReviewWorker } from "@/lib/review-worker";
 import { getPublicChangedFiles, makePublicOctokit } from "@/lib/github-files-public";
 import { reviewPR } from "@/lib/review-pipeline";
 import { getAcpReviewPriceUsdc, getReviewPriceUsdc } from "@/lib/paywall/env";
@@ -189,6 +190,17 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
       }
     } else {
       await markJobFailed(db, jobId, failureMode, publicMessage, new Date());
+    }
+
+    // Alert on terminal infrastructure failures only — not user-input errors
+    // (those are caller mistakes, not operator-actionable). settlement errors
+    // are always terminal, so outcomeFailureMode "internal" covers them.
+    if (outcomeFailureMode !== "user_input" && outcomeFailureMode !== "invalid_input") {
+      alertCritical("review_job.failed", {
+        jobId,
+        paymentRail: job.paymentRail ?? "unknown",
+        failureMode: outcomeFailureMode,
+      });
     }
 
     return {
@@ -372,67 +384,30 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
     filenames: files.map((f) => f.filename),
   });
 
-  if (files.length === 0) {
-    await updateReview(enqueued.reviewId, {
-      filesReviewed: [],
-      providerResponses: { status: "skipped", reason: "no reviewable files", rail: "x402" },
-      agreementDecision: { status: "skipped" },
-    });
-    await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
-  } else {
-    const bundle = await withX402WallClockTimeout((signal) =>
-      reviewPR({ files, owner, repo, prNumber, signal }),
-    );
-    const price = Number(getReviewPriceUsdc());
-    if (Number.isFinite(price) && bundle.estimatedCostUsd > price * 3) {
-      await updateReview(enqueued.reviewId, {
-        filesReviewed: files.map((f) => f.filename),
-        providerModelIds: bundle.modelIds,
-        providerResponses: { perProvider: bundle.perProvider, rail: "x402" },
-        agreementDecision: {
-          mode: bundle.agreementMode,
-          agreed: bundle.agreed,
-          disagreements: bundle.disagreements,
-          degraded: bundle.degraded,
-          degradedReason: bundle.degradedReason,
-          // Keep the triage decision in the paid-path audit trail too, so a
-          // triage-skip is distinguishable from a real empty consensus.
-          triage: bundle.triage,
+  // Shared kernel (audit T2.3): same dispatch → reviewPR → persist (with
+  // triage) → recordFindingStatuses surface the installation rail uses.
+  // The paid wrapper adds the wall-clock signal + cost cap + rail tag.
+  await withX402WallClockTimeout(async (signal) => {
+    const outcome = await runReviewKernel(
+      {
+        reviewId: enqueued.reviewId,
+        owner,
+        repo,
+        prNumber,
+        files,
+        signal,
+        rail: "x402",
+        costCap: {
+          readPriceUsdc: getReviewPriceUsdc,
+          errorMessage: "x402 review exceeded inference cost cap",
         },
-        timingMs: bundle.totalMs,
-        costEstimatedUsd: bundle.estimatedCostUsd,
-      });
-      throw Object.assign(new Error("x402 review exceeded inference cost cap"), {
-        failureModeTag: "cost_cap_exceeded",
-      });
-    }
-
-    await updateReview(enqueued.reviewId, {
-      filesReviewed: files.map((f) => f.filename),
-      providerModelIds: bundle.modelIds,
-      providerResponses: { perProvider: bundle.perProvider, rail: "x402" },
-      agreementDecision: {
-        mode: bundle.agreementMode,
-        agreed: bundle.agreed,
-        disagreements: bundle.disagreements,
-        degraded: bundle.degraded,
-        degradedReason: bundle.degradedReason,
       },
-      timingMs: bundle.totalMs,
-      costEstimatedUsd: bundle.estimatedCostUsd,
-    });
-    if (!bundle.degraded && bundle.agreed.length > 0) {
-      await recordFindingStatuses(
-        enqueued.reviewId,
-        bundle.agreed.map((f) => ({
-          title: f.title,
-          severity: f.severity,
-          category: f.category,
-        })),
-      );
+      { reviewPR, updateReview, recordFindingStatuses },
+    );
+    if (outcome.kind === "completed" || outcome.kind === "skipped") {
+      await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
     }
-    await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
-  }
+  });
 
   const { loadReviewForResponse } = await import("@/lib/paywall/queries");
   const payload = await loadReviewForResponse(db, enqueued.reviewId);
@@ -494,67 +469,34 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
     filenames: files.map((f) => f.filename),
   });
 
-  if (files.length === 0) {
-    await updateReview(enqueued.reviewId, {
-      filesReviewed: [],
-      providerResponses: { status: "skipped", reason: "no reviewable files", rail: "acp" },
-      agreementDecision: { status: "skipped" },
-    });
-    throw Object.assign(new Error("no reviewable files"), {
-      failureModeTag: "no_reviewable_files",
-    });
-  } else {
-    const bundle = await withX402WallClockTimeout((signal) =>
-      reviewPR({ files, owner, repo, prNumber: target.prNumber, signal }),
-    );
-    const price = Number(getAcpReviewPriceUsdc());
-    if (Number.isFinite(price) && bundle.estimatedCostUsd > price * 3) {
-      await updateReview(enqueued.reviewId, {
-        filesReviewed: files.map((f) => f.filename),
-        providerModelIds: bundle.modelIds,
-        providerResponses: { perProvider: bundle.perProvider, rail: "acp" },
-        agreementDecision: {
-          mode: bundle.agreementMode,
-          agreed: bundle.agreed,
-          disagreements: bundle.disagreements,
-          degraded: bundle.degraded,
-          degradedReason: bundle.degradedReason,
-          triage: bundle.triage,
+  // Shared kernel (audit T2.3). ACP differs from x402 only in how it
+  // handles an empty-files outcome: ACP cannot deliver an empty review
+  // under the schema contract, so the empty-files branch throws
+  // `no_reviewable_files` instead of marking the review succeeded.
+  await withX402WallClockTimeout(async (signal) => {
+    const outcome = await runReviewKernel(
+      {
+        reviewId: enqueued.reviewId,
+        owner,
+        repo,
+        prNumber: target.prNumber,
+        files,
+        signal,
+        rail: "acp",
+        costCap: {
+          readPriceUsdc: getAcpReviewPriceUsdc,
+          errorMessage: "ACP review exceeded inference cost cap",
         },
-        timingMs: bundle.totalMs,
-        costEstimatedUsd: bundle.estimatedCostUsd,
-      });
-      throw Object.assign(new Error("ACP review exceeded inference cost cap"), {
-        failureModeTag: "cost_cap_exceeded",
-      });
-    }
-
-    await updateReview(enqueued.reviewId, {
-      filesReviewed: files.map((f) => f.filename),
-      providerModelIds: bundle.modelIds,
-      providerResponses: { perProvider: bundle.perProvider, rail: "acp" },
-      agreementDecision: {
-        mode: bundle.agreementMode,
-        agreed: bundle.agreed,
-        disagreements: bundle.disagreements,
-        degraded: bundle.degraded,
-        degradedReason: bundle.degradedReason,
       },
-      timingMs: bundle.totalMs,
-      costEstimatedUsd: bundle.estimatedCostUsd,
-    });
-    if (!bundle.degraded && bundle.agreed.length > 0) {
-      await recordFindingStatuses(
-        enqueued.reviewId,
-        bundle.agreed.map((f) => ({
-          title: f.title,
-          severity: f.severity,
-          category: f.category,
-        })),
-      );
+      { reviewPR, updateReview, recordFindingStatuses },
+    );
+    if (outcome.kind === "skipped") {
+      throw Object.assign(new Error("no reviewable files"), {
+        failureModeTag: "no_reviewable_files",
+      });
     }
     await markReviewSucceeded({ reviewId: enqueued.reviewId, now: new Date() });
-  }
+  });
 
   const { loadReviewForResponse } = await import("@/lib/paywall/queries");
   const payload = await loadReviewForResponse(db, enqueued.reviewId);

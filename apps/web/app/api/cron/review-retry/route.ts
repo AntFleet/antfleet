@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { alertCritical } from "@/lib/alert";
 import { requireCronAuth } from "@/lib/cron-auth";
 import { logError, logInfo, messageOf } from "@/lib/log";
 import { runReviewRetryTick } from "@/lib/review-retry";
@@ -32,6 +33,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   } catch (err) {
     const message = messageOf(err);
     logError("review_retry_cron.failed", { message });
+    alertCritical("review_retry_cron.failed", { message });
     return new NextResponse("retry tick failed", { status: 500 });
   }
 }
