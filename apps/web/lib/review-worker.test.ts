@@ -125,6 +125,7 @@ describe("runReviewWorker", () => {
       reviewId: "rev-1",
       fromStatuses: ["pending"],
       now: NOW,
+      stuckBefore: new Date(NOW.getTime() - 5 * 60 * 1000),
     });
     expect(deps.reviewPR).toHaveBeenCalledTimes(1);
     expect(deps.postPRComment).toHaveBeenCalledTimes(1);
@@ -205,6 +206,7 @@ describe("runReviewWorker", () => {
       reviewId: "rev-1",
       fromStatuses: ["pending", "pending_retry", "in_progress"],
       now: NOW,
+      stuckBefore: new Date(NOW.getTime() - 5 * 60 * 1000),
     });
   });
 

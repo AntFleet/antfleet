@@ -219,6 +219,10 @@ export const findingStatus = pgTable(
     // for closed-finding feeds. Migration 0037.
     index("finding_status_review_id_idx").on(t.reviewId),
     index("finding_status_status_closure_idx").on(t.status, t.closureDetectedAt),
+    // Natural-key uniqueness (migration 0038). recordFindingStatuses
+    // upserts target this so a finding_id format change can't produce
+    // a duplicate row per (review_id, finding_index).
+    uniqueIndex("finding_status_review_index_uniq").on(t.reviewId, t.findingIndex),
   ],
 );
 

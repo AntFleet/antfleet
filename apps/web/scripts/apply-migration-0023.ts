@@ -32,6 +32,11 @@ async function main() {
   if (entry === undefined) throw new Error(`migration ${TAG} not found in journal`);
 
   const sqlContent = readFileSync(SQL_PATH, "utf-8");
+  if (!apply) {
+    console.log("\n--- DRY RUN (pass --apply to execute) ---\n");
+    console.log(sqlContent);
+    return;
+  }
   const hash = createHash("sha256").update(sqlContent).digest("hex");
   const { Pool } = await import("@neondatabase/serverless");
   const databaseUrl = process.env["DATABASE_URL"];

@@ -193,10 +193,17 @@ export async function runReviewWorker(
   const dispatchRow = { ...row, installationId, owner, repo };
 
   const fromStatuses = allowedClaimSources(source);
+  const claimNow = deps.now();
+  // stuckBefore gates the in_progress claim path against a competing
+  // cron tick that already refreshed processingStartedAt. For
+  // webhook/api sources the in_progress branch isn't legal, but we still
+  // pass it to keep the claim API call-shape uniform.
+  const stuckBefore = new Date(claimNow.getTime() - STUCK_AFTER_MS);
   const claimed = await deps.claimReviewForProcessing({
     reviewId,
     fromStatuses,
-    now: deps.now(),
+    now: claimNow,
+    stuckBefore,
   });
   if (!claimed) {
     // Another worker beat us. This is the expected race outcome when the

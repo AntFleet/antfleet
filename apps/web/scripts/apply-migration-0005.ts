@@ -42,6 +42,12 @@ async function main() {
   const apply = process.argv.includes("--apply");
   if (apply) await assertSafeToApply();
 
+  if (!apply) {
+    console.log("\n--- DRY RUN (pass --apply to backfill drizzle tracker + apply 0005) ---\n");
+    console.log(`migrations covered: ${MIGRATIONS.join(", ")}`);
+    return;
+  }
+
   // Drizzle hashes the SQL content (split by --> statement-breakpoint, then
   // concatenated) to identify a migration. We compute the same hash so the
   // backfilled rows look identical to what drizzle would have written.
@@ -49,8 +55,12 @@ async function main() {
     entries: JournalEntry[];
   };
 
+  const databaseUrl = process.env["DATABASE_URL"];
+  if (databaseUrl === undefined || databaseUrl.length === 0) {
+    throw new Error("DATABASE_URL is not set — populate apps/web/.env.local");
+  }
   const { Pool } = await import("@neondatabase/serverless");
-  const pool = new Pool({ connectionString: process.env["DATABASE_URL"]! });
+  const pool = new Pool({ connectionString: databaseUrl });
 
   try {
     // 1. Ensure __drizzle_migrations table exists (drizzle creates it lazily;

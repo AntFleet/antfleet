@@ -132,16 +132,36 @@ export type ReviewProcessingStatus = (typeof REVIEW_PROCESSING_STATUSES)[number]
 
 // Atomic claim. Caller specifies which prior states are valid to claim from
 // — webhook after() passes ["pending"], the retry cron passes
-// ["pending", "pending_retry", "in_progress"] (the last only when the row
-// looks stuck; cron applies an age filter on processingStartedAt itself).
+// ["pending", "pending_retry", "in_progress"]. When `in_progress` is in
+// fromStatuses, stuckBefore MUST be supplied; the claim then requires
+// processingStartedAt < stuckBefore so a second overlapping cron tick
+// cannot steal a row that a faster cron tick just freshly claimed.
 // Returns true iff the row transitioned to in_progress. False means another
 // worker beat us to it — caller should move on without processing.
 export async function claimReviewForProcessing(args: {
   reviewId: string;
   fromStatuses: ReadonlyArray<ReviewProcessingStatus>;
   now: Date;
+  stuckBefore?: Date;
 }): Promise<boolean> {
   if (args.fromStatuses.length === 0) return false;
+  // Build the staleness gate. For in_progress claims it's mandatory: the
+  // worker reads the row, computes stuckBefore from STUCK_AFTER_MS, and
+  // passes it down. The atomic UPDATE then guards against a competing
+  // claim that refreshed processing_started_at.
+  const includesInProgress = args.fromStatuses.includes("in_progress");
+  if (includesInProgress && args.stuckBefore === undefined) {
+    throw new Error(
+      "claimReviewForProcessing: stuckBefore is required when fromStatuses includes 'in_progress'",
+    );
+  }
+  const stalePredicate =
+    args.stuckBefore !== undefined
+      ? or(
+          ne(reviews.processingStatus, "in_progress"),
+          lt(reviews.processingStartedAt, args.stuckBefore),
+        )
+      : undefined;
   const updated = await db
     .update(reviews)
     .set({
@@ -154,6 +174,7 @@ export async function claimReviewForProcessing(args: {
       and(
         eq(reviews.reviewId, args.reviewId),
         inArray(reviews.processingStatus, args.fromStatuses as ReviewProcessingStatus[]),
+        ...(stalePredicate !== undefined ? [stalePredicate] : []),
       ),
     )
     .returning({ reviewId: reviews.reviewId });
@@ -477,11 +498,20 @@ export async function recordFindingStatuses(
   //      pre-comment write).
   return await db.transaction(async (tx) => {
     if (rows.length > 0) {
+      // Target the (review_id, finding_index) natural key (migration
+      // 0038) rather than finding_id, because the finding_id format
+      // widened in round 5 and a pre-deploy row's short ID would not
+      // conflict with the post-deploy long ID — producing a duplicate
+      // row per index. Targeting the natural key matches existing rows
+      // by review/index regardless of finding_id text; the finding_id
+      // column is intentionally NOT in the SET clause so existing rows
+      // keep their original (short) value and downstream tables that
+      // reference finding_id stay coherent.
       await tx
         .insert(findingStatus)
         .values(rows)
         .onConflictDoUpdate({
-          target: findingStatus.findingId,
+          target: [findingStatus.reviewId, findingStatus.findingIndex],
           set: {
             title: sql`excluded.title`,
             severity: sql`excluded.severity`,
