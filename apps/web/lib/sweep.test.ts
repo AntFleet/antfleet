@@ -308,6 +308,71 @@ describe("runSweep", () => {
     expect(deps.pollReactions).toHaveBeenCalledTimes(1);
   });
 
+  // T3.3 — line-range extraction. The closure pass must pull startLine /
+  // endLine out of agreement_decision.evidence[0] and pass them down to
+  // detectClosures so the hunk-overlap check has the data it needs.
+  describe("line-range extraction (T3.3)", () => {
+    it("threads startLine / endLine from agreement_decision into detectClosures", async () => {
+      const batch = mkBatch({
+        agreementDecision: productionAgreement(
+          validFinding({
+            evidence: [{ path: "src/handler.ts", startLine: 42, endLine: 50 }],
+          }),
+        ),
+      });
+      const detectClosures = vi
+        .fn()
+        .mockResolvedValue([{ findingId: "review-1-0", status: "still_open" }]);
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([batch]),
+        detectClosures,
+      });
+      await runSweep(deps);
+      expect(detectClosures).toHaveBeenCalledWith(
+        expect.objectContaining({
+          findings: [
+            expect.objectContaining({
+              findingId: "review-1-0",
+              evidencePath: "src/handler.ts",
+              startLine: 42,
+              endLine: 50,
+            }),
+          ],
+        }),
+      );
+    });
+
+    it("passes null line range for legacy findings with null evidence lines", async () => {
+      const batch = mkBatch({
+        agreementDecision: productionAgreement(
+          validFinding({
+            evidence: [{ path: "src/handler.ts", startLine: null, endLine: null }],
+          }),
+        ),
+      });
+      const detectClosures = vi
+        .fn()
+        .mockResolvedValue([{ findingId: "review-1-0", status: "still_open" }]);
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([batch]),
+        detectClosures,
+      });
+      await runSweep(deps);
+      expect(detectClosures).toHaveBeenCalledWith(
+        expect.objectContaining({
+          findings: [
+            expect.objectContaining({
+              findingId: "review-1-0",
+              evidencePath: "src/handler.ts",
+              startLine: null,
+              endLine: null,
+            }),
+          ],
+        }),
+      );
+    });
+  });
+
   // T3.1 — base-branch resolution. The closure pass must resolve the repo's
   // actual default branch and pass it to detectClosures so that repos whose
   // default branch is "master" (or any non-"main" name) can close findings.

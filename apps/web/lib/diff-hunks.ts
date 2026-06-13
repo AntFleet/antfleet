@@ -19,6 +19,13 @@ export type HunkRange = {
   end: number;
 };
 
+// T3.3 — shared shape for closure-overlap ranges. OLD-side line range a
+// finding was authored against; see hunksTouching below.
+export type LineRange = {
+  start: number;
+  end: number;
+};
+
 // Matches the unified-diff hunk header: @@ -<oldStart>,<oldCount> +<newStart>,<newCount> @@
 // The count component is optional in unified-diff: "@@ -3 +3 @@" is a single-
 // line hunk on both sides. Treat a missing count as 1.
@@ -110,4 +117,65 @@ export function countAddedLines(patch: string): number {
     if (line.startsWith("+")) count += 1;
   }
   return count;
+}
+
+// T3.3 — Option B closure-overlap check (OLD-side hunk parser).
+//
+// The Patch Agent helpers above operate on NEW-side ranges because they
+// must align with the PR head's line numbers when posting suggestions.
+// The closure sweeper has the inverse question: a finding's evidence range
+// was authored against `review.commit_sha` (the OLD side of the
+// compareCommits diff between review SHA -> HEAD). So we test overlap
+// against `[oldStart, oldStart + oldCount - 1]`.
+//
+// Kept separate from `parseHunkRanges` because (a) we only need a single
+// boolean answer per file, (b) the semantic is different (NEW-side suggest
+// vs OLD-side closure), and (c) it lets us reject pure-deletion hunks on
+// the new side without affecting the closure check, where a deletion that
+// removes the flagged lines absolutely counts as "touched".
+
+// Same shape as HUNK_HEADER above but captures the OLD-side coordinates.
+// Multi-line + global so it scans the full patch in one pass.
+const HUNK_HEADER_OLD = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/gmu;
+
+/**
+ * Returns true iff the patch contains at least one hunk whose OLD-side line
+ * range overlaps the inclusive finding range [range.start, range.end].
+ *
+ * Overlap test (both inclusive):
+ *   hunk old range  = [oldStart, oldStart + oldCount - 1]
+ *   finding range   = [range.start, range.end]
+ *   overlap iff hunk_end >= range.start && hunk_first <= range.end
+ *
+ * Edge cases:
+ *   - Omitted oldCount defaults to 1 (e.g. "@@ -10 +12,3 @@").
+ *   - oldCount === 0 means a pure insertion at line `oldStart` on the new
+ *     side (nothing removed from old). The insertion lives BETWEEN old
+ *     lines `oldStart` and `oldStart + 1`, but git renders it as anchored
+ *     at `oldStart`. We treat the touched point as `oldStart` so that an
+ *     insertion adjacent to the flagged range still registers as activity
+ *     in the region — conservative (favors marking closed when in doubt).
+ *   - An empty / null patch returns false (caller should fall back to the
+ *     file-changed signal in that case; see classifyFindings).
+ *   - range.start > range.end returns false (invalid input).
+ */
+export function hunksTouching(patch: string, range: LineRange): boolean {
+  if (patch.length === 0) return false;
+  if (range.start > range.end) return false;
+  // Reset lastIndex — the regex has /g and lives at module scope; without
+  // a reset, a previous call could leave it past the end of the next input.
+  HUNK_HEADER_OLD.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = HUNK_HEADER_OLD.exec(patch)) !== null) {
+    const oldStart = Number.parseInt(match[1] ?? "0", 10);
+    if (oldStart <= 0) continue;
+    const oldCountRaw = match[2];
+    const oldCount = oldCountRaw === undefined ? 1 : Number.parseInt(oldCountRaw, 10);
+    const hunkFirst = oldStart;
+    const hunkLast = oldCount === 0 ? oldStart : oldStart + oldCount - 1;
+    if (hunkLast >= range.start && hunkFirst <= range.end) {
+      return true;
+    }
+  }
+  return false;
 }

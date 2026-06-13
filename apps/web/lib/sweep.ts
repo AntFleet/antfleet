@@ -303,7 +303,10 @@ export async function runSweep(deps: SweepDeps = REAL_DEPS): Promise<SweepResult
 
 async function runClosurePass(
   batch: SweepReviewBatch,
-  findingsByIndex: ReadonlyMap<number, { evidence: { path: string }[] }>,
+  findingsByIndex: ReadonlyMap<
+    number,
+    { evidence: { path: string; startLine: number | null; endLine: number | null }[] }
+  >,
   deps: SweepDeps,
   result: SweepResult,
   closedThisBatch: Set<string>,
@@ -312,9 +315,20 @@ async function runClosurePass(
   for (const f of batch.findings) {
     const finding = findingsByIndex.get(f.findingIndex);
     if (finding === undefined) continue;
-    const evidencePath = finding.evidence[0]?.path;
+    const ev = finding.evidence[0];
+    if (ev === undefined) continue;
+    const evidencePath = ev.path;
     if (evidencePath === undefined) continue;
-    closureInputs.push({ findingId: f.findingId, evidencePath });
+    // T3.3 — extract OLD-side line range from agreement_decision JSONB.
+    // Null on legacy rows whose evidence didn't carry numeric line data
+    // (the Finding schema allows startLine/endLine to be null) — those
+    // fall back to file-changed inside classifyFindings.
+    closureInputs.push({
+      findingId: f.findingId,
+      evidencePath,
+      startLine: ev.startLine,
+      endLine: ev.endLine,
+    });
   }
   if (closureInputs.length === 0) return;
 
