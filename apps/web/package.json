@@ -43,6 +43,7 @@
     "@types/react-dom": "^19.0.0",
     "drizzle-kit": "^0.31.10",
     "postcss": "^8.5.15",
+    "postgres": "^3.4.9",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
