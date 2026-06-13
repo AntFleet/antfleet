@@ -19,8 +19,8 @@ const sqlFile = readFileSync(join(selfDir, "0030_finding_retraction.sql"), "utf-
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 export function migration0030Statements(sqlText = sqlFile): string[] {
@@ -36,7 +36,7 @@ export function migration0030Statements(sqlText = sqlFile): string[] {
 export async function applyMigration0030(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
   for (const stmt of migration0030Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
 }
 

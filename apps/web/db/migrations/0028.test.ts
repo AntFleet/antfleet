@@ -18,8 +18,8 @@ const migration0027Text = readFileSync(
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 function hasDocker(): boolean {
@@ -36,8 +36,7 @@ function sqlLiteral(value: unknown): string {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function formatSql(strings: TemplateStringsArray | string, values: unknown[]): string {
-  if (typeof strings === "string") return strings;
+function formatSql(strings: TemplateStringsArray, values: unknown[]): string {
   return strings.reduce((text, part, index) => {
     const value = index < values.length ? sqlLiteral(values[index]) : "";
     return `${text}${part}${value}`;
@@ -79,8 +78,7 @@ async function queryRows(
 }
 
 function makeMigrationSql(container: StartedPostgreSqlContainer): MigrationSql {
-  const fn = async (strings: TemplateStringsArray | string, ...values: unknown[]) => {
-    const statement = formatSql(strings, values);
+  const runStatement = async (statement: string): Promise<SqlRow[]> => {
     const rows = await queryRows(container, statement);
 
     if (statement.includes("column_name")) {
@@ -94,7 +92,11 @@ function makeMigrationSql(container: StartedPostgreSqlContainer): MigrationSql {
     }
     return [];
   };
-  return fn as MigrationSql;
+
+  const fn = (async (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]> =>
+    runStatement(formatSql(strings, values))) as MigrationSql;
+  fn.query = (statement: string, _params?: unknown[]): Promise<SqlRow[]> => runStatement(statement);
+  return fn;
 }
 
 async function applyStatements(container: StartedPostgreSqlContainer, text: string): Promise<void> {

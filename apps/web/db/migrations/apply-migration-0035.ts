@@ -21,8 +21,8 @@ const sqlFile = readFileSync(join(selfDir, "0035_patch_skip_reason_per_side.sql"
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 export function migration0035Statements(sqlText = sqlFile): string[] {
@@ -61,7 +61,7 @@ export function migration0035Statements(sqlText = sqlFile): string[] {
 export async function applyMigration0035(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
   for (const stmt of migration0035Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
 }
 

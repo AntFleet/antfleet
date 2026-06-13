@@ -20,8 +20,8 @@ const sqlFile = readFileSync(join(selfDir, "0036_review_jobs_acp.sql"), "utf-8")
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 export function migration0036Statements(sqlText = sqlFile): string[] {
@@ -49,7 +49,7 @@ export function migration0036Statements(sqlText = sqlFile): string[] {
 export async function applyMigration0036(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
   for (const stmt of migration0036Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
 }
 

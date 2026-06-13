@@ -36,7 +36,7 @@ async function main() {
     .filter((s) => s.length > 0);
   for (const stmt of statements) {
     console.log(`  Running: ${stmt.slice(0, 60)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
   console.log("Migration 0026 applied successfully.");
 }

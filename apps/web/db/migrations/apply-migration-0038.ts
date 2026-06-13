@@ -21,8 +21,8 @@ const sqlFile = readFileSync(join(selfDir, "0038_finding_status_natural_key.sql"
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 export function migration0038Statements(sqlText = sqlFile): string[] {
@@ -50,7 +50,7 @@ export function migration0038Statements(sqlText = sqlFile): string[] {
 export async function applyMigration0038(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
   for (const stmt of migration0038Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
 }
 
