@@ -37,6 +37,8 @@ function deps(overrides: Partial<X402RouteDeps> = {}): X402RouteDeps {
     findJobByIdempotencyKey: vi.fn(),
     findRecentRepoShaJob: vi.fn(),
     checkWalletRateLimit: vi.fn(),
+    claimReviewAuthorization: vi.fn(),
+    markReviewClaimStatus: vi.fn(),
     makeOctokit: vi.fn(),
     scheduleWorker: vi.fn(),
     ...overrides,
@@ -141,6 +143,8 @@ function happyDeps(overrides: Partial<X402RouteDeps> = {}): X402RouteDeps {
     findJobByIdempotencyKey: vi.fn(async () => null),
     findRecentRepoShaJob: vi.fn(async () => null),
     checkWalletRateLimit: vi.fn(async () => ({ ok: true as const })),
+    claimReviewAuthorization: vi.fn(async () => ({ claimed: true as const, claimId: "claim-1" })),
+    markReviewClaimStatus: vi.fn(async () => undefined),
     makeOctokit: vi.fn(() => octokit()),
     ...overrides,
   });
@@ -325,6 +329,137 @@ describe("POST /api/v1/review/x402", () => {
 
       expect(res.status).toBe(202);
       expect(checkWalletRateLimit).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("rejects a replayed x402 authorization with 409 and does not enqueue a second job", async () => {
+    await withGate(async () => {
+      const claimReviewAuthorization = vi.fn(async () => ({
+        claimed: false as const,
+        reason: "duplicate_authorization" as const,
+      }));
+      const createJob = vi.fn();
+      const scheduleWorker = vi.fn();
+      const checkWalletRateLimit = vi.fn(async () => ({ ok: true as const }));
+      const res = await handleX402ReviewRequest(
+        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        happyDeps({ claimReviewAuthorization, createJob, scheduleWorker, checkWalletRateLimit }),
+      );
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { code: "duplicate_x402_authorization" },
+      });
+      expect(claimReviewAuthorization).toHaveBeenCalledTimes(1);
+      // Rate-limit budget MUST NOT be consumed on a replay reject.
+      expect(checkWalletRateLimit).not.toHaveBeenCalled();
+      expect(createJob).not.toHaveBeenCalled();
+      expect(scheduleWorker).not.toHaveBeenCalled();
+    });
+  });
+
+  it("claims the authorization once, then 409s the second attempt with the same authorization", async () => {
+    await withGate(async () => {
+      // Same in-memory store simulates the unique-index on authorization_key.
+      const claimed = new Set<string>();
+      const claimReviewAuthorization = vi.fn(
+        async (args: {
+          authorizationKey: string;
+        }): Promise<
+          | {
+              claimed: true;
+              claimId: string;
+            }
+          | { claimed: false; reason: "duplicate_authorization" }
+        > => {
+          if (claimed.has(args.authorizationKey)) {
+            return { claimed: false, reason: "duplicate_authorization" };
+          }
+          claimed.add(args.authorizationKey);
+          return { claimed: true, claimId: "claim-1" };
+        },
+      );
+      const createJob = vi.fn(async () => job());
+      const scheduleWorker = vi.fn();
+
+      const sig = paymentSignature();
+      const first = await handleX402ReviewRequest(
+        request({ ...aeonHeader(), "payment-signature": sig }),
+        happyDeps({
+          claimReviewAuthorization,
+          createJob,
+          scheduleWorker,
+          // The idempotency lookup must miss on the second attempt too so we
+          // exercise the claim guard rather than the idempotency short-circuit.
+          findJobByIdempotencyKey: vi.fn(async () => null),
+          findRecentRepoShaJob: vi.fn(async () => null),
+        }),
+      );
+      expect(first.status).toBe(202);
+
+      const second = await handleX402ReviewRequest(
+        request({ ...aeonHeader(), "payment-signature": sig }),
+        happyDeps({
+          claimReviewAuthorization,
+          createJob,
+          scheduleWorker,
+          findJobByIdempotencyKey: vi.fn(async () => null),
+          findRecentRepoShaJob: vi.fn(async () => null),
+        }),
+      );
+
+      expect(second.status).toBe(409);
+      await expect(second.json()).resolves.toMatchObject({
+        error: { code: "duplicate_x402_authorization" },
+      });
+      expect(createJob).toHaveBeenCalledTimes(1);
+      expect(scheduleWorker).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("marks the claim rate_limited when the wallet quota fires after a successful claim", async () => {
+    await withGate(async () => {
+      const claimReviewAuthorization = vi.fn(async () => ({
+        claimed: true as const,
+        claimId: "claim-1",
+      }));
+      const markReviewClaimStatus = vi.fn(async () => undefined);
+      const checkWalletRateLimit = vi.fn(async () => ({
+        ok: false as const,
+        retryAfterSeconds: 42,
+        limit: 10,
+      }));
+      const res = await handleX402ReviewRequest(
+        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        happyDeps({ claimReviewAuthorization, markReviewClaimStatus, checkWalletRateLimit }),
+      );
+
+      expect(res.status).toBe(429);
+      expect(markReviewClaimStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ claimId: "claim-1", status: "rate_limited" }),
+      );
+    });
+  });
+
+  it("marks the claim dispatch_failed when createJob throws after a successful claim", async () => {
+    await withGate(async () => {
+      const claimReviewAuthorization = vi.fn(async () => ({
+        claimed: true as const,
+        claimId: "claim-1",
+      }));
+      const markReviewClaimStatus = vi.fn(async () => undefined);
+      const createJob = vi.fn(async () => {
+        throw new Error("db down");
+      });
+      const res = await handleX402ReviewRequest(
+        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        happyDeps({ claimReviewAuthorization, markReviewClaimStatus, createJob }),
+      );
+
+      expect(res.status).toBe(500);
+      expect(markReviewClaimStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ claimId: "claim-1", status: "dispatch_failed" }),
+      );
     });
   });
 });

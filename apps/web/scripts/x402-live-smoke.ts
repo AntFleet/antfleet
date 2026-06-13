@@ -617,6 +617,8 @@ function routeDeps(config: X402Config, verify: X402RouteDeps["verifyPayment"]): 
     findJobByIdempotencyKey: async () => null,
     findRecentRepoShaJob: async () => null,
     checkWalletRateLimit: async () => ({ ok: true, limit: 100 }),
+    claimReviewAuthorization: async () => ({ claimed: true, claimId: "smoke-claim" }),
+    markReviewClaimStatus: async () => undefined,
     makeOctokit: () => ({
       rest: {
         pulls: {

@@ -11,10 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "x402:smoke": "tsx scripts/x402-live-smoke.ts",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push"
+    "x402:smoke": "tsx scripts/x402-live-smoke.ts"
   },
   "dependencies": {
     "@antfleet/cli": "workspace:*",
