@@ -490,6 +490,20 @@ async function processClaimedRow(
   // finding_status rows exist (recordPatchDecisions is an UPDATE). A
   // throw here is logged but never blocks comment success; the
   // suggestion block is already on the PR even if the DB write fails.
+  //
+  // patch-agent generates its own finding_id strings via makeFindingId
+  // (always the round-5+ long form). recordFindingStatuses, on retry of
+  // a pre-deploy review, intentionally preserves the existing short
+  // finding_id text. Translate the patch-decision's finding_id through
+  // findingIds[index] so the WHERE finding_id = X clause in
+  // recordPatchDecisions / recordPatchProposedEvent / etc. matches the
+  // actual finding_status row even when its id is legacy short form.
+  const canonicalFindingId = (decisionFindingId: string): string => {
+    const m = /-(\d+)$/.exec(decisionFindingId);
+    if (m === null) return decisionFindingId;
+    const index = Number(m[1]);
+    return findingIds[index] ?? decisionFindingId;
+  };
   if (patchOutcome !== null && patchOutcome.decisions.length > 0) {
     try {
       await deps.recordPatchDecisions(
@@ -499,7 +513,7 @@ async function processClaimedRow(
           // that omit the field. A missing split → all-null token columns.
           const split = patchOutcome.tokensByFindingId?.get(d.findingId);
           return {
-            findingId: d.findingId,
+            findingId: canonicalFindingId(d.findingId),
             suggestedPatch: d.patch,
             patchModelId: d.modelId,
             patchSkipReason: d.gateOutcome,
@@ -554,7 +568,9 @@ async function processClaimedRow(
           // useful via GitHub's start_line review comments).
           const isSingleLine = ev.endLine === null || ev.endLine === ev.startLine;
           if (!isSingleLine) continue;
-          const findingId = makeFindingId(reviewId, findingIndex);
+          // Canonical id from recordFindingStatuses (preserves legacy
+          // short-form text on retry of a pre-deploy review).
+          const findingId = findingIds[findingIndex] ?? makeFindingId(reviewId, findingIndex);
           try {
             const reviewCommentPost = await deps.postPatchReviewComment({
               installationId: row.installationId,
@@ -601,13 +617,14 @@ async function processClaimedRow(
       // for that finding (else null, matching pre-v1.6 shape).
       for (const d of patchOutcome.decisions) {
         if (d.patch === null || d.modelId === null) continue;
-        const linkedComment = reviewCommentByFindingId.get(d.findingId);
+        const canonicalId = canonicalFindingId(d.findingId);
+        const linkedComment = reviewCommentByFindingId.get(canonicalId);
         await deps.recordPatchProposedEvent({
           installationId: row.installationId,
           owner: row.owner,
           repo: row.repo,
           reviewId,
-          findingId: d.findingId,
+          findingId: canonicalId,
           modelId: d.modelId,
           suggestedPatch: d.patch,
           reviewCommentId: linkedComment?.id ?? null,

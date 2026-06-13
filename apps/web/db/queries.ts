@@ -37,7 +37,7 @@ import {
   scorecardSnapshots,
 } from "./schema";
 import { writePostDraft } from "@/lib/post-drafts";
-import { reconcilableTrailingRows } from "./finding-lifecycle";
+import { LIFECYCLE_PRESERVE_COLUMNS, reconcilableTrailingRows } from "./finding-lifecycle";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -497,27 +497,51 @@ export async function recordFindingStatuses(
   //      failed, the row stayed in_progress, and a retry re-ran the
   //      pre-comment write).
   return await db.transaction(async (tx) => {
-    if (rows.length > 0) {
-      // Target the (review_id, finding_index) natural key (migration
-      // 0038) rather than finding_id, because the finding_id format
-      // widened in round 5 and a pre-deploy row's short ID would not
-      // conflict with the post-deploy long ID — producing a duplicate
-      // row per index. Targeting the natural key matches existing rows
-      // by review/index regardless of finding_id text; the finding_id
-      // column is intentionally NOT in the SET clause so existing rows
-      // keep their original (short) value and downstream tables that
-      // reference finding_id stay coherent.
+    // Preselect every existing row for this reviewId so we can REUSE
+    // each row's existing finding_id text in the insert. This:
+    //   - Lets the upsert target finding_id (already UNIQUE pre-0038)
+    //     without depending on the natural-key migration being applied
+    //     before this code ships.
+    //   - Keeps legacy short-format finding_ids stable across a retry
+    //     so downstream tables that FK by finding_id text
+    //     (maintainer_reactions, patch decisions, patch review comment)
+    //     continue to match.
+    const existing = await tx
+      .select({
+        findingIndex: findingStatus.findingIndex,
+        findingId: findingStatus.findingId,
+        status: findingStatus.status,
+      })
+      .from(findingStatus)
+      .where(eq(findingStatus.reviewId, reviewId));
+    const existingByIndex = new Map(existing.map((r) => [r.findingIndex, r]));
+    const reconciledRows = rows.map((r) => ({
+      ...r,
+      findingId: existingByIndex.get(r.findingIndex)?.findingId ?? r.findingId,
+    }));
+    if (reconciledRows.length > 0) {
+      // Only update identity (title/severity/label/category) when the
+      // existing row is still untouched. A row that has lifecycle
+      // history (closure, patch artefacts, retraction) keeps its
+      // current identity so a retry can't attach old closure metadata
+      // to a different LLM finding at the same index. The preserve
+      // predicate is the same one used by reconcilableTrailingRows so
+      // the two paths agree on what "untouched" means.
       await tx
         .insert(findingStatus)
-        .values(rows)
+        .values(reconciledRows)
         .onConflictDoUpdate({
-          target: [findingStatus.reviewId, findingStatus.findingIndex],
+          target: findingStatus.findingId,
           set: {
             title: sql`excluded.title`,
             severity: sql`excluded.severity`,
             label: sql`excluded.label`,
             category: sql`excluded.category`,
           },
+          where: and(
+            eq(findingStatus.status, "open"),
+            ...LIFECYCLE_PRESERVE_COLUMNS.map((c) => isNull(c)),
+          ),
         });
     }
     // Delete trailing rows beyond the new length, but only when they
@@ -1064,7 +1088,20 @@ export async function loadSweepWork(): Promise<SweepReviewBatch[]> {
     })
     .from(findingStatus)
     .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(eq(findingStatus.status, "open"));
+    .where(
+      and(
+        eq(findingStatus.status, "open"),
+        // Only sweep findings whose parent review has actually posted its
+        // PR comment. Without this gate, the sweeper races the worker: a
+        // worker that wrote finding_status before postPRComment then died
+        // (setReviewComment never persisted prCommentId) would leave
+        // findings the sweeper can pick up and close — even though the
+        // worker is about to retry and overwrite the identity. Closing
+        // a stale-identity finding then attaches closure metadata to a
+        // different LLM finding when the retry lands.
+        isNotNull(reviews.prCommentId),
+      ),
+    );
 
   const byReview = new Map<string, SweepReviewBatch>();
   for (const r of rows) {
