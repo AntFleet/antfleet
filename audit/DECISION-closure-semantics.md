@@ -201,8 +201,8 @@ Select one option to gate implementation of T3.3:
 
 - [ ] **Option A — File-Changed (status quo):** Accept current behavior; document the
   false-positive risk in the product. No code changes required.
-- [ ] **Option B — Lines-Changed:** Narrow closure to findings whose original evidence
-  line range was touched. Recommended.
+- [x] **Option B — Lines-Changed:** Narrow closure to findings whose original evidence
+  line range was touched. Recommended. **— Selected by operator 2026-06-13.**
 - [ ] **Option C — Hunk-Overlap:** Tightest signal; parse hunk headers from unified
   diff. Accept complexity and fallback-to-file-changed for large repos.
 
