@@ -24,7 +24,14 @@ import {
   type VerifiedPayment,
 } from "@/lib/x402/facilitator";
 import { isX402ConfigError, loadX402Config, type X402Config } from "@/lib/x402/env";
-import { checkWalletRateLimit, findRecentRepoShaJob } from "@/lib/x402/rate-limit";
+import {
+  checkWalletRateLimit,
+  claimX402ReviewAuthorization,
+  findRecentRepoShaJob,
+  markX402ReviewClaimStatus,
+  type X402ReviewClaimResult,
+  type X402ReviewClaimStatus,
+} from "@/lib/x402/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -86,6 +93,22 @@ export type X402RouteDeps = {
     callerWallet: string;
     now: Date;
   }) => Promise<Awaited<ReturnType<typeof checkWalletRateLimit>>>;
+  claimReviewAuthorization: (args: {
+    authorizationKey: string;
+    callerWallet: string;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    sha: string;
+    now: Date;
+  }) => Promise<X402ReviewClaimResult>;
+  markReviewClaimStatus: (args: {
+    claimId: string;
+    status: Exclude<X402ReviewClaimStatus, "claimed">;
+    now: Date;
+    jobId?: string | null;
+    settlementResponse?: unknown;
+  }) => Promise<void>;
   makeOctokit: () => X402Octokit;
   scheduleWorker: (jobId: string) => void;
 };
@@ -98,6 +121,8 @@ const DEFAULT_DEPS: X402RouteDeps = {
   findJobByIdempotencyKey: (idempotencyKey) => findX402JobByIdempotencyKey(db, idempotencyKey),
   findRecentRepoShaJob: (args) => findRecentRepoShaJob(db, args),
   checkWalletRateLimit: (args) => checkWalletRateLimit(db, args),
+  claimReviewAuthorization: (args) => claimX402ReviewAuthorization(db, args),
+  markReviewClaimStatus: (args) => markX402ReviewClaimStatus(db, args),
   makeOctokit: () => {
     const token = process.env["GITHUB_PUBLIC_TOKEN"];
     return token ? new Octokit({ auth: token }) : new Octokit();
@@ -191,21 +216,6 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
     });
     if (cooldownHit !== null) return jobResponse(cooldownHit, statusForExisting(cooldownHit));
 
-    const rate = await deps.checkWalletRateLimit({
-      callerWallet: payment.callerWallet,
-      now,
-    });
-    if (!rate.ok) {
-      const res = jsonError(
-        429,
-        "rate_limited_wallet",
-        `Rate limit exceeded: ${rate.limit} reviews per wallet per hour`,
-        { retry_after_seconds: rate.retryAfterSeconds },
-      );
-      res.headers.set("Retry-After", String(rate.retryAfterSeconds));
-      return res;
-    }
-
     const idempotencyKey = buildX402IdempotencyKey({
       callerWallet: payment.callerWallet,
       owner: target.owner,
@@ -216,16 +226,69 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
     const existing = await deps.findJobByIdempotencyKey(idempotencyKey);
     if (existing !== null) return jobResponse(existing, statusForExisting(existing));
 
-    const job = await deps.createJob({
+    // Per-authorization replay guard (mirrors scan rail). The unique index on
+    // authorization_key enforces single-use even if the Coinbase facilitator
+    // does not. Placed AFTER cooldown + idempotency so legitimate retries on
+    // the same PR short-circuit before consuming the claim; placed BEFORE
+    // rate-limit + createJob so a stale authorization cannot drive two
+    // distinct reviews.
+    const claim = await deps.claimReviewAuthorization({
+      authorizationKey: reviewAuthorizationKey(payment),
       callerWallet: payment.callerWallet,
-      repoOwner: target.owner,
-      repoName: target.repo,
+      owner: target.owner,
+      repo: target.repo,
       prNumber: target.prNumber,
       sha: target.sha,
-      idempotencyKey,
-      x402PayTo: config.treasury,
-      authorizationState: makeAuthorizationState(payment),
+      now,
     });
+    if (!claim.claimed) {
+      return jsonError(
+        409,
+        "duplicate_x402_authorization",
+        "this x402 authorization has already been used for a review",
+      );
+    }
+
+    const rate = await deps.checkWalletRateLimit({
+      callerWallet: payment.callerWallet,
+      now,
+    });
+    if (!rate.ok) {
+      await deps.markReviewClaimStatus({
+        claimId: claim.claimId,
+        status: "rate_limited",
+        now: deps.now(),
+      });
+      const res = jsonError(
+        429,
+        "rate_limited_wallet",
+        `Rate limit exceeded: ${rate.limit} reviews per wallet per hour`,
+        { retry_after_seconds: rate.retryAfterSeconds },
+      );
+      res.headers.set("Retry-After", String(rate.retryAfterSeconds));
+      return res;
+    }
+
+    let job: ReviewJobRow;
+    try {
+      job = await deps.createJob({
+        callerWallet: payment.callerWallet,
+        repoOwner: target.owner,
+        repoName: target.repo,
+        prNumber: target.prNumber,
+        sha: target.sha,
+        idempotencyKey,
+        x402PayTo: config.treasury,
+        authorizationState: makeAuthorizationState(payment),
+      });
+    } catch (err) {
+      await deps.markReviewClaimStatus({
+        claimId: claim.claimId,
+        status: "dispatch_failed",
+        now: deps.now(),
+      });
+      throw err;
+    }
 
     logInfo("x402_review_job", {
       jobId: job.jobId,
@@ -327,6 +390,10 @@ function githubTargetError(
     message: messageOf(err),
   });
   return { kind: "error", status: 503, code: "github_unavailable", message: "GitHub unavailable" };
+}
+
+function reviewAuthorizationKey(payment: VerifiedPayment): string {
+  return createHash("sha256").update(payment.payloadBase64).digest("hex");
 }
 
 export function buildX402IdempotencyKey(args: {

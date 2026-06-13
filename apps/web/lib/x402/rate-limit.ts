@@ -121,6 +121,75 @@ export async function markX402ScanClaimStatus(
   `);
 }
 
+export type X402ReviewClaimStatus =
+  | "claimed"
+  | "rate_limited"
+  | "validation_failed"
+  | "dispatch_failed"
+  | "settlement_failed"
+  | "settled";
+
+export type X402ReviewClaimResult =
+  | { claimed: true; claimId: string }
+  | { claimed: false; reason: "duplicate_authorization" };
+
+export async function claimX402ReviewAuthorization(
+  q: Queryable,
+  args: {
+    authorizationKey: string;
+    callerWallet: string;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    sha: string;
+    now: Date;
+  },
+): Promise<X402ReviewClaimResult> {
+  const result = await q.execute(sql`
+    INSERT INTO x402_review_claims (
+      authorization_key, caller_wallet, repo_owner, repo_name, pr_number, head_sha, status, created_at
+    )
+    VALUES (
+      ${args.authorizationKey},
+      ${args.callerWallet.toLowerCase()},
+      ${args.owner},
+      ${args.repo},
+      ${args.prNumber},
+      ${args.sha},
+      'claimed',
+      ${args.now}
+    )
+    ON CONFLICT (authorization_key) DO NOTHING
+    RETURNING id
+  `);
+  const row = firstRow<{ id: string }>(result);
+  if (row === null) return { claimed: false, reason: "duplicate_authorization" };
+  return { claimed: true, claimId: row.id };
+}
+
+export async function markX402ReviewClaimStatus(
+  q: Queryable,
+  args: {
+    claimId: string;
+    status: Exclude<X402ReviewClaimStatus, "claimed">;
+    now: Date;
+    jobId?: string | null;
+    settlementResponse?: unknown;
+  },
+): Promise<void> {
+  const settlementResponseJson =
+    args.settlementResponse === undefined ? null : JSON.stringify(args.settlementResponse);
+  await q.execute(sql`
+    UPDATE x402_review_claims
+    SET status = ${args.status},
+        job_id = COALESCE(${args.jobId ?? null}, job_id),
+        settlement_response = ${settlementResponseJson}::jsonb,
+        completed_at = ${args.now}
+    WHERE id = ${args.claimId}
+      AND status = 'claimed'
+  `);
+}
+
 export async function findRecentRepoShaJob(
   q: Queryable,
   args: {

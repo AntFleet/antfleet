@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   checkWalletRateLimit,
+  claimX402ReviewAuthorization,
   claimX402ScanAuthorization,
   findRecentRepoShaJob,
+  markX402ReviewClaimStatus,
   markX402ScanClaimStatus,
 } from "./rate-limit";
 
@@ -83,6 +85,51 @@ describe("x402 rate limit", () => {
       now: new Date("2026-05-29T00:00:00Z"),
       headSha: "abc1234",
       settlementResponse: { txHash: "0xsettled" },
+    });
+
+    expect(q.execute).toHaveBeenCalledOnce();
+  });
+
+  it("claims each x402 review authorization only once", async () => {
+    const q = { execute: vi.fn(async () => ({ rows: [{ id: "claim-1" }] })) };
+
+    const result = await claimX402ReviewAuthorization(q as never, {
+      authorizationKey: "auth-key",
+      callerWallet: "0x0000000000000000000000000000000000000001",
+      owner: "antfleet",
+      repo: "x402-fixture",
+      prNumber: 1,
+      sha: "abc1234",
+      now: new Date("2026-05-29T00:00:00Z"),
+    });
+
+    expect(result).toEqual({ claimed: true, claimId: "claim-1" });
+  });
+
+  it("reports duplicate x402 review authorizations when the insert conflicts", async () => {
+    const q = { execute: vi.fn(async () => ({ rows: [] })) };
+
+    const result = await claimX402ReviewAuthorization(q as never, {
+      authorizationKey: "auth-key",
+      callerWallet: "0x0000000000000000000000000000000000000001",
+      owner: "antfleet",
+      repo: "x402-fixture",
+      prNumber: 1,
+      sha: "abc1234",
+      now: new Date("2026-05-29T00:00:00Z"),
+    });
+
+    expect(result).toEqual({ claimed: false, reason: "duplicate_authorization" });
+  });
+
+  it("finalizes a claimed x402 review with terminal status metadata", async () => {
+    const q = { execute: vi.fn(async () => ({ rows: [] })) };
+
+    await markX402ReviewClaimStatus(q as never, {
+      claimId: "claim-1",
+      status: "dispatch_failed",
+      now: new Date("2026-05-29T00:00:00Z"),
+      jobId: null,
     });
 
     expect(q.execute).toHaveBeenCalledOnce();

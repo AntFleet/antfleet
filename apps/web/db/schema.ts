@@ -745,6 +745,30 @@ export const x402ScanClaims = pgTable(
   ],
 );
 
+export const x402ReviewClaims = pgTable(
+  "x402_review_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    authorizationKey: text("authorization_key").notNull(),
+    callerWallet: text("caller_wallet").notNull(),
+    repoOwner: text("repo_owner").notNull(),
+    repoName: text("repo_name").notNull(),
+    prNumber: integer("pr_number"),
+    headSha: text("head_sha"),
+    jobId: text("job_id"),
+    status: text("status").notNull().default("claimed"),
+    settlementResponse: jsonb("settlement_response"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("x402_review_claims_authorization_key_uniq").on(t.authorizationKey),
+    index("x402_review_claims_wallet_created_idx").on(t.callerWallet, t.createdAt),
+    index("x402_review_claims_repo_created_idx").on(t.repoOwner, t.repoName, t.createdAt),
+    index("x402_review_claims_status_idx").on(t.status),
+  ],
+);
+
 export const cronCursors = pgTable("cron_cursors", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -831,5 +855,7 @@ export type ReviewJob = typeof reviewJobs.$inferSelect;
 export type NewReviewJob = typeof reviewJobs.$inferInsert;
 export type X402ScanClaim = typeof x402ScanClaims.$inferSelect;
 export type NewX402ScanClaim = typeof x402ScanClaims.$inferInsert;
+export type X402ReviewClaim = typeof x402ReviewClaims.$inferSelect;
+export type NewX402ReviewClaim = typeof x402ReviewClaims.$inferInsert;
 export type ScorecardSnapshot = typeof scorecardSnapshots.$inferSelect;
 export type NewScorecardSnapshot = typeof scorecardSnapshots.$inferInsert;
