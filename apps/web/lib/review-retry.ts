@@ -100,6 +100,7 @@ export async function runReviewRetryTick(
     logInfo("retry_cron.row_processed", {
       reviewId: candidate.reviewId,
       kind: outcome.kind,
+      lifecycle: candidate.kind,
       priorAttempts: candidate.processingAttempts,
     });
   }

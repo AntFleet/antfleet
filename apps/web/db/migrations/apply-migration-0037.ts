@@ -8,7 +8,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
-import { assertSafeToApply } from "./safety";
+import { assertSafeToApply, databaseHostForLog } from "./safety";
+
+// Re-export to match the pattern the 0035/0036 scripts established for
+// test consumers that import the host helper from the apply-migration
+// module rather than the shared safety helper.
+export { databaseHostForLog };
 
 const selfPath = fileURLToPath(import.meta.url);
 const selfDir = dirname(selfPath);
@@ -65,14 +70,6 @@ export async function verifyMigration0037(sql: MigrationSql): Promise<{ indexes:
     ORDER BY indexname
   `;
   return { indexes: indexes.map((r) => String(r["indexname"])) };
-}
-
-export function databaseHostForLog(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return "(unparseable DATABASE_URL)";
-  }
 }
 
 async function main() {

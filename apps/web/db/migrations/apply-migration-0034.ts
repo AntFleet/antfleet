@@ -8,7 +8,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
-import { assertSafeToApply } from "./safety";
+import { assertSafeToApply, databaseHostForLog } from "./safety";
+
+export { databaseHostForLog };
 
 const selfPath = fileURLToPath(import.meta.url);
 const selfDir = dirname(selfPath);
@@ -49,14 +51,6 @@ export async function verifyMigration0034(sql: MigrationSql): Promise<{ columns:
     ORDER BY column_name
   `;
   return { columns: columns.map((r) => String(r["column_name"])) };
-}
-
-export function databaseHostForLog(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return "(unparseable DATABASE_URL)";
-  }
 }
 
 async function main() {

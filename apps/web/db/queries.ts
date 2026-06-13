@@ -212,10 +212,20 @@ export async function loadReviewQueueRow(reviewId: string): Promise<ReviewQueueR
 // Rows missing installation_id/owner/repo (M3-1 smoke rows) are excluded —
 // the worker has no way to act on them. Rows already terminal ('done' or
 // 'failed') are excluded by construction.
+// `kind` discriminates the two lifecycle intents that select rows for
+// the worker: `due_retry` is a pending or pending_retry row below the
+// attempts cap (worker re-runs the pipeline); `stuck_recovery` is an
+// in_progress row whose claim has aged past stuckBefore (worker retries
+// if below cap, terminalizes if at cap). Returning the intent up to the
+// cron layer keeps the two paths legible even though both end up
+// dispatched through runReviewWorker.
+export type RetryCandidateKind = "due_retry" | "stuck_recovery";
+
 export type RetryCandidate = {
   reviewId: string;
   processingStatus: string;
   processingAttempts: number;
+  kind: RetryCandidateKind;
 };
 
 export async function loadReviewsReadyForRetry(args: {
@@ -264,7 +274,10 @@ export async function loadReviewsReadyForRetry(args: {
     )
     .orderBy(reviews.createdAt)
     .limit(args.limit);
-  return rows;
+  return rows.map((r) => ({
+    ...r,
+    kind: r.processingStatus === "in_progress" ? "stuck_recovery" : "due_retry",
+  }));
 }
 
 export async function markReviewSucceeded(args: { reviewId: string; now: Date }): Promise<void> {

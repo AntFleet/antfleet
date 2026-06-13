@@ -7,7 +7,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
-import { assertSafeToApply } from "./safety";
+import { assertSafeToApply, databaseHostForLog } from "./safety";
+
+export { databaseHostForLog };
 
 const selfPath = fileURLToPath(import.meta.url);
 const selfDir = dirname(selfPath);
@@ -125,14 +127,6 @@ export async function verifyMigration0036(sql: MigrationSql): Promise<{
     hasWalletConstraint: constraintNames.has("review_jobs_acp_wallet_check"),
     hasEventStatusConstraint: constraintNames.has("acp_provider_events_status_check"),
   };
-}
-
-export function databaseHostForLog(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return "(unparseable DATABASE_URL)";
-  }
 }
 
 async function main() {
