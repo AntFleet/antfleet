@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { discoverRepoForAgent } from "./repo-discovery";
+import { discoverRepoForAgent, isPublicHttpUrl } from "./repo-discovery";
 
 const readContract = vi.fn();
 const reposGet = vi.fn();
@@ -145,5 +145,48 @@ describe("discoverRepoForAgent", () => {
       repo: "liquid-protocol-ops/agent-autonomopoly",
       method: "github_search",
     });
+  });
+});
+
+describe("isPublicHttpUrl (SSRF allowlist for tokenURI fetch)", () => {
+  it("rejects the AWS/Vercel instance metadata service", async () => {
+    expect(await isPublicHttpUrl("http://169.254.169.254/latest/meta-data/")).toBe(false);
+  });
+
+  it("rejects loopback", async () => {
+    expect(await isPublicHttpUrl("http://127.0.0.1/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[::1]/")).toBe(false);
+  });
+
+  it("rejects RFC1918 private ranges", async () => {
+    expect(await isPublicHttpUrl("http://10.0.0.1/foo")).toBe(false);
+    expect(await isPublicHttpUrl("http://172.16.0.1/foo")).toBe(false);
+    expect(await isPublicHttpUrl("http://192.168.1.1/foo")).toBe(false);
+  });
+
+  it("rejects non-http(s) schemes", async () => {
+    expect(await isPublicHttpUrl("file:///etc/passwd")).toBe(false);
+    expect(await isPublicHttpUrl("gopher://1.2.3.4/")).toBe(false);
+    expect(await isPublicHttpUrl("ipfs://bafy/")).toBe(false);
+  });
+
+  it("rejects malformed URLs", async () => {
+    expect(await isPublicHttpUrl("not a url")).toBe(false);
+  });
+
+  it("rejects fc00::/7 unique-local IPv6", async () => {
+    expect(await isPublicHttpUrl("http://[fc00::1]/")).toBe(false);
+    expect(await isPublicHttpUrl("http://[fd00::1]/")).toBe(false);
+  });
+
+  it("permits public IPv4 literals (e.g. an ipfs.io address)", async () => {
+    // 1.1.1.1 is Cloudflare DNS — a well-known public IPv4; the helper
+    // must let unrelated public addresses through.
+    expect(await isPublicHttpUrl("https://1.1.1.1/")).toBe(true);
+  });
+
+  it("permits a normal ipfs.io URL after dns resolution", async () => {
+    // Real DNS lookup; ipfs.io must resolve to a public address.
+    expect(await isPublicHttpUrl("https://ipfs.io/ipfs/bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy")).toBe(true);
   });
 });

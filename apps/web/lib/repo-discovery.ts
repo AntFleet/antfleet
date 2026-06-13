@@ -1,3 +1,5 @@
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { Octokit } from "@octokit/rest";
 import { createPublicClient, getAddress, http, isAddress, parseAbi, type Address } from "viem";
 import { base } from "viem/chains";
@@ -115,7 +117,71 @@ function rewriteIpfsUri(uri: string): string {
   return `https://ipfs.io/ipfs/${path}`;
 }
 
+// Permitted IP families for tokenURI metadata fetches. The URL is
+// attacker-controlled (it comes from an on-chain ERC-20 read), so we
+// must refuse private/link-local/loopback ranges to avoid SSRF into
+// the Vercel runtime metadata service (169.254.169.254) or any
+// internal-only host the build environment can reach.
+export async function isPublicHttpUrl(url: string): Promise<boolean> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  // `new URL` keeps IPv6 literals wrapped in brackets in `.hostname`; strip
+  // them so node:net `isIP` recognizes the literal.
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  const literal = isIP(hostname);
+  const addresses: Array<{ address: string; family: number }> =
+    literal !== 0
+      ? [{ address: hostname, family: literal }]
+      : await lookup(hostname, { all: true });
+  for (const addr of addresses) {
+    if (!isPublicAddress(addr.address, addr.family)) return false;
+  }
+  return true;
+}
+
+function isPublicAddress(address: string, family: number): boolean {
+  if (family === 4) return isPublicIPv4(address);
+  if (family === 6) return isPublicIPv6(address);
+  return false;
+}
+
+function isPublicIPv4(address: string): boolean {
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  const [a, b] = parts as [number, number, number, number];
+  if (a === 10) return false; // 10/8
+  if (a === 127) return false; // 127/8 loopback
+  if (a === 169 && b === 254) return false; // 169.254/16 link-local
+  if (a === 172 && b >= 16 && b <= 31) return false; // 172.16/12
+  if (a === 192 && b === 168) return false; // 192.168/16
+  if (a === 0) return false; // 0.0.0.0/8
+  return true;
+}
+
+function isPublicIPv6(address: string): boolean {
+  const lower = address.toLowerCase();
+  if (lower === "::1" || lower === "::") return false;
+  if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return false; // link-local
+  // fc00::/7 (unique local): first byte 0xfc or 0xfd.
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return false;
+  // ::ffff:<ipv4> tunnels delegate to the v4 check.
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
+  if (mapped !== null) return isPublicIPv4(mapped[1] as string);
+  return true;
+}
+
 async function fetchMetadataJson(url: string): Promise<unknown> {
+  if (!(await isPublicHttpUrl(url))) {
+    logInfo("repo_discovery.fetch_blocked", { url });
+    return null;
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
