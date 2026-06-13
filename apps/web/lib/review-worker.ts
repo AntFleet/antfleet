@@ -43,11 +43,7 @@ import {
   type ReviewQueueRow,
 } from "@/db/queries";
 
-import {
-  BACKOFF_SECONDS,
-  MAX_PROCESSING_ATTEMPTS,
-  STUCK_AFTER_MS,
-} from "./review-worker-config";
+import { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS } from "./review-worker-config";
 // Re-exported so existing call sites (./review-retry.ts, tests) keep working
 // without an import path churn.
 export { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS };

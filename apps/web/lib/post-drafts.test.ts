@@ -30,9 +30,7 @@ describe("writePostDraft (read-only FS guard)", () => {
     // /proc/self is a directory but we can't write into a fresh subdir of
     // it; mkdir surfaces ENOENT/EACCES. The helper must swallow either.
     process.env[ENV_KEY] = "/proc/self/no-such/antfleet-drafts";
-    await expect(
-      writePostDraft({ slug: "x", title: "t", body: "b" }),
-    ).resolves.toBe(null);
+    await expect(writePostDraft({ slug: "x", title: "t", body: "b" })).resolves.toBe(null);
   });
 
   it("writes the draft when a writable directory is configured", async () => {

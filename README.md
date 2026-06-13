@@ -159,8 +159,12 @@ for the rationale.
 │   └── scripts/            operator admin scripts (dotenv-loaded),
 │                           e.g. weekly-digest.ts for Phase 2 metrics
 │
-├── docs/                   ONBOARDING.md, venice-integration.md
+├── docs/                   ONBOARDING.md, venice-integration.md,
+│                           acp-provider-runbook.md, aeon-skill-pack.md,
+│                           antfleet-agent-on-liquid-protocol.md,
+│                           autopilot/, demos/, handoffs/
 ├── examples/               dogfood spike corpus + baseline reports
+├── sting/                  bounty-platform runtime + verifiers
 └── CHANGELOG.md            per-release ship log
 ```
 
@@ -177,7 +181,7 @@ Postgres (Neon, EU region). Tables:
 - `onboarding_events` — Onboarder audit trail (welcome, summary,
   check-in, partner_reply)
 
-Migration schema head: `0017_agent_findings_bench_repo`. Schema definitions
+Migration schema head: `0037_public_page_indexes`. Schema definitions
 in `apps/web/db/schema.ts`; query layer in `apps/web/db/queries.ts`.
 
 ## Safety

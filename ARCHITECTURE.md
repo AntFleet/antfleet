@@ -130,6 +130,26 @@ Receipt pages — `/receipts`, `/receipts/[id]`, `/receipts.rss` — render the 
 
 All UI lives in `apps/web/app/`; shared library code in `apps/web/lib/`; DB schema and queries in `apps/web/db/`; one-off operator scripts in `apps/web/scripts/` (notably `weekly-digest.ts` for Phase 2 metrics). DB migrations are append-only under `apps/web/db/migrations/`.
 
+### x402 wallet-bound paywall — `apps/web/lib/paywall/*`
+
+Wallet-bound x402 channels with EIP-191 binding and prefunded drawdown. An agent signs up via `/wallets/[address]`, deposits USDC against the published `ANTFLEET_DEPOSIT_ADDRESS` on Base, and reviews on that wallet's installations draw from the deposit until the channel is drained. State lives in `installations`, paywall ledger tables, and the deposit-scan cron at `apps/web/app/api/cron/scan-deposits/route.ts`. See `CHANGELOG.md` 2026-05-21.
+
+### Patch Agent — `apps/web/lib/patch-agent.ts` + `patch-review-comment.ts`
+
+Suggested-patch lane that runs between the agreement gate and the PR comment post. Both Opus and GPT-5 propose a unified diff for each agreed finding; a deterministic gate (`patch-gate.ts`) selects the shipped patch and persists both candidates to `finding_status.suggested_patch_opus` / `_gpt5` (Eval Phase 0 dual-candidate storage, migration 0023). v1.6 click-to-apply posts a GitHub review-comment alongside the issue comment when `PATCH_AGENT_CLICK_APPLY_ENABLED`; sweeper detects "Commit suggestion" via `patchApplyClickedAt`. Self-gated on `PATCH_AGENT_ENABLED`; flag-off path is byte-identical to pre-sprint output.
+
+### Async review API + review_jobs — `apps/web/app/api/v1/review/*` + `apps/web/db/migrations/0024_review_jobs.sql`
+
+The public review surface is async by default. `POST /api/v1/review` returns `202 + jobId`; `GET /api/v1/review/{jobId}` polls. Job lifecycle persists to `review_jobs`; refunds fire on `provider_error | timeout | internal` only. The aeon-skills package consumes this contract.
+
+### Virtuals (Vault skill / Auto-claim) — `apps/web/lib/virtuals/*`
+
+Integration with the Virtuals factory: detect launches, run pre-launch reviews inside the deposit window, and surface verdicts on the agent page. State in `factory_launches`; cron in `apps/web/app/api/cron/poll-factory/route.ts`.
+
+### ACP intake — `apps/web/lib/acp/*` + `apps/web/db/migrations/0036_review_jobs_acp.sql`
+
+ACP rail wires the async review_jobs lifecycle to ACP provider events. New columns under `review_jobs.acp_*` carry the client wallet, target key, budget/submit state, and a per-event audit trail in `acp_provider_events`. Runbook in `docs/acp-provider-runbook.md`.
+
 ## What is intentionally untouched
 
 - **The slicer.** `src/mapper.ts`, `src/mappers/*` are the inherited body of work — language-aware feature detection across nine ecosystems. AntFleet does not touch it.

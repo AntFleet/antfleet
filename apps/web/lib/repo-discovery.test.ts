@@ -187,6 +187,10 @@ describe("isPublicHttpUrl (SSRF allowlist for tokenURI fetch)", () => {
 
   it("permits a normal ipfs.io URL after dns resolution", async () => {
     // Real DNS lookup; ipfs.io must resolve to a public address.
-    expect(await isPublicHttpUrl("https://ipfs.io/ipfs/bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy")).toBe(true);
+    expect(
+      await isPublicHttpUrl(
+        "https://ipfs.io/ipfs/bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy",
+      ),
+    ).toBe(true);
   });
 });
