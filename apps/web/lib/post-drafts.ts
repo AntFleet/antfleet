@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import path from "node:path";
+import { logDebug, logWarn, messageOf } from "./log";
 
 export type PostDraftInput = {
   slug: string;
@@ -16,24 +16,39 @@ function safeSlug(slug: string): string {
     .slice(0, 80);
 }
 
-export async function writePostDraft(input: PostDraftInput, now = new Date()): Promise<string> {
-  const dir = path.join(workspaceRoot(), ".omc", "state", "posts");
-  await mkdir(dir, { recursive: true });
+// Operator-facing post drafts land under ANTFLEET_DRAFTS_DIR when set.
+// In production (Vercel) the filesystem is read-only, so the env var is
+// unset and the helper short-circuits to a log line. The previous
+// implementation tried to mkdir under process.cwd() and surfaced EROFS
+// to every caller, which had two real-world consequences: identity-drift
+// + drift cron silently failed mid-run, and a thrown writePostDraft in
+// the roast pipeline caused roast-runner's catch to mark already-
+// published roasts as rejected. Both paths now treat the write as
+// best-effort.
+export async function writePostDraft(
+  input: PostDraftInput,
+  now = new Date(),
+): Promise<string | null> {
+  const dir = process.env["ANTFLEET_DRAFTS_DIR"];
+  if (dir === undefined || dir.length === 0) {
+    logDebug("post_draft.skipped", { reason: "ANTFLEET_DRAFTS_DIR_unset", slug: input.slug });
+    return null;
+  }
   const iso = now.toISOString().replace(/[:.]/g, "-");
   const filename = `${iso}-${safeSlug(input.slug) || "post"}.md`;
   const filePath = path.join(dir, filename);
   const markdown = `TODO(voice)\n\n# ${input.title}\n\n${input.body.trim()}\n`;
-  await writeFile(filePath, markdown, "utf8");
-  return filePath;
-}
-
-function workspaceRoot(): string {
-  let current = process.cwd();
-  for (;;) {
-    if (existsSync(path.join(current, "pnpm-workspace.yaml"))) return current;
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(filePath, markdown, "utf8");
+    return filePath;
+  } catch (err) {
+    logWarn("post_draft.write_failed", {
+      slug: input.slug,
+      dir,
+      message: messageOf(err),
+    });
+    return null;
   }
 }
 
@@ -50,7 +65,7 @@ export type RoastPostDraftInput = {
 export async function writeRoastPostDraft(
   input: RoastPostDraftInput,
   now = new Date(),
-): Promise<string> {
+): Promise<string | null> {
   const sevLine =
     input.topSeverity !== null
       ? `${input.findingsCount} findings · top severity: ${input.topSeverity}`
@@ -97,7 +112,7 @@ export type FactoryDetectedDraftInput = FactoryDraftBase & {
 export async function writeFactoryDetectedDraft(
   input: FactoryDetectedDraftInput,
   now = new Date(),
-): Promise<string> {
+): Promise<string | null> {
   const display = factoryDraftDisplay(input);
   const nameLine =
     input.tokenName !== null && input.tokenSymbol !== null && input.tokenName !== input.tokenSymbol
@@ -126,7 +141,7 @@ export type FactoryRepoFoundDraftInput = FactoryDraftBase & {
 export async function writeFactoryRepoFoundDraft(
   input: FactoryRepoFoundDraftInput,
   now = new Date(),
-): Promise<string> {
+): Promise<string | null> {
   const display = factoryDraftDisplay(input);
   const body = [
     `repo found for ${display}: github.com/${input.repoFullName}`,
@@ -151,7 +166,7 @@ export type FactoryVerdictDraftInput = FactoryDraftBase & {
 export async function writeFactoryVerdictDraft(
   input: FactoryVerdictDraftInput,
   now = new Date(),
-): Promise<string> {
+): Promise<string | null> {
   const display = factoryDraftDisplay(input);
   const sevLine = input.topSeverity !== null ? `top severity: ${input.topSeverity}` : null;
   const body = [
@@ -181,7 +196,7 @@ export type ClaimVerifiedDraftInput = FactoryDraftBase & {
 export async function writeClaimVerifiedDraft(
   input: ClaimVerifiedDraftInput,
   now = new Date(),
-): Promise<string> {
+): Promise<string | null> {
   const display = factoryDraftDisplay(input);
   const body = [
     `operator-verified: ${display} is github.com/${input.repoFullName}`,
@@ -211,7 +226,7 @@ export type WeeklyFeatureDraftInput = {
 export async function writeWeeklyFeatureDraft(
   input: WeeklyFeatureDraftInput,
   now = new Date(),
-): Promise<string> {
+): Promise<string | null> {
   const body = [
     `receipt of the week: ${input.agentName}`,
     `${input.findingTitle} (${input.severity})`,
