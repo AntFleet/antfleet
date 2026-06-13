@@ -1,8 +1,11 @@
 # RUNBOOK — Split dev DB off the prod Neon endpoint (T0.4)
 
-> **CONFIDENTIAL — operator-only.** This file lives under the gitignored `audit/`
-> directory. The work it describes touches the Neon control plane and your
-> local `.env.local`; nothing in here gets pushed.
+> **CONFIDENTIAL — operator-only.** This file lives under the gitignored
+> `audit/` directory by default. The Neon-branch creation and `.env.local`
+> swap it describes are local-only and never need to be pushed. (If the
+> file is ever force-added to a commit it enters git history visible to
+> all repo collaborators — no credentials live in this runbook, so the
+> blast radius is documentation only, but be deliberate about it.)
 
 **Audit task:** Milestone 0 / T0.4.
 **Status before:** `apps/web/.env.local`'s `DATABASE_URL` points at the prod
@@ -190,7 +193,11 @@ pnpm --dir apps/web exec tsx db/migrations/apply-migration-0038.ts
 > prints `Target host: <hostname>` followed by `--- DRY RUN (pass
 > --apply to execute) ---` and the SQL body, then exits 0 without
 > touching the DB. (`safety.ts:46-53` makes the `apply=false` path
-> permissive — it does not require `ALLOW_PROD_APPLY`.)
+> permissive — it does not require `ALLOW_PROD_APPLY`.) This guarantee
+> applies only to appliers that route through `assertSafeToApply()` from
+> `db/migrations/safety.ts`; older scripts under `apps/web/scripts/`
+> that pre-date the safety helper may write on import — verify any
+> chosen probe imports `safety` (`grep -l "from.*safety" apps/web/db/migrations apps/web/scripts`) before running it.
 
 Expected printed host: the dev-branch hostname from §3 (some variant
 of `ep-<words>-<id>-pooler.<region>.aws.neon.tech`).
@@ -215,6 +222,12 @@ pnpm --dir apps/web exec tsx scripts/apply-migration-0026.ts
 
 Same expected output: `Target host: ep-<…dev…>…`. This catches the
 case where both env files exist and one is stale.
+
+> Caveat: only probe `scripts/` files that import `assertSafeToApply`
+> from `db/migrations/safety.ts` — the dry-run-without-`--apply`
+> guarantee only holds via that helper. Confirm with
+> `grep -l "from.*safety" apps/web/scripts/apply-migration-*.ts` before
+> running a scripts/-side applier as a probe.
 
 ### 5.3 — Data sanity (dev branch sees the cloned snapshot, not live prod)
 
