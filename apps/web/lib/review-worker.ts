@@ -43,20 +43,14 @@ import {
   type ReviewQueueRow,
 } from "@/db/queries";
 
-// Backoff sequence. Indexed by the attempts counter AFTER the failure
-// (so a 1st-attempt failure picks index 0 → 60s, 2nd → 120s, …). 6 is
-// the terminal threshold: after the 6th failure we mark the row failed
-// rather than schedule another retry. Total wall-clock from first
-// failure to terminal ≈ 60+120+240+480+960+1800 ≈ 62 minutes.
-const BACKOFF_SECONDS = [60, 120, 240, 480, 960, 1800] as const;
-export const MAX_PROCESSING_ATTEMPTS = BACKOFF_SECONDS.length;
-
-// A row that has been claimed and stuck in in_progress for longer than
-// this is considered abandoned — the cron re-claims it. Picked to be
-// well above a normal review's runtime (Pro plan maxDuration is 300s);
-// 5 minutes gives the worker headroom to finish the slowest observed
-// PRs without the cron stomping on a still-running attempt.
-export const STUCK_AFTER_MS = 5 * 60 * 1000;
+import {
+  BACKOFF_SECONDS,
+  MAX_PROCESSING_ATTEMPTS,
+  STUCK_AFTER_MS,
+} from "./review-worker-config";
+// Re-exported so existing call sites (./review-retry.ts, tests) keep working
+// without an import path churn.
+export { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS };
 
 export type WorkerOutcome =
   | { kind: "done"; reviewId: string; agreedCount: number; degraded: boolean }

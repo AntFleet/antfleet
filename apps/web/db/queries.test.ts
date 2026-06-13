@@ -8,12 +8,27 @@ const dbMocks = vi.hoisted(() => {
     return { where };
   });
   const update = vi.fn(() => ({ set }));
+  const selectWhereCalls: unknown[] = [];
+  const selectLimit = vi.fn(() => Promise.resolve([]));
+  const selectOrderBy = vi.fn(() => ({ limit: selectLimit }));
+  const selectWhere = vi.fn((arg: unknown) => {
+    selectWhereCalls.push(arg);
+    return { orderBy: selectOrderBy };
+  });
+  const selectFrom = vi.fn(() => ({ where: selectWhere }));
+  const select = vi.fn(() => ({ from: selectFrom }));
   return {
-    db: { update },
+    db: { update, select },
     setCalls,
     set,
     update,
     where,
+    select,
+    selectFrom,
+    selectWhere,
+    selectOrderBy,
+    selectLimit,
+    selectWhereCalls,
   };
 });
 
@@ -22,10 +37,12 @@ vi.mock("./index", () => ({ db: dbMocks.db }));
 import {
   isMissingPatchRationaleColumnError,
   isMissingPatchSkipReasonColumnError,
+  loadReviewsReadyForRetry,
   normalizeActivityWindow,
   recordPatchDecisions,
   summarizeRoastFindings,
 } from "./queries";
+import { MAX_PROCESSING_ATTEMPTS } from "@/lib/review-worker-config";
 
 const NOW = new Date("2026-05-19T12:00:00.000Z");
 
@@ -164,6 +181,36 @@ describe("recordPatchDecisions", () => {
         }),
       ]),
     );
+  });
+});
+
+describe("loadReviewsReadyForRetry", () => {
+  it("filters out rows that have hit the attempts cap", async () => {
+    dbMocks.selectWhereCalls.length = 0;
+    await loadReviewsReadyForRetry({ now: NOW, stuckBefore: NOW, limit: 10 });
+    expect(dbMocks.selectWhereCalls).toHaveLength(1);
+    // The composed `and(...)` predicate exposes its children via queryChunks.
+    // We walk it for a chunk that references the processing_attempts column
+    // and pairs it with the MAX_PROCESSING_ATTEMPTS literal so a future
+    // refactor that drops the cap from the WHERE will fail this.
+    const seenColumns = new Set<string>();
+    const seenParams = new Set<string>();
+    const visited = new WeakSet<object>();
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== "object") {
+        if (node !== undefined) seenParams.add(String(node));
+        return;
+      }
+      if (visited.has(node as object)) return;
+      visited.add(node as object);
+      if ("name" in node && typeof (node as { name?: unknown }).name === "string") {
+        seenColumns.add((node as { name: string }).name);
+      }
+      for (const v of Object.values(node)) walk(v);
+    };
+    walk(dbMocks.selectWhereCalls[0]);
+    expect(seenColumns.has("processing_attempts")).toBe(true);
+    expect(seenParams.has(String(MAX_PROCESSING_ATTEMPTS))).toBe(true);
   });
 });
 

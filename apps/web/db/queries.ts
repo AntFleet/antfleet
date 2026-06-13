@@ -38,6 +38,7 @@ import {
   scorecardSnapshots,
 } from "./schema";
 import { writePostDraft } from "@/lib/post-drafts";
+import { MAX_PROCESSING_ATTEMPTS } from "@/lib/review-worker-config";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -235,6 +236,11 @@ export async function loadReviewsReadyForRetry(args: {
         isNotNull(reviews.installationId),
         isNotNull(reviews.owner),
         isNotNull(reviews.repo),
+        // Don't hand the worker rows that have already hit the attempts
+        // cap. The worker's catch checks the same bound, but a function
+        // killed mid-attempt at maxDuration never reaches catch — so
+        // without this filter the same dead row gets re-claimed forever.
+        lt(reviews.processingAttempts, MAX_PROCESSING_ATTEMPTS),
         or(
           eq(reviews.processingStatus, "pending"),
           and(eq(reviews.processingStatus, "pending_retry"), lte(reviews.nextRetryAt, args.now)),
