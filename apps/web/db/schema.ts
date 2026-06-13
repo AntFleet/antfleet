@@ -108,6 +108,9 @@ export const reviews = pgTable(
     // Index on the retry cron's hot path: scanning for non-terminal rows
     // whose nextRetryAt is due. Partial index keeps it tight.
     index("reviews_processing_lookup_idx").on(t.processingStatus, t.nextRetryAt),
+    // /receipts and /receipts.rss filter on public_receipt=true before
+    // joining finding_status. Migration 0037.
+    index("reviews_public_receipt_idx").on(t.publicReceipt),
   ],
 );
 
@@ -206,7 +209,14 @@ export const findingStatus = pgTable("finding_status", {
   retractedAt: timestamp("retracted_at", { withTimezone: true }),
   retractionReason: text("retraction_reason"),
   retractionEmail: text("retraction_email"),
-});
+}, (t) => [
+  // /receipts page joins finding_status -> reviews filtering on
+  // status='closed' AND public_receipt=true. The review_id FK is the
+  // join key; status + closure_detected_at indexes the order-by used
+  // for closed-finding feeds. Migration 0037.
+  index("finding_status_review_id_idx").on(t.reviewId),
+  index("finding_status_status_closure_idx").on(t.status, t.closureDetectedAt),
+]);
 
 export const maintainerReactions = pgTable(
   "maintainer_reactions",
