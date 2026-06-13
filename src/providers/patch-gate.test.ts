@@ -273,3 +273,55 @@ describe("decidePatchOutcomes — idempotence", () => {
     expect(a).toEqual(b);
   });
 });
+
+const virtual = (overrides: Partial<ProviderPatchProposal> = {}): ProviderPatchProposal => ({
+  providerName: "openrouter",
+  findingId: "fid-1",
+  patch: null,
+  modelId: "meta-llama/llama-4-maverick",
+  skipReason: null,
+  rationale: null,
+  usage: null,
+  ...overrides,
+});
+
+describe("decidePatchOutcomes — provider-keyed candidates (T3.8c)", () => {
+  it("captures a virtual (non-openai) provider's patch in candidates.gpt5 slot when both propose", () => {
+    const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), virtual({ patch: PATCH_B })]);
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.selector).toBe("deterministic-opus");
+    // The virtual provider's patch must be captured — not null — in gpt5 slot.
+    expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: PATCH_B });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
+  });
+
+  it("captures a virtual provider's skipReason in skipReasons.gpt5 slot when it declined", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ patch: PATCH_A }),
+      virtual({ patch: null, skipReason: "outside_diff_hunk" }),
+    ]);
+    expect(out[0]?.patch).toBeNull();
+    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: "outside_diff_hunk" });
+    expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
+  });
+
+  it("captures a virtual provider's rationale in rationales.gpt5 slot", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ patch: null, rationale: "no safe fix available" }),
+      virtual({ patch: null, rationale: "out of scope" }),
+    ]);
+    expect(out[0]?.rationales).toEqual({
+      opus: "no safe fix available",
+      gpt5: "out of scope",
+    });
+  });
+
+  it("gpt5 candidate slots stay null when only anthropic is in the group (pre-existing behavior unchanged)", () => {
+    const out = decidePatchOutcomes([anthropic({ patch: PATCH_A })]);
+    expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
+    expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
+  });
+});
