@@ -66,11 +66,23 @@ vi.mock("@/lib/github-files-public", () => ({
   }),
 }));
 vi.mock("@/lib/review-pipeline", () => ({ reviewPR: vi.fn() }));
-vi.mock("@/lib/paywall/env", () => ({ getReviewPriceUsdc: () => "1.00" }));
+vi.mock("@/lib/paywall/env", () => ({
+  getReviewPriceUsdc: () => "1.00",
+  // T2.3 shared kernel reads the price lazily via a thunk threaded through
+  // executePaidReviewKernel; the named import is touched even on the empty-files
+  // branch when the ACP caller passes `readPriceUsdc: getAcpReviewPriceUsdc`.
+  getAcpReviewPriceUsdc: () => "1.00",
+}));
 vi.mock("@/lib/github-app", () => ({ getInstallationToken: vi.fn() }));
 vi.mock("@/lib/repo-visibility", () => repoVisibilityMocks);
 vi.mock("@/lib/repo-benchmark", () => ({ isBenchmarkRepo: vi.fn() }));
-vi.mock("@/lib/review-worker", () => ({ runReviewWorker: vi.fn() }));
+// review-worker is the home of runReviewKernel (audit T2.3). Use partial
+// mocking so the kernel is real and only runReviewWorker (the install
+// entrypoint the paid path never hits) is stubbed.
+vi.mock("@/lib/review-worker", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/review-worker")>();
+  return { ...actual, runReviewWorker: vi.fn() };
+});
 vi.mock("@/lib/log", () => ({
   logError: logMocks.logError,
   logInfo: logMocks.logInfo,

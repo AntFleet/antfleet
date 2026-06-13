@@ -294,59 +294,170 @@ function allowedClaimSources(source: ClaimSource): ReadonlyArray<ReviewProcessin
   return ["pending", "pending_retry", "in_progress"];
 }
 
-// Inner review work. Identical surface to the legacy webhook after()
-// body — get files, run the pipeline, persist, post comment if agreed,
-// record finding lifecycle, fire onboarder. Any throw bubbles up to
-// runReviewWorker's catch where retry decisions are made.
-async function processClaimedRow(
-  reviewId: string,
-  row: ReviewQueueRow & { installationId: number; owner: string; repo: string },
-  deps: WorkerDeps,
-): Promise<void> {
-  const installationToken = await deps.getInstallationToken(row.installationId);
-  const files = await deps.getChangedFiles({
-    installationId: row.installationId,
-    owner: row.owner,
-    repo: row.repo,
-    prNumber: row.prNumber,
-    headSha: row.commitSha,
-  });
-  logInfo("review.files_fetched", {
-    reviewId,
-    fileCount: files.length,
-    filenames: files.map((f) => f.filename),
-  });
+// Shared review-execution kernel (audit T2.3). Single place where the
+// review lifecycle runs end-to-end: dispatch → reviewPR → agreement
+// decision (including triage) → persist responses → record finding
+// statuses → install-only lanes (onboarder + patch agent + PR comment +
+// click-apply). Both the installation worker (processClaimedRow below)
+// AND the paid x402/ACP job-worker invoke this single kernel; the
+// install rail passes the `installLane` dep set to enable patch+comment;
+// the paid rails leave it unset to ship the deliverable through x402/
+// ACP submission instead of GitHub comment.
+//
+// What the kernel guarantees:
+//   - `agreementDecision` includes `triage` on EVERY persistence branch
+//     (empty files = skipped shape; cost-cap overflow; success). The
+//     paid-path drift this audit fixes was triage being dropped from the
+//     success branch — a triage-skip became indistinguishable from a real
+//     empty consensus in the JSONB audit trail.
+//   - The optional `costCap` gate persists the bundle (with triage)
+//     BEFORE throwing `cost_cap_exceeded`, so the audit trail survives
+//     even when the review is refused for cost reasons.
+//   - The optional `signal` is forwarded into `reviewPR` so paid-rail
+//     callers can enforce a wall-clock timeout.
+//   - The optional `installLane` deps enable the install-only stages
+//     (onboarder, patch agent, PR comment, click-apply review comments,
+//     settlement footer). When undefined, the kernel returns after
+//     persistence; paid rails opt out this way because they don't post
+//     to GitHub.
+//
+// What the kernel does NOT do (caller responsibility):
+//   - mark the review row succeeded (callers settle the review row in
+//     their own catch/finally — installation through `runReviewWorker`,
+//     paid through their billing wrapper)
+//   - fetch files: callers pass them in, since the installation rail
+//     uses an install-token client and the paid rails use the public
+//     Octokit
+//
+// Return shape:
+//   - `{ kind: "skipped" }` when files is empty (caller decides whether
+//     to mark succeeded — x402 does, installation does, ACP throws)
+//   - `{ kind: "completed", bundle, findingIds }` on a normal completion.
+//     `findingIds` is the array returned by recordFindingStatuses (empty
+//     when no agreed findings or when the review degraded).
+export type ReviewKernelOutcome =
+  | { kind: "skipped" }
+  | {
+      kind: "completed";
+      bundle: Awaited<ReturnType<typeof realReviewPR>>;
+      findingIds: string[];
+    };
+
+export type ReviewKernelDeps = {
+  reviewPR: typeof realReviewPR;
+  updateReview: typeof realUpdateReview;
+  recordFindingStatuses: typeof realRecordFindingStatuses;
+};
+
+// Install-only lane deps. When the caller (installation rail) wires
+// these, the kernel runs the onboarder + patch agent + PR comment +
+// click-apply stages after persistence. Paid rails leave it undefined
+// to opt out.
+export type ReviewKernelInstallLane = {
+  installationId: number;
+  commitSha: string;
+  runFirstReviewSummary: typeof realRunFirstReviewSummary;
+  runPatchAgent: typeof realRunPatchAgent;
+  isPatchAgentClickApplyEnabledForInstall: typeof realIsPatchAgentClickApplyEnabledForInstall;
+  postPatchReviewComment: typeof realPostPatchReviewComment;
+  recordPatchReviewComment: typeof realRecordPatchReviewComment;
+  loadReviewSettlement: (reviewId: string) => Promise<ReviewSettlement | null>;
+  postPRComment: typeof realPostPRComment;
+  setReviewComment: typeof realSetReviewComment;
+  recordPatchDecisions: typeof realRecordPatchDecisions;
+  setReviewPatchCost: typeof realSetReviewPatchCost;
+  recordPatchProposedEvent: typeof realRecordPatchProposedEvent;
+  now: () => Date;
+};
+
+export type ReviewKernelArgs = {
+  reviewId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  files: Parameters<typeof realReviewPR>[0]["files"];
+  // Forwarded into reviewPR — paid rails set this so the kernel respects
+  // the rail's wall-clock budget.
+  signal?: AbortSignal;
+  // Optional billing-rail tag attached to providerResponses (e.g. "x402",
+  // "acp"). Installation reviews pass undefined and the field is absent.
+  rail?: string;
+  // Optional cost cap. When the bundle's estimatedCostUsd exceeds
+  // `priceUsdc * 3` (the existing paywall cap), the kernel persists the
+  // bundle (with triage) and throws an error tagged with
+  // `failureModeTag: "cost_cap_exceeded"`. Caller decides whether to
+  // continue (installation rail passes undefined).
+  costCap?: { readPriceUsdc: () => string; errorMessage: string };
+  // Optional install-only lane. Enables onboarder + patch agent + PR
+  // comment + click-apply. Paid rails leave this undefined.
+  installLane?: ReviewKernelInstallLane;
+};
+
+export async function runReviewKernel(
+  args: ReviewKernelArgs,
+  deps: ReviewKernelDeps,
+): Promise<ReviewKernelOutcome> {
+  const { reviewId, owner, repo, prNumber, files, signal, rail } = args;
 
   if (files.length === 0) {
+    const providerResponses: Record<string, unknown> = {
+      status: "skipped",
+      reason: "no reviewable files",
+    };
+    if (rail !== undefined) providerResponses["rail"] = rail;
     await deps.updateReview(reviewId, {
       filesReviewed: [],
-      providerResponses: { status: "skipped", reason: "no reviewable files" },
+      providerResponses,
       agreementDecision: { status: "skipped" },
     });
     logInfo("review.skipped", { reviewId, reason: "no reviewable files" });
-    return;
+    return { kind: "skipped" };
   }
 
   const bundle = await deps.reviewPR({
     files,
-    owner: row.owner,
-    repo: row.repo,
-    prNumber: row.prNumber,
+    owner,
+    repo,
+    prNumber,
+    ...(signal !== undefined ? { signal } : {}),
   });
+
+  // Full agreement-decision shape, shared across cost-cap + success
+  // branches. Triage is included unconditionally — see the kernel
+  // contract above.
+  const agreementDecision = {
+    mode: bundle.agreementMode,
+    agreed: bundle.agreed,
+    disagreements: bundle.disagreements,
+    degraded: bundle.degraded,
+    degradedReason: bundle.degradedReason,
+    triage: bundle.triage,
+  };
+  const providerResponses: Record<string, unknown> = { perProvider: bundle.perProvider };
+  if (rail !== undefined) providerResponses["rail"] = rail;
+
+  if (args.costCap !== undefined) {
+    const price = Number(args.costCap.readPriceUsdc());
+    if (Number.isFinite(price) && bundle.estimatedCostUsd > price * 3) {
+      await deps.updateReview(reviewId, {
+        filesReviewed: files.map((f) => f.filename),
+        providerModelIds: bundle.modelIds,
+        providerResponses,
+        agreementDecision,
+        timingMs: bundle.totalMs,
+        costEstimatedUsd: bundle.estimatedCostUsd,
+      });
+      throw Object.assign(new Error(args.costCap.errorMessage), {
+        failureModeTag: "cost_cap_exceeded",
+      });
+    }
+  }
+
   await deps.updateReview(reviewId, {
     filesReviewed: files.map((f) => f.filename),
     providerModelIds: bundle.modelIds,
-    providerResponses: { perProvider: bundle.perProvider },
-    agreementDecision: {
-      mode: bundle.agreementMode,
-      agreed: bundle.agreed,
-      disagreements: bundle.disagreements,
-      degraded: bundle.degraded,
-      degradedReason: bundle.degradedReason,
-      // Full triage decision (or null when triage was bypassed) kept in the
-      // JSONB audit trail alongside the agreement outcome.
-      triage: bundle.triage,
-    },
+    providerResponses,
+    agreementDecision,
     timingMs: bundle.totalMs,
     costEstimatedUsd: bundle.estimatedCostUsd,
   });
@@ -366,6 +477,53 @@ async function processClaimedRow(
     })),
   });
 
+  // recordFindingStatuses is only useful for non-degraded reviews with
+  // at least one agreed finding — degraded/empty consensus reviews
+  // never surface findings to consumers.
+  let findingIds: string[] = [];
+  if (!bundle.degraded && bundle.agreed.length > 0) {
+    findingIds = await deps.recordFindingStatuses(
+      reviewId,
+      bundle.agreed.map((f) => ({
+        title: f.title,
+        severity: f.severity,
+        category: f.category,
+      })),
+    );
+  }
+
+  if (args.installLane !== undefined) {
+    await runInstallLane({
+      reviewId,
+      owner,
+      repo,
+      prNumber,
+      bundle,
+      files,
+      findingIds,
+      lane: args.installLane,
+    });
+  }
+
+  return { kind: "completed", bundle, findingIds };
+}
+
+// Install-only lane: onboarder summary, patch agent, PR comment, click-
+// apply review comments, patch decisions persistence. Lives inside the
+// kernel module (audit T2.3) so the install path stays a single kernel
+// invocation; paid rails leave `installLane` undefined and skip this.
+async function runInstallLane(args: {
+  reviewId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  bundle: Awaited<ReturnType<typeof realReviewPR>>;
+  files: Parameters<typeof realReviewPR>[0]["files"];
+  findingIds: string[];
+  lane: ReviewKernelInstallLane;
+}): Promise<void> {
+  const { reviewId, owner, repo, prNumber, bundle, files, findingIds, lane } = args;
+
   // Onboarder summary fires regardless of agreed/degraded. It self-gates
   // on ONBOARDER_ENABLED + first-review-only. Failures are logged but
   // never bubble; the review itself is the load-bearing outcome.
@@ -374,11 +532,11 @@ async function processClaimedRow(
     for (const p of bundle.perProvider) {
       perProviderFindingCounts[p.name] = p.output?.findings.length ?? 0;
     }
-    await deps.runFirstReviewSummary({
-      installationId: row.installationId,
-      owner: row.owner,
-      repo: row.repo,
-      prNumber: row.prNumber,
+    await lane.runFirstReviewSummary({
+      installationId: lane.installationId,
+      owner,
+      repo,
+      prNumber,
       perProviderFindingCounts,
       agreedCount: bundle.agreed.length,
       disagreementCount: bundle.disagreements.length,
@@ -400,10 +558,10 @@ async function processClaimedRow(
   // requires patch generation failure to be invisible to the caller.
   let patchOutcome: Awaited<ReturnType<typeof realRunPatchAgent>> = null;
   try {
-    patchOutcome = await deps.runPatchAgent({
+    patchOutcome = await lane.runPatchAgent({
       reviewId,
-      installationId: row.installationId,
-      repo: row.repo,
+      installationId: lane.installationId,
+      repo,
       findings: bundle.agreed,
       changedFiles: files,
     });
@@ -433,9 +591,9 @@ async function processClaimedRow(
   let clickApplyEnabled = false;
   if (patchOutcome !== null && inlinePatchByIndex.size > 0) {
     try {
-      clickApplyEnabled = await deps.isPatchAgentClickApplyEnabledForInstall(
-        row.installationId,
-        row.repo,
+      clickApplyEnabled = await lane.isPatchAgentClickApplyEnabledForInstall(
+        lane.installationId,
+        repo,
       );
     } catch (err) {
       logError("patch_review_comment.gate_lookup_failed", {
@@ -456,7 +614,7 @@ async function processClaimedRow(
   // formatPRComment omits the footer entirely in that case.
   let settlement: ReviewSettlement | null = null;
   try {
-    settlement = await deps.loadReviewSettlement(reviewId);
+    settlement = await lane.loadReviewSettlement(reviewId);
   } catch (err) {
     logError("review_worker.settlement_lookup_failed", {
       reviewId,
@@ -474,19 +632,13 @@ async function processClaimedRow(
       : {}),
     clickApplyEnabled,
   });
-  const findingIds = await deps.recordFindingStatuses(
-    reviewId,
-    bundle.agreed.map((f) => ({
-      title: f.title,
-      severity: f.severity,
-      category: f.category,
-    })),
-  );
-  const posted = await deps.postPRComment({
-    installationId: row.installationId,
-    owner: row.owner,
-    repo: row.repo,
-    prNumber: row.prNumber,
+  // findingIds were already written by the kernel above. The install
+  // lane consumes the same array for canonical-id translation below.
+  const posted = await lane.postPRComment({
+    installationId: lane.installationId,
+    owner,
+    repo,
+    prNumber,
     body: commentBody,
   });
   logInfo("comment.posted", {
@@ -497,7 +649,7 @@ async function processClaimedRow(
     patchesIncluded: patchOutcome?.byIndex.size ?? 0,
   });
 
-  await deps.setReviewComment({
+  await lane.setReviewComment({
     reviewId,
     commentId: posted.id,
     commentUrl: posted.htmlUrl,
@@ -527,7 +679,7 @@ async function processClaimedRow(
   };
   if (patchOutcome !== null && patchOutcome.decisions.length > 0) {
     try {
-      await deps.recordPatchDecisions(
+      await lane.recordPatchDecisions(
         patchOutcome.decisions.map((d) => {
           // runPatchAgent always populates tokensByFindingId (every return
           // path sets a Map); the `?.` only tolerates loosely-typed test mocks
@@ -538,7 +690,7 @@ async function processClaimedRow(
             suggestedPatch: d.patch,
             patchModelId: d.modelId,
             patchSkipReason: d.gateOutcome,
-            proposedAt: deps.now(),
+            proposedAt: lane.now(),
             candidates: d.candidates,
             rationales: d.rationales ?? { opus: null, gpt5: null },
             skipReasons: d.skipReasons,
@@ -559,7 +711,7 @@ async function processClaimedRow(
       // summed at token list rates in patch-cost.ts. Drawdown invariant 3:
       // this is the ONLY cost write in the click-apply path; no new payments
       // / drawdown rows touched.
-      await deps.setReviewPatchCost(reviewId, patchOutcome.costPatchUsd);
+      await lane.setReviewPatchCost(reviewId, patchOutcome.costPatchUsd);
 
       // Patch Agent v1.6 — click-apply lane runs BEFORE the patch_proposed
       // events fire so the events can carry the review_comment_id/url for
@@ -593,23 +745,23 @@ async function processClaimedRow(
           // short-form text on retry of a pre-deploy review).
           const findingId = findingIds[findingIndex] ?? makeFindingId(reviewId, findingIndex);
           try {
-            const reviewCommentPost = await deps.postPatchReviewComment({
-              installationId: row.installationId,
-              owner: row.owner,
-              repo: row.repo,
-              pullNumber: row.prNumber,
-              commitId: row.commitSha,
+            const reviewCommentPost = await lane.postPatchReviewComment({
+              installationId: lane.installationId,
+              owner,
+              repo,
+              pullNumber: prNumber,
+              commitId: lane.commitSha,
               path: ev.path,
               line: ev.startLine,
               patch,
               bodyPrefix: `**${finding.title}** · proposed patch (model: \`${patch.modelId}\`)`,
             });
             if (reviewCommentPost === null) continue;
-            await deps.recordPatchReviewComment({
+            await lane.recordPatchReviewComment({
               findingId,
               reviewCommentId: reviewCommentPost.id,
               reviewCommentUrl: reviewCommentPost.url,
-              proposedAt: deps.now(),
+              proposedAt: lane.now(),
             });
             reviewCommentByFindingId.set(findingId, {
               id: reviewCommentPost.id,
@@ -640,10 +792,10 @@ async function processClaimedRow(
         if (d.patch === null || d.modelId === null) continue;
         const canonicalId = canonicalFindingId(d.findingId);
         const linkedComment = reviewCommentByFindingId.get(canonicalId);
-        await deps.recordPatchProposedEvent({
-          installationId: row.installationId,
-          owner: row.owner,
-          repo: row.repo,
+        await lane.recordPatchProposedEvent({
+          installationId: lane.installationId,
+          owner,
+          repo,
           reviewId,
           findingId: canonicalId,
           modelId: d.modelId,
@@ -659,6 +811,68 @@ async function processClaimedRow(
       });
     }
   }
+}
+
+// Inner review work for the installation rail. After audit T2.3 this is
+// a thin wrapper around `runReviewKernel`: it fetches files using the
+// install-token client, then invokes the kernel with the install-only
+// lane (onboarder + patch agent + PR comment + click-apply) wired
+// through. Any throw bubbles up to runReviewWorker's catch where retry
+// decisions are made.
+async function processClaimedRow(
+  reviewId: string,
+  row: ReviewQueueRow & { installationId: number; owner: string; repo: string },
+  deps: WorkerDeps,
+): Promise<void> {
+  const installationToken = await deps.getInstallationToken(row.installationId);
+  const files = await deps.getChangedFiles({
+    installationId: row.installationId,
+    owner: row.owner,
+    repo: row.repo,
+    prNumber: row.prNumber,
+    headSha: row.commitSha,
+  });
+  logInfo("review.files_fetched", {
+    reviewId,
+    fileCount: files.length,
+    filenames: files.map((f) => f.filename),
+  });
+
+  const kernelOutcome = await runReviewKernel(
+    {
+      reviewId,
+      owner: row.owner,
+      repo: row.repo,
+      prNumber: row.prNumber,
+      files,
+      // No cost cap on the installation rail — drawdown lives in the
+      // paywall layer, not here.
+      // No signal — the installation rail has no wall-clock budget.
+      installLane: {
+        installationId: row.installationId,
+        commitSha: row.commitSha,
+        runFirstReviewSummary: deps.runFirstReviewSummary,
+        runPatchAgent: deps.runPatchAgent,
+        isPatchAgentClickApplyEnabledForInstall: deps.isPatchAgentClickApplyEnabledForInstall,
+        postPatchReviewComment: deps.postPatchReviewComment,
+        recordPatchReviewComment: deps.recordPatchReviewComment,
+        loadReviewSettlement: deps.loadReviewSettlement,
+        postPRComment: deps.postPRComment,
+        setReviewComment: deps.setReviewComment,
+        recordPatchDecisions: deps.recordPatchDecisions,
+        setReviewPatchCost: deps.setReviewPatchCost,
+        recordPatchProposedEvent: deps.recordPatchProposedEvent,
+        now: deps.now,
+      },
+    },
+    {
+      reviewPR: deps.reviewPR,
+      updateReview: deps.updateReview,
+      recordFindingStatuses: deps.recordFindingStatuses,
+    },
+  );
+  if (kernelOutcome.kind === "skipped") return;
+
   // installationToken is consumed implicitly through getChangedFiles /
   // postPRComment via the GitHub App auth path; the explicit fetch above
   // surfaces install-token failures early (before LLM calls). Suppress
