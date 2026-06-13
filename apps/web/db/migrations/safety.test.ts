@@ -29,6 +29,18 @@ describe("resolveApplyPlan", () => {
     if (result.ok) expect(result.apply).toBe(false);
   });
 
+  it("allows a dry-run with no DATABASE_URL at all", () => {
+    // Dry-run prints SQL and exits without touching the DB. Requiring an
+    // env var just to read the migration script breaks the documented
+    // review workflow; only --apply needs DB connectivity.
+    const result = resolveApplyPlan({ argv: ["node", "x"], env: {} });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.apply).toBe(false);
+      expect(result.host).toContain("dry-run");
+    }
+  });
+
   it("refuses --apply without ALLOW_PROD_APPLY=1 and names the host in the message", () => {
     const result = resolveApplyPlan({
       argv: ["node", "x", "--apply"],

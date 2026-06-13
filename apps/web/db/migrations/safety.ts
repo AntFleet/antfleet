@@ -33,17 +33,29 @@ export type ResolveResult = ResolveOk | ResolveErr;
 // a result object so the caller controls process.exit (and the helper stays
 // trivially unit-testable). Treat `apply=true` as authoritative: the caller
 // must NOT touch the DB when apply=false, regardless of other flags.
+//
+// Dry-run path (no --apply) is intentionally permissive about DATABASE_URL.
+// Callers print SQL and exit without touching the DB; requiring an env var
+// just to read the script breaks the documented review workflow.
 export function resolveApplyPlan(opts: {
   argv: ReadonlyArray<string>;
   env: Record<string, string | undefined>;
 }): ResolveResult {
   const apply = opts.argv.includes("--apply");
   const url = opts.env["DATABASE_URL"];
+  if (!apply) {
+    return {
+      ok: true,
+      url: url ?? "",
+      host: url !== undefined ? databaseHostForLog(url) : "(dry-run, no DATABASE_URL)",
+      apply: false,
+    };
+  }
   if (!url) {
     return { ok: false, reason: "DATABASE_URL not set" };
   }
   const host = databaseHostForLog(url);
-  if (apply && opts.env["ALLOW_PROD_APPLY"] !== "1") {
+  if (opts.env["ALLOW_PROD_APPLY"] !== "1") {
     return {
       ok: false,
       reason:
