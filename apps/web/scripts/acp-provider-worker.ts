@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { config as loadDotenv } from "dotenv";
 import type { recordAcpProviderEvent } from "@/lib/acp/event-inbox";
+import { messageOf } from "../lib/log";
 
 loadDotenv({ path: ".env.local", quiet: true });
 
@@ -233,10 +234,6 @@ function readFlag(name: string): string | null {
   const index = process.argv.indexOf(name);
   if (index === -1) return null;
   return process.argv[index + 1] ?? null;
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 export function safeAcpProviderWorkerErrorSummary(err: unknown): Record<string, string> {
