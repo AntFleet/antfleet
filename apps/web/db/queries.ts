@@ -382,9 +382,20 @@ export async function recordFindingStatuses(
     label: f.label ?? "blocking",
     category: f.category,
   }));
-  const inserted = await db.insert(findingStatus).values(rows).returning({
-    findingId: findingStatus.findingId,
-  });
+  // finding_id is UNIQUE and deterministic from (reviewId, index); a worker
+  // retry after a transient postPRComment failure re-enters this path with
+  // the same rows. onConflictDoNothing makes the insert idempotent; the
+  // follow-up select returns ids on both first run and replay (returning()
+  // yields nothing for conflict-skipped rows).
+  await db
+    .insert(findingStatus)
+    .values(rows)
+    .onConflictDoNothing({ target: findingStatus.findingId });
+  const inserted = await db
+    .select({ findingId: findingStatus.findingId })
+    .from(findingStatus)
+    .where(eq(findingStatus.reviewId, reviewId))
+    .orderBy(findingStatus.findingIndex);
   return inserted.map((r) => r.findingId);
 }
 

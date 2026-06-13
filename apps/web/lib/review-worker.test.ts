@@ -163,6 +163,38 @@ describe("runReviewWorker", () => {
     expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
   });
 
+  it("retries a transient postPRComment failure and reaches done on the second attempt", async () => {
+    // Regression: recordFindingStatuses used to do a plain insert. On retry,
+    // the duplicate finding_id rows raised 23505 and the worker marked the
+    // review terminally failed. The query is now onConflictDoNothing + a
+    // follow-up select that returns the same ids on both first run and replay.
+    const findingIds = ["rev-1-0"];
+    const recordFindingStatuses = vi.fn().mockResolvedValue(findingIds);
+    const postPRComment = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 503 service unavailable"))
+      .mockResolvedValueOnce({ id: 9001, htmlUrl: "https://gh/c/9001" });
+    let processingAttempts = 0;
+    const loadReviewQueueRow = vi.fn(async () => mkRow({ processingAttempts }));
+    const deps = mkDeps({
+      loadReviewQueueRow,
+      recordFindingStatuses,
+      postPRComment,
+    });
+
+    const first = await runReviewWorker("rev-1", "webhook", deps);
+    expect(first.kind).toBe("retried");
+    expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
+    processingAttempts = 1;
+
+    const second = await runReviewWorker("rev-1", "cron", deps);
+    expect(second.kind).toBe("done");
+    expect(recordFindingStatuses).toHaveBeenCalledTimes(2);
+    expect(postPRComment).toHaveBeenCalledTimes(2);
+    expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+    expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+  });
+
   it("cron source may claim from pending, pending_retry, and in_progress", async () => {
     const deps = mkDeps({
       loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow({ processingStatus: "pending_retry" })),
