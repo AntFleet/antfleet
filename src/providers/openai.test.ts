@@ -1,11 +1,28 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type OpenAI from "openai";
-import { openaiProvider, extractOpenAIContent } from "./openai.js";
+import { openaiProvider, extractOpenAIContent, OPENAI_MAX_TOKENS } from "./openai.js";
 import { reviewOutputSchema } from "../types.js";
 import { FleetError } from "../errors.js";
+
+// Spy target captured at module scope so the vi.mock factory (which is
+// hoisted and cannot close over later-declared let bindings) can reference
+// it through a stable wrapper object.
+const sdkSpy = { create: vi.fn() }; // eslint-disable-line -- module-scope mock target
+
+vi.mock("openai", async (importOriginal) => {
+  // Preserve the real OpenAI type for extractOpenAIContent / fixture tests.
+  const actual = await importOriginal<typeof import("openai")>();
+  const OriginalOpenAI = actual.default;
+  class MockOpenAI extends OriginalOpenAI {
+    override chat = {
+      completions: { create: sdkSpy.create },
+    } as unknown as OpenAI["chat"];
+  }
+  return { ...actual, default: MockOpenAI };
+});
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__");
 
@@ -91,5 +108,40 @@ describe("extractOpenAIContent", () => {
     const response = await loadFixture("openai-review-malformed.json");
     expect(() => extractOpenAIContent(response)).toThrow(FleetError);
     expect(() => extractOpenAIContent(response)).toThrow(/invalid JSON/u);
+  });
+});
+
+describe("OPENAI_MAX_TOKENS cap", () => {
+  it("constant is 16384, matching the Anthropic provider budget", () => {
+    expect(OPENAI_MAX_TOKENS).toBe(16384);
+  });
+
+  describe("sends max_tokens on every chat completion request", () => {
+    let originalKey: string | undefined;
+
+    beforeEach(() => {
+      originalKey = process.env["OPENAI_API_KEY"];
+      process.env["OPENAI_API_KEY"] = "sk-test-dummy-cap-value";
+      sdkSpy.create.mockReset();
+    });
+
+    afterEach(() => {
+      if (originalKey === undefined) {
+        delete process.env["OPENAI_API_KEY"];
+      } else {
+        process.env["OPENAI_API_KEY"] = originalKey;
+      }
+    });
+
+    it("review() passes max_tokens=16384 to chat.completions.create", async () => {
+      const fixture = await loadFixture("openai-review-with-findings.json");
+      sdkSpy.create.mockResolvedValue(fixture);
+
+      await openaiProvider.review("/tmp/fake", "test prompt", null);
+
+      expect(sdkSpy.create).toHaveBeenCalledOnce();
+      const [body] = sdkSpy.create.mock.calls[0] as [Record<string, unknown>, ...unknown[]];
+      expect(body["max_tokens"]).toBe(OPENAI_MAX_TOKENS);
+    });
   });
 });

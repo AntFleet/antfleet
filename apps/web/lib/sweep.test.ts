@@ -75,6 +75,7 @@ function mkDeps(overrides: Partial<SweepDeps> = {}): SweepDeps {
     recordPatchApplyClickedEvent: vi.fn().mockResolvedValue(undefined),
     fetchReviewComment: vi.fn().mockResolvedValue(null),
     getDefaultBranchSha: vi.fn().mockResolvedValue(null),
+    getDefaultBranch: vi.fn().mockResolvedValue("main"),
     now: () => NOW,
     ...overrides,
   };
@@ -305,6 +306,68 @@ describe("runSweep", () => {
     });
     await runSweep(deps);
     expect(deps.pollReactions).toHaveBeenCalledTimes(1);
+  });
+
+  // T3.1 — base-branch resolution. The closure pass must resolve the repo's
+  // actual default branch and pass it to detectClosures so that repos whose
+  // default branch is "master" (or any non-"main" name) can close findings.
+  describe("base-branch resolution in closure pass", () => {
+    it("passes the resolved default branch to detectClosures", async () => {
+      const batch = mkBatch();
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([batch]),
+        getDefaultBranch: vi.fn().mockResolvedValue("master"),
+        detectClosures: vi
+          .fn()
+          .mockResolvedValue([
+            { findingId: "review-1-0", status: "closed", closureSha: "new-sha" },
+          ]),
+      });
+      const out = await runSweep(deps);
+      expect(out.closed).toBe(1);
+      expect(deps.detectClosures).toHaveBeenCalledWith(
+        expect.objectContaining({ baseBranch: "master" }),
+      );
+    });
+
+    it("closes a finding on a master-default repo end-to-end", async () => {
+      const batch = mkBatch();
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([batch]),
+        getDefaultBranch: vi.fn().mockResolvedValue("master"),
+        detectClosures: vi
+          .fn()
+          .mockResolvedValue([
+            { findingId: "review-1-0", status: "closed", closureSha: "master-sha" },
+          ]),
+      });
+      const out = await runSweep(deps);
+      expect(out.closed).toBe(1);
+      expect(out.errors).toEqual([]);
+      expect(deps.markFindingClosed).toHaveBeenCalledWith(
+        expect.objectContaining({ findingId: "review-1-0", closureSha: "master-sha" }),
+      );
+    });
+
+    it("falls back gracefully when getDefaultBranch returns null", async () => {
+      // Resolution failure: baseBranch is omitted (detectClosures falls back
+      // to its own default). The closure pass should still call detectClosures
+      // rather than silently skipping — the sweeper impl falls back to "main".
+      const batch = mkBatch();
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([batch]),
+        getDefaultBranch: vi.fn().mockResolvedValue(null),
+        detectClosures: vi
+          .fn()
+          .mockResolvedValue([{ findingId: "review-1-0", status: "still_open" }]),
+      });
+      const out = await runSweep(deps);
+      // Still calls detectClosures (with undefined baseBranch — sweeper defaults to "main")
+      expect(deps.detectClosures).toHaveBeenCalledWith(
+        expect.objectContaining({ baseBranch: undefined }),
+      );
+      expect(out.errors).toEqual([]);
+    });
   });
 
   // Patch Agent v1.5 — patch-acceptance pass tests. Co-exist with the
