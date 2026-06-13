@@ -25,4 +25,19 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test
       - run: pnpm --dir apps/web test
+      - run: pnpm --dir apps/web typecheck
+      - run: pnpm --dir apps/web exec next build
       - run: pnpm --dir apps/web exec tsx scripts/x402-live-smoke.ts --mode verify --skip-on-missing-creds
+
+  sting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: npm ci
+        working-directory: sting
+      - run: npm test
+        working-directory: sting
