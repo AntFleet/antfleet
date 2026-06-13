@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Octokit } from "@octokit/rest";
+import { Agent, fetch as undiciFetch } from "undici";
 import { createPublicClient, getAddress, http, isAddress, parseAbi, type Address } from "viem";
 import { base } from "viem/chains";
 import { logInfo } from "./log";
@@ -123,25 +124,42 @@ function rewriteIpfsUri(uri: string): string {
 // the Vercel runtime metadata service (169.254.169.254) or any
 // internal-only host the build environment can reach.
 export async function isPublicHttpUrl(url: string): Promise<boolean> {
+  const target = await resolvePublicHttpTarget(url);
+  return target !== null;
+}
+
+type PinnedTarget = { parsed: URL; address: string; family: 4 | 6 };
+
+// Validate the URL + DNS resolution, return the address we will pin into
+// the fetch. Returning the address (instead of just a boolean) lets the
+// fetch path use an undici Agent whose `connect.lookup` always answers
+// with this address, closing the DNS-rebinding window between lookup()
+// and undici's own resolution.
+export async function resolvePublicHttpTarget(url: string): Promise<PinnedTarget | null> {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return false;
+    return null;
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
   // `new URL` keeps IPv6 literals wrapped in brackets in `.hostname`; strip
   // them so node:net `isIP` recognizes the literal.
   const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
   const literal = isIP(hostname);
-  const addresses: Array<{ address: string; family: number }> =
-    literal !== 0
-      ? [{ address: hostname, family: literal }]
-      : await lookup(hostname, { all: true });
-  for (const addr of addresses) {
-    if (!isPublicAddress(addr.address, addr.family)) return false;
+  if (literal !== 0) {
+    const family = literal === 4 ? 4 : 6;
+    if (!isPublicAddress(hostname, family)) return null;
+    return { parsed, address: hostname, family };
   }
-  return true;
+  const addresses = await lookup(hostname, { all: true });
+  for (const addr of addresses) {
+    if (!isPublicAddress(addr.address, addr.family)) return null;
+  }
+  const first = addresses[0];
+  if (first === undefined) return null;
+  const family = first.family === 4 || first.family === 6 ? first.family : 4;
+  return { parsed, address: first.address, family };
 }
 
 function isPublicAddress(address: string, family: number): boolean {
@@ -213,21 +231,40 @@ function ipv4FromMappedIPv6(value: string): string | null {
   return null;
 }
 
-// Manual redirect handling: fetch with redirect:"manual" so we can revalidate
-// the Location target against isPublicHttpUrl before following. Bounded depth
-// prevents redirect loops. Without this, an attacker could publish a tokenURI
-// at a public host that 302s into 169.254.169.254 and bypass the allowlist.
+// Manual redirect handling + DNS-pinned dispatcher. Two-stage SSRF defense:
+//   1. isPublicHttpUrl validates the URL scheme + resolves the hostname,
+//      asserting every returned address is in a public range.
+//   2. The undici Agent's connect.lookup is hard-coded to return the same
+//      address we validated, so the actual TCP connect cannot be redirected
+//      by a DNS-rebinding attacker race between lookup() and fetch().
+// Bounded redirect depth prevents loops; every Location is revalidated via
+// resolvePublicHttpTarget before recursion, so an attacker cannot 302 from
+// a public host into 169.254.169.254.
 const MAX_REDIRECT_HOPS = 5;
 
 async function fetchMetadataJson(url: string, hops = 0): Promise<unknown> {
-  if (!(await isPublicHttpUrl(url))) {
+  const target = await resolvePublicHttpTarget(url);
+  if (target === null) {
     logInfo("repo_discovery.fetch_blocked", { url, hops });
     return null;
   }
+  const dispatcher = new Agent({
+    connect: {
+      // Pin the resolved address into the dispatcher so undici does not
+      // re-resolve the hostname during socket creation.
+      lookup: (_hostname, _opts, cb) => {
+        cb(null, target.address, target.family);
+      },
+    },
+  });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { signal: controller.signal, redirect: "manual" });
+    const response = await undiciFetch(url, {
+      signal: controller.signal,
+      redirect: "manual",
+      dispatcher,
+    });
     if (response.status >= 300 && response.status < 400) {
       if (hops >= MAX_REDIRECT_HOPS) {
         logInfo("repo_discovery.redirect_cap_exceeded", { url, hops });
@@ -242,6 +279,7 @@ async function fetchMetadataJson(url: string, hops = 0): Promise<unknown> {
     return await response.json();
   } finally {
     clearTimeout(timeout);
+    await dispatcher.close().catch(() => undefined);
   }
 }
 

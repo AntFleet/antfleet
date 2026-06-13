@@ -6,6 +6,7 @@ const reposGet = vi.fn();
 const searchRepos = vi.fn();
 const getReadme = vi.fn();
 const getTree = vi.fn();
+const undiciFetch = vi.fn();
 
 vi.mock("viem", async () => {
   const actual = await vi.importActual<typeof import("viem")>("viem");
@@ -23,6 +24,15 @@ vi.mock("@octokit/rest", () => ({
       search: { repos: searchRepos },
     };
   },
+}));
+
+vi.mock("undici", () => ({
+  Agent: class FakeAgent {
+    close() {
+      return Promise.resolve();
+    }
+  },
+  fetch: (...args: unknown[]) => undiciFetch(...args),
 }));
 
 function launch(overrides: Partial<Parameters<typeof discoverRepoForAgent>[0]> = {}) {
@@ -46,8 +56,10 @@ function repo(fullName: string) {
 }
 
 function mockFetchJson(body: unknown) {
-  vi.mocked(globalThis.fetch).mockResolvedValue({
+  undiciFetch.mockResolvedValue({
+    status: 200,
     ok: true,
+    headers: new Headers(),
     json: vi.fn().mockResolvedValue(body),
   } as unknown as Response);
 }
@@ -55,7 +67,7 @@ function mockFetchJson(body: unknown) {
 describe("discoverRepoForAgent", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.stubGlobal("fetch", vi.fn());
+    undiciFetch.mockReset();
     searchRepos.mockResolvedValue({ data: { items: [] } });
     getReadme.mockRejectedValue(new Error("no readme"));
     getTree.mockResolvedValue({ data: { tree: [] } });
@@ -70,7 +82,7 @@ describe("discoverRepoForAgent", () => {
       repo: "foo/bar",
       method: "token_uri",
     });
-    expect(globalThis.fetch).toHaveBeenCalledWith(
+    expect(undiciFetch).toHaveBeenCalledWith(
       "https://ipfs.io/ipfs/QmExample/metadata.json",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
@@ -87,13 +99,28 @@ describe("discoverRepoForAgent", () => {
     });
   });
 
+  it("passes a pinned dispatcher to undici so DNS cannot be re-resolved at connect time", async () => {
+    // Regression: round-1 isPublicHttpUrl validated lookup() output but
+    // node's global fetch resolved the hostname a second time and could
+    // be rebinded onto an internal address between the two resolutions.
+    // The fetch path now pins the validated address via undici Agent's
+    // connect.lookup hook; verify the dispatcher reaches undici.fetch.
+    readContract.mockResolvedValue("https://1.1.1.1/meta");
+    mockFetchJson({ repository: "https://github.com/foo/bar" });
+    reposGet.mockResolvedValue({ data: { private: false } });
+
+    await discoverRepoForAgent(launch());
+    const initArg = undiciFetch.mock.calls[0]?.[1] as { dispatcher?: unknown };
+    expect(initArg?.dispatcher).toBeDefined();
+  });
+
   it("blocks tokenURI metadata that 302s into a private address (SSRF redirect)", async () => {
     // Attacker publishes a tokenURI at a public IP that redirects into the
     // Vercel/AWS instance-metadata service. Manual redirect handling +
     // isPublicHttpUrl on the Location target must refuse to follow.
     // Use 1.1.1.1 so the initial allowlist check doesn't depend on DNS.
     readContract.mockResolvedValue("https://1.1.1.1/meta");
-    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+    vi.mocked(undiciFetch).mockResolvedValueOnce({
       status: 302,
       headers: new Headers({ location: "http://169.254.169.254/latest/meta-data/" }),
       ok: false,
@@ -105,7 +132,7 @@ describe("discoverRepoForAgent", () => {
     });
     // Only the initial fetch should fire; the redirect target is rejected
     // before any second fetch is issued.
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(undiciFetch).toHaveBeenCalledTimes(1);
   });
 
   it("falls through when tokenURI points at a private repo", async () => {

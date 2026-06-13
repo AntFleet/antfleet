@@ -88,6 +88,9 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.2.6(react@19.2.6)
+      undici:
+        specifier: ^8.4.1
+        version: 8.4.1
       viem:
         specifier: ^2.51.3
         version: 2.51.3(typescript@6.0.3)(zod@4.4.3)
@@ -2796,6 +2799,10 @@ packages:
     resolution: {integrity: sha512-3O9Tf67pGhgOv9jM35AbhkXAKi13f3oy3aE4CSgr+TckGeY+/iu97ZXN+J7DpHPzLbVApFd1IFhcnBjREYXYcg==}
     engines: {node: '>=20.18.1'}
 
+  undici@8.4.1:
+    resolution: {integrity: sha512-RNHlB4fxZK0IrkhBsxhlbx7s8kFWwr7rzzOqj5nvZugw3ig3RsB7KW3zVlV0eu8POl+rx5d1hmL7rRg0z1owow==}
+    engines: {node: '>=22.19.0'}
+
   universal-github-app-jwt@2.2.2:
     resolution: {integrity: sha512-dcmbeSrOdTnsjGjUfAlqNDJrhxXizjAz94ija9Qw8YkZ1uu0d+GoZzyH+Jb9tIIqvGsadUfwg+22k5aDqqwzbw==}
 
@@ -5297,6 +5304,8 @@ snapshots:
   undici-types@7.16.0: {}
 
   undici@7.26.0: {}
+
+  undici@8.4.1: {}
 
   universal-github-app-jwt@2.2.2: {}
 
