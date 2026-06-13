@@ -21,8 +21,8 @@ const sqlFile = readFileSync(join(selfDir, "0034_finding_status_label.sql"), "ut
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 export function migration0034Statements(sqlText = sqlFile): string[] {
@@ -38,7 +38,7 @@ export function migration0034Statements(sqlText = sqlFile): string[] {
 export async function applyMigration0034(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
   for (const stmt of migration0034Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 80)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
 }
 

@@ -16,12 +16,11 @@
   "dependencies": {
     "@antfleet/cli": "workspace:*",
     "@anthropic-ai/sdk": "^0.96.0",
-    "@neondatabase/serverless": "^0.10.4",
+    "@neondatabase/serverless": "^1.1.0",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
     "@x402/core": "2.14.0",
     "@x402/evm": "2.14.0",
-    "@x402/express": "2.14.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "nanoid": "^3.3.12",
@@ -42,6 +41,7 @@
     "postcss": "^8.5.15",
     "postgres": "^3.4.9",
     "tailwindcss": "^4.3.0",
+    "tsx": "4.22.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   }

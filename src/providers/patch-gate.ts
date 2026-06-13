@@ -118,19 +118,22 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
   const withPatch = group.filter((p) => p.patch !== null);
 
   // Extract per-provider candidates for eval persistence.
+  // Use the registered providerName from each proposal rather than hard-coded
+  // strings so virtual/openrouter providers that are not named "openai" are
+  // correctly captured in the eval candidates slots.
   const anthropicProposal = group.find((p) => p.providerName === WINNING_PROVIDER);
-  const openaiProposal = group.find((p) => p.providerName === "openai");
+  const otherProposal = group.find((p) => p.providerName !== WINNING_PROVIDER);
   const candidates = {
     opus: anthropicProposal?.patch ?? null,
-    gpt5: openaiProposal?.patch ?? null,
+    gpt5: otherProposal?.patch ?? null,
   };
   const rationales = {
     opus: anthropicProposal?.rationale ?? null,
-    gpt5: openaiProposal?.rationale ?? null,
+    gpt5: otherProposal?.rationale ?? null,
   };
   const skipReasons = {
     opus: anthropicProposal?.skipReason ?? null,
-    gpt5: openaiProposal?.skipReason ?? null,
+    gpt5: otherProposal?.skipReason ?? null,
   };
 
   // Happy path: every provider in the group proposed a patch. Ship the

@@ -21,8 +21,8 @@ const sqlFile = readFileSync(join(selfDir, "0031_patch_rationales.sql"), "utf-8"
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 export function migration0031Statements(sqlText = sqlFile): string[] {
@@ -38,7 +38,7 @@ export function migration0031Statements(sqlText = sqlFile): string[] {
 export async function applyMigration0031(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
   for (const stmt of migration0031Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
 }
 

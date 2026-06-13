@@ -21,6 +21,11 @@ import {
 
 export const OPENAI_DEFAULT_MODEL = "gpt-5";
 const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL;
+// Mirrors Anthropic's MAX_TOKENS cap (16384). GPT-5 can emit very long
+// reasoning traces; without a ceiling a single runaway call could exhaust
+// per-call spend. 16384 is enough for any structured review/patch response
+// and symmetric with the Anthropic provider budget.
+export const OPENAI_MAX_TOKENS = 16384;
 
 // Per-request timeout + retry policy, matched to the Anthropic client
 // (ANTHROPIC_CLIENT_OPTS). The OpenAI SDK default is a 600s timeout with 2
@@ -108,6 +113,7 @@ async function callOpenAI(opts: CallOptions): Promise<OpenAICallResult> {
   const response = await client.chat.completions.create(
     {
       model: opts.model,
+      max_tokens: OPENAI_MAX_TOKENS,
       messages: [{ role: "user", content: opts.prompt }],
       response_format: {
         type: "json_schema",

@@ -105,6 +105,16 @@ export type SweepDeps = {
     owner: string;
     repo: string;
   }) => Promise<string | null>;
+  // Resolves the default branch NAME (e.g. "master", "develop") so the
+  // closure pass can hand it to detectClosures. Separate from
+  // getDefaultBranchSha because that dep resolves the SHA for file reads;
+  // the closure pass only needs the branch name for the getRef call inside
+  // detectClosuresWith.
+  getDefaultBranch: (args: {
+    installationId: number;
+    owner: string;
+    repo: string;
+  }) => Promise<string | null>;
   now: () => Date;
 };
 
@@ -125,6 +135,7 @@ const REAL_DEPS: SweepDeps = {
   recordPatchApplyClickedEvent: recordPatchApplyClickedEventImpl,
   fetchReviewComment: realFetchReviewComment,
   getDefaultBranchSha: realGetDefaultBranchSha,
+  getDefaultBranch: realGetDefaultBranch,
   now: () => new Date(),
 };
 
@@ -176,6 +187,23 @@ async function realGetDefaultBranchSha(args: {
       ref: `heads/${defaultBranch}`,
     });
     return ref.data.object.sha;
+  } catch {
+    return null;
+  }
+}
+
+// Resolves the default branch NAME (e.g. "master", "develop", "main") via
+// the installation token. Used by the closure pass so detectClosuresWith
+// queries the correct ref instead of always assuming "main".
+async function realGetDefaultBranch(args: {
+  installationId: number;
+  owner: string;
+  repo: string;
+}): Promise<string | null> {
+  try {
+    const octokit = await getInstallationOctokitImpl(args.installationId);
+    const repoInfo = await octokit.rest.repos.get({ owner: args.owner, repo: args.repo });
+    return repoInfo.data.default_branch;
   } catch {
     return null;
   }
@@ -290,12 +318,27 @@ async function runClosurePass(
   }
   if (closureInputs.length === 0) return;
 
+  // Resolve the repo's actual default branch so detectClosures queries the
+  // right ref. Without this, repos whose default branch is not "main"
+  // (e.g. "master", "develop") always get indeterminate results because
+  // the getRef call inside detectClosuresWith 404s on heads/main.
+  // If the resolution fails (returns null) the baseBranch arg is omitted
+  // and detectClosuresWith falls back to "main" — same transient behaviour
+  // as before for that tick, retried next cron pass.
+  const baseBranch =
+    (await deps.getDefaultBranch({
+      installationId: batch.installationId,
+      owner: batch.owner,
+      repo: batch.repo,
+    })) ?? undefined;
+
   const decisions = await deps.detectClosures({
     installationId: batch.installationId,
     owner: batch.owner,
     repo: batch.repo,
     reviewCommitSha: batch.commitSha,
     findings: closureInputs,
+    baseBranch,
   });
 
   for (const decision of decisions) {

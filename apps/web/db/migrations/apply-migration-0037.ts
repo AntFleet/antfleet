@@ -24,8 +24,8 @@ const sqlFile = readFileSync(join(selfDir, "0037_public_page_indexes.sql"), "utf
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
-  (statement: string): Promise<SqlRow[]>;
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<SqlRow[]>;
+  query: (statement: string, params?: unknown[]) => Promise<SqlRow[]>;
 };
 
 export function migration0037Statements(sqlText = sqlFile): string[] {
@@ -53,7 +53,7 @@ export function migration0037Statements(sqlText = sqlFile): string[] {
 export async function applyMigration0037(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
   for (const stmt of migration0037Statements(sqlText)) {
     console.log(`  Running: ${stmt.slice(0, 70)}...`);
-    await sql(stmt);
+    await sql.query(stmt);
   }
 }
 

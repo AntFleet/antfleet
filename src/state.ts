@@ -114,7 +114,13 @@ async function readRecords<T>(dir: string, schema: z.ZodType<T>): Promise<T[]> {
     if (!name.endsWith(".json")) {
       continue;
     }
-    records.push(await readJson(join(dir, name), schema));
+    const filePath = join(dir, name);
+    try {
+      records.push(await readJson(filePath, schema));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`fleet: skipping malformed state file ${filePath}: ${message}\n`);
+    }
   }
   return records;
 }
