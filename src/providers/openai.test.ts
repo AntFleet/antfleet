@@ -116,7 +116,7 @@ describe("OPENAI_MAX_TOKENS cap", () => {
     expect(OPENAI_MAX_TOKENS).toBe(16384);
   });
 
-  describe("sends max_tokens on every chat completion request", () => {
+  describe("sends max_completion_tokens on every chat completion request", () => {
     let originalKey: string | undefined;
 
     beforeEach(() => {
@@ -133,7 +133,7 @@ describe("OPENAI_MAX_TOKENS cap", () => {
       }
     });
 
-    it("review() passes max_tokens=16384 to chat.completions.create", async () => {
+    it("review() passes max_completion_tokens=16384 to chat.completions.create", async () => {
       const fixture = await loadFixture("openai-review-with-findings.json");
       sdkSpy.create.mockResolvedValue(fixture);
 
@@ -141,7 +141,9 @@ describe("OPENAI_MAX_TOKENS cap", () => {
 
       expect(sdkSpy.create).toHaveBeenCalledOnce();
       const [body] = sdkSpy.create.mock.calls[0] as [Record<string, unknown>, ...unknown[]];
-      expect(body["max_tokens"]).toBe(OPENAI_MAX_TOKENS);
+      expect(body["max_completion_tokens"]).toBe(OPENAI_MAX_TOKENS);
+      // Legacy `max_tokens` must not be set — GPT-5 rejects it with a 400.
+      expect(body["max_tokens"]).toBeUndefined();
     });
   });
 });
