@@ -25,6 +25,12 @@ const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL;
 // reasoning traces; without a ceiling a single runaway call could exhaust
 // per-call spend. 16384 is enough for any structured review/patch response
 // and symmetric with the Anthropic provider budget.
+//
+// GPT-5 (and other OpenAI reasoning models) rejects the legacy `max_tokens`
+// param with 400 "Unsupported parameter: 'max_tokens' is not supported with
+// this model. Use 'max_completion_tokens' instead." — so we send it under
+// the new key. `max_completion_tokens` includes invisible reasoning tokens,
+// matching the previous behavior's intent (cap total output spend).
 export const OPENAI_MAX_TOKENS = 16384;
 
 // Per-request timeout + retry policy, matched to the Anthropic client
@@ -113,7 +119,7 @@ async function callOpenAI(opts: CallOptions): Promise<OpenAICallResult> {
   const response = await client.chat.completions.create(
     {
       model: opts.model,
-      max_tokens: OPENAI_MAX_TOKENS,
+      max_completion_tokens: OPENAI_MAX_TOKENS,
       messages: [{ role: "user", content: opts.prompt }],
       response_format: {
         type: "json_schema",
