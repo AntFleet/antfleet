@@ -29,6 +29,7 @@
     "react-dom": "^19.0.0",
     "undici": "^8.4.1",
     "viem": "^2.51.3",
+    "ws": "^8.18.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -37,6 +38,7 @@
     "@types/node": "^24.10.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.5.13",
     "drizzle-kit": "^0.31.10",
     "postcss": "^8.5.15",
     "postgres": "^3.4.9",
