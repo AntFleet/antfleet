@@ -117,18 +117,67 @@ describe("findingsAgree", () => {
     expect(findingsAgree(a, b)).toBe(false);
   });
 
-  it("does not treat null line ranges as covering the whole file", () => {
-    const a = makeFinding({
+  // Sparse-evidence fallback (added for GPT-5 reasoning-model interop).
+  // When one provider returns a finding with only a file path — no line range,
+  // no symbol, no quote — and the other side localized the same file, we
+  // accept the path-level match. The upstream category + severity gates still
+  // apply.
+  it("treats a fully path-only finding as a path-level wildcard against a localized counterpart", () => {
+    const sparse = makeFinding({
       evidence: [
         { path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null },
       ],
     });
-    const b = makeFinding({
+    const localized = makeFinding({
       evidence: [
         { path: "src/handler.ts", startLine: 100, endLine: 200, symbol: null, quote: null },
       ],
     });
-    expect(findingsAgree(a, b)).toBe(false);
+    expect(findingsAgree(sparse, localized)).toBe(true);
+  });
+
+  it("sparse-evidence fallback still requires category to match", () => {
+    const sparse = makeFinding({
+      category: "bug",
+      evidence: [
+        { path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null },
+      ],
+    });
+    const localizedDifferentCategory = makeFinding({
+      category: "security",
+      evidence: [
+        { path: "src/handler.ts", startLine: 100, endLine: 200, symbol: null, quote: null },
+      ],
+    });
+    expect(findingsAgree(sparse, localizedDifferentCategory)).toBe(false);
+  });
+
+  it("sparse-evidence fallback still requires severities within 1 bucket", () => {
+    const sparse = makeFinding({
+      severity: "critical",
+      evidence: [
+        { path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null },
+      ],
+    });
+    const localizedFarSeverity = makeFinding({
+      severity: "low",
+      evidence: [
+        { path: "src/handler.ts", startLine: 100, endLine: 200, symbol: null, quote: null },
+      ],
+    });
+    expect(findingsAgree(sparse, localizedFarSeverity)).toBe(false);
+  });
+
+  it("sparse-evidence fallback requires the file paths to actually match", () => {
+    const sparse = makeFinding({
+      evidence: [
+        { path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null },
+      ],
+    });
+    const localizedOtherFile = makeFinding({
+      evidence: [{ path: "src/other.ts", startLine: 100, endLine: 200, symbol: null, quote: null }],
+    });
+    expect(findingsAgree(sparse, localizedOtherFile)).toBe(false);
   });
 
   it("agrees on null line ranges when both providers name the same symbol", () => {

@@ -192,7 +192,26 @@ function evidenceEntriesOverlap(
   if (lineRangesOverlap(a.startLine, a.endLine, b.startLine, b.endLine)) return true;
   if (a.symbol !== null && b.symbol !== null && a.symbol === b.symbol) return true;
   if (a.quote !== null && b.quote !== null && a.quote === b.quote) return true;
+  // Sparse-evidence fallback: GPT-5 (and other OpenAI reasoning models) sometimes
+  // emit findings with only a file path — startLine/endLine/symbol/quote all null —
+  // because the structured-output schema allows nullability and the model isn't
+  // confident about the position. Without this fallback, a unanimous-mode review
+  // pairing a fully-localized Anthropic finding with a path-only GPT-5 finding on
+  // the same file returns no consensus, even when both clearly identify the same
+  // bug (observed in bench-claude-mem PR #1, mergeSettings data-loss finding).
+  //
+  // The caller (`evidenceOverlaps`) already confirmed path equality before we
+  // get here, and `findingsAgree` already required category + severity proximity.
+  // Treating a fully-sparse evidence entry as a path-level wildcard is bounded by
+  // those upstream gates. A single sparse finding may cluster with multiple
+  // non-sparse findings in the same file under the same category, which is the
+  // correct behavior — we'd rather over-cluster than silently drop consensus.
+  if (isPathOnly(a) || isPathOnly(b)) return true;
   return false;
+}
+
+function isPathOnly(e: Finding["evidence"][number]): boolean {
+  return e.startLine === null && e.endLine === null && e.symbol === null && e.quote === null;
 }
 
 function pickRepresentative(findings: Finding[]): Finding {

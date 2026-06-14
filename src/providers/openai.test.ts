@@ -112,8 +112,8 @@ describe("extractOpenAIContent", () => {
 });
 
 describe("OPENAI_MAX_TOKENS cap", () => {
-  it("constant is 16384, matching the Anthropic provider budget", () => {
-    expect(OPENAI_MAX_TOKENS).toBe(16384);
+  it("constant is 32768 — asymmetric to Anthropic's 16384 because GPT-5 reasoning tokens count against this budget", () => {
+    expect(OPENAI_MAX_TOKENS).toBe(32768);
   });
 
   describe("sends max_completion_tokens on every chat completion request", () => {
@@ -133,7 +133,7 @@ describe("OPENAI_MAX_TOKENS cap", () => {
       }
     });
 
-    it("review() passes max_completion_tokens=16384 to chat.completions.create", async () => {
+    it("review() passes max_completion_tokens=32768 to chat.completions.create", async () => {
       const fixture = await loadFixture("openai-review-with-findings.json");
       sdkSpy.create.mockResolvedValue(fixture);
 

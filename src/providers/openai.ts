@@ -21,17 +21,27 @@ import {
 
 export const OPENAI_DEFAULT_MODEL = "gpt-5";
 const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL;
-// Mirrors Anthropic's MAX_TOKENS cap (16384). GPT-5 can emit very long
-// reasoning traces; without a ceiling a single runaway call could exhaust
-// per-call spend. 16384 is enough for any structured review/patch response
-// and symmetric with the Anthropic provider budget.
+// GPT-5 reasoning-model budget. Asymmetric to Anthropic's MAX_TOKENS=16384
+// for two reasons:
 //
-// GPT-5 (and other OpenAI reasoning models) rejects the legacy `max_tokens`
-// param with 400 "Unsupported parameter: 'max_tokens' is not supported with
-// this model. Use 'max_completion_tokens' instead." — so we send it under
-// the new key. `max_completion_tokens` includes invisible reasoning tokens,
-// matching the previous behavior's intent (cap total output spend).
-export const OPENAI_MAX_TOKENS = 16384;
+// 1. `max_completion_tokens` counts BOTH visible output AND invisible
+//    reasoning tokens. At 16384, larger code-review prompts saw GPT-5
+//    spend the entire budget on reasoning and return empty content with
+//    finish_reason="length" — observed in bench-claude-mem PRs #3/#4
+//    after the max_tokens→max_completion_tokens rename. 32768 gives
+//    enough headroom for reasoning + the structured-output JSON.
+//
+// 2. Anthropic's Messages SDK trips a "use streaming for long requests"
+//    guard at max_tokens=32768, so we can't symmetrically bump that side
+//    without restructuring the Anthropic call path. The two providers
+//    use different fields with different semantics — keeping them
+//    asymmetric is correct.
+//
+// GPT-5 rejects the legacy `max_tokens` param with HTTP 400
+// ("Unsupported parameter: 'max_tokens' is not supported with this
+// model. Use 'max_completion_tokens' instead."), so we send it under
+// the new key.
+export const OPENAI_MAX_TOKENS = 32768;
 
 // Per-request timeout + retry policy, matched to the Anthropic client
 // (ANTHROPIC_CLIENT_OPTS). The OpenAI SDK default is a 600s timeout with 2
