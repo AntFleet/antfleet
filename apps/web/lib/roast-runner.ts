@@ -84,6 +84,10 @@ const SKIP_DIRS = new Set([
   "out",
   ".pnpm-store",
   "coverage",
+  // Foundry writes per-chain deployment receipts here (run-latest.json,
+  // run-<ts>.json) — transaction hashes, gas reports, broadcast logs.
+  // Auditor noise when treated as source under review.
+  "broadcast",
 ]);
 
 export type RoastRunResult =
@@ -238,7 +242,9 @@ async function reviewRepo(submission: RoastSubmission, deps: RoastRunnerDeps): P
     const contents = await fetchFileContents(octokit, owner, repo, filePath);
     if (contents === null) continue;
     const trimmed =
-      contents.length > MAX_BYTES_PER_FILE ? contents.slice(0, MAX_BYTES_PER_FILE) : contents;
+      contents.length > MAX_BYTES_PER_FILE
+        ? `${contents.slice(0, MAX_BYTES_PER_FILE)}\n[TRUNCATED: showing first ${MAX_BYTES_PER_FILE} of ${contents.length} bytes]`
+        : contents;
     fetched.push({
       filename: filePath,
       contents: trimmed,

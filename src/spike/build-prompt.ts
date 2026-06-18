@@ -16,6 +16,24 @@ export type BuildSpikePromptArgs = {
 
 export function buildSpikePrompt(args: BuildSpikePromptArgs): string {
   const blocks = args.files.map((f) => `--- ${f.path}\n${f.contents}`);
+  // Smart-contract supplement, conditional on Solidity in the bundle. Ports
+  // the soft category-list pattern from open-evmbench's antfleet_reference
+  // consensus_agent.py AUDITOR_PROMPT verbatim — the actual source lists
+  // "logic errors, access control, reentrancy, oracle misuse, accounting
+  // errors, etc" as smart-contract-shaped vulnerabilities. Advisory, not a
+  // forced output template — the model still emits findings under the
+  // existing top-level "category" enum.
+  const solSupplement = args.files.some((f) => f.path.toLowerCase().endsWith(".sol"))
+    ? `
+
+Smart contract supplement (Solidity files present in this bundle — consider
+these categories alongside the ones above where they apply):
+- logic errors (state machine, share/asset accounting, invariant violations)
+- access control and privilege escalation
+- reentrancy and external-call ordering
+- oracle misuse (price manipulation, stale data, single-source trust)
+- accounting errors (rounding bias, fee math, over/underflow)`
+    : "";
   return `You are reviewing one semantic feature for fleet.
 
 Return strict JSON only. No markdown fences.
@@ -43,7 +61,7 @@ Review categories:
 - bad error handling
 - API contract gaps (missing validation, unchecked input)
 - deceptive or misleading comments/docs
-- maintainability risks with concrete impact
+- maintainability risks with concrete impact${solSupplement}
 
 Inspect every file. Treat suspicious comments as evidence to verify against the
 code they describe; a comment that lies about behavior is itself a bug.
