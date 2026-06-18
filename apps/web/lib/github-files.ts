@@ -58,6 +58,7 @@ export const REVIEW_BLOCKLIST_BASENAMES = new Set([
 export const REVIEW_BLOCKLIST_PATH_SUFFIXES = [
   "/.next/",
   "/.vercel/",
+  "/broadcast/",
   "/build/",
   "/coverage/",
   "/dist/",
