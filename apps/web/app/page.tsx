@@ -301,7 +301,7 @@ function HowItWorks() {
             <div className="pl-7">
               <CodeBlock lang="text">
                 {`[anthropic]  claude-opus-4-7   → 9 findings
-[openai]     gpt-5             → 7 findings
+[openai]     gpt-5.5           → 7 findings
 [agreement]  unanimous gate    → 3 agreed
 [post]       PR comment        ✓`}
               </CodeBlock>

@@ -168,7 +168,7 @@ describe("processReviewJob ACP rail", () => {
       repo: "acp-fixture",
       prNumber: 7,
       commitSha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
-      providerModelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+      providerModelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
       agreementDecision: { mode: "unanimous", agreed: [], degraded: false },
       publicReceipt: true,
       isBenchmark: false,

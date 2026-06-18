@@ -133,7 +133,7 @@ describe("ACP review deliverable builder", () => {
       },
       review: {
         reviewId: "review-1",
-        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
         durationMs: 84_231,
       },
       findings: [
@@ -165,7 +165,7 @@ describe("ACP review deliverable builder", () => {
       },
       review: {
         reviewId: "review-pending-1",
-        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
       },
       findings: [],
       reviewReceiptUrl: null,
@@ -181,7 +181,7 @@ describe("ACP review deliverable builder", () => {
       },
       review: {
         reviewId: "review-pending-2",
-        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
       },
       findings: [
         mapFindingToAcpFinding({
@@ -225,7 +225,7 @@ describe("ACP review deliverable builder", () => {
       },
       review: {
         reviewId: "review-2",
-        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
       },
       findings: [],
       reviewReceiptUrl: "https://www.antfleet.dev/receipts/review/review-2",
@@ -294,7 +294,7 @@ describe("ACP review deliverable builder", () => {
       },
       review: {
         reviewId: "review-3",
-        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+        modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
       },
       findings: [],
       reviewReceiptUrl: "https://www.antfleet.dev/receipts/review/review-3",

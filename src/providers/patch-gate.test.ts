@@ -19,7 +19,7 @@ const openai = (overrides: Partial<ProviderPatchProposal> = {}): ProviderPatchPr
   providerName: "openai",
   findingId: "fid-1",
   patch: null,
-  modelId: "gpt-5",
+  modelId: "gpt-5.5",
   skipReason: null,
   rationale: null,
   usage: null,
@@ -254,7 +254,7 @@ describe("decidePatchOutcomes — modelId threading (audit-response)", () => {
   it("falls back to provider name when modelId is unexpectedly null", () => {
     const out = decidePatchOutcomes([
       anthropic({ patch: PATCH_A, modelId: null }),
-      openai({ patch: PATCH_B, modelId: "gpt-5" }),
+      openai({ patch: PATCH_B, modelId: "gpt-5.5" }),
     ]);
     expect(out[0]?.modelId).toBe("anthropic");
   });

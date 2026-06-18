@@ -30,8 +30,18 @@ describe("callCostUsd", () => {
     ).toBeCloseTo(0.09, 10);
   });
 
-  it("prices GPT-5 at $5/MTok in + $30/MTok out", () => {
+  it("prices GPT-5.5 at $5/MTok in + $30/MTok out", () => {
     // 1000 in + 1000 out → 0.005 + 0.03 = 0.035
+    expect(callCostUsd("openai", "gpt-5.5", { inputTokens: 1000, outputTokens: 1000 })).toBeCloseTo(
+      0.035,
+      10,
+    );
+  });
+
+  it("prices the historical gpt-5 reconciliation row at $5/MTok in + $30/MTok out", () => {
+    // The historical row stays in the pricing table so patch-cost-reconcile can
+    // recompute cost for rows that ran under the OLD default. Same rate as
+    // gpt-5.5 — these are not different prices, just different model ids.
     expect(callCostUsd("openai", "gpt-5", { inputTokens: 1000, outputTokens: 1000 })).toBeCloseTo(
       0.035,
       10,
@@ -57,6 +67,8 @@ describe("callCostUsd", () => {
 
   it("documents both priced models in the pricing table", () => {
     expect(PATCH_TOKEN_PRICING_USD_PER_MTOK["claude-opus-4-7"]).toEqual({ input: 15, output: 75 });
+    expect(PATCH_TOKEN_PRICING_USD_PER_MTOK["gpt-5.5"]).toEqual({ input: 5, output: 30 });
+    // Historical gpt-5 row kept for patch-cost-reconcile backfill — same rate.
     expect(PATCH_TOKEN_PRICING_USD_PER_MTOK["gpt-5"]).toEqual({ input: 5, output: 30 });
   });
 });
@@ -71,7 +83,7 @@ describe("estimatePatchCostUsd", () => {
       }),
       proposal({
         providerName: "openai",
-        modelId: "gpt-5",
+        modelId: "gpt-5.5",
         usage: { inputTokens: 1000, outputTokens: 1000 },
       }),
     ];
@@ -82,7 +94,7 @@ describe("estimatePatchCostUsd", () => {
   it("treats null-usage proposals as $0 and never goes non-zero on a precheck-only review", () => {
     const proposals = [
       proposal({ providerName: "anthropic", usage: null }),
-      proposal({ providerName: "openai", modelId: "gpt-5", usage: null }),
+      proposal({ providerName: "openai", modelId: "gpt-5.5", usage: null }),
     ];
     expect(estimatePatchCostUsd(proposals)).toBe(0);
   });
@@ -91,7 +103,7 @@ describe("estimatePatchCostUsd", () => {
     const proposals = [
       proposal({
         providerName: "openai",
-        modelId: "gpt-5",
+        modelId: "gpt-5.5",
         usage: { inputTokens: 333, outputTokens: 0 },
       }),
     ];

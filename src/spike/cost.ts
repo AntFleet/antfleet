@@ -14,7 +14,7 @@ export const DEFAULT_COST_CEILING_USD = 5;
 export const COST_PER_CALL_USD_ESTIMATES: Readonly<Record<string, number>> = {
   // claude-opus-4-7 ~ $15/MTok input, $75/MTok output. 6k input + 2k output ~ $0.24.
   anthropic: 0.25,
-  // gpt-5 list pricing is uncertain; use a conservative $10/MTok in, $30/MTok out.
+  // gpt-5.5 list pricing is uncertain; use a conservative $10/MTok in, $30/MTok out.
   openai: 0.15,
   // deepseek/deepseek-chat via OpenRouter ~ $0.27/MTok in, $1.10/MTok out -> tiny.
   openrouter: 0.01,

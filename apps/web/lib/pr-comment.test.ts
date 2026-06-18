@@ -6,7 +6,7 @@ const META: ReviewMeta = {
   reviewId: "abcd1234-ef56-7890-abcd-ef1234567890",
   totalMs: 87000,
   estimatedCostUsd: 0.4,
-  modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+  modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
 };
 
 const mkFinding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -119,7 +119,7 @@ describe("formatPRComment", () => {
   it("includes the footer with reviewId prefix, model ids, timing, and cost", () => {
     const out = formatPRComment([mkFinding()], META);
     expect(out).toContain("`abcd1234`");
-    expect(out).toContain("`claude-opus-4-7` + `gpt-5`");
+    expect(out).toContain("`claude-opus-4-7` + `gpt-5.5`");
     expect(out).toContain("(unanimous)");
     expect(out).toContain("87s");
     expect(out).toContain("~$0.40");
