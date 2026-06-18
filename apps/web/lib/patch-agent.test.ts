@@ -48,7 +48,7 @@ const opus: PatchProposingProvider = {
 const gpt: PatchProposingProvider = {
   name: "openai",
   async proposePatch() {
-    return { patch: "@@ -10,1 +10,1 @@\n-old\n+other\n", rationale: null, modelId: "gpt-5" };
+    return { patch: "@@ -10,1 +10,1 @@\n-old\n+other\n", rationale: null, modelId: "gpt-5.5" };
   },
 };
 
@@ -119,7 +119,7 @@ describe("runPatchAgent — happy path", () => {
         return {
           patch: "@@ -10,1 +10,1 @@\n-old\n+other\n",
           rationale: null,
-          modelId: "gpt-5",
+          modelId: "gpt-5.5",
           usage: { inputTokens: 1000, outputTokens: 1000 },
         };
       },
@@ -147,7 +147,7 @@ describe("runPatchAgent — happy path", () => {
     const decline: PatchProposingProvider = {
       name: "openai",
       async proposePatch() {
-        return { patch: null, rationale: null, modelId: "gpt-5" };
+        return { patch: null, rationale: null, modelId: "gpt-5.5" };
       },
     };
     const out = await runPatchAgent({
@@ -261,7 +261,7 @@ describe("runPatchAgent — degenerate paths", () => {
             return {
               patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -50,1 +50,1 @@\n-old\n+other\n",
               rationale: null,
-              modelId: "gpt-5",
+              modelId: "gpt-5.5",
             };
           },
         },

@@ -57,7 +57,7 @@ describe("openaiProvider.check", () => {
     process.env["OPENAI_API_KEY"] = "sk-test-dummy-value-not-real";
     const status = await openaiProvider.check("/tmp/fake");
     expect(status).toMatch(/openai ready/u);
-    expect(status).toMatch(/gpt-5/u);
+    expect(status).toMatch(/gpt-5\.5/u);
   });
 });
 
@@ -78,7 +78,7 @@ describe("extractOpenAIContent", () => {
       id: "chatcmpl_empty",
       object: "chat.completion",
       created: 0,
-      model: "gpt-5",
+      model: "gpt-5.5",
       choices: [],
     } as unknown as OpenAI.Chat.Completions.ChatCompletion;
     expect(() => extractOpenAIContent(empty)).toThrow(FleetError);
@@ -90,7 +90,7 @@ describe("extractOpenAIContent", () => {
       id: "chatcmpl_blank",
       object: "chat.completion",
       created: 0,
-      model: "gpt-5",
+      model: "gpt-5.5",
       choices: [
         {
           index: 0,

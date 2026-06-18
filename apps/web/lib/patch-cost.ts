@@ -18,14 +18,19 @@ type Rate = { input: number; output: number };
 
 // Published list prices in USD per 1,000,000 tokens.
 //
-// VERIFY-BY DATE: 2026-05-30. Sources:
+// VERIFY-BY DATE: 2026-06-18. Sources:
 //   - claude-opus-4-7: Anthropic API pricing — $15/MTok input, $75/MTok output.
-//   - gpt-5: OpenAI API pricing — $5/MTok input, $30/MTok output.
+//   - gpt-5.5: OpenAI API pricing (developers.openai.com/api/docs/pricing,
+//     fetched 2026-06-18) — $5/MTok input, $30/MTok output.
+//   - gpt-5: Historical row for reconciliation of rows generated before the
+//     2026-06-18 default bump (RECONCILE_GPT5_MODEL backfill). Same $5/$30
+//     rate the model carried at the time of the cohort being reconciled.
 // These are list rates (no cache discount, no batch discount applied) so the
 // estimate is a conservative upper bound on real spend. Update both the rates
 // AND this date when provider pricing changes materially.
 export const PATCH_TOKEN_PRICING_USD_PER_MTOK: Readonly<Record<string, Rate>> = {
   "claude-opus-4-7": { input: 15, output: 75 },
+  "gpt-5.5": { input: 5, output: 30 },
   "gpt-5": { input: 5, output: 30 },
 };
 

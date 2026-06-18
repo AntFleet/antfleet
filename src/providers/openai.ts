@@ -19,16 +19,19 @@ import {
   revalidateOutputSchema,
 } from "../types.js";
 
-export const OPENAI_DEFAULT_MODEL = "gpt-5";
+export const OPENAI_DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL;
-// GPT-5 reasoning-model budget. Asymmetric to Anthropic's MAX_TOKENS=16384
+// GPT-5.5 reasoning-model budget. Asymmetric to Anthropic's MAX_TOKENS=16384
 // for two reasons:
 //
 // 1. `max_completion_tokens` counts BOTH visible output AND invisible
-//    reasoning tokens. At 16384, larger code-review prompts saw GPT-5
-//    spend the entire budget on reasoning and return empty content with
-//    finish_reason="length" — observed in bench-claude-mem PRs #3/#4
-//    after the max_tokens→max_completion_tokens rename. 32768 gives
+//    reasoning tokens. At 16384, larger code-review prompts saw the
+//    earlier GPT-5 default spend the entire budget on reasoning and
+//    return empty content with finish_reason="length" — observed in
+//    bench-claude-mem PRs #3/#4 after the max_tokens→max_completion_tokens
+//    rename. gpt-5.5 is the same reasoning-model family (smoke-tested
+//    2026-06-18: response carries a `reasoning_tokens` field, same
+//    `max_completion_tokens` semantics), so 32768 still applies to give
 //    enough headroom for reasoning + the structured-output JSON.
 //
 // 2. Anthropic's Messages SDK trips a "use streaming for long requests"
@@ -37,7 +40,7 @@ const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL;
 //    use different fields with different semantics — keeping them
 //    asymmetric is correct.
 //
-// GPT-5 rejects the legacy `max_tokens` param with HTTP 400
+// gpt-5.5 rejects the legacy `max_tokens` param with HTTP 400
 // ("Unsupported parameter: 'max_tokens' is not supported with this
 // model. Use 'max_completion_tokens' instead."), so we send it under
 // the new key.

@@ -10,7 +10,7 @@ const META: ReviewMeta = {
   reviewId: "abcd1234-ef56-7890-abcd-ef1234567890",
   totalMs: 87000,
   estimatedCostUsd: 0.4,
-  modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+  modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
 };
 
 const mkFinding = (overrides: Partial<Finding> = {}): Finding => ({

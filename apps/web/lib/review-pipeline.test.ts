@@ -19,7 +19,7 @@ vi.mock("@antfleet/cli/providers/anthropic", () => ({
 }));
 vi.mock("@antfleet/cli/providers/openai", () => ({
   openaiProvider: { name: "openai", review: (...a: unknown[]) => openaiReview(...a) },
-  OPENAI_DEFAULT_MODEL: "gpt-5",
+  OPENAI_DEFAULT_MODEL: "gpt-5.5",
 }));
 
 import { reviewPR } from "./review-pipeline";

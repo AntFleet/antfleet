@@ -91,7 +91,7 @@ describe("firstReviewSummaryPrompt", () => {
     perProviderFindingCounts: { anthropic: 3, openai: 4 },
     agreedCount: 2,
     disagreementCount: 5,
-    modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5" },
+    modelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
     optInUrl: "https://www.antfleet.dev/api/opt-in?t=abc.def",
   };
 
