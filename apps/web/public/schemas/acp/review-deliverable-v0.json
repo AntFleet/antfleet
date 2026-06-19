@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://www.antfleet.dev/schemas/acp/review-deliverable-v0.json",
   "title": "AntFleet ACP review deliverable",
   "description": "Structured AntFleet review result for a public GitHub pull request, including target metadata, two-model agreement metadata, receipt state, and consensus findings.",
