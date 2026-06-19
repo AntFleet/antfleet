@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://www.antfleet.dev/schemas/acp/review-request-v0.json",
   "title": "AntFleet ACP review request",
   "description": "Request a two-model AntFleet review for one public GitHub pull request. Provide either a PR number or an open PR head SHA, plus optional review focus settings.",

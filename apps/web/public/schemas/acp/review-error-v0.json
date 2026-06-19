@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://www.antfleet.dev/schemas/acp/review-error-v0.json",
   "title": "AntFleet ACP review error",
   "type": "object",
