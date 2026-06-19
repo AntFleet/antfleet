@@ -458,4 +458,11 @@ describe("buildPatchPrompt", () => {
     const prompt = buildPatchPrompt(stubFinding({ reproduction: null }));
     expect(prompt).toContain("(none provided)");
   });
+
+  it("rule 3 forbids describing the patch as a decline rationale", () => {
+    const prompt = buildPatchPrompt(stubFinding());
+    expect(prompt).toContain("WHY a patch is impossible");
+    expect(prompt).toContain("MUST NOT");
+    expect(prompt).toContain("describe what the patch would do");
+  });
 });
