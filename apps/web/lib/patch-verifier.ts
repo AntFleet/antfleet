@@ -740,11 +740,18 @@ export function realPatchVerifierIo(): PatchVerifierIo {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Apply-stage: filter a patch-agent outcome through the verifier. For each
-// entry in `byIndex` we shell out to runPatchVerifier and decide whether
-// to keep, drop, or tag the entry. Returns a NEW outcome shape (the input
-// is left untouched) plus one row per attempted verification for the
-// caller to persist via recordGateOutcome.
+// Apply-stage: filter a patch-agent outcome through the verifier. For
+// each entry in `byIndex` we shell out to runPatchVerifier and decide
+// whether to keep, drop, or tag the entry.
+//
+// The applier MUTATES the input outcome's Maps in place (deletes
+// `regressed` entries; tags `verified` / `inconclusive` entries with
+// `verifyStatus` and `verifyInconclusiveReason`). The returned
+// `outcome` field is the same reference as `args.outcome` — NOT a
+// clone. The caller is expected to have constructed the outcome
+// specifically for this verifier pass (the kernel constructs it from
+// patch-agent's return) and not to share the Maps with anything that
+// must observe pre-verifier shape.
 //
 // The applier is structurally generic over PatchAgentOutcome so this
 // module does not have to import patch-agent.ts (which would create a
@@ -823,19 +830,26 @@ export async function applyPatchVerifier<O extends VerifiablePatchOutcome>(
     }
     // verified or inconclusive: tag in place so pr-comment can render
     // "(unverified)" when applicable. The inconclusiveReason is plumbed
-    // through too — pr-comment uses it to decide whether to render the
-    // tag at all (soft outcomes like "no test runner" stay untagged).
-    const tag = outcome.verdict === "verified" ? "verified" : "inconclusive";
-    const reason = outcome.verdict === "inconclusive" ? outcome.inconclusiveReason : null;
+    // through ONLY on inconclusive verdicts — pr-comment uses it to
+    // decide whether to render the tag at all (soft outcomes like "no
+    // test runner" stay untagged). We deliberately do NOT write
+    // `verifyInconclusiveReason` on `verified` entries — leaving the
+    // field absent prevents any future consumer from reading it without
+    // checking `verifyStatus` first and mis-tagging a verified patch.
     const byEntry = args.outcome.byIndex.get(index);
-    if (byEntry !== undefined) {
-      byEntry["verifyStatus"] = tag;
-      byEntry["verifyInconclusiveReason"] = reason;
-    }
     const inlineEntry = args.outcome.inlineByIndex.get(index);
-    if (inlineEntry !== undefined) {
-      inlineEntry["verifyStatus"] = tag;
-      inlineEntry["verifyInconclusiveReason"] = reason;
+    if (outcome.verdict === "verified") {
+      if (byEntry !== undefined) byEntry["verifyStatus"] = "verified";
+      if (inlineEntry !== undefined) inlineEntry["verifyStatus"] = "verified";
+    } else {
+      if (byEntry !== undefined) {
+        byEntry["verifyStatus"] = "inconclusive";
+        byEntry["verifyInconclusiveReason"] = outcome.inconclusiveReason;
+      }
+      if (inlineEntry !== undefined) {
+        inlineEntry["verifyStatus"] = "inconclusive";
+        inlineEntry["verifyInconclusiveReason"] = outcome.inconclusiveReason;
+      }
     }
   }
 

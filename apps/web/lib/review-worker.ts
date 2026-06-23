@@ -494,6 +494,16 @@ export async function runReviewKernel(
   // per-finding ('uncertain' on any model/parse error).
   let reachabilityOutcomes: Array<{ index: number; reason: string; originalSeverity: string }> = [];
   let agreedRaw: typeof bundle.agreed | null = null;
+  // Per-rail wall-clock cap on the gate. Each Haiku call has its own
+  // 45s timeout + retries inside the SDK, but the applier runs them
+  // sequentially across N HIGH/CRITICAL findings. During an Anthropic
+  // outage the worst case (5 findings × 3 attempts × 45s = ~11 min)
+  // would swallow most of an x402 review's wall-clock budget before the
+  // outer signal aborts. We bound the WHOLE gate sequence at 60s; if
+  // it exceeds that, the catch below logs and the review proceeds with
+  // the un-gated bundle. The per-finding fail-open semantics still
+  // apply for any findings the gate did decide on before the cap.
+  const REACHABILITY_GATE_CAP_MS = 60_000;
   if (!bundle.degraded && bundle.agreed.length > 0) {
     const installationId = args.installLane?.installationId ?? null;
     try {
@@ -506,13 +516,28 @@ export async function runReviewKernel(
         // `agreementDecision.agreed[i].severity` still see the canonical
         // re-graded value; auditors can correlate against the raw shape.
         agreedRaw = bundle.agreed.map((f) => ({ ...f }));
-        const applied = await deps.applyReachabilityGate({
+        const applierPromise = deps.applyReachabilityGate({
           agreed: bundle.agreed,
           owner,
           repo,
           files,
           ...(signal !== undefined ? { signal } : {}),
         });
+        const applied = await Promise.race([
+          applierPromise,
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  Object.assign(
+                    new Error(`reachability gate exceeded ${REACHABILITY_GATE_CAP_MS}ms cap`),
+                    { failureModeTag: "timeout" },
+                  ),
+                ),
+              REACHABILITY_GATE_CAP_MS,
+            ),
+          ),
+        ]);
         bundle.agreed = applied.agreed;
         // Per-finding canonical ids are not yet allocated at this point
         // (recordFindingStatuses runs below). We compute the deterministic

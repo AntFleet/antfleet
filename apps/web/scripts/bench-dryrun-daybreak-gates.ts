@@ -99,7 +99,7 @@ async function main(): Promise<void> {
   const { sql, eq, and, gte } = await import("drizzle-orm");
   const { runReachabilityGate } = await import("@/lib/reachability-gate");
   const { runPatchVerifier, realPatchVerifierIo } = await import("@/lib/patch-verifier");
-  const { recordGateOutcome } = await import("@/db/queries");
+  const { recordGateOutcome, makeFindingId } = await import("@/db/queries");
   const { getPublicChangedFiles, PublicRepoAccessError } =
     await import("@/lib/github-files-public");
   const filesCache = new Map<string, Awaited<ReturnType<typeof getPublicChangedFiles>> | null>();
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
     for (const row of benchRows) {
       const findings = extractAgreed(row.agreementDecision);
       const prFiles = await fetchFiles(owner, repo, row.prNumber, row.commitSha);
-      for (const finding of findings) {
+      for (const [findingIdx, finding] of findings.entries()) {
         if (reachabilityBudget <= 0) break;
         if (finding.severity !== "high" && finding.severity !== "critical") continue;
         reachabilityBudget--;
@@ -244,8 +244,12 @@ async function main(): Promise<void> {
           }
           reachabilityRecords.push(record);
           try {
+            // Bench writes use the same canonical id convention the
+            // kernel uses (makeFindingId(reviewId, index)), so the
+            // side-table's (review_id, finding_id) index can be joined
+            // across bench + prod rows without a schema split.
             await recordGateOutcome(row.reviewId, {
-              findingId: null,
+              findingId: makeFindingId(row.reviewId, findingIdx),
               stage: "reachability",
               verdict: outcome.verdict,
               evidence: outcome,

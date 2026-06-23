@@ -114,27 +114,32 @@ export async function runReachabilityGate(args: RunReachabilityArgs): Promise<Re
       args.signal === null || args.signal === undefined ? undefined : { signal: args.signal },
     );
     const parsed = parseReachabilityJson(extractText(response));
-    // Evidence-path citation requirement (security-review M2). An
+    // Evidence-path citation requirement (security-review M2/M4). An
     // `unreachable` verdict downgrades a HIGH/CRITICAL to LOW — the
-    // load-bearing safety property. Require the model's `reason` to
-    // reference the actual evidence path the finding cited; an attacker
-    // who succeeded at prompt injection generally cannot also fabricate
-    // a plausible cite of the real path while also keeping a non-empty
-    // reason short and natural. Soft check (case-insensitive substring)
-    // — adversarially imperfect but raises the bar materially without
-    // false-positiving real unreachable verdicts from cooperating
-    // models, which DO tend to cite the path.
+    // load-bearing safety property. We require the model's `reason` to
+    // BOTH cite the actual evidence path AND mention a line number near
+    // the evidence line. An attacker that prompt-injects Haiku can
+    // probably echo a path string in their injected reason, but the
+    // nearby-line co-requirement adds structural alignment that requires
+    // knowledge of the actual finding (which the attacker only has
+    // partial control over). Both conditions must hold; failing either
+    // coerces the verdict to `uncertain`.
     let verdict = parsed.verdict;
     let coercionReason: string | null = null;
     const evPath = args.finding.evidence[0]?.path;
-    if (
-      verdict === "unreachable" &&
-      evPath !== undefined &&
-      evPath.length > 0 &&
-      !parsed.reason.toLowerCase().includes(evPath.toLowerCase())
-    ) {
-      verdict = "uncertain";
-      coercionReason = `coerced to uncertain — reason did not cite evidence path '${evPath}'`;
+    const evStart = args.finding.evidence[0]?.startLine ?? null;
+    const evEnd = args.finding.evidence[0]?.endLine ?? evStart;
+    if (verdict === "unreachable" && evPath !== undefined && evPath.length > 0) {
+      const reasonNorm = parsed.reason.normalize("NFKC");
+      const pathOk = reasonNorm.toLowerCase().includes(evPath.toLowerCase());
+      const lineOk =
+        evStart === null ? true : reasonCitesNearbyLine(reasonNorm, evStart, evEnd ?? evStart);
+      if (!pathOk || !lineOk) {
+        verdict = "uncertain";
+        coercionReason = pathOk
+          ? `coerced to uncertain — reason cited path but no line near ${evStart}`
+          : `coerced to uncertain — reason did not cite evidence path '${evPath}'`;
+      }
     }
     return {
       verdict,
@@ -198,10 +203,16 @@ function buildReachabilityPrompt(args: {
   // attacker-chosen tag. Some models then treat the outer block as data
   // and the nested block as instructions. Strip any literal that LOOKS
   // like our fence so only the legitimate nonce-fenced block survives.
-  // The replacement keeps the source character count stable (length of
-  // "[fence-stripped]") so prompt token accounting stays predictable.
-  const FENCE_RE = /<\/?untrusted-[^>]*>/giu;
-  const scrub = (s: string): string => s.replace(FENCE_RE, "[fence-stripped]");
+  //
+  // Two passes:
+  //   1. Unicode NFKC normalize so FULLWIDTH/MATHEMATICAL/etc. lookalikes
+  //      collapse to their ASCII forms BEFORE the regex runs. Without
+  //      this an attacker can write ＜untrusted-evil＞ (U+FF1C…U+FF1E)
+  //      and the model still tokenizes it as a fence-like marker.
+  //   2. A character class on the opener / closer that also covers the
+  //      lookalikes the normalize pass might miss (defensive belt).
+  const FENCE_RE = /[<＜‹❮〈][\s/]*untrusted-[^>＞›❯〉]*[>＞›❯〉]/giu;
+  const scrub = (s: string): string => s.normalize("NFKC").replace(FENCE_RE, "[fence-stripped]");
 
   const fileBlocks = args.files
     .map((f) => {
@@ -325,6 +336,24 @@ function parseEntryPoint(raw: unknown): ReachabilityEntryPoint | null {
 function stripFences(text: string): string {
   const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/u);
   return fenced !== null ? fenced[1]!.trim() : text;
+}
+
+// True iff `reason` contains a numeric token within ±5 of the evidence
+// line range. We scan all integer tokens, not just the first match, so a
+// citation buried inside a long reason still counts. The ±5 window
+// tolerates the model rounding to a nearby helper / brace boundary.
+function reasonCitesNearbyLine(reason: string, evStart: number, evEnd: number): boolean {
+  const tolerance = 5;
+  const lo = Math.max(1, evStart - tolerance);
+  const hi = evEnd + tolerance;
+  // \d{1,6} caps the token length so an attacker can't blow up the regex
+  // with a giant fake-line number string. Lines past 1e6 are pathological.
+  const re = /\b(\d{1,6})\b/gu;
+  for (const m of reason.matchAll(re)) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n >= lo && n <= hi) return true;
+  }
+  return false;
 }
 
 // ────────────────────────────────────────────────────────────────────────
