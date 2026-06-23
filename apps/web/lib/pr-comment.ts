@@ -21,6 +21,13 @@ export type PatchForRender = {
   // apply unified diff for fixes outside the PR hunk. Undefined preserves
   // pre-v1.7 callers as inline.
   mode?: "inline" | "artifact";
+  // Daybreak — patch verifier verdict tag. Set to "verified" when the
+  // verifier observed tests passing and (where available) the PoC no
+  // longer reproducing. Set to "inconclusive" when verification ran but
+  // could not decide (no test runner detected, no PoC available, or the
+  // serverless / no-clone codepath). Undefined when the verifier is off
+  // (env flag disabled) — renderer treats undefined as "no claim made".
+  verifyStatus?: "verified" | "inconclusive";
 };
 
 export type ReviewMeta = {
@@ -147,10 +154,13 @@ function formatFinding(
         ev !== undefined &&
         ev.startLine !== null &&
         (ev.endLine === null || ev.endLine === ev.startLine);
+      const verifyTag = patch.verifyStatus === "inconclusive" ? " (unverified)" : "";
       if (mode === "artifact") {
         lines.push("");
         lines.push(`<details>`);
-        lines.push(`<summary>Out-of-hunk patch artifact (model: ${patch.modelId})</summary>`);
+        lines.push(
+          `<summary>Out-of-hunk patch artifact (model: ${patch.modelId}${verifyTag})</summary>`,
+        );
         lines.push("");
         lines.push(
           `This non-click-to-apply fix is outside the PR diff hunk, so GitHub cannot render it as a suggestion.`,
@@ -160,11 +170,13 @@ function formatFinding(
         lines.push(`</details>`);
       } else if (clickApplyEnabled && evidenceIsSingleLine) {
         lines.push("");
-        lines.push(`→ Proposed patch as a reviewable comment below (click \`Commit suggestion\`)`);
+        lines.push(
+          `→ Proposed patch${verifyTag} as a reviewable comment below (click \`Commit suggestion\`)`,
+        );
       } else {
         lines.push("");
         lines.push(`<details>`);
-        lines.push(`<summary>Proposed patch (model: ${patch.modelId})</summary>`);
+        lines.push(`<summary>Proposed patch (model: ${patch.modelId}${verifyTag})</summary>`);
         lines.push("");
         lines.push(...block);
         lines.push(`</details>`);

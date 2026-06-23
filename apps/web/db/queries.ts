@@ -25,6 +25,7 @@ import {
   maintainerReactions,
   onboardingEvents,
   outgoingPrs,
+  reviewGateOutcomes,
   roastSubmissions,
   reviews,
   type AgentFinding,
@@ -33,6 +34,7 @@ import {
   type NewMaintainerReaction,
   type NewOnboardingEvent,
   type NewReview,
+  type NewReviewGateOutcome,
   type OnboardingEvent,
   type RoastSubmission,
   scorecardSnapshots,
@@ -2987,4 +2989,32 @@ export async function insertScorecardSnapshot(
     .onConflictDoNothing()
     .returning({ yyyyMmDd: scorecardSnapshots.yyyyMmDd });
   return result.length > 0;
+}
+
+// Side-table writer for the Daybreak reachability + patch-verify stages.
+// Pure INSERT — there's no UPSERT or UPDATE path; each stage invocation
+// emits exactly one row. Callers gate on the relevant flag before
+// invoking this; a DB write failure must not bubble up and block the
+// underlying review or patch comment (lifecycle invariant 2). The
+// migration that ships the underlying table (0041) is authored but NOT
+// yet applied to prod — callers behind the flag-off path will never reach
+// this function in prod until the operator runs the apply script.
+export type GateOutcomeRow = {
+  findingId: string | null;
+  stage: "reachability" | "patch_verify";
+  verdict: string;
+  evidence: unknown;
+  modelId: string | null;
+};
+
+export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): Promise<void> {
+  const values: NewReviewGateOutcome = {
+    reviewId,
+    findingId: row.findingId,
+    stage: row.stage,
+    verdict: row.verdict,
+    evidence: row.evidence,
+    modelId: row.modelId,
+  };
+  await db.insert(reviewGateOutcomes).values(values);
 }

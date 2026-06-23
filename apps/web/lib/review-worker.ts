@@ -20,6 +20,15 @@ import {
 import { runPatchAgent as realRunPatchAgent } from "./patch-agent";
 import { isPatchAgentClickApplyEnabledForInstall as realIsPatchAgentClickApplyEnabledForInstall } from "./patch-agent-env";
 import { postPatchReviewComment as realPostPatchReviewComment } from "./patch-review-comment";
+import { applyReachabilityGate as realApplyReachabilityGate } from "./reachability-gate";
+import {
+  applyPatchVerifier as realApplyPatchVerifier,
+  realPatchVerifierIo,
+} from "./patch-verifier";
+import {
+  isReachabilityGateEnabledForInstall as realIsReachabilityGateEnabledForInstall,
+  isPatchVerifyEnabledForInstall as realIsPatchVerifyEnabledForInstall,
+} from "./daybreak-gates-env";
 import { alertCritical } from "./alert";
 import { logError, logInfo, messageOf } from "./log";
 import { db } from "@/db";
@@ -36,6 +45,7 @@ import {
   markReviewSucceeded as realMarkReviewSucceeded,
   markReviewTerminallyFailed as realMarkReviewTerminallyFailed,
   recordFindingStatuses as realRecordFindingStatuses,
+  recordGateOutcome as realRecordGateOutcome,
   recordPatchDecisions as realRecordPatchDecisions,
   recordPatchReviewComment as realRecordPatchReviewComment,
   setReviewComment as realSetReviewComment,
@@ -86,6 +96,15 @@ export type WorkerDeps = {
   markReviewTerminallyFailed: typeof realMarkReviewTerminallyFailed;
   markReviewExhaustedIfStale: typeof realMarkReviewExhaustedIfStale;
   loadReviewSettlement: (reviewId: string) => Promise<ReviewSettlement | null>;
+  // Daybreak — reachability gate + patch verifier deps. Both default to
+  // the real implementations; tests can inject no-ops. Each is paired
+  // with its env-flag resolver so the kernel can short-circuit when the
+  // flag is off (no LLM call, no /tmp worktree, no DB write).
+  applyReachabilityGate: typeof realApplyReachabilityGate;
+  applyPatchVerifier: typeof realApplyPatchVerifier;
+  recordGateOutcome: typeof realRecordGateOutcome;
+  isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
+  isPatchVerifyEnabledForInstall: typeof realIsPatchVerifyEnabledForInstall;
   now: () => Date;
 };
 
@@ -113,6 +132,11 @@ export function realWorkerDeps(): WorkerDeps {
     markReviewTerminallyFailed: realMarkReviewTerminallyFailed,
     markReviewExhaustedIfStale: realMarkReviewExhaustedIfStale,
     loadReviewSettlement: (reviewId) => realLoadReviewSettlement(db, reviewId),
+    applyReachabilityGate: realApplyReachabilityGate,
+    applyPatchVerifier: realApplyPatchVerifier,
+    recordGateOutcome: realRecordGateOutcome,
+    isReachabilityGateEnabledForInstall: realIsReachabilityGateEnabledForInstall,
+    isPatchVerifyEnabledForInstall: realIsPatchVerifyEnabledForInstall,
     now: () => new Date(),
   };
 }
@@ -347,6 +371,15 @@ export type ReviewKernelDeps = {
   reviewPR: typeof realReviewPR;
   updateReview: typeof realUpdateReview;
   recordFindingStatuses: typeof realRecordFindingStatuses;
+  // Daybreak — reachability gate plumbing. The kernel-side hook runs on
+  // every rail (install + paid + acp) because the gate question — "is this
+  // bug reachable from a real entry point?" — is rail-agnostic. Disabled
+  // by default in prod via env flag; on in bench.
+  applyReachabilityGate: typeof realApplyReachabilityGate;
+  recordGateOutcome: typeof realRecordGateOutcome;
+  // Resolver receives an installationId / repo so future per-install
+  // overrides slot in without a churning signature.
+  isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
 };
 
 // Install-only lane deps. When the caller (installation rail) wires
@@ -367,6 +400,14 @@ export type ReviewKernelInstallLane = {
   recordPatchDecisions: typeof realRecordPatchDecisions;
   setReviewPatchCost: typeof realSetReviewPatchCost;
   recordPatchProposedEvent: typeof realRecordPatchProposedEvent;
+  // Daybreak — patch verifier plumbing. Runs after the patch agent emits
+  // proposals and BEFORE we persist / post them. Disabled by default in
+  // prod via env flag; on in bench. The verifier needs git+spawn+/tmp so
+  // serverless runtimes return inconclusive across the board until the
+  // operator routes the install rail through a backing service.
+  applyPatchVerifier: typeof realApplyPatchVerifier;
+  recordGateOutcome: typeof realRecordGateOutcome;
+  isPatchVerifyEnabledForInstall: typeof realIsPatchVerifyEnabledForInstall;
   now: () => Date;
 };
 
@@ -422,9 +463,72 @@ export async function runReviewKernel(
     ...(signal !== undefined ? { signal } : {}),
   });
 
+  // Daybreak — reachability gate. A third independent axis on top of the
+  // Opus + GPT-5 consensus. Runs ONLY on the install rail (the only path
+  // with a known installationId for the per-install override) and only
+  // when the flag resolver returns true. Outcomes are persisted into
+  // review_gate_outcomes; on `unreachable`, the matching agreed finding
+  // is re-graded to LOW with the reason appended to the title BEFORE
+  // agreementDecision is persisted. We deliberately keep the consensus
+  // stage itself untouched — this is a downstream re-grade, not a
+  // re-vote.
+  //
+  // A throw inside the gate must NOT block the review. We catch + log
+  // and proceed with the un-gated bundle. The applier itself fails open
+  // per-finding ('uncertain' on any model/parse error).
+  let reachabilityOutcomes: Array<{ index: number; reason: string }> = [];
+  if (args.installLane !== undefined && !bundle.degraded && bundle.agreed.length > 0) {
+    const installationId = args.installLane.installationId;
+    try {
+      const enabled = await deps.isReachabilityGateEnabledForInstall(installationId, repo);
+      if (enabled) {
+        const applied = await deps.applyReachabilityGate({
+          agreed: bundle.agreed,
+          owner,
+          repo,
+          files,
+          ...(signal !== undefined ? { signal } : {}),
+        });
+        // Mutate the bundle's agreed array in place so all downstream
+        // consumers see the re-graded shape (agreementDecision JSONB,
+        // recordFindingStatuses, formatPRComment).
+        bundle.agreed = applied.agreed;
+        reachabilityOutcomes = applied.downgrades;
+        for (const row of applied.rows) {
+          try {
+            await deps.recordGateOutcome(reviewId, {
+              findingId: row.findingId,
+              stage: "reachability",
+              verdict: row.outcome.verdict,
+              evidence: row.outcome,
+              modelId: row.outcome.modelId,
+            });
+          } catch (persistErr) {
+            // Non-fatal — gate outcome rows are observability-only.
+            logError("reachability_gate.persist_failed", {
+              reviewId,
+              message: messageOf(persistErr),
+            });
+          }
+        }
+        logInfo("reachability_gate.completed", {
+          reviewId,
+          gated: applied.rows.length,
+          downgraded: applied.downgrades.length,
+        });
+      }
+    } catch (err) {
+      logError("reachability_gate.threw", {
+        reviewId,
+        message: messageOf(err),
+      });
+    }
+  }
+
   // Full agreement-decision shape, shared across cost-cap + success
   // branches. Triage is included unconditionally — see the kernel
-  // contract above.
+  // contract above. `agreed` here reflects the post-reachability-gate
+  // state when the gate fired; otherwise it is the raw consensus output.
   const agreementDecision = {
     mode: bundle.agreementMode,
     agreed: bundle.agreed,
@@ -432,6 +536,8 @@ export async function runReviewKernel(
     degraded: bundle.degraded,
     degradedReason: bundle.degradedReason,
     triage: bundle.triage,
+    reachabilityGate:
+      reachabilityOutcomes.length > 0 ? { downgrades: reachabilityOutcomes } : undefined,
   };
   const providerResponses: Record<string, unknown> = { perProvider: bundle.perProvider };
   if (rail !== undefined) providerResponses["rail"] = rail;
@@ -578,6 +684,64 @@ async function runInstallLane(args: {
       shippedCount: patchOutcome.byIndex.size,
       elapsedMs: patchOutcome.elapsedMs,
     });
+  }
+
+  // Daybreak — patch verifier. Runs AFTER the patch agent produces
+  // proposals and BEFORE we persist / post them. Drops `regressed`
+  // patches outright; tags `inconclusive` ones so the suggestion block
+  // can mark them unverified. `verified` patches pass through unchanged.
+  //
+  // The verifier needs git+spawn+/tmp. Serverless runtimes will return
+  // `inconclusive` on every entry (no-clone path), which is the correct
+  // direction — we keep posting the suggestion but mark it unverified.
+  // Throws never block the post; we log and continue.
+  if (patchOutcome !== null && patchOutcome.byIndex.size > 0) {
+    try {
+      const enabled = await lane.isPatchVerifyEnabledForInstall(lane.installationId, repo);
+      if (enabled) {
+        const applied = await lane.applyPatchVerifier({
+          outcome: patchOutcome,
+          repoUrl: `https://github.com/${owner}/${repo}.git`,
+          sha: lane.commitSha,
+          findingAt: (i) => bundle.agreed[i],
+          findingIdAt: (i) => findingIds[i] ?? null,
+          io: realPatchVerifierIo(),
+        });
+        for (const row of applied.rows) {
+          try {
+            await lane.recordGateOutcome(reviewId, {
+              findingId: row.findingId,
+              stage: "patch_verify",
+              verdict: row.outcome.verdict,
+              evidence: row.outcome,
+              modelId: null,
+            });
+          } catch (persistErr) {
+            logError("patch_verify.persist_failed", {
+              reviewId,
+              message: messageOf(persistErr),
+            });
+          }
+        }
+        if (applied.droppedIndexes.length > 0) {
+          logInfo("patch_verify.regressed_dropped", {
+            reviewId,
+            droppedIndexes: applied.droppedIndexes,
+          });
+        }
+        logInfo("patch_verify.completed", {
+          reviewId,
+          verified: applied.rows.filter((r) => r.outcome.verdict === "verified").length,
+          regressed: applied.rows.filter((r) => r.outcome.verdict === "regressed").length,
+          inconclusive: applied.rows.filter((r) => r.outcome.verdict === "inconclusive").length,
+        });
+      }
+    } catch (err) {
+      logError("patch_verify.threw", {
+        reviewId,
+        message: messageOf(err),
+      });
+    }
   }
 
   const inlinePatchByIndex =
@@ -862,6 +1026,9 @@ async function processClaimedRow(
         recordPatchDecisions: deps.recordPatchDecisions,
         setReviewPatchCost: deps.setReviewPatchCost,
         recordPatchProposedEvent: deps.recordPatchProposedEvent,
+        applyPatchVerifier: deps.applyPatchVerifier,
+        recordGateOutcome: deps.recordGateOutcome,
+        isPatchVerifyEnabledForInstall: deps.isPatchVerifyEnabledForInstall,
         now: deps.now,
       },
     },
@@ -869,6 +1036,9 @@ async function processClaimedRow(
       reviewPR: deps.reviewPR,
       updateReview: deps.updateReview,
       recordFindingStatuses: deps.recordFindingStatuses,
+      applyReachabilityGate: deps.applyReachabilityGate,
+      recordGateOutcome: deps.recordGateOutcome,
+      isReachabilityGateEnabledForInstall: deps.isReachabilityGateEnabledForInstall,
     },
   );
   if (kernelOutcome.kind === "skipped") return;
