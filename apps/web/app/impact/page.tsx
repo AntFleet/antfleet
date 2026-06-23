@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { formatHoursToFix, loadPatchKpis } from "@/lib/kpis";
 import {
   formatRelativeTime,
   loadCrossRepoReceipts,
@@ -14,7 +15,7 @@ export const metadata: Metadata = {
 };
 
 export default async function ImpactPage() {
-  const crossRepo = await loadCrossRepoReceipts(100);
+  const [crossRepo, kpis] = await Promise.all([loadCrossRepoReceipts(100), loadPatchKpis()]);
   const now = new Date();
 
   const uniqueRepos = new Set(crossRepo.recent.map((r) => `${r.upstreamOwner}/${r.upstreamRepo}`));
@@ -56,6 +57,16 @@ export default async function ImpactPage() {
                   {uniqueRepos.size === 1 ? "repo" : "repos"} affected
                 </p>
               </div>
+              {kpis.medianHoursToFix !== null && (
+                <div>
+                  <p className="text-4xl font-mono font-semibold tracking-tight text-[var(--color-ink)] tabular-nums">
+                    {formatHoursToFix(kpis.medianHoursToFix)}
+                  </p>
+                  <p className="mt-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+                    median time to fix
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </ContentWrap>

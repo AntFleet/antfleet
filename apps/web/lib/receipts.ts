@@ -1,7 +1,7 @@
 import { and, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
-import { outgoingPrs, type OutgoingPr } from "@/db/schema";
+import { findingStatus, outgoingPrs, reviews, type OutgoingPr } from "@/db/schema";
 import { shortenRepoHash, shortenReviewId, shortenSha } from "./short-id";
 
 // Pure view-model for the public /receipts page. Lives apart from the DB
@@ -153,12 +153,27 @@ export function mapReceiptEligibleRows(rows: readonly OutgoingPr[]): {
   return { receipts, lastResolvedAt };
 }
 
+// Visibility gate — hide a cross-repo receipt only when its source finding
+// is positively known to be private (publicReceipt=false on the review or
+// the finding was retracted). Orphan outgoing_prs rows (sourceFindingId has
+// no matching finding_status row, e.g. bench/manual-onboarding seeds) pass
+// through: they are upstream PRs AntFleet itself opened, never private.
+// Same privacy contract as /receipts in the "known public" case, more
+// permissive than loadPublicReceiptsPage for the "unknown source" case.
+const publicReceiptGate = sql`NOT EXISTS (
+  SELECT 1 FROM ${findingStatus}
+  INNER JOIN ${reviews} ON ${reviews.reviewId} = ${findingStatus.reviewId}
+  WHERE ${findingStatus.findingId} = ${outgoingPrs.sourceFindingId}
+    AND (${reviews.publicReceipt} = false OR ${findingStatus.retractedAt} IS NOT NULL)
+)`;
+
 export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoReceiptsPage> {
   const receiptStatuses = ["merged", "closed_absorbed"];
+  const baseFilter = and(inArray(outgoingPrs.status, receiptStatuses), publicReceiptGate);
   const rows = (await db
     .select()
     .from(outgoingPrs)
-    .where(inArray(outgoingPrs.status, receiptStatuses))
+    .where(baseFilter)
     .orderBy(
       sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) DESC NULLS LAST`,
     )
@@ -169,7 +184,7 @@ export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoRec
   const [countRow] = await db
     .select({ value: sql<number>`count(*)::int`.as("value") })
     .from(outgoingPrs)
-    .where(inArray(outgoingPrs.status, receiptStatuses));
+    .where(baseFilter);
 
   return { total: countRow?.value ?? 0, recent: receipts, lastResolvedAt };
 }
@@ -189,6 +204,7 @@ export async function loadCrossRepoReceiptsBetween(
     inArray(outgoingPrs.status, receiptStatuses),
     sql`${resolvedAt} >= ${since}`,
     sql`${resolvedAt} < ${until}`,
+    publicReceiptGate,
   );
 
   const rows = (await db

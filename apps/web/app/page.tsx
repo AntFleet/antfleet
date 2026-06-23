@@ -1,6 +1,7 @@
 import { loadCurrentWeeklyFeature, type WeeklyFeatureRow } from "@/db/queries";
 import { severityLabel, shortAddress } from "@/lib/agent-findings";
 import { getGitHubAppInstallUrl } from "@/lib/install-url";
+import { formatHoursToFix, loadPatchKpis, type PatchKpis } from "@/lib/kpis";
 import {
   getDepositAddress,
   getMinDepositUsdc,
@@ -98,7 +99,7 @@ function toPlaintextPreview(markdown: string, maxChars: number): string {
 
 // ─── hero ────────────────────────────────────────────────────────────────────
 
-function Hero({ installUrl }: { installUrl: string }) {
+function Hero({ installUrl, kpis }: { installUrl: string; kpis: PatchKpis }) {
   return (
     <section className="py-20 pb-12">
       <ContentWrap>
@@ -113,10 +114,11 @@ function Hero({ installUrl }: { installUrl: string }) {
 
         <p className="mt-6 text-base leading-relaxed text-[var(--color-ink-muted)] max-w-xl">
           Two independent frontier models review every PR. Agreement between them is the trust
-          primitive — and every closed finding is pinned to a public, SHA-verifiable receipt on the
-          PR that resolved it. The audit trail isn&apos;t in our database; it&apos;s on
-          GitHub&apos;s event log, where anyone can check it.
+          primitive — and the receipt is the patch that landed upstream, SHA-pinned to GitHub&apos;s
+          event log where anyone can check it.
         </p>
+
+        {kpis.patchesLanded > 0 && <HeroStats kpis={kpis} />}
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <a
@@ -134,6 +136,36 @@ function Hero({ installUrl }: { installUrl: string }) {
         </div>
       </ContentWrap>
     </section>
+  );
+}
+
+function HeroStats({ kpis }: { kpis: PatchKpis }) {
+  const { patchesLanded, reposAffected, medianHoursToFix } = kpis;
+  return (
+    <div className="mt-8 flex flex-wrap items-baseline gap-x-8 gap-y-2">
+      <div className="flex items-baseline gap-3">
+        <span className="text-4xl font-mono font-semibold tracking-tight text-[var(--color-ink)] tabular-nums">
+          {patchesLanded.toLocaleString()}
+        </span>
+        <span className="text-sm text-[var(--color-ink-muted)]">
+          {patchesLanded === 1 ? "patch" : "patches"} landed
+          {reposAffected > 0 && (
+            <>
+              {" "}
+              across {reposAffected.toLocaleString()} {reposAffected === 1 ? "repo" : "repos"}
+            </>
+          )}
+        </span>
+      </div>
+      {medianHoursToFix !== null && (
+        <div className="flex items-baseline gap-3">
+          <span className="text-4xl font-mono font-semibold tracking-tight text-[var(--color-ink)] tabular-nums">
+            {formatHoursToFix(medianHoursToFix)}
+          </span>
+          <span className="text-sm text-[var(--color-ink-muted)]">median time to fix</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -474,9 +506,10 @@ function BottomCta({ installUrl }: { installUrl: string }) {
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 export default async function Home() {
-  const [feature, latestImpact] = await Promise.all([
+  const [feature, latestImpact, kpis] = await Promise.all([
     loadCurrentWeeklyFeature(),
     loadCrossRepoReceipts(1),
+    loadPatchKpis(),
   ]);
   const installUrl = getGitHubAppInstallUrl();
   const baseUrl = getPublicBaseUrl();
@@ -486,7 +519,7 @@ export default async function Home() {
 
   return (
     <>
-      <Hero installUrl={installUrl} />
+      <Hero installUrl={installUrl} kpis={kpis} />
       <SectionDivider />
       {feature !== null && (
         <>

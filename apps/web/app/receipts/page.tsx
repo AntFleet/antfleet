@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { TweetIntent } from "@/components/TweetIntent";
 import { loadPublicReceiptsPage } from "@/db/queries";
+import { formatHoursToFix, loadPatchKpis } from "@/lib/kpis";
 import {
   formatRelativeTime,
   loadCrossRepoReceipts,
@@ -54,7 +55,7 @@ export default async function ReceiptsPage({
 }) {
   const params = await searchParams;
   const before = parseBeforeCursor(params["before"]);
-  const [pageData, crossRepo] = await Promise.all([
+  const [pageData, crossRepo, kpis] = await Promise.all([
     loadPublicReceiptsPage({ limit: RECENT_LIMIT, before }),
     // Cross-repo receipts skip pagination — they're a curated stream
     // surfaced only on the latest view, since the corpus is small and the
@@ -63,28 +64,36 @@ export default async function ReceiptsPage({
     before === undefined
       ? loadCrossRepoReceipts(CROSS_REPO_LIMIT)
       : Promise.resolve({ total: 0, recent: [], lastResolvedAt: null }),
+    loadPatchKpis(),
   ]);
   const { totalClosed, recent, lastUpdatedAt, hasMore } = pageData;
   const now = new Date();
   const displays: DisplayReceipt[] = recent.map((row) => toDisplayReceipt(row, now));
-  // Pick the most-recent timestamp across same-repo closures and cross-repo receipts.
+  // Pick the most-recent timestamp across closures, cross-repo receipts, and KPI updates.
+  const candidates = [lastUpdatedAt, crossRepo.lastResolvedAt, kpis.lastUpdated].filter(
+    (d): d is Date => d !== null,
+  );
   const effectiveLastUpdated =
-    lastUpdatedAt === null
-      ? crossRepo.lastResolvedAt
-      : crossRepo.lastResolvedAt !== null && crossRepo.lastResolvedAt > lastUpdatedAt
-        ? crossRepo.lastResolvedAt
-        : lastUpdatedAt;
+    candidates.length === 0
+      ? null
+      : candidates.reduce((acc, d) => (d > acc ? d : acc), candidates[0]!);
   const lastUpdatedRelative =
     effectiveLastUpdated === null ? null : formatRelativeTime(now, effectiveLastUpdated);
   const nextCursor =
     hasMore && displays.length > 0 ? (displays[displays.length - 1]?.closedAtIso ?? null) : null;
   const isPaginated = before !== undefined;
-  // Aggregate headline: same-repo closures + cross-repo receipts (merged + absorbed)
+  // Aggregate findings receipts count (kept as tertiary stat under patches-landed).
   const totalReceipts = totalClosed + crossRepo.total;
 
   return (
     <>
-      <ReceiptsHero totalClosed={totalReceipts} lastUpdatedRelative={lastUpdatedRelative} />
+      <ReceiptsHero
+        patchesLanded={kpis.patchesLanded}
+        reposAffected={kpis.reposAffected}
+        medianHoursToFix={kpis.medianHoursToFix}
+        totalReceipts={totalReceipts}
+        lastUpdatedRelative={lastUpdatedRelative}
+      />
       <SectionDivider />
       {crossRepo.recent.length > 0 && (
         <>
@@ -192,10 +201,16 @@ function SectionDivider() {
 }
 
 function ReceiptsHero({
-  totalClosed,
+  patchesLanded,
+  reposAffected,
+  medianHoursToFix,
+  totalReceipts,
   lastUpdatedRelative,
 }: {
-  totalClosed: number;
+  patchesLanded: number;
+  reposAffected: number;
+  medianHoursToFix: number | null;
+  totalReceipts: number;
   lastUpdatedRelative: string | null;
 }) {
   return (
@@ -206,28 +221,42 @@ function ReceiptsHero({
         </p>
 
         <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)] leading-snug max-w-xl">
-          Independent code review. Two-model consensus. Every fix that landed upstream, by any path.
+          Two-model consensus finds the bug. The receipt is the patch that landed.
         </h1>
 
         <div className="mt-10 flex items-baseline gap-4">
           <p className="text-6xl font-mono font-semibold tracking-tight text-[var(--color-ink)] tabular-nums">
-            {totalClosed.toLocaleString()}
+            {patchesLanded.toLocaleString()}
           </p>
           <p className="text-sm text-[var(--color-ink-muted)]">
-            {totalClosed === 1 ? "receipt" : "receipts"} and counting
+            {patchesLanded === 1 ? "patch" : "patches"} landed
+            {reposAffected > 0 && (
+              <>
+                {" "}
+                across {reposAffected.toLocaleString()} {reposAffected === 1 ? "repo" : "repos"}
+              </>
+            )}
           </p>
         </div>
 
-        {lastUpdatedRelative !== null && (
-          <p className="mt-2 font-mono text-[11px] text-[var(--color-ink-subtle)]">
-            updated {lastUpdatedRelative}
-          </p>
-        )}
+        <div className="mt-4 flex flex-wrap items-baseline gap-x-6 gap-y-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+          {medianHoursToFix !== null && (
+            <span>
+              median time to fix:{" "}
+              <span className="text-[var(--color-ink-muted)]">
+                {formatHoursToFix(medianHoursToFix)}
+              </span>
+            </span>
+          )}
+          <span>
+            {totalReceipts.toLocaleString()} {totalReceipts === 1 ? "finding" : "findings"} on file
+          </span>
+          {lastUpdatedRelative !== null && <span>updated {lastUpdatedRelative}</span>}
+        </div>
 
         <p className="mt-8 text-sm text-[var(--color-ink-muted)] max-w-xl leading-relaxed">
-          Every entry below is a comment on a real PR — the closure receipt lives on GitHub&apos;s
-          event log, not ours. Click any link to verify the SHA, the timestamp, and the surrounding
-          diff for yourself.
+          Finding a bug is the easy half. The receipt is the patch that landed — merged upstream,
+          SHA-pinned, verifiable on GitHub&apos;s event log. Click any row to follow the trail.
         </p>
         <p className="mt-3 text-xs text-[var(--color-ink-subtle)] max-w-xl leading-relaxed">
           Showing all public-repo receipts; private repos opt in via{" "}
