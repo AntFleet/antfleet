@@ -111,6 +111,21 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     markReviewTerminallyFailed: vi.fn().mockResolvedValue(undefined),
     markReviewExhaustedIfStale: vi.fn().mockResolvedValue(true),
     loadReviewSettlement: vi.fn().mockResolvedValue(null),
+    // Daybreak gates — defaults are "flag off, no-op". Tests that exercise
+    // the gates override the resolvers + appliers explicitly.
+    applyReachabilityGate: vi.fn().mockImplementation(async ({ agreed }) => ({
+      agreed: [...agreed],
+      rows: [],
+      downgrades: [],
+    })),
+    applyPatchVerifier: vi.fn().mockImplementation(async ({ outcome }) => ({
+      outcome,
+      rows: [],
+      droppedIndexes: [],
+    })),
+    recordGateOutcome: vi.fn().mockResolvedValue(undefined),
+    isReachabilityGateEnabledForInstall: vi.fn().mockResolvedValue(false),
+    isPatchVerifyEnabledForInstall: vi.fn().mockResolvedValue(false),
     now: () => NOW,
     ...overrides,
   };

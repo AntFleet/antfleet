@@ -19,6 +19,7 @@ const dbQueryMocks = vi.hoisted(() => ({
   hashRepo: vi.fn(),
   markReviewSucceeded: vi.fn(),
   recordFindingStatuses: vi.fn(),
+  recordGateOutcome: vi.fn(),
   updateReview: vi.fn(),
 }));
 

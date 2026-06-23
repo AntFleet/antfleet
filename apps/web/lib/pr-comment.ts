@@ -21,6 +21,20 @@ export type PatchForRender = {
   // apply unified diff for fixes outside the PR hunk. Undefined preserves
   // pre-v1.7 callers as inline.
   mode?: "inline" | "artifact";
+  // Daybreak — patch verifier verdict tag. Set to "verified" when the
+  // verifier observed tests passing and (where available) the PoC no
+  // longer reproducing. Set to "inconclusive" when verification ran but
+  // could not decide. Undefined when the verifier is off (env flag
+  // disabled) — renderer treats undefined as "no claim made".
+  verifyStatus?: "verified" | "inconclusive";
+  // Reason the verifier returned `inconclusive`. Only set when
+  // `verifyStatus === "inconclusive"`. The renderer uses this to scope
+  // the user-visible tag — "(unverified)" is reserved for genuine
+  // could-not-decide outcomes (test_timeout, poc_timeout, exception);
+  // softer outcomes (no test runner, no PoC available) render WITHOUT
+  // an alarming tag so legitimate patches don't get penalised by
+  // missing test infra.
+  verifyInconclusiveReason?: string | null;
 };
 
 export type ReviewMeta = {
@@ -147,10 +161,23 @@ function formatFinding(
         ev !== undefined &&
         ev.startLine !== null &&
         (ev.endLine === null || ev.endLine === ev.startLine);
+      // Only tag "(unverified)" for inconclusive verdicts that signal
+      // genuine indecision. Soft outcomes — no test runner detected, no PoC
+      // available — leave the suggestion untagged so legit patches aren't
+      // penalised by missing test infra. The reason set comes from the
+      // verifier's InconclusiveReason enum (see patch-verifier.ts).
+      const SOFT_INCONCLUSIVE = new Set(["no_runner", "no_poc", "no_repo_url"]);
+      const verifyTag =
+        patch.verifyStatus === "inconclusive" &&
+        !SOFT_INCONCLUSIVE.has(patch.verifyInconclusiveReason ?? "")
+          ? " (unverified)"
+          : "";
       if (mode === "artifact") {
         lines.push("");
         lines.push(`<details>`);
-        lines.push(`<summary>Out-of-hunk patch artifact (model: ${patch.modelId})</summary>`);
+        lines.push(
+          `<summary>Out-of-hunk patch artifact (model: ${patch.modelId}${verifyTag})</summary>`,
+        );
         lines.push("");
         lines.push(
           `This non-click-to-apply fix is outside the PR diff hunk, so GitHub cannot render it as a suggestion.`,
@@ -160,11 +187,13 @@ function formatFinding(
         lines.push(`</details>`);
       } else if (clickApplyEnabled && evidenceIsSingleLine) {
         lines.push("");
-        lines.push(`→ Proposed patch as a reviewable comment below (click \`Commit suggestion\`)`);
+        lines.push(
+          `→ Proposed patch${verifyTag} as a reviewable comment below (click \`Commit suggestion\`)`,
+        );
       } else {
         lines.push("");
         lines.push(`<details>`);
-        lines.push(`<summary>Proposed patch (model: ${patch.modelId})</summary>`);
+        lines.push(`<summary>Proposed patch (model: ${patch.modelId}${verifyTag})</summary>`);
         lines.push("");
         lines.push(...block);
         lines.push(`</details>`);

@@ -819,6 +819,37 @@ export const scorecardSnapshots = pgTable("scorecard_snapshots", {
   payload: jsonb("payload").notNull(),
 });
 
+// Daybreak-inspired side table for the reachability gate + patch verifier.
+// One INSERT per stage invocation; never UPDATEd, so there's no contention
+// with the recordPatchDecisions UPDATE path on finding_status. Adding new
+// stage names is application-only (stage column is free-text text).
+//
+// Migration 0041 ships the DDL. Until applied, code paths that write to
+// this table are gated behind ANTFLEET_REACHABILITY_GATE and
+// ANTFLEET_PATCH_VERIFY (both default OFF in prod) — schema-presence is
+// part of the bench-on / prod-off contract.
+export const reviewGateOutcomes = pgTable(
+  "review_gate_outcomes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => reviews.reviewId, { onDelete: "cascade" }),
+    findingId: text("finding_id"),
+    stage: text("stage").notNull(),
+    verdict: text("verdict").notNull(),
+    evidence: jsonb("evidence").notNull().default({}),
+    modelId: text("model_id"),
+    reviewAttempt: integer("review_attempt").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("review_gate_outcomes_review_idx").on(t.reviewId),
+    index("review_gate_outcomes_stage_verdict_idx").on(t.stage, t.verdict),
+    index("review_gate_outcomes_review_finding_idx").on(t.reviewId, t.findingId),
+  ],
+);
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -859,3 +890,5 @@ export type X402ReviewClaim = typeof x402ReviewClaims.$inferSelect;
 export type NewX402ReviewClaim = typeof x402ReviewClaims.$inferInsert;
 export type ScorecardSnapshot = typeof scorecardSnapshots.$inferSelect;
 export type NewScorecardSnapshot = typeof scorecardSnapshots.$inferInsert;
+export type ReviewGateOutcome = typeof reviewGateOutcomes.$inferSelect;
+export type NewReviewGateOutcome = typeof reviewGateOutcomes.$inferInsert;
