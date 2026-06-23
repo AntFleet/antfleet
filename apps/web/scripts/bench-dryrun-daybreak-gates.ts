@@ -100,6 +100,31 @@ async function main(): Promise<void> {
   const { runReachabilityGate } = await import("@/lib/reachability-gate");
   const { runPatchVerifier, realPatchVerifierIo } = await import("@/lib/patch-verifier");
   const { recordGateOutcome } = await import("@/db/queries");
+  const { getPublicChangedFiles, PublicRepoAccessError } =
+    await import("@/lib/github-files-public");
+  const filesCache = new Map<string, Awaited<ReturnType<typeof getPublicChangedFiles>> | null>();
+  const fetchFiles = async (
+    owner: string,
+    repo: string,
+    prNumber: number,
+    sha: string,
+  ): Promise<Awaited<ReturnType<typeof getPublicChangedFiles>>> => {
+    const key = `${owner}/${repo}#${prNumber}@${sha}`;
+    if (filesCache.has(key)) return filesCache.get(key) ?? [];
+    try {
+      const files = await getPublicChangedFiles({ owner, repo, prNumber, headSha: sha });
+      filesCache.set(key, files);
+      return files;
+    } catch (err) {
+      if (err instanceof PublicRepoAccessError) {
+        console.warn(`[bench-dryrun] ${key} is private or 404 — falling back to evidence-only`);
+      } else {
+        console.warn(`[bench-dryrun] file fetch failed for ${key}: ${(err as Error).message}`);
+      }
+      filesCache.set(key, null);
+      return [];
+    }
+  };
 
   const since = new Date(Date.now() - RECENT_DAYS * 24 * 60 * 60 * 1000);
   const rows = await db
@@ -162,6 +187,7 @@ async function main(): Promise<void> {
 
     for (const row of benchRows) {
       const findings = extractAgreed(row.agreementDecision);
+      const prFiles = await fetchFiles(owner, repo, row.prNumber, row.commitSha);
       for (const finding of findings) {
         if (reachabilityBudget <= 0) break;
         if (finding.severity !== "high" && finding.severity !== "critical") continue;
@@ -192,10 +218,11 @@ async function main(): Promise<void> {
             },
             owner,
             repo,
-            // Bench scripts don't re-fetch PR files; the prompt only sees
-            // the evidence file path/line and the model's own knowledge.
-            // This is a deliberate scope cap for the dry-run.
-            files: [],
+            // Real PR-changed files when the repo is publicly fetchable.
+            // Empty array when the repo is private/404 or the API call
+            // failed; reachability degrades to evidence-only signal
+            // (still useful, just lower quality).
+            files: prFiles,
           });
           const record: ReachabilityRecord = {
             reviewId: row.reviewId,
@@ -239,6 +266,12 @@ async function main(): Promise<void> {
       for (const status of row.findingStatuses) {
         if (patchVerifyBudget <= 0) break;
         if (status.suggestedPatch === null) continue;
+        // Pair the finding_status row with the corresponding agreed
+        // finding by index. finding_id is `<short>-<index>` (per
+        // makeFindingId); decoding the trailing integer is the cheapest
+        // way to thread evidence into the verifier without re-querying.
+        const idx = parseFindingIndex(status.findingId);
+        const agreed = idx !== null ? findings[idx] : undefined;
         patchVerifyBudget--;
         try {
           const outcome = await runPatchVerifier({
@@ -246,15 +279,21 @@ async function main(): Promise<void> {
             sha: row.commitSha,
             patch: status.suggestedPatch,
             finding: {
-              title: "(bench replay)",
-              category: "logic" as never,
-              severity: "low",
+              title: agreed?.title ?? "(bench replay)",
+              category: (agreed?.category as never) ?? ("logic" as never),
+              severity: agreed?.severity ?? "low",
               label: "blocking",
               confidence: "low",
-              evidence: [],
-              reasoning: "",
-              reproduction: null,
-              recommendation: "",
+              evidence: (agreed?.evidence ?? []).map((e) => ({
+                path: e.path,
+                startLine: e.startLine,
+                endLine: e.endLine,
+                symbol: null,
+                quote: null,
+              })),
+              reasoning: agreed?.reasoning ?? "",
+              reproduction: agreed?.reproduction ?? null,
+              recommendation: agreed?.recommendation ?? "",
               whyTestsDoNotAlreadyCoverThis: "",
               suggestedRegressionTest: null,
               minimumFixScope: "",
@@ -311,6 +350,13 @@ async function main(): Promise<void> {
     "utf8",
   );
   console.log(`[bench-dryrun] report written to ${reportPath}`);
+}
+
+function parseFindingIndex(findingId: string): number | null {
+  const m = /-(\d+)$/u.exec(findingId);
+  if (m === null) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
 }
 
 function extractAgreed(agreementDecision: unknown): AgreedFinding[] {
@@ -424,18 +470,25 @@ function renderReport(args: {
       `**Auth fail-open notice.** ${auth401.length}/${args.reachabilityRecords.length} reachability calls landed on \`uncertain\` because the local Anthropic API key returned 401. The verdicts in the table below therefore reflect the fail-open path, not Haiku's substantive answer. To reach the gate's discriminative output, swap the local \`ANTHROPIC_API_KEY\` for a valid one and re-run.`,
     );
   }
-  if (patchApplyFails.length > 0) {
+  const adapterRefusals = args.patchVerifyRecords.filter((r) =>
+    r.notes.includes("patch-adapter could not normalise"),
+  );
+  if (patchApplyFails.length > 0 || adapterRefusals.length > 0) {
     lines.push("");
     const note =
-      "**Patch-verifier adapter gap.** " +
-      `${patchApplyFails.length}/${args.patchVerifyRecords.length} verifier calls returned ` +
-      "`regressed` because the bench-stored `suggested_patch` lives as a GitHub " +
-      "suggestion replacement block, not a unified diff. `git apply` cannot consume " +
-      "the suggestion form. Before flipping the prod `ANTFLEET_PATCH_VERIFY` flag, " +
-      "the verifier needs an adapter that lifts the suggestion's NEW-side lines into " +
-      "a unified diff anchored on the evidence line. The shape of the failure " +
-      "(`exit 128: corrupt patch`) is the structural verdict; it is NOT a real " +
-      "regression in the proposed fix.";
+      "**Patch-verifier adapter active.** " +
+      "Stored `suggested_patch` rows are rebuilt by `patch-adapter.ts` (recomputes " +
+      "the `diff --git` envelope and re-anchors the hunk against the file at the " +
+      "reviewed SHA). " +
+      `${adapterRefusals.length}/${args.patchVerifyRecords.length} calls were safely ` +
+      "refused as `inconclusive` because the patch's old-side block could not be " +
+      "located in the evidence file — the proposed fix may target a different " +
+      `version of the file. ${patchApplyFails.length}/${args.patchVerifyRecords.length} ` +
+      "still hit `git apply` errors after rebuild; the residual failures are usually " +
+      "whitespace drift between the patch's old-side text and the actual file lines " +
+      "(future work: anchor-line substitution in the rebuild step). Either way, the " +
+      "gate refuses to ship; the prod flag flip is now bounded by adapter quality " +
+      "rather than format-level rejection.";
     lines.push(note);
   }
   lines.push("");

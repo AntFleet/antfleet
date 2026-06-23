@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, type SpawnOptions } from "node:child_process";
 import type { Finding } from "./review-types";
+import { normalizePatchForApply } from "./patch-adapter";
 
 export type PatchVerifyVerdict = "verified" | "regressed" | "inconclusive";
 
@@ -115,31 +116,83 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
   let worktree: string | null = null;
   try {
     worktree = await args.io.mkWorktreeRoot();
-    const cloned = await args.io.exec({
-      command: "git",
-      args: ["clone", "--depth", "1", args.repoUrl, worktree],
-      cwd: worktree,
+    // Fetch the exact reviewed SHA, not the repo's default branch HEAD.
+    // The previous shape (`git clone --depth 1 <url>`) silently landed on
+    // whatever the default branch is today, which made every old bench
+    // patch fail to apply because line numbers had drifted. Init + fetch
+    // by SHA is the right model: `git fetch --depth 1 origin <sha>` is
+    // supported by GitHub and any other Smart-HTTP server that has
+    // `uploadpack.allowAnySHA1InWant=true` (GitHub's default).
+    const initialised = await runSetupSteps(
+      args.io,
+      worktree,
+      [
+        { command: "git", args: ["init", "--quiet", worktree] },
+        { command: "git", args: ["-C", worktree, "remote", "add", "origin", args.repoUrl] },
+        {
+          command: "git",
+          args: ["-C", worktree, "fetch", "--depth", "1", "--quiet", "origin", args.sha],
+        },
+        { command: "git", args: ["-C", worktree, "checkout", "--quiet", "FETCH_HEAD"] },
+      ],
       timeoutMs,
-      env: minimalEnv(),
-    });
-    if (cloned.exitCode !== 0) {
+    );
+    if (initialised.error !== null) {
       return inconclusive({
         worktreePath: worktree,
         detector: "none",
-        notes: `git clone failed (exit ${cloned.exitCode ?? "null"}): ${truncate(cloned.stderr)}`,
+        notes: initialised.error,
         ms: args.io.now() - t0,
       });
     }
 
-    // git apply --index on the proposed patch. Any conflict / hunk failure
+    // Normalise the proposed patch into a form `git apply --index` can
+    // consume. The model occasionally emits broken hunk headers (missing
+    // counts, mismatched counts, missing `diff --git` line); the adapter
+    // rebuilds the envelope and re-anchors the hunk against the file at
+    // the reviewed SHA. See patch-adapter.ts for the failure modes the
+    // adapter covers and the ones it refuses.
+    const evidence = args.finding.evidence[0];
+    const evidencePath = evidence?.path ?? null;
+    let normalisedPatch = args.patch;
+    if (evidencePath !== null) {
+      try {
+        const fileBytes = await args.io.readFile(join(worktree, evidencePath));
+        const adapt = normalizePatchForApply({
+          patch: args.patch,
+          evidencePath,
+          fileContents: fileBytes,
+        });
+        if (adapt.ok) {
+          normalisedPatch = adapt.patch;
+        } else {
+          return inconclusive({
+            worktreePath: worktree,
+            detector: "none",
+            notes: `patch-adapter could not normalise: ${adapt.reason}`,
+            ms: args.io.now() - t0,
+          });
+        }
+      } catch (readErr) {
+        // Evidence file missing in the checked-out worktree is a hard
+        // signal that the patch and the finding don't match — refuse.
+        return inconclusive({
+          worktreePath: worktree,
+          detector: "none",
+          notes: `could not read evidence file '${evidencePath}': ${(readErr as Error).message}`,
+          ms: args.io.now() - t0,
+        });
+      }
+    }
+
+    // git apply --index on the normalised patch. Any remaining conflict
     // is treated as `regressed` — the suggestion does not apply cleanly
-    // against the reviewed SHA. We deliberately do NOT use the worker's
-    // `--check`-then-apply pattern because that doubles the wall clock and
-    // we already get the same failure signal in a single call.
-    const patchFile = await args.io.writeTempFile(args.patch);
+    // against the reviewed SHA after we did our best to fix the
+    // envelope.
+    const patchFile = await args.io.writeTempFile(normalisedPatch);
     const applied = await args.io.exec({
       command: "git",
-      args: ["apply", "--index", patchFile],
+      args: ["-C", worktree, "apply", "--index", patchFile],
       cwd: worktree,
       timeoutMs,
       env: minimalEnv(),
@@ -252,6 +305,34 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
       }
     }
   }
+}
+
+// Run a fixed sequence of setup commands (init / remote / fetch / checkout)
+// and short-circuit on the first non-zero exit. Returns a structured note
+// the caller can drop straight into a verdict payload.
+async function runSetupSteps(
+  io: PatchVerifierIo,
+  worktree: string,
+  steps: ReadonlyArray<{ command: string; args: string[] }>,
+  timeoutMs: number,
+): Promise<{ error: string | null }> {
+  for (const step of steps) {
+    const result = await io.exec({
+      command: step.command,
+      args: step.args,
+      cwd: worktree,
+      timeoutMs,
+      env: minimalEnv(),
+    });
+    if (result.exitCode !== 0) {
+      return {
+        error: `${step.command} ${step.args.slice(0, 3).join(" ")}… failed (exit ${
+          result.exitCode ?? "null"
+        }): ${truncate(result.stderr)}`,
+      };
+    }
+  }
+  return { error: null };
 }
 
 // Auto-detect the project's test runner from lockfile + manifest presence.

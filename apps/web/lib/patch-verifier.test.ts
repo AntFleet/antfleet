@@ -49,7 +49,10 @@ function mkFinding(overrides: Partial<Finding> = {}): Finding {
     severity: "high",
     label: "blocking",
     confidence: "high",
-    evidence: [{ path: "src/x.ts", startLine: 1, endLine: 1, symbol: null, quote: null }],
+    // Default: no evidence — bypasses the patch-adapter step so the
+    // legacy verifier tests focus on the run-test / run-PoC / cleanup
+    // surfaces. A separate test covers the adapter wire-up explicitly.
+    evidence: [],
     reasoning: "r",
     reproduction: null,
     recommendation: "rec",
@@ -62,11 +65,29 @@ function mkFinding(overrides: Partial<Finding> = {}): Finding {
   };
 }
 
+// Matcher for the SHA-checkout flow (init / remote add / fetch / checkout).
+// `git -C <dir> <subcmd>` lands `subcmd` at args[1] when the test passes via
+// the runSetupSteps shape; `git clone` / `git apply` come through with the
+// verb at args[0]. The helper returns the verb regardless.
+function gitVerb(args: string[]): string {
+  if (args[0] === "-C") return args[2] ?? "";
+  return args[0] ?? "";
+}
+
 describe("runPatchVerifier", () => {
   it("returns verified when tests pass and PoC stops exiting 0", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
-      if (command === "git" && args[0] === "clone") return ok();
-      if (command === "git" && args[0] === "apply") return ok();
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (
+          verb === "init" ||
+          verb === "remote" ||
+          verb === "fetch" ||
+          verb === "checkout" ||
+          verb === "apply"
+        )
+          return ok();
+      }
       if (command === "pnpm" && args[0] === "test") return ok("3 passed");
       if (command === "pytest") return fail("AssertionError"); // PoC fails post-patch
       return ok();
@@ -87,8 +108,12 @@ describe("runPatchVerifier", () => {
 
   it("returns regressed when the patch fails to apply", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
-      if (command === "git" && args[0] === "clone") return ok();
-      if (command === "git" && args[0] === "apply") return fail("patch does not apply");
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (verb === "init" || verb === "remote" || verb === "fetch" || verb === "checkout")
+          return ok();
+        if (verb === "apply") return fail("patch does not apply");
+      }
       return ok();
     });
     const out = await runPatchVerifier({
@@ -102,10 +127,39 @@ describe("runPatchVerifier", () => {
     expect(out.notes).toMatch(/git apply failed/);
   });
 
+  it("returns inconclusive when fetch of the reviewed SHA fails", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (verb === "init" || verb === "remote") return ok();
+        if (verb === "fetch") return fail("Could not resolve sha", 128);
+      }
+      return ok();
+    });
+    const out = await runPatchVerifier({
+      repoUrl: "https://github.com/o/r.git",
+      sha: "deadbeef",
+      patch: "diff",
+      finding: mkFinding(),
+      io: mkIo({ exec }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.notes).toMatch(/fetch.*failed/);
+  });
+
   it("returns regressed when the post-patch test suite fails", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
-      if (command === "git" && args[0] === "clone") return ok();
-      if (command === "git" && args[0] === "apply") return ok();
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (
+          verb === "init" ||
+          verb === "remote" ||
+          verb === "fetch" ||
+          verb === "checkout" ||
+          verb === "apply"
+        )
+          return ok();
+      }
       if (command === "pnpm" && args[0] === "test") return fail("3 failing");
       return ok();
     });
@@ -124,8 +178,17 @@ describe("runPatchVerifier", () => {
 
   it("returns regressed when tests pass but PoC still exits 0 (bug not closed)", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
-      if (command === "git" && args[0] === "clone") return ok();
-      if (command === "git" && args[0] === "apply") return ok();
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (
+          verb === "init" ||
+          verb === "remote" ||
+          verb === "fetch" ||
+          verb === "checkout" ||
+          verb === "apply"
+        )
+          return ok();
+      }
       if (command === "pnpm" && args[0] === "test") return ok();
       if (command === "pytest") return ok("still exploits");
       return ok();
@@ -144,8 +207,17 @@ describe("runPatchVerifier", () => {
 
   it("returns inconclusive when no test runner is detected", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
-      if (command === "git" && args[0] === "clone") return ok();
-      if (command === "git" && args[0] === "apply") return ok();
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (
+          verb === "init" ||
+          verb === "remote" ||
+          verb === "fetch" ||
+          verb === "checkout" ||
+          verb === "apply"
+        )
+          return ok();
+      }
       return ok();
     });
     const out = await runPatchVerifier({
@@ -162,8 +234,17 @@ describe("runPatchVerifier", () => {
 
   it("returns inconclusive when tests pass but no PoC command is available", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
-      if (command === "git" && args[0] === "clone") return ok();
-      if (command === "git" && args[0] === "apply") return ok();
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (
+          verb === "init" ||
+          verb === "remote" ||
+          verb === "fetch" ||
+          verb === "checkout" ||
+          verb === "apply"
+        )
+          return ok();
+      }
       if (command === "pnpm" && args[0] === "test") return ok();
       return ok();
     });
@@ -178,6 +259,82 @@ describe("runPatchVerifier", () => {
     expect(out.verdict).toBe("inconclusive");
     expect(out.notes).toMatch(/no PoC command available/);
     expect(out.testExitCode).toBe(0);
+  });
+
+  it("runs the adapter when finding evidence is present and applies the rebuilt patch", async () => {
+    const file = `line 1
+line 2
+def foo():
+    return 1
+line 5
+`;
+    const brokenPatch = `--- a/src/x.py
++++ b/src/x.py
+@@
+-def foo():
+-    return 1
++def foo():
++    return 2
+`;
+    const patches: string[] = [];
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (verb === "init" || verb === "remote" || verb === "fetch" || verb === "checkout")
+          return ok();
+        if (verb === "apply") return ok();
+      }
+      if (command === "pnpm" && args[0] === "test") return ok();
+      return ok();
+    });
+    const readFile = vi.fn(async () => file);
+    const writeTempFile = vi.fn(async (contents: string) => {
+      patches.push(contents);
+      return "/tmp/patch.diff";
+    });
+    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const out = await runPatchVerifier({
+      repoUrl: "https://github.com/o/r.git",
+      sha: "abc",
+      patch: brokenPatch,
+      finding: mkFinding({
+        evidence: [{ path: "src/x.py", startLine: 3, endLine: 4, symbol: null, quote: null }],
+      }),
+      io: { ...mkIo({ exec, exists }), readFile, writeTempFile },
+    });
+    expect(out.verdict).toBe("inconclusive"); // tests pass, no PoC, no evidence reproducer
+    expect(patches[0]).toMatch(/^diff --git a\/src\/x\.py b\/src\/x\.py/u);
+    expect(patches[0]).toMatch(/@@ -3,2 \+3,2 @@/u);
+  });
+
+  it("returns inconclusive when the adapter cannot locate the patch block", async () => {
+    const file = "totally unrelated content";
+    const brokenPatch = `--- a/src/x.py
++++ b/src/x.py
+@@
+-missing line
++replacement
+`;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (verb === "init" || verb === "remote" || verb === "fetch" || verb === "checkout")
+          return ok();
+      }
+      return ok();
+    });
+    const readFile = vi.fn(async () => file);
+    const out = await runPatchVerifier({
+      repoUrl: "https://github.com/o/r.git",
+      sha: "abc",
+      patch: brokenPatch,
+      finding: mkFinding({
+        evidence: [{ path: "src/x.py", startLine: 1, endLine: 1, symbol: null, quote: null }],
+      }),
+      io: { ...mkIo({ exec }), readFile },
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.notes).toMatch(/patch-adapter could not normalise/);
   });
 
   it("returns inconclusive when repoUrl is null (e.g. serverless)", async () => {

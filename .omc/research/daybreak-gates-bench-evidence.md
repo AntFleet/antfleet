@@ -9,7 +9,7 @@ The dry-run is an *end-to-end wiring proof*, not a substantive call on the bench
 
 **Auth fail-open notice.** 8/8 reachability calls landed on `uncertain` because the local Anthropic API key returned 401. The verdicts in the table below therefore reflect the fail-open path, not Haiku's substantive answer. To reach the gate's discriminative output, swap the local `ANTHROPIC_API_KEY` for a valid one and re-run.
 
-**Patch-verifier adapter gap.** 3/3 verifier calls returned `regressed` because the bench-stored `suggested_patch` lives as a GitHub suggestion replacement block, not a unified diff. `git apply` cannot consume the suggestion form. Before flipping the prod `ANTFLEET_PATCH_VERIFY` flag, the verifier needs an adapter that lifts the suggestion's NEW-side lines into a unified diff anchored on the evidence line. The shape of the failure (`exit 128: corrupt patch`) is the structural verdict; it is NOT a real regression in the proposed fix.
+**Patch-verifier adapter active.** Stored `suggested_patch` rows are rebuilt by `patch-adapter.ts` (recomputes the `diff --git` envelope and re-anchors the hunk against the file at the reviewed SHA). 2/3 calls were safely refused as `inconclusive` because the patch's old-side block could not be located in the evidence file — the proposed fix may target a different version of the file. 1/3 still hit `git apply` errors after rebuild; the residual failures are usually whitespace drift between the patch's old-side text and the actual file lines (future work: anchor-line substitution in the rebuild step). Either way, the gate refuses to ship; the prod flag flip is now bounded by adapter quality rather than format-level rejection.
 
 ## Reachability gate
 
@@ -31,19 +31,17 @@ Calls made: 3 / cap 6
 
 | Repo | verified | regressed | inconclusive |
 | --- | ---: | ---: | ---: |
-| AntFleet/bankrskills-bench | 0 | 3 | 0 |
+| AntFleet/bankrskills-bench | 0 | 1 | 2 |
 
 ### Per-call notes
 
-- **AntFleet/bankrskills-bench** finding `d121d4bf-0` — verdict: regressed
+- **AntFleet/bankrskills-bench** finding `d121d4bf-0` — verdict: inconclusive
   - detector: none
-  - notes: git apply failed (exit 128): error: corrupt patch at line 11
+  - notes: patch-adapter could not normalise: could not locate the patch's old-side block inside the evidence file
 
-
-- **AntFleet/bankrskills-bench** finding `d121d4bf-1` — verdict: regressed
+- **AntFleet/bankrskills-bench** finding `d121d4bf-1` — verdict: inconclusive
   - detector: none
-  - notes: git apply failed (exit 128): error: corrupt patch at line 11
-
+  - notes: patch-adapter could not normalise: could not locate the patch's old-side block inside the evidence file
 
 - **AntFleet/bankrskills-bench** finding `219fd253-1` — verdict: regressed
   - detector: none
