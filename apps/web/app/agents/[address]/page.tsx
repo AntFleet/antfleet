@@ -5,6 +5,7 @@ import {
   loadFactoryLaunchDetail,
   type AgentBenchmarkReference,
   type AgentCrossRepoMerge,
+  type AgentThreatModelReference,
   type FactoryLaunchAgentDetail,
 } from "@/db/queries";
 import type { AgentFinding } from "@/db/schema";
@@ -116,6 +117,12 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
         <>
           <SectionDivider />
           <CrossRepoMergesSection fixes={upstreamFixes} now={now} />
+        </>
+      )}
+      {detail.threatModels.length > 0 && (
+        <>
+          <SectionDivider />
+          <ThreatModelsSection models={detail.threatModels} />
         </>
       )}
       <SectionDivider />
@@ -375,6 +382,136 @@ function BadgeEmbedSection({ repo, address }: { repo: string; address: string })
       </ContentWrap>
     </section>
   );
+}
+
+type PublicThreatModelItem = {
+  name?: unknown;
+  kind?: unknown;
+  path?: unknown;
+  line?: unknown;
+  summary?: unknown;
+  confidence?: unknown;
+};
+
+type PublicThreatModelSection = {
+  items?: unknown;
+};
+
+function ThreatModelsSection({ models }: { models: AgentThreatModelReference[] }) {
+  return (
+    <section>
+      <ContentWrap>
+        <div className="mb-5 flex items-baseline justify-between gap-4">
+          <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+            Attack surface
+          </h2>
+          <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            {models.length} repo{models.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="flex flex-col divide-y divide-[var(--color-line)] border-t border-b border-[var(--color-line)]">
+          {models.map((model) => (
+            <ThreatModelBlock key={`${model.owner}/${model.repo}`} model={model} />
+          ))}
+        </div>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function ThreatModelBlock({ model }: { model: AgentThreatModelReference }) {
+  const view = asThreatModelView(model.publicModel);
+  if (view === null) return null;
+  const shortSha = model.lastReviewedSha.slice(0, 7);
+  return (
+    <details className="group py-5">
+      <summary className="cursor-pointer list-none">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-[var(--color-ink)]">
+              {model.owner}/{model.repo}
+            </h3>
+            <p className="mt-1 font-mono text-[11px] text-[var(--color-ink-subtle)]">
+              reviewed {shortSha}
+            </p>
+          </div>
+          <span className="font-mono text-[11px] text-[var(--color-ink-muted)] group-open:hidden">
+            expand
+          </span>
+          <span className="hidden font-mono text-[11px] text-[var(--color-ink-muted)] group-open:inline">
+            collapse
+          </span>
+        </div>
+      </summary>
+      <div className="mt-5 grid gap-5">
+        <ThreatModelSectionList title="Entry points" items={view.entryPoints} />
+        <ThreatModelSectionList title="Trust boundaries" items={view.trustBoundaries} />
+        <ThreatModelSectionList title="Sinks" items={view.sinks} />
+      </div>
+    </details>
+  );
+}
+
+function ThreatModelSectionList({
+  title,
+  items,
+}: {
+  title: string;
+  items: PublicThreatModelItem[];
+}) {
+  return (
+    <div>
+      <h4 className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
+        {title}
+      </h4>
+      {items.length === 0 ? (
+        <p className="mt-2 text-sm text-[var(--color-ink-muted)]">No public entries recorded.</p>
+      ) : (
+        <ul className="mt-2 flex flex-col gap-2">
+          {items.map((item, index) => (
+            <li key={`${String(item.path)}-${String(item.line)}-${index}`} className="text-sm">
+              <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
+                {safeText(item.kind)}
+              </span>{" "}
+              <span className="text-[var(--color-ink)]">{safeText(item.path)}</span>
+              {typeof item.line === "number" && (
+                <span className="text-[var(--color-ink-subtle)]">:{item.line}</span>
+              )}
+              <span className="text-[var(--color-ink-muted)]"> - {safeText(item.summary)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function asThreatModelView(value: unknown): {
+  entryPoints: PublicThreatModelItem[];
+  trustBoundaries: PublicThreatModelItem[];
+  sinks: PublicThreatModelItem[];
+} | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const sections = (value as { sections?: unknown }).sections;
+  if (sections === null || typeof sections !== "object" || Array.isArray(sections)) return null;
+  const record = sections as Record<string, PublicThreatModelSection>;
+  return {
+    entryPoints: sectionItems(record["entryPoints"]),
+    trustBoundaries: sectionItems(record["trustBoundaries"]),
+    sinks: sectionItems(record["sinks"]),
+  };
+}
+
+function sectionItems(section: PublicThreatModelSection | undefined): PublicThreatModelItem[] {
+  if (section === undefined || !Array.isArray(section.items)) return [];
+  return section.items.filter(
+    (item): item is PublicThreatModelItem =>
+      item !== null && typeof item === "object" && !Array.isArray(item),
+  );
+}
+
+function safeText(value: unknown): string {
+  return typeof value === "string" && value.length > 0 ? value : "unknown";
 }
 
 function latestAgentActivityAt(findings: AgentFinding[], submissions: AgentSubmission[]): Date {

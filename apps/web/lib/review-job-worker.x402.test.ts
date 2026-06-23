@@ -17,11 +17,13 @@ const queryMocks = vi.hoisted(() => ({
 const dbQueryMocks = vi.hoisted(() => ({
   enqueueReview: vi.fn(),
   hashRepo: vi.fn(),
+  loadRepoThreatModel: vi.fn(),
   markReviewSucceeded: vi.fn(),
   recordFindingStatuses: vi.fn(),
   recordFindingEvidenceBundleSlot: vi.fn(),
   recordGateOutcome: vi.fn(),
   updateReview: vi.fn(),
+  upsertRepoThreatModel: vi.fn(),
 }));
 
 const facilitatorMocks = vi.hoisted(() => ({
@@ -30,6 +32,7 @@ const facilitatorMocks = vi.hoisted(() => ({
 
 const publicFilesMocks = vi.hoisted(() => ({
   getPublicChangedFiles: vi.fn(),
+  makePublicOctokit: vi.fn(),
 }));
 
 const reviewPipelineMocks = vi.hoisted(() => ({
@@ -131,6 +134,30 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     publicFilesMocks.getPublicChangedFiles.mockResolvedValue([
       { filename: "src/index.ts", patch: "@@ -1 +1 @@" },
     ]);
+    publicFilesMocks.makePublicOctokit.mockReturnValue({
+      rest: {
+        git: {
+          getCommit: vi.fn().mockResolvedValue({
+            data: { tree: { sha: "tree-sha" } },
+          }),
+          getTree: vi.fn().mockResolvedValue({
+            data: {
+              tree: [{ path: "app/api/route.ts", type: "blob", size: 64, sha: "file-sha" }],
+            },
+          }),
+        },
+        repos: {
+          getContent: vi.fn().mockResolvedValue({
+            data: {
+              type: "file",
+              content: Buffer.from(
+                "export async function GET() { return Response.json({ ok: true }); }",
+              ).toString("base64"),
+            },
+          }),
+        },
+      },
+    });
     reviewPipelineMocks.reviewPR.mockResolvedValue({
       estimatedCostUsd: 0.25,
       modelIds: { a: "model-a" },
@@ -320,6 +347,36 @@ describe("processReviewJob x402 settlement lifecycle", () => {
       null,
       expect.any(Date),
     );
+  });
+
+  it("generates a first repo threat model from a public repo snapshot on x402", async () => {
+    const oldFlag = process.env["ANTFLEET_THREAT_MODEL"];
+    process.env["ANTFLEET_THREAT_MODEL"] = "true";
+    try {
+      dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: true });
+      dbQueryMocks.loadRepoThreatModel.mockResolvedValue(null);
+      dbQueryMocks.upsertRepoThreatModel.mockResolvedValue(undefined);
+
+      const { processReviewJob } = await import("./review-job-worker");
+      await processReviewJob("job-x402");
+
+      expect(publicFilesMocks.makePublicOctokit).toHaveBeenCalled();
+      expect(dbQueryMocks.upsertRepoThreatModel).toHaveBeenCalledTimes(1);
+      expect(dbQueryMocks.upsertRepoThreatModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoHash: "repo-hash",
+          publicAccess: "public",
+          model: expect.objectContaining({
+            sections: expect.objectContaining({
+              entryPoints: expect.objectContaining({ items: expect.any(Array) }),
+            }),
+          }),
+        }),
+      );
+    } finally {
+      if (oldFlag === undefined) delete process.env["ANTFLEET_THREAT_MODEL"];
+      else process.env["ANTFLEET_THREAT_MODEL"] = oldFlag;
+    }
   });
 
   it("fails x402 reviews with timeout and skips settlement when reviewPR exceeds wall-clock limit", async () => {

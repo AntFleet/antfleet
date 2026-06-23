@@ -7,6 +7,7 @@ import {
   type WorkerDeps,
 } from "./review-worker";
 import type { ReviewQueueRow } from "../db/queries";
+import { generateRepoThreatModel } from "./repo-threat-model";
 
 const NOW = new Date("2026-05-18T12:00:00Z");
 
@@ -87,6 +88,18 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     getChangedFiles: vi
       .fn()
       .mockResolvedValue([{ filename: "src/x.ts", status: "modified", contents: "code" }]),
+    getRepoThreatModelFiles: vi.fn().mockResolvedValue({
+      files: [
+        {
+          filename: "src/api.ts",
+          status: "changed",
+          contents: "export function handler() {}",
+          sha: "abc123",
+          patch: null,
+        },
+      ],
+      paths: ["src/api.ts"],
+    }),
     reviewPR: vi.fn().mockResolvedValue(mkBundle()),
     postPRComment: vi.fn().mockResolvedValue({ id: 9001, htmlUrl: "https://gh/c/9001" }),
     runFirstReviewSummary: vi.fn().mockResolvedValue(undefined),
@@ -124,9 +137,12 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
       droppedIndexes: [],
     })),
     recordGateOutcome: vi.fn().mockResolvedValue("gate-outcome-1"),
+    loadRepoThreatModel: vi.fn().mockResolvedValue(null),
+    upsertRepoThreatModel: vi.fn().mockResolvedValue(undefined),
     recordFindingEvidenceBundleSlot: vi.fn().mockResolvedValue(undefined),
     isReachabilityGateEnabledForInstall: vi.fn().mockResolvedValue(false),
     isPatchVerifyEnabledForInstall: vi.fn().mockResolvedValue(false),
+    isThreatModelEnabledForInstall: vi.fn().mockResolvedValue(false),
     isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(false),
     now: () => NOW,
     ...overrides,
@@ -145,6 +161,9 @@ describe("runReviewWorker", () => {
       stuckBefore: new Date(NOW.getTime() - 5 * 60 * 1000),
     });
     expect(deps.reviewPR).toHaveBeenCalledTimes(1);
+    expect(deps.getRepoThreatModelFiles).not.toHaveBeenCalled();
+    expect(deps.loadRepoThreatModel).not.toHaveBeenCalled();
+    expect(deps.upsertRepoThreatModel).not.toHaveBeenCalled();
     expect(deps.postPRComment).toHaveBeenCalledTimes(1);
     expect(deps.setReviewComment).toHaveBeenCalledWith({
       reviewId: "rev-1",
@@ -155,6 +174,98 @@ describe("runReviewWorker", () => {
     expect(deps.markReviewSucceeded).toHaveBeenCalledWith({ reviewId: "rev-1", now: NOW });
     expect(deps.markReviewFailedForRetry).not.toHaveBeenCalled();
     expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+  });
+
+  it("generates a repo threat model when the threat-model flag is enabled", async () => {
+    const deps = mkDeps({
+      isThreatModelEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isReachabilityGateEnabledForInstall: vi.fn().mockResolvedValue(true),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    expect(deps.getRepoThreatModelFiles).toHaveBeenCalledWith({
+      installationToken: "ghs_token",
+      owner: "antfleet",
+      repo: "aeon-bench",
+      sha: "abc123",
+    });
+    expect(deps.loadRepoThreatModel).toHaveBeenCalledWith("hash-abc");
+    expect(deps.upsertRepoThreatModel).toHaveBeenCalledTimes(1);
+    expect(deps.applyReachabilityGate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threatModel: expect.objectContaining({
+          entryPoints: expect.any(Object),
+        }),
+      }),
+    );
+  });
+
+  it("does not persist a first repo threat model from changed files when the repo snapshot fails", async () => {
+    const deps = mkDeps({
+      getRepoThreatModelFiles: vi.fn().mockRejectedValue(new Error("github 503")),
+      isThreatModelEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isReachabilityGateEnabledForInstall: vi.fn().mockResolvedValue(true),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    expect(deps.loadRepoThreatModel).toHaveBeenCalledWith("hash-abc");
+    expect(deps.upsertRepoThreatModel).not.toHaveBeenCalled();
+    expect(deps.applyReachabilityGate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threatModel: null,
+      }),
+    );
+  });
+
+  it("does not publish a private-derived threat model when the later public snapshot fails", async () => {
+    const privateModel = generateRepoThreatModel({
+      owner: "antfleet",
+      repo: "aeon-bench",
+      repoHash: "hash-abc",
+      sha: "old-sha",
+      files: [
+        {
+          filename: "app/api/route.ts",
+          status: "modified",
+          contents: "export async function GET() { return Response.json({ ok: true }); }",
+          sha: "old-sha",
+          patch: null,
+        },
+      ],
+      now: NOW,
+    });
+    const deps = mkDeps({
+      getRepoThreatModelFiles: vi.fn().mockRejectedValue(new Error("github 503")),
+      isThreatModelEnabledForInstall: vi.fn().mockResolvedValue(true),
+      loadRepoThreatModel: vi.fn().mockResolvedValue({
+        id: "tm-1",
+        repoHash: "hash-abc",
+        owner: "antfleet",
+        repo: "aeon-bench",
+        version: 1,
+        model: privateModel,
+        publicModel: {},
+        provenance: {},
+        generatorModelId: "repo-threat-model-static-v1",
+        lastReviewedSha: "old-sha",
+        entryPointsRefreshedSha: "old-sha",
+        trustBoundariesRefreshedSha: "old-sha",
+        sinksRefreshedSha: "old-sha",
+        secretsSurfaceRefreshedSha: "old-sha",
+        criticalAssetsRefreshedSha: "old-sha",
+        refreshCount: 1,
+        publicAccess: "private",
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    });
+
+    await runReviewWorker("rev-1", "webhook", deps);
+
+    expect(deps.upsertRepoThreatModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publicAccess: "private",
+        publicModel: {},
+      }),
+    );
   });
 
   it("does not post or mark done when finding lifecycle persistence fails", async () => {

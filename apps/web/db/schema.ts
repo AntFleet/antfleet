@@ -878,6 +878,39 @@ export const findingValidationEvidenceBundles = pgTable(
   ],
 );
 
+// Daybreak primitive #3 — durable per-repo threat model. One row per repo,
+// not per installation, so repeated reviews accumulate and reuse the same
+// attack-surface memory. Public rendering reads only public_model and only
+// when public_access = 'public'.
+export const repoThreatModel = pgTable(
+  "repo_threat_model",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoHash: text("repo_hash").notNull().unique(),
+    owner: text("owner").notNull(),
+    repo: text("repo").notNull(),
+    version: integer("version").notNull().default(1),
+    model: jsonb("model").notNull(),
+    publicModel: jsonb("public_model").notNull().default({}),
+    provenance: jsonb("provenance").notNull().default({}),
+    generatorModelId: text("generator_model_id"),
+    lastReviewedSha: text("last_reviewed_sha").notNull(),
+    entryPointsRefreshedSha: text("entry_points_refreshed_sha"),
+    trustBoundariesRefreshedSha: text("trust_boundaries_refreshed_sha"),
+    sinksRefreshedSha: text("sinks_refreshed_sha"),
+    secretsSurfaceRefreshedSha: text("secrets_surface_refreshed_sha"),
+    criticalAssetsRefreshedSha: text("critical_assets_refreshed_sha"),
+    refreshCount: integer("refresh_count").notNull().default(1),
+    publicAccess: text("public_access").notNull().default("private"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("repo_threat_model_owner_repo_idx").on(sql`lower(${t.owner})`, sql`lower(${t.repo})`),
+    index("repo_threat_model_public_access_idx").on(t.publicAccess),
+  ],
+);
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -885,6 +918,8 @@ export type NewFindingStatus = typeof findingStatus.$inferInsert;
 export type FindingValidationEvidenceBundle = typeof findingValidationEvidenceBundles.$inferSelect;
 export type NewFindingValidationEvidenceBundle =
   typeof findingValidationEvidenceBundles.$inferInsert;
+export type RepoThreatModel = typeof repoThreatModel.$inferSelect;
+export type NewRepoThreatModel = typeof repoThreatModel.$inferInsert;
 export type MaintainerReaction = typeof maintainerReactions.$inferSelect;
 export type NewMaintainerReaction = typeof maintainerReactions.$inferInsert;
 export type OnboardingEvent = typeof onboardingEvents.$inferSelect;

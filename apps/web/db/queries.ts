@@ -29,6 +29,7 @@ import {
   reviewGateOutcomes,
   roastSubmissions,
   reviews,
+  repoThreatModel,
   type AgentFinding,
   type FactoryLaunch,
   type FindingValidationEvidenceBundle,
@@ -38,7 +39,9 @@ import {
   type NewOnboardingEvent,
   type NewReview,
   type NewReviewGateOutcome,
+  type NewRepoThreatModel,
   type OnboardingEvent,
+  type RepoThreatModel,
   type RoastSubmission,
   scorecardSnapshots,
 } from "./schema";
@@ -2291,6 +2294,7 @@ export type AgentDetail = {
   findings: AgentFinding[];
   benchmarkReviews: AgentBenchmarkReference[];
   crossRepoMerges: AgentCrossRepoMerge[];
+  threatModels: AgentThreatModelReference[];
 };
 
 export type AgentBenchmarkReference = {
@@ -2312,6 +2316,14 @@ export type AgentCrossRepoMerge = {
   resolutionSha: string;
   closureMethod: string;
   prUrl: string;
+};
+
+export type AgentThreatModelReference = {
+  owner: string;
+  repo: string;
+  lastReviewedSha: string;
+  updatedAt: Date;
+  publicModel: unknown;
 };
 
 // M12: cache() deduplicates calls from generateMetadata + page + OG image
@@ -2387,6 +2399,25 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
       ),
   ]);
 
+  const coveredRepos = Array.from(
+    new Set(
+      [
+        ...findings
+          .map((f) => parseRepoFullNameLoose(f.repoFullName))
+          .filter((r): r is { owner: string; repo: string } => r !== null),
+        ...benchmarkRows
+          .map((r) =>
+            r.owner === null || r.repo === null ? null : { owner: r.owner, repo: r.repo },
+          )
+          .filter((r): r is { owner: string; repo: string } => r !== null),
+      ].map((r) => `${r.owner}/${r.repo}`),
+    ),
+  ).map((fullName) => {
+    const [owner, repo] = fullName.split("/");
+    return { owner: owner!, repo: repo! };
+  });
+  const threatModels = await loadPublicRepoThreatModelsForRepos(coveredRepos);
+
   const crossRepoMerges: AgentCrossRepoMerge[] = mergedOutgoingRows
     .filter((r) => {
       if (r.status === "merged") return r.mergedAt !== null && r.mergeSha !== null;
@@ -2414,8 +2445,16 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
     findings,
     benchmarkReviews: benchmarkRows,
     crossRepoMerges,
+    threatModels,
   };
 });
+
+function parseRepoFullNameLoose(value: string | null): { owner: string; repo: string } | null {
+  if (value === null) return null;
+  const [owner, repo] = value.split("/");
+  if (owner === undefined || repo === undefined || owner === "" || repo === "") return null;
+  return { owner, repo };
+}
 
 // Auto-stub agent shape for factory_launches rows that don't yet have any
 // agent_findings. The /agents/[address] page renders this when loadAgentDetail
@@ -3037,6 +3076,107 @@ export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): 
     throw new Error("recordGateOutcome: insert returned no row");
   }
   return first.id;
+}
+
+export type RepoThreatModelUpsertInput = {
+  repoHash: string;
+  owner: string;
+  repo: string;
+  version: number;
+  model: unknown;
+  publicModel: unknown;
+  provenance: unknown;
+  generatorModelId: string | null;
+  lastReviewedSha: string;
+  entryPointsRefreshedSha: string | null;
+  trustBoundariesRefreshedSha: string | null;
+  sinksRefreshedSha: string | null;
+  secretsSurfaceRefreshedSha: string | null;
+  criticalAssetsRefreshedSha: string | null;
+  refreshCount: number;
+  publicAccess: "private" | "public" | "live_protocol_review_required";
+};
+
+export async function loadRepoThreatModel(repoHash: string): Promise<RepoThreatModel | null> {
+  const rows = await db
+    .select()
+    .from(repoThreatModel)
+    .where(eq(repoThreatModel.repoHash, repoHash))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function upsertRepoThreatModel(input: RepoThreatModelUpsertInput): Promise<void> {
+  const values: NewRepoThreatModel = {
+    repoHash: input.repoHash,
+    owner: input.owner,
+    repo: input.repo,
+    version: input.version,
+    model: input.model,
+    publicModel: input.publicModel,
+    provenance: input.provenance,
+    generatorModelId: input.generatorModelId,
+    lastReviewedSha: input.lastReviewedSha,
+    entryPointsRefreshedSha: input.entryPointsRefreshedSha,
+    trustBoundariesRefreshedSha: input.trustBoundariesRefreshedSha,
+    sinksRefreshedSha: input.sinksRefreshedSha,
+    secretsSurfaceRefreshedSha: input.secretsSurfaceRefreshedSha,
+    criticalAssetsRefreshedSha: input.criticalAssetsRefreshedSha,
+    refreshCount: input.refreshCount,
+    publicAccess: input.publicAccess,
+    updatedAt: new Date(),
+  };
+  await db
+    .insert(repoThreatModel)
+    .values(values)
+    .onConflictDoUpdate({
+      target: repoThreatModel.repoHash,
+      set: {
+        owner: input.owner,
+        repo: input.repo,
+        version: input.version,
+        model: input.model,
+        publicModel: input.publicModel,
+        provenance: input.provenance,
+        generatorModelId: input.generatorModelId,
+        lastReviewedSha: input.lastReviewedSha,
+        entryPointsRefreshedSha: input.entryPointsRefreshedSha,
+        trustBoundariesRefreshedSha: input.trustBoundariesRefreshedSha,
+        sinksRefreshedSha: input.sinksRefreshedSha,
+        secretsSurfaceRefreshedSha: input.secretsSurfaceRefreshedSha,
+        criticalAssetsRefreshedSha: input.criticalAssetsRefreshedSha,
+        refreshCount: input.refreshCount,
+        publicAccess: input.publicAccess,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+export async function loadPublicRepoThreatModelsForRepos(
+  repos: ReadonlyArray<{ owner: string; repo: string }>,
+): Promise<AgentThreatModelReference[]> {
+  if (repos.length === 0) return [];
+  const keys = repos.map((r) => `${r.owner.toLowerCase()}/${r.repo.toLowerCase()}`);
+  const rows = await db
+    .select({
+      owner: repoThreatModel.owner,
+      repo: repoThreatModel.repo,
+      lastReviewedSha: repoThreatModel.lastReviewedSha,
+      updatedAt: repoThreatModel.updatedAt,
+      publicModel: repoThreatModel.publicModel,
+    })
+    .from(repoThreatModel)
+    .where(
+      and(
+        eq(repoThreatModel.publicAccess, "public"),
+        inArray(
+          sql<string>`lower(${repoThreatModel.owner}) || '/' || lower(${repoThreatModel.repo})`,
+          keys,
+        ),
+      ),
+    )
+    .orderBy(desc(repoThreatModel.updatedAt));
+  return rows;
 }
 
 export type EvidenceBundleSlotProvenance = {
