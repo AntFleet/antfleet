@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import { db } from "@/db/index";
 import { reviews, findingStatus } from "@/db/schema";
@@ -356,6 +357,53 @@ async function computeRolling4Week(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// All-time rollup of the same definition the weekly snapshot uses:
+//   rate = findingsPosted / (anthropicTotalFindings + openaiTotalFindings)
+// where findingsPosted is the count of unanimous (posted) findings and the
+// denominator is the sum of independent finding counts each model produced
+// across all reviews. Cache()-wrapped so /impact, /scorecard, /activity share
+// one query when the StatsStrip renders.
+export type AllTimeAgreement = {
+  rate: number;
+  findingsPosted: number;
+  totalDistinctFindings: number;
+};
+
+export const loadAllTimeAgreementRate = cache(async (): Promise<AllTimeAgreement | null> => {
+  const reviewRows = await db
+    .select({
+      reviewId: reviews.reviewId,
+      providerResponses: reviews.providerResponses,
+    })
+    .from(reviews)
+    .where(eq(reviews.publicReceipt, true));
+
+  if (reviewRows.length === 0) return null;
+
+  const reviewIds = reviewRows.map((r) => r.reviewId);
+  const findingRows = await db
+    .select({ reviewId: findingStatus.reviewId })
+    .from(findingStatus)
+    .where(inArray(findingStatus.reviewId, reviewIds));
+
+  let denominator = 0;
+  for (const row of reviewRows) {
+    for (const entry of parsePerProvider(row.providerResponses)) {
+      if (entry.name === "anthropic" || entry.name === "openai") {
+        denominator += entry.output?.findings.length ?? 0;
+      }
+    }
+  }
+
+  const findingsPosted = findingRows.length;
+  if (denominator === 0) return null;
+  return {
+    rate: findingsPosted / denominator,
+    findingsPosted,
+    totalDistinctFindings: denominator,
+  };
+});
 
 function parsePerProvider(providerResponses: unknown): PerProviderEntry[] {
   if (typeof providerResponses !== "object" || providerResponses === null) return [];

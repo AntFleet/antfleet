@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { StatsStrip } from "@/components/StatsStrip";
 import { loadFleetActivity } from "@/db/queries";
 import { ActivityView, type FleetActivityJson } from "./ActivityView";
 
@@ -40,5 +41,10 @@ export default async function ActivityPage() {
   };
   const initialNowIso = new Date().toISOString();
 
-  return <ActivityView initial={initialJson} initialNowIso={initialNowIso} />;
+  return (
+    <>
+      <StatsStrip />
+      <ActivityView initial={initialJson} initialNowIso={initialNowIso} />
+    </>
+  );
 }

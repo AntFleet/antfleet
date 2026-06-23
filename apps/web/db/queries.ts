@@ -1613,7 +1613,7 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     db.select({ value: max(reviews.createdAt) }).from(reviews),
     activityWindow(since24h),
     activityWindow(since7d),
-    activityWindow(null),
+    loadAllTimeActivityWindow(),
     // M10 fix: removed the LEFT JOIN on finding_status — it multiplied rows
     // by finding count, so LIMIT 20 could return only 1 review with 20
     // findings. Zero-finding reviews still surface because the join was
@@ -2089,6 +2089,14 @@ export async function activityWindow(
     reactionsObserved: x[0]?.value ?? 0,
   };
 }
+
+// Cached wrapper around activityWindow(null) — the per-request StatsStrip
+// surface reads all-time reviewsRun + findingsAgreed, and /activity reads
+// the same numbers for its allTime slot. cache() lets both call sites share
+// one query.
+export const loadAllTimeActivityWindow = cache(
+  async (): Promise<ActivityWindow> => activityWindow(null),
+);
 
 function coerceDate(raw: unknown): Date | null {
   if (raw === null || raw === undefined) return null;

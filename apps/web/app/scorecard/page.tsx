@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { StatsStrip } from "@/components/StatsStrip";
 import { loadScorecardIndex } from "@/db/queries";
 import type { ScorecardPayload } from "@/lib/scorecard";
 
@@ -24,17 +25,9 @@ export default async function ScorecardIndexPage({
   const before = rawBefore && /^\d{4}-\d{2}-\d{2}$/.test(rawBefore) ? rawBefore : undefined;
   const { rows, hasMore } = await loadScorecardIndex({ limit: PAGE_SIZE, before });
 
-  // Compute cumulative stats across all snapshots on this page
-  let cumulativeReviews = 0;
-  let cumulativeFindings = 0;
-  for (const row of rows) {
-    const p = row.payload;
-    cumulativeReviews += p.sample.reviewsAnalyzed;
-    cumulativeFindings += p.sample.findingsPosted;
-  }
-
   return (
     <>
+      <StatsStrip />
       <section className="py-20 pb-12">
         <ContentWrap>
           <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
@@ -59,17 +52,6 @@ export default async function ScorecardIndexPage({
           </p>
         </ContentWrap>
       </section>
-
-      {rows.length > 0 && (
-        <section className="pb-8">
-          <ContentWrap>
-            <div className="flex gap-12">
-              <BigNumber value={cumulativeReviews} label="reviews analyzed" />
-              <BigNumber value={cumulativeFindings} label="findings posted" />
-            </div>
-          </ContentWrap>
-        </section>
-      )}
 
       <div className="border-t border-[var(--color-line)]" />
 
@@ -121,17 +103,6 @@ function ScorecardRow({ payload, date }: { payload: ScorecardPayload; date: stri
         <span>agreement {agreementPct}</span>
       </div>
     </a>
-  );
-}
-
-function BigNumber({ value, label }: { value: number; label: string }) {
-  return (
-    <div>
-      <p className="text-3xl font-semibold text-[var(--color-ink)] tabular-nums">{value}</p>
-      <p className="text-xs font-mono text-[var(--color-ink-muted)] mt-1 tracking-wide uppercase">
-        {label}
-      </p>
-    </div>
   );
 }
 

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { StatsStrip } from "@/components/StatsStrip";
 import { formatHoursToFix, loadPatchKpis } from "@/lib/kpis";
 import {
   formatRelativeTime,
@@ -22,6 +23,7 @@ export default async function ImpactPage() {
 
   return (
     <>
+      <StatsStrip />
       <section className="py-20 pb-12">
         <ContentWrap>
           <p className="font-mono text-xs text-[var(--color-ink-subtle)] mb-6 tracking-widest uppercase">
