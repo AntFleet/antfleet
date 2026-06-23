@@ -20,6 +20,8 @@ import { db } from "./index";
 import {
   agentFindings,
   factoryLaunches,
+  findingDisclosure,
+  findingDisclosureLog,
   findingValidationEvidenceBundles,
   findingStatus,
   installations,
@@ -34,6 +36,8 @@ import {
   type FactoryLaunch,
   type FindingValidationEvidenceBundle,
   type NewAgentFinding,
+  type NewFindingDisclosure,
+  type NewFindingDisclosureLog,
   type NewFindingValidationEvidenceBundle,
   type NewMaintainerReaction,
   type NewOnboardingEvent,
@@ -45,8 +49,14 @@ import {
   type RoastSubmission,
   scorecardSnapshots,
 } from "./schema";
+import {
+  derivedPublicReceiptCondition,
+  reviewDerivedPublicReceiptCondition,
+} from "./public-receipt";
 import { writePostDraft } from "@/lib/post-drafts";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { LIFECYCLE_PRESERVE_COLUMNS, reconcilableTrailingRows } from "./finding-lifecycle";
+import type { DisclosureActorType, DisclosureState } from "@/lib/disclosure-types";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -1058,6 +1068,7 @@ export type SweepFinding = {
   findingId: string;
   findingIndex: number;
   prCommentId: number | null;
+  publicReceiptEligible: boolean;
   createdAt: Date;
   lastPolledAt: Date | null;
 };
@@ -1092,11 +1103,32 @@ export async function loadSweepWork(): Promise<SweepReviewBatch[]> {
       agreementDecision: reviews.agreementDecision,
       findingId: findingStatus.findingId,
       findingIndex: findingStatus.findingIndex,
+      publicReceiptEligible: sql<boolean>`(
+        (
+            ${findingDisclosure.state} = 'published'
+            AND (
+              (
+                ${findingDisclosure.ghsaId} IS NULL
+                AND ${findingStatus.closureCommentUrl} IS NOT NULL
+              )
+              OR (
+                ${findingDisclosure.ghsaId} IS NOT NULL
+                AND ${findingDisclosure.ghsaPublishedAt} IS NOT NULL
+                AND ${findingDisclosure.ghsaHtmlUrl} IS NOT NULL
+              )
+            )
+          )
+        OR (
+          ${findingDisclosure.state} = 'none'
+          AND ${reviews.publicReceipt} = true
+        )
+      )`.as("publicReceiptEligible"),
       findingCreatedAt: findingStatus.createdAt,
       findingLastPolledAt: findingStatus.lastPolledAt,
     })
     .from(findingStatus)
     .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
     .where(
       and(
         eq(findingStatus.status, "open"),
@@ -1108,7 +1140,15 @@ export async function loadSweepWork(): Promise<SweepReviewBatch[]> {
         // worker is about to retry and overwrite the identity. Closing
         // a stale-identity finding then attaches closure metadata to a
         // different LLM finding when the retry lands.
-        isNotNull(reviews.prCommentId),
+        or(
+          isNotNull(reviews.prCommentId),
+          inArray(findingDisclosure.state, [
+            "embargoed",
+            "maintainer-acknowledged",
+            "patch-merged",
+            "embargo-expired",
+          ]),
+        ),
       ),
     );
 
@@ -1135,6 +1175,7 @@ export async function loadSweepWork(): Promise<SweepReviewBatch[]> {
       findingId: r.findingId,
       findingIndex: r.findingIndex,
       prCommentId: r.prCommentId,
+      publicReceiptEligible: r.publicReceiptEligible === true,
       createdAt: r.findingCreatedAt,
       lastPolledAt: r.findingLastPolledAt,
     });
@@ -1175,6 +1216,7 @@ export type PublicReceiptRow = {
   prNumber: number;
   closureSha: string | null;
   closureCommentUrl: string | null;
+  ghsaHtmlUrl: string | null;
   closedAt: Date | null;
 };
 
@@ -1192,6 +1234,7 @@ export async function loadPublicReceiptsPage(args: {
   // Stable under inserts because closures append at the top, not the middle.
   before?: Date | undefined;
 }): Promise<PublicReceiptsPage> {
+  const disclosureGateEnabled = isDisclosureGateEnabled();
   // Fetch limit+1 so we can answer hasMore without a second count query.
   const fetchLimit = args.limit + 1;
   // Gate condition is identical across all three queries — closed findings
@@ -1205,51 +1248,87 @@ export async function loadPublicReceiptsPage(args: {
     args.before === undefined
       ? and(
           eq(findingStatus.status, "closed"),
-          eq(reviews.publicReceipt, true),
+          disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
           isNull(findingStatus.retractedAt),
         )
       : and(
           eq(findingStatus.status, "closed"),
-          eq(reviews.publicReceipt, true),
+          disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
           isNull(findingStatus.retractedAt),
           lt(findingStatus.closureDetectedAt, args.before),
         );
 
   const totalConditions = and(
     eq(findingStatus.status, "closed"),
-    eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
     isNull(findingStatus.retractedAt),
   );
 
   const [countRows, fetchedRows, lastUpdatedRows] = await Promise.all([
-    db
-      .select({ value: count() })
-      .from(findingStatus)
-      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(totalConditions),
-    db
-      .select({
-        findingId: findingStatus.findingId,
-        severity: findingStatus.severity,
-        label: findingStatus.label,
-        category: findingStatus.category,
-        title: findingStatus.title,
-        repoHash: reviews.repoHash,
-        prNumber: reviews.prNumber,
-        closureSha: findingStatus.closureSha,
-        closureCommentUrl: findingStatus.closureCommentUrl,
-        closedAt: findingStatus.closureDetectedAt,
-      })
-      .from(findingStatus)
-      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(recentConditions)
-      .orderBy(desc(findingStatus.closureDetectedAt))
-      .limit(fetchLimit),
-    db
-      .select({ value: max(findingStatus.closureDetectedAt) })
-      .from(findingStatus)
-      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(totalConditions),
+    disclosureGateEnabled
+      ? db
+          .select({ value: count() })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(totalConditions)
+      : db
+          .select({ value: count() })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .where(totalConditions),
+    disclosureGateEnabled
+      ? db
+          .select({
+            findingId: findingStatus.findingId,
+            severity: findingStatus.severity,
+            label: findingStatus.label,
+            category: findingStatus.category,
+            title: findingStatus.title,
+            repoHash: reviews.repoHash,
+            prNumber: reviews.prNumber,
+            closureSha: findingStatus.closureSha,
+            closureCommentUrl: findingStatus.closureCommentUrl,
+            ghsaHtmlUrl: findingDisclosure.ghsaHtmlUrl,
+            closedAt: findingStatus.closureDetectedAt,
+          })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(recentConditions)
+          .orderBy(desc(findingStatus.closureDetectedAt))
+          .limit(fetchLimit)
+      : db
+          .select({
+            findingId: findingStatus.findingId,
+            severity: findingStatus.severity,
+            label: findingStatus.label,
+            category: findingStatus.category,
+            title: findingStatus.title,
+            repoHash: reviews.repoHash,
+            prNumber: reviews.prNumber,
+            closureSha: findingStatus.closureSha,
+            closureCommentUrl: findingStatus.closureCommentUrl,
+            ghsaHtmlUrl: sql<string | null>`NULL`.as("ghsaHtmlUrl"),
+            closedAt: findingStatus.closureDetectedAt,
+          })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .where(recentConditions)
+          .orderBy(desc(findingStatus.closureDetectedAt))
+          .limit(fetchLimit),
+    disclosureGateEnabled
+      ? db
+          .select({ value: max(findingStatus.closureDetectedAt) })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(totalConditions)
+      : db
+          .select({ value: max(findingStatus.closureDetectedAt) })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .where(totalConditions),
   ]);
 
   const hasMore = fetchedRows.length > args.limit;
@@ -1284,29 +1363,49 @@ export async function loadTopClosuresBetween(
   limit: number,
 ): Promise<PublicReceiptRow[]> {
   if (until.getTime() <= since.getTime() || limit <= 0) return [];
-  const rows = await db
-    .select({
-      findingId: findingStatus.findingId,
-      severity: findingStatus.severity,
-      label: findingStatus.label,
-      category: findingStatus.category,
-      title: findingStatus.title,
-      repoHash: reviews.repoHash,
-      prNumber: reviews.prNumber,
-      closureSha: findingStatus.closureSha,
-      closureCommentUrl: findingStatus.closureCommentUrl,
-      closedAt: findingStatus.closureDetectedAt,
-    })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(
-      and(
-        eq(findingStatus.status, "closed"),
-        eq(reviews.publicReceipt, true),
-        gte(findingStatus.closureDetectedAt, since),
-        lt(findingStatus.closureDetectedAt, until),
-      ),
-    );
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const baseConditions = and(
+    eq(findingStatus.status, "closed"),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    gte(findingStatus.closureDetectedAt, since),
+    lt(findingStatus.closureDetectedAt, until),
+  );
+  const rows = await (disclosureGateEnabled
+    ? db
+        .select({
+          findingId: findingStatus.findingId,
+          severity: findingStatus.severity,
+          label: findingStatus.label,
+          category: findingStatus.category,
+          title: findingStatus.title,
+          repoHash: reviews.repoHash,
+          prNumber: reviews.prNumber,
+          closureSha: findingStatus.closureSha,
+          closureCommentUrl: findingStatus.closureCommentUrl,
+          ghsaHtmlUrl: findingDisclosure.ghsaHtmlUrl,
+          closedAt: findingStatus.closureDetectedAt,
+        })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(baseConditions)
+    : db
+        .select({
+          findingId: findingStatus.findingId,
+          severity: findingStatus.severity,
+          label: findingStatus.label,
+          category: findingStatus.category,
+          title: findingStatus.title,
+          repoHash: reviews.repoHash,
+          prNumber: reviews.prNumber,
+          closureSha: findingStatus.closureSha,
+          closureCommentUrl: findingStatus.closureCommentUrl,
+          ghsaHtmlUrl: sql<string | null>`NULL`.as("ghsaHtmlUrl"),
+          closedAt: findingStatus.closureDetectedAt,
+        })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .where(baseConditions));
   // JS toSorted below severity-DESC + closedAt-DESC; the SQL ORDER BY
   // would be redundant, so we sort entirely in JS for clarity.
   const ranked = rows.toSorted((a, b) => {
@@ -1358,35 +1457,56 @@ export type PublicReceiptDetailRow = PublicReceiptRow & {
 // argument — without cache() each issues a separate DB round-trip).
 export const loadPublicReceiptDetail = cache(
   async (findingId: string): Promise<PublicReceiptDetailRow | null> => {
-    const rows = await db
-      .select({
-        findingId: findingStatus.findingId,
-        findingIndex: findingStatus.findingIndex,
-        status: findingStatus.status,
-        severity: findingStatus.severity,
-        label: findingStatus.label,
-        category: findingStatus.category,
-        title: findingStatus.title,
-        closureSha: findingStatus.closureSha,
-        closureCommentUrl: findingStatus.closureCommentUrl,
-        closedAt: findingStatus.closureDetectedAt,
-        retractedAt: findingStatus.retractedAt,
-        retractionReason: findingStatus.retractionReason,
-        reviewId: reviews.reviewId,
-        repoHash: reviews.repoHash,
-        prNumber: reviews.prNumber,
-        prCommentUrl: reviews.prCommentUrl,
-        reviewCreatedAt: reviews.createdAt,
-        timingMs: reviews.timingMs,
-        costEstimatedUsd: reviews.costEstimatedUsd,
-        providerModelIds: reviews.providerModelIds,
-        providerResponses: reviews.providerResponses,
-        agreementDecision: reviews.agreementDecision,
-      })
-      .from(findingStatus)
-      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(and(eq(findingStatus.findingId, findingId), eq(reviews.publicReceipt, true)))
-      .limit(1);
+    const disclosureGateEnabled = isDisclosureGateEnabled();
+    const visibilityCondition = disclosureGateEnabled
+      ? derivedPublicReceiptCondition
+      : eq(reviews.publicReceipt, true);
+    const baseSelectColumns = {
+      findingId: findingStatus.findingId,
+      findingIndex: findingStatus.findingIndex,
+      status: findingStatus.status,
+      severity: findingStatus.severity,
+      label: findingStatus.label,
+      category: findingStatus.category,
+      title: findingStatus.title,
+      closureSha: findingStatus.closureSha,
+      closureCommentUrl: findingStatus.closureCommentUrl,
+      closedAt: findingStatus.closureDetectedAt,
+      retractedAt: findingStatus.retractedAt,
+      retractionReason: findingStatus.retractionReason,
+      reviewId: reviews.reviewId,
+      repoHash: reviews.repoHash,
+      prNumber: reviews.prNumber,
+      prCommentUrl: reviews.prCommentUrl,
+      reviewCreatedAt: reviews.createdAt,
+      timingMs: reviews.timingMs,
+      costEstimatedUsd: reviews.costEstimatedUsd,
+      providerModelIds: reviews.providerModelIds,
+      providerResponses: reviews.providerResponses,
+      agreementDecision: reviews.agreementDecision,
+    };
+    const disclosureSelectColumns = {
+      ...baseSelectColumns,
+      ghsaHtmlUrl: findingDisclosure.ghsaHtmlUrl,
+    };
+    const legacySelectColumns = {
+      ...baseSelectColumns,
+      ghsaHtmlUrl: sql<string | null>`NULL`.as("ghsaHtmlUrl"),
+    };
+    const rows = await (disclosureGateEnabled
+      ? db
+          .select(disclosureSelectColumns)
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(and(eq(findingStatus.findingId, findingId), visibilityCondition))
+          .limit(1)
+      : db
+          .select(legacySelectColumns)
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .where(and(eq(findingStatus.findingId, findingId), visibilityCondition))
+          .limit(1));
 
     return rows[0] ?? null;
   },
@@ -1425,59 +1545,161 @@ export type PublicReviewReceiptRow = {
 export async function loadPublicReviewReceipt(
   reviewId: string,
 ): Promise<PublicReviewReceiptRow | null> {
-  const result = await db.execute(sql`
-    SELECT
-      r.review_id AS "reviewId",
-      r.repo_hash AS "repoHash",
-      r.owner,
-      r.repo,
-      r.pr_number AS "prNumber",
-      r.commit_sha AS "commitSha",
-      r.created_at AS "createdAt",
-      r.processing_status AS "processingStatus",
-      r.processing_error AS "processingError",
-      r.timing_ms AS "timingMs",
-      r.cost_estimated_usd::text AS "costEstimatedUsd",
-      r.agreement_decision AS "agreementDecision",
-      j.job_id AS "jobId",
-      j.payment_rail AS "paymentRail",
-      j.status AS "jobStatus",
-      j.failure_mode AS "failureMode",
-      j.failure_message AS "failureMessage",
-      j.x402_pay_to AS "x402PayTo",
-      j.caller_wallet AS "callerWallet",
-      j.x402_settlement_status AS "settlementStatus",
-      COALESCE(
-        jsonb_agg(
-          jsonb_build_object(
-            'findingId', fs.finding_id,
-            'findingIndex', fs.finding_index,
-            'severity', fs.severity,
-            'category', fs.category,
-            'title', fs.title
+  const result = await db.execute(
+    isDisclosureGateEnabled()
+      ? sql`
+          SELECT
+            r.review_id AS "reviewId",
+            r.repo_hash AS "repoHash",
+            r.owner,
+            r.repo,
+            r.pr_number AS "prNumber",
+            r.commit_sha AS "commitSha",
+            r.created_at AS "createdAt",
+            r.processing_status AS "processingStatus",
+            r.processing_error AS "processingError",
+            r.timing_ms AS "timingMs",
+            r.cost_estimated_usd::text AS "costEstimatedUsd",
+            r.agreement_decision AS "agreementDecision",
+            j.job_id AS "jobId",
+            j.payment_rail AS "paymentRail",
+            j.status AS "jobStatus",
+            j.failure_mode AS "failureMode",
+            j.failure_message AS "failureMessage",
+            j.x402_pay_to AS "x402PayTo",
+            j.caller_wallet AS "callerWallet",
+            j.x402_settlement_status AS "settlementStatus",
+            COALESCE(
+              jsonb_agg(
+                jsonb_build_object(
+                  'findingId', fs.finding_id,
+                  'findingIndex', fs.finding_index,
+                  'severity', fs.severity,
+                  'category', fs.category,
+                  'title', fs.title
+                )
+                ORDER BY fs.finding_index
+              ) FILTER (
+                WHERE fs.finding_id IS NOT NULL
+                  AND (
+                    (
+	                      fd.state = 'published'
+	                      AND (
+	                        (
+	                          fd.ghsa_id IS NULL
+	                          AND fs.closure_comment_url IS NOT NULL
+	                        )
+	                        OR (
+	                          fd.ghsa_id IS NOT NULL
+	                          AND fd.ghsa_published_at IS NOT NULL
+	                          AND fd.ghsa_html_url IS NOT NULL
+	                        )
+	                      )
+                    )
+                    OR (fd.state = 'none' AND r.public_receipt = true)
+                  )
+              ),
+              '[]'::jsonb
+            ) AS "findings"
+          FROM reviews r
+          LEFT JOIN finding_status fs ON fs.review_id = r.review_id
+          LEFT JOIN finding_disclosure fd ON fd.finding_id = fs.finding_id
+          LEFT JOIN review_jobs j ON (
+            j.x402_review_id = r.review_id
+            OR (
+              j.x402_review_id IS NULL
+              AND lower(j.repo_owner) = lower(COALESCE(r.owner, ''))
+              AND lower(j.repo_name) = lower(COALESCE(r.repo, ''))
+              AND j.pr_number = r.pr_number
+              AND lower(j.sha) = lower(r.commit_sha)
+            )
           )
-          ORDER BY fs.finding_index
-        ) FILTER (WHERE fs.finding_id IS NOT NULL),
-        '[]'::jsonb
-      ) AS "findings"
-    FROM reviews r
-    LEFT JOIN finding_status fs ON fs.review_id = r.review_id
-    LEFT JOIN review_jobs j ON (
-      j.x402_review_id = r.review_id
-      OR (
-        j.x402_review_id IS NULL
-        AND lower(j.repo_owner) = lower(COALESCE(r.owner, ''))
-        AND lower(j.repo_name) = lower(COALESCE(r.repo, ''))
-        AND j.pr_number = r.pr_number
-        AND lower(j.sha) = lower(r.commit_sha)
-      )
-    )
-    WHERE r.review_id = ${reviewId}
-      AND r.public_receipt = true
-    GROUP BY r.review_id, j.job_id
-    ORDER BY j.created_at DESC NULLS LAST
-    LIMIT 1
-  `);
+          WHERE r.review_id = ${reviewId}
+            AND r.public_receipt = true
+            AND NOT EXISTS (
+              SELECT 1
+              FROM finding_status review_fs
+              LEFT JOIN finding_disclosure review_fd ON review_fd.finding_id = review_fs.finding_id
+              WHERE review_fs.review_id = r.review_id
+                AND (
+                  review_fd.finding_id IS NULL
+                  OR NOT (
+                    (
+	                      review_fd.state = 'published'
+	                      AND (
+	                        (
+	                          review_fd.ghsa_id IS NULL
+	                          AND review_fs.closure_comment_url IS NOT NULL
+	                        )
+	                        OR (
+	                          review_fd.ghsa_id IS NOT NULL
+	                          AND review_fd.ghsa_published_at IS NOT NULL
+	                          AND review_fd.ghsa_html_url IS NOT NULL
+	                        )
+	                      )
+                    )
+                    OR (review_fd.state = 'none' AND r.public_receipt = true)
+                  )
+                )
+            )
+          GROUP BY r.review_id, j.job_id
+          ORDER BY j.created_at DESC NULLS LAST
+          LIMIT 1
+        `
+      : sql`
+          SELECT
+            r.review_id AS "reviewId",
+            r.repo_hash AS "repoHash",
+            r.owner,
+            r.repo,
+            r.pr_number AS "prNumber",
+            r.commit_sha AS "commitSha",
+            r.created_at AS "createdAt",
+            r.processing_status AS "processingStatus",
+            r.processing_error AS "processingError",
+            r.timing_ms AS "timingMs",
+            r.cost_estimated_usd::text AS "costEstimatedUsd",
+            r.agreement_decision AS "agreementDecision",
+            j.job_id AS "jobId",
+            j.payment_rail AS "paymentRail",
+            j.status AS "jobStatus",
+            j.failure_mode AS "failureMode",
+            j.failure_message AS "failureMessage",
+            j.x402_pay_to AS "x402PayTo",
+            j.caller_wallet AS "callerWallet",
+            j.x402_settlement_status AS "settlementStatus",
+            COALESCE(
+              jsonb_agg(
+                jsonb_build_object(
+                  'findingId', fs.finding_id,
+                  'findingIndex', fs.finding_index,
+                  'severity', fs.severity,
+                  'category', fs.category,
+                  'title', fs.title
+                )
+                ORDER BY fs.finding_index
+              ) FILTER (WHERE fs.finding_id IS NOT NULL),
+              '[]'::jsonb
+            ) AS "findings"
+          FROM reviews r
+          LEFT JOIN finding_status fs ON fs.review_id = r.review_id
+          LEFT JOIN review_jobs j ON (
+            j.x402_review_id = r.review_id
+            OR (
+              j.x402_review_id IS NULL
+              AND lower(j.repo_owner) = lower(COALESCE(r.owner, ''))
+              AND lower(j.repo_name) = lower(COALESCE(r.repo, ''))
+              AND j.pr_number = r.pr_number
+              AND lower(j.sha) = lower(r.commit_sha)
+            )
+          )
+          WHERE r.review_id = ${reviewId}
+            AND r.public_receipt = true
+          GROUP BY r.review_id, j.job_id
+          ORDER BY j.created_at DESC NULLS LAST
+          LIMIT 1
+        `,
+  );
   const rows = Array.isArray(result)
     ? (result as PublicReviewReceiptRow[])
     : ((result as unknown as { rows?: PublicReviewReceiptRow[] }).rows ?? []);
@@ -1597,6 +1819,13 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
   const ms7d = 7 * ms24h;
   const since24h = new Date(now.getTime() - ms24h);
   const since7d = new Date(now.getTime() - ms7d);
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const reviewPublicGate = disclosureGateEnabled
+    ? reviewDerivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const findingPublicGate = disclosureGateEnabled
+    ? derivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
 
   const [
     lastSweep,
@@ -1612,15 +1841,26 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
     eventOnboarder,
   ] = await Promise.all([
     db.select({ value: max(findingStatus.lastPolledAt) }).from(findingStatus),
-    db
-      .select({ value: max(findingStatus.closureDetectedAt) })
-      .from(findingStatus)
-      .where(eq(findingStatus.status, "closed")),
+    disclosureGateEnabled
+      ? db
+          .select({ value: max(findingStatus.closureDetectedAt) })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(and(eq(findingStatus.status, "closed"), findingPublicGate))
+      : db
+          .select({ value: max(findingStatus.closureDetectedAt) })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .where(and(eq(findingStatus.status, "closed"), findingPublicGate)),
     db
       .select({ value: max(onboardingEvents.createdAt) })
       .from(onboardingEvents)
       .where(eq(onboardingEvents.public, true)),
-    db.select({ value: max(reviews.createdAt) }).from(reviews),
+    db
+      .select({ value: max(reviews.createdAt) })
+      .from(reviews)
+      .where(reviewPublicGate),
     activityWindow(since24h),
     activityWindow(since7d),
     loadAllTimeActivityWindow(),
@@ -1638,42 +1878,79 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
         repo: reviews.repo,
       })
       .from(reviews)
-      .where(eq(reviews.publicReceipt, true))
+      .where(reviewPublicGate)
       .orderBy(desc(reviews.createdAt))
       .limit(EVENT_STREAM_LIMIT),
-    db
-      .select({
-        ts: findingStatus.createdAt,
-        findingId: findingStatus.findingId,
-        severity: findingStatus.severity,
-        category: findingStatus.category,
-        title: findingStatus.title,
-        repoHash: reviews.repoHash,
-        owner: reviews.owner,
-        repo: reviews.repo,
-      })
-      .from(findingStatus)
-      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(eq(reviews.publicReceipt, true))
-      .orderBy(desc(findingStatus.createdAt))
-      .limit(EVENT_STREAM_LIMIT),
-    db
-      .select({
-        ts: findingStatus.closureDetectedAt,
-        findingId: findingStatus.findingId,
-        severity: findingStatus.severity,
-        category: findingStatus.category,
-        title: findingStatus.title,
-        closureSha: findingStatus.closureSha,
-        repoHash: reviews.repoHash,
-        owner: reviews.owner,
-        repo: reviews.repo,
-      })
-      .from(findingStatus)
-      .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-      .where(and(eq(findingStatus.status, "closed"), eq(reviews.publicReceipt, true)))
-      .orderBy(desc(findingStatus.closureDetectedAt))
-      .limit(EVENT_STREAM_LIMIT),
+    disclosureGateEnabled
+      ? db
+          .select({
+            ts: findingStatus.createdAt,
+            findingId: findingStatus.findingId,
+            severity: findingStatus.severity,
+            category: findingStatus.category,
+            title: findingStatus.title,
+            repoHash: reviews.repoHash,
+            owner: reviews.owner,
+            repo: reviews.repo,
+          })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(findingPublicGate)
+          .orderBy(desc(findingStatus.createdAt))
+          .limit(EVENT_STREAM_LIMIT)
+      : db
+          .select({
+            ts: findingStatus.createdAt,
+            findingId: findingStatus.findingId,
+            severity: findingStatus.severity,
+            category: findingStatus.category,
+            title: findingStatus.title,
+            repoHash: reviews.repoHash,
+            owner: reviews.owner,
+            repo: reviews.repo,
+          })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .where(findingPublicGate)
+          .orderBy(desc(findingStatus.createdAt))
+          .limit(EVENT_STREAM_LIMIT),
+    disclosureGateEnabled
+      ? db
+          .select({
+            ts: findingStatus.closureDetectedAt,
+            findingId: findingStatus.findingId,
+            severity: findingStatus.severity,
+            category: findingStatus.category,
+            title: findingStatus.title,
+            closureSha: findingStatus.closureSha,
+            repoHash: reviews.repoHash,
+            owner: reviews.owner,
+            repo: reviews.repo,
+          })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(and(eq(findingStatus.status, "closed"), findingPublicGate))
+          .orderBy(desc(findingStatus.closureDetectedAt))
+          .limit(EVENT_STREAM_LIMIT)
+      : db
+          .select({
+            ts: findingStatus.closureDetectedAt,
+            findingId: findingStatus.findingId,
+            severity: findingStatus.severity,
+            category: findingStatus.category,
+            title: findingStatus.title,
+            closureSha: findingStatus.closureSha,
+            repoHash: reviews.repoHash,
+            owner: reviews.owner,
+            repo: reviews.repo,
+          })
+          .from(findingStatus)
+          .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+          .where(and(eq(findingStatus.status, "closed"), findingPublicGate))
+          .orderBy(desc(findingStatus.closureDetectedAt))
+          .limit(EVENT_STREAM_LIMIT),
     db
       .select({
         ts: onboardingEvents.createdAt,
@@ -2060,24 +2337,44 @@ export async function activityWindow(
     until === null ? undefined : lt(maintainerReactions.polledAt, until),
   );
 
-  const publicGate = eq(reviews.publicReceipt, true);
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const publicGate = disclosureGateEnabled
+    ? reviewDerivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const findingPublicGate = disclosureGateEnabled
+    ? derivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
 
   const reviewsCountQuery = db
     .select({ value: count() })
     .from(reviews)
     .where(and(publicGate, reviewsRange));
 
-  const agreedCountQuery = db
-    .select({ value: count() })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(and(publicGate, findingsCreatedRange));
+  const agreedCountQuery = disclosureGateEnabled
+    ? db
+        .select({ value: count() })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(and(findingPublicGate, findingsCreatedRange))
+    : db
+        .select({ value: count() })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .where(and(findingPublicGate, findingsCreatedRange));
 
-  const closedCountQuery = db
-    .select({ value: count() })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(and(publicGate, findingsClosedRange));
+  const closedCountQuery = disclosureGateEnabled
+    ? db
+        .select({ value: count() })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(and(findingPublicGate, findingsClosedRange))
+    : db
+        .select({ value: count() })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .where(and(findingPublicGate, findingsClosedRange));
 
   const reactionsCountQuery = db
     .select({ value: count() })
@@ -2217,7 +2514,10 @@ export async function loadPublicBenchmarksPage(args: {
   before?: Date | undefined;
 }): Promise<PublicBenchmarksPage> {
   const fetchLimit = args.limit + 1;
-  const baseConditions = and(eq(reviews.isBenchmark, true), eq(reviews.publicReceipt, true));
+  const reviewPublicGate = isDisclosureGateEnabled()
+    ? reviewDerivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const baseConditions = and(eq(reviews.isBenchmark, true), reviewPublicGate);
   const recentConditions =
     args.before === undefined
       ? baseConditions
@@ -2344,6 +2644,9 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
 
   const first = findings[0]!;
   const benchRepoName = first.benchRepoName;
+  const reviewPublicGate = isDisclosureGateEnabled()
+    ? reviewDerivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
 
   // Public benchmark reviews tied to this agent's bench repo. Gated on
   // publicReceipt + isBenchmark like /benchmarks. Repo names are
@@ -2363,7 +2666,7 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
       .where(
         and(
           eq(reviews.isBenchmark, true),
-          eq(reviews.publicReceipt, true),
+          reviewPublicGate,
           benchRepoName === null
             ? sql`false`
             : sql`lower(${reviews.repo}) = ${benchRepoName.toLowerCase()}`,
@@ -2915,15 +3218,33 @@ export type InstallRow = {
   patchAgentClickApplyEnabled: boolean | null;
 };
 
+const installRowColumns = {
+  id: installations.id,
+  installationId: installations.installationId,
+  owner: installations.owner,
+  repo: installations.repo,
+  status: installations.status,
+  notes: installations.notes,
+  createdAt: installations.createdAt,
+  approvedAt: installations.approvedAt,
+  rejectedAt: installations.rejectedAt,
+  walletAddress: installations.walletAddress,
+  walletProofSignature: installations.walletProofSignature,
+  walletBoundAt: installations.walletBoundAt,
+  legacyPartner: installations.legacyPartner,
+  patchAgentEnabled: installations.patchAgentEnabled,
+  patchAgentClickApplyEnabled: installations.patchAgentClickApplyEnabled,
+};
+
 export async function listInstallRows(filter?: InstallStatus): Promise<InstallRow[]> {
   if (filter !== undefined) {
     return db
-      .select()
+      .select(installRowColumns)
       .from(installations)
       .where(eq(installations.status, filter))
       .orderBy(desc(installations.createdAt));
   }
-  return db.select().from(installations).orderBy(desc(installations.createdAt));
+  return db.select(installRowColumns).from(installations).orderBy(desc(installations.createdAt));
 }
 
 export async function setInstallStatus(
@@ -3179,6 +3500,622 @@ export async function loadPublicRepoThreatModelsForRepos(
   return rows;
 }
 
+export async function isLiveProtocolInstallRepo(args: {
+  installationId: number | null;
+  owner: string;
+  repo: string;
+}): Promise<boolean> {
+  const scope =
+    args.installationId === null
+      ? and(eq(installations.owner, args.owner), eq(installations.repo, args.repo))
+      : and(
+          eq(installations.installationId, args.installationId),
+          eq(installations.owner, args.owner),
+          eq(installations.repo, args.repo),
+        );
+  const rows = await db
+    .select({ isLiveProtocol: installations.isLiveProtocol })
+    .from(installations)
+    .where(scope)
+    .limit(1);
+  return rows[0]?.isLiveProtocol === true;
+}
+
+export type CreateFindingDisclosureInput = {
+  findingId: string;
+  reviewId: string;
+  state: DisclosureState;
+  enteredAt: Date;
+  embargoExpiresAt: Date | null;
+  maintainerUrlCiphertext?: string | null;
+  maintainerUrlLogId?: string | null;
+  advisoryDraft: string | null;
+  atSha: string;
+  reason: string;
+};
+
+export async function createFindingDisclosure(
+  input: CreateFindingDisclosureInput,
+): Promise<{ created: boolean }> {
+  const values: NewFindingDisclosure = {
+    findingId: input.findingId,
+    reviewId: input.reviewId,
+    state: input.state,
+    enteredAt: input.enteredAt,
+    embargoExpiresAt: input.embargoExpiresAt,
+    maintainerUrlCiphertext: input.maintainerUrlCiphertext ?? null,
+    maintainerUrlLogId: input.maintainerUrlLogId ?? null,
+    advisoryDraft: input.advisoryDraft,
+    advisoryDraftUpdatedAt: input.advisoryDraft === null ? null : input.enteredAt,
+  };
+  return await db.transaction(async (tx) => {
+    const inserted = await tx
+      .insert(findingDisclosure)
+      .values(values)
+      .onConflictDoNothing({ target: findingDisclosure.findingId })
+      .returning({ findingId: findingDisclosure.findingId });
+    if (inserted.length === 0) {
+      const existing = await tx
+        .select({ state: findingDisclosure.state })
+        .from(findingDisclosure)
+        .where(eq(findingDisclosure.findingId, input.findingId))
+        .limit(1);
+      const existingState = existing[0]?.state as DisclosureState | undefined;
+      if (existingState !== undefined) {
+        const initialLog = await tx
+          .select({ id: findingDisclosureLog.id })
+          .from(findingDisclosureLog)
+          .where(
+            and(
+              eq(findingDisclosureLog.findingId, input.findingId),
+              isNull(findingDisclosureLog.fromState),
+            ),
+          )
+          .limit(1);
+        if (initialLog.length === 0) {
+          const recoveredLog: NewFindingDisclosureLog = {
+            findingId: input.findingId,
+            fromState: null,
+            toState: existingState,
+            actorType: "system",
+            actorId: null,
+            reason: "recovered missing initial disclosure log",
+            atSha: input.atSha,
+            metadata: { recovered: true },
+          };
+          await tx.insert(findingDisclosureLog).values(recoveredLog);
+        }
+      }
+      return { created: false };
+    }
+    const logValues: NewFindingDisclosureLog = {
+      findingId: input.findingId,
+      fromState: null,
+      toState: input.state,
+      actorType: "system",
+      actorId: null,
+      reason: input.reason,
+      atSha: input.atSha,
+      metadata: {},
+    };
+    await tx.insert(findingDisclosureLog).values(logValues);
+    return { created: true };
+  });
+}
+
+export async function recordFindingDisclosureLog(input: {
+  findingId: string;
+  fromState: DisclosureState | null;
+  toState: DisclosureState;
+  actorType: DisclosureActorType;
+  actorId: string | null;
+  reason: string;
+  atSha: string;
+  metadata: unknown;
+}): Promise<void> {
+  const values: NewFindingDisclosureLog = {
+    findingId: input.findingId,
+    fromState: input.fromState,
+    toState: input.toState,
+    actorType: input.actorType,
+    actorId: input.actorId,
+    reason: input.reason,
+    atSha: input.atSha,
+    metadata: input.metadata,
+  };
+  await db.insert(findingDisclosureLog).values(values);
+}
+
+export async function updateFindingDisclosureReservation(args: {
+  findingId: string;
+  ghsaId: string | null;
+  cveId: string | null;
+  ghsaHtmlUrl?: string | null;
+  cveRequestedAt?: Date | null;
+}): Promise<void> {
+  await db
+    .update(findingDisclosure)
+    .set({
+      ghsaId: args.ghsaId,
+      cveId: args.cveId,
+      ...(args.ghsaHtmlUrl !== undefined ? { ghsaHtmlUrl: args.ghsaHtmlUrl } : {}),
+      ...(args.cveRequestedAt !== undefined ? { cveRequestedAt: args.cveRequestedAt } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(findingDisclosure.findingId, args.findingId));
+}
+
+export async function claimFindingDisclosureGhsaReservation(args: {
+  findingId: string;
+  reservationToken: string;
+  now: Date;
+  staleBefore: Date;
+}): Promise<boolean> {
+  const updated = await db
+    .update(findingDisclosure)
+    .set({
+      ghsaReservationToken: args.reservationToken,
+      updatedAt: args.now,
+    })
+    .where(
+      and(
+        eq(findingDisclosure.findingId, args.findingId),
+        isNull(findingDisclosure.cveRequestedAt),
+        or(
+          isNull(findingDisclosure.ghsaReservationToken),
+          lt(findingDisclosure.updatedAt, args.staleBefore),
+        ),
+      ),
+    )
+    .returning({ findingId: findingDisclosure.findingId });
+  return updated.length > 0;
+}
+
+export async function completeFindingDisclosureGhsaReservation(args: {
+  findingId: string;
+  reservationToken: string;
+  ghsaId: string;
+  cveId: string | null;
+  ghsaHtmlUrl: string | null;
+  cveRequestedAt: Date | null;
+  now: Date;
+}): Promise<boolean> {
+  const updated = await db
+    .update(findingDisclosure)
+    .set({
+      ghsaId: args.ghsaId,
+      cveId: args.cveId,
+      ghsaHtmlUrl: args.ghsaHtmlUrl,
+      cveRequestedAt: args.cveRequestedAt,
+      ghsaReservationToken: null,
+      updatedAt: args.now,
+    })
+    .where(
+      and(
+        eq(findingDisclosure.findingId, args.findingId),
+        eq(findingDisclosure.ghsaReservationToken, args.reservationToken),
+      ),
+    )
+    .returning({ findingId: findingDisclosure.findingId });
+  return updated.length > 0;
+}
+
+export async function recordFindingDisclosureGhsaDraft(args: {
+  findingId: string;
+  reservationToken: string;
+  ghsaId: string;
+  cveId: string | null;
+  ghsaHtmlUrl: string | null;
+  now: Date;
+}): Promise<boolean> {
+  const updated = await db
+    .update(findingDisclosure)
+    .set({
+      ghsaId: args.ghsaId,
+      cveId: args.cveId,
+      ghsaHtmlUrl: args.ghsaHtmlUrl,
+      updatedAt: args.now,
+    })
+    .where(
+      and(
+        eq(findingDisclosure.findingId, args.findingId),
+        eq(findingDisclosure.ghsaReservationToken, args.reservationToken),
+      ),
+    )
+    .returning({ findingId: findingDisclosure.findingId });
+  return updated.length > 0;
+}
+
+export async function releaseFindingDisclosureGhsaReservation(args: {
+  findingId: string;
+  reservationToken: string;
+  now: Date;
+}): Promise<void> {
+  await db
+    .update(findingDisclosure)
+    .set({
+      ghsaReservationToken: null,
+      updatedAt: args.now,
+    })
+    .where(
+      and(
+        eq(findingDisclosure.findingId, args.findingId),
+        eq(findingDisclosure.ghsaReservationToken, args.reservationToken),
+      ),
+    );
+}
+
+export async function markFindingDisclosureGhsaPublished(args: {
+  findingId: string;
+  ghsaHtmlUrl: string;
+  ghsaPublishedAt: Date;
+}): Promise<void> {
+  await db
+    .update(findingDisclosure)
+    .set({
+      ghsaHtmlUrl: args.ghsaHtmlUrl,
+      ghsaPublishedAt: args.ghsaPublishedAt,
+      updatedAt: args.ghsaPublishedAt,
+    })
+    .where(eq(findingDisclosure.findingId, args.findingId));
+}
+
+export async function loadPrivateDisclosureFindingIndexes(reviewId: string): Promise<number[]> {
+  const rows = await db
+    .select({ findingIndex: findingStatus.findingIndex })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
+    .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+    .where(
+      and(
+        eq(findingStatus.reviewId, reviewId),
+        or(
+          isNull(findingDisclosure.findingId),
+          sql`NOT (
+            (
+                ${findingDisclosure.state} = 'published'
+                AND (
+                  (
+                    ${findingDisclosure.ghsaId} IS NULL
+                    AND ${findingStatus.closureCommentUrl} IS NOT NULL
+                  )
+                  OR (
+                    ${findingDisclosure.ghsaId} IS NOT NULL
+                    AND ${findingDisclosure.ghsaPublishedAt} IS NOT NULL
+                    AND ${findingDisclosure.ghsaHtmlUrl} IS NOT NULL
+                  )
+                )
+              )
+            OR (
+              ${findingDisclosure.state} = 'none'
+              AND ${reviews.publicReceipt} = true
+            )
+          )`,
+        ),
+      ),
+    )
+    .orderBy(findingStatus.findingIndex);
+  return rows.map((row) => row.findingIndex);
+}
+
+export async function transitionFindingDisclosure(args: {
+  findingId: string;
+  toState: DisclosureState;
+  actorType: DisclosureActorType;
+  actorId: string | null;
+  reason: string;
+  atSha: string;
+  now: Date;
+  metadata?: unknown;
+  acknowledgedBy?: string | null;
+  forcedBy?: string | null;
+  advisoryDraft?: string | null;
+}): Promise<{ transitioned: boolean; fromState: DisclosureState | null }> {
+  return await db.transaction(async (tx) => {
+    const rows = await tx
+      .select({
+        state: findingDisclosure.state,
+      })
+      .from(findingDisclosure)
+      .where(eq(findingDisclosure.findingId, args.findingId))
+      .limit(1);
+    const current = rows[0]?.state as DisclosureState | undefined;
+    if (current === undefined) return { transitioned: false, fromState: null };
+
+    const sameState = current === args.toState;
+    if (!sameState && !isAllowedDisclosureTransition(current, args.toState, args.actorType)) {
+      throw new Error(`invalid disclosure transition ${current} -> ${args.toState}`);
+    }
+
+    const patch = {
+      updatedAt: args.now,
+      ...(sameState ? {} : { state: args.toState, enteredAt: args.now }),
+      ...(args.acknowledgedBy !== undefined
+        ? { acknowledgedAt: args.now, acknowledgedBy: args.acknowledgedBy }
+        : {}),
+      ...(args.forcedBy !== undefined ? { forcedBy: args.forcedBy } : {}),
+      ...(args.advisoryDraft !== undefined
+        ? { advisoryDraft: args.advisoryDraft, advisoryDraftUpdatedAt: args.now }
+        : {}),
+    };
+    const updated = await tx
+      .update(findingDisclosure)
+      .set(patch)
+      .where(
+        and(eq(findingDisclosure.findingId, args.findingId), eq(findingDisclosure.state, current)),
+      )
+      .returning({ findingId: findingDisclosure.findingId });
+    if (updated.length === 0) return { transitioned: false, fromState: current };
+
+    const logValues: NewFindingDisclosureLog = {
+      findingId: args.findingId,
+      fromState: current,
+      toState: args.toState,
+      actorType: args.actorType,
+      actorId: args.actorId,
+      reason: args.reason,
+      atSha: args.atSha,
+      metadata: args.metadata ?? {},
+    };
+    await tx.insert(findingDisclosureLog).values(logValues);
+    return { transitioned: !sameState, fromState: current };
+  });
+}
+
+function isAllowedDisclosureTransition(
+  from: DisclosureState,
+  to: DisclosureState,
+  actorType: DisclosureActorType,
+): boolean {
+  if (actorType === "operator" && to === "published") {
+    return from !== "none" && from !== "published";
+  }
+  const allowed: Record<DisclosureState, readonly DisclosureState[]> = {
+    none: [],
+    embargoed: ["maintainer-acknowledged", "patch-merged", "embargo-expired"],
+    "maintainer-acknowledged": ["patch-merged", "embargo-expired"],
+    "patch-merged": ["embargo-expired"],
+    "embargo-expired": ["published"],
+    published: [],
+  };
+  return allowed[from].includes(to);
+}
+
+export type DisclosureFindingDetail = {
+  findingId: string;
+  findingIndex: number;
+  title: string;
+  severity: string;
+  category: string;
+  status: string;
+  closureDetectedAt: Date | null;
+  closureSha: string | null;
+  patchAcceptedAt: Date | null;
+  patchAcceptedSha: string | null;
+  reviewId: string;
+  owner: string | null;
+  repo: string | null;
+  installationId: number | null;
+  prNumber: number;
+  commitSha: string;
+  publicReceipt: boolean;
+  agreementDecision: unknown;
+  providerResponses: unknown;
+  disclosure: {
+    state: DisclosureState;
+    enteredAt: Date;
+    createdAt: Date;
+    embargoExpiresAt: Date | null;
+    cveId: string | null;
+    cveRequestedAt: Date | null;
+    ghsaId: string | null;
+    ghsaHtmlUrl: string | null;
+    ghsaPublishedAt: Date | null;
+    acknowledgedAt: Date | null;
+    acknowledgedBy: string | null;
+    maintainerUrlLogId: string | null;
+    advisoryDraft: string | null;
+  } | null;
+  evidenceBundle: {
+    affectedSha: string;
+    pocSnippet: unknown;
+    reproductionCommand: unknown;
+    callPathTrace: unknown;
+    bundleStatus: string;
+  } | null;
+  threatModel: unknown;
+};
+
+export async function loadDisclosureFindingDetail(
+  findingId: string,
+): Promise<DisclosureFindingDetail | null> {
+  const rows = await db
+    .select({
+      findingId: findingStatus.findingId,
+      findingIndex: findingStatus.findingIndex,
+      title: findingStatus.title,
+      severity: findingStatus.severity,
+      category: findingStatus.category,
+      status: findingStatus.status,
+      closureDetectedAt: findingStatus.closureDetectedAt,
+      closureSha: findingStatus.closureSha,
+      patchAcceptedAt: findingStatus.patchAcceptedAt,
+      patchAcceptedSha: findingStatus.patchAcceptedSha,
+      reviewId: reviews.reviewId,
+      owner: reviews.owner,
+      repo: reviews.repo,
+      installationId: reviews.installationId,
+      prNumber: reviews.prNumber,
+      commitSha: reviews.commitSha,
+      publicReceipt: reviews.publicReceipt,
+      agreementDecision: reviews.agreementDecision,
+      providerResponses: reviews.providerResponses,
+      disclosureState: findingDisclosure.state,
+      enteredAt: findingDisclosure.enteredAt,
+      disclosureCreatedAt: findingDisclosure.createdAt,
+      embargoExpiresAt: findingDisclosure.embargoExpiresAt,
+      cveId: findingDisclosure.cveId,
+      cveRequestedAt: findingDisclosure.cveRequestedAt,
+      ghsaId: findingDisclosure.ghsaId,
+      ghsaHtmlUrl: findingDisclosure.ghsaHtmlUrl,
+      ghsaPublishedAt: findingDisclosure.ghsaPublishedAt,
+      acknowledgedAt: findingDisclosure.acknowledgedAt,
+      acknowledgedBy: findingDisclosure.acknowledgedBy,
+      maintainerUrlLogId: findingDisclosure.maintainerUrlLogId,
+      advisoryDraft: findingDisclosure.advisoryDraft,
+      evidenceAffectedSha: findingValidationEvidenceBundles.affectedSha,
+      pocSnippet: findingValidationEvidenceBundles.pocSnippet,
+      reproductionCommand: findingValidationEvidenceBundles.reproductionCommand,
+      callPathTrace: findingValidationEvidenceBundles.callPathTrace,
+      bundleStatus: findingValidationEvidenceBundles.bundleStatus,
+      threatModel: repoThreatModel.publicModel,
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+    .leftJoin(
+      findingValidationEvidenceBundles,
+      and(
+        eq(findingValidationEvidenceBundles.reviewId, findingStatus.reviewId),
+        eq(findingValidationEvidenceBundles.findingId, findingStatus.findingId),
+      ),
+    )
+    .leftJoin(repoThreatModel, eq(repoThreatModel.repoHash, reviews.repoHash))
+    .where(eq(findingStatus.findingId, findingId))
+    .orderBy(desc(findingValidationEvidenceBundles.reviewAttempt))
+    .limit(1);
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
+    findingId: row.findingId,
+    findingIndex: row.findingIndex,
+    title: row.title,
+    severity: row.severity,
+    category: row.category,
+    status: row.status,
+    closureDetectedAt: row.closureDetectedAt,
+    closureSha: row.closureSha,
+    patchAcceptedAt: row.patchAcceptedAt,
+    patchAcceptedSha: row.patchAcceptedSha,
+    reviewId: row.reviewId,
+    owner: row.owner,
+    repo: row.repo,
+    installationId: row.installationId,
+    prNumber: row.prNumber,
+    commitSha: row.commitSha,
+    publicReceipt: row.publicReceipt,
+    agreementDecision: row.agreementDecision,
+    providerResponses: row.providerResponses,
+    disclosure:
+      row.disclosureState === null
+        ? null
+        : {
+            state: row.disclosureState as DisclosureState,
+            enteredAt: row.enteredAt!,
+            createdAt: row.disclosureCreatedAt!,
+            embargoExpiresAt: row.embargoExpiresAt,
+            cveId: row.cveId,
+            cveRequestedAt: row.cveRequestedAt,
+            ghsaId: row.ghsaId,
+            ghsaHtmlUrl: row.ghsaHtmlUrl,
+            ghsaPublishedAt: row.ghsaPublishedAt,
+            acknowledgedAt: row.acknowledgedAt,
+            acknowledgedBy: row.acknowledgedBy,
+            maintainerUrlLogId: row.maintainerUrlLogId,
+            advisoryDraft: row.advisoryDraft,
+          },
+    evidenceBundle:
+      row.evidenceAffectedSha === null
+        ? null
+        : {
+            affectedSha: row.evidenceAffectedSha,
+            pocSnippet: row.pocSnippet,
+            reproductionCommand: row.reproductionCommand,
+            callPathTrace: row.callPathTrace,
+            bundleStatus: row.bundleStatus!,
+          },
+    threatModel: row.threatModel,
+  };
+}
+
+export async function loadDisclosureMaintainerSecret(findingId: string): Promise<{
+  maintainerUrlCiphertext: string;
+  maintainerUrlLogId: string;
+  state: DisclosureState;
+  commitSha: string;
+} | null> {
+  const rows = await db
+    .select({
+      maintainerUrlCiphertext: findingDisclosure.maintainerUrlCiphertext,
+      maintainerUrlLogId: findingDisclosure.maintainerUrlLogId,
+      state: findingDisclosure.state,
+      commitSha: reviews.commitSha,
+    })
+    .from(findingDisclosure)
+    .innerJoin(findingStatus, eq(findingStatus.findingId, findingDisclosure.findingId))
+    .innerJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
+    .where(eq(findingDisclosure.findingId, findingId))
+    .limit(1);
+  const row = rows[0];
+  if (
+    row === undefined ||
+    row.maintainerUrlCiphertext === null ||
+    row.maintainerUrlLogId === null
+  ) {
+    return null;
+  }
+  return {
+    maintainerUrlCiphertext: row.maintainerUrlCiphertext,
+    maintainerUrlLogId: row.maintainerUrlLogId,
+    state: row.state as DisclosureState,
+    commitSha: row.commitSha,
+  };
+}
+
+export async function loadDisclosureTimerCandidates(now: Date): Promise<DisclosureFindingDetail[]> {
+  const rows = await db
+    .select({ findingId: findingDisclosure.findingId })
+    .from(findingDisclosure)
+    .innerJoin(findingStatus, eq(findingStatus.findingId, findingDisclosure.findingId))
+    .where(
+      and(
+        inArray(findingDisclosure.state, ["embargoed", "maintainer-acknowledged", "patch-merged"]),
+        or(
+          lte(findingDisclosure.embargoExpiresAt, now),
+          and(
+            isNotNull(findingDisclosure.acknowledgedAt),
+            or(
+              isNotNull(findingStatus.patchAcceptedAt),
+              isNotNull(findingStatus.closureDetectedAt),
+            ),
+          ),
+        ),
+      ),
+    )
+    .limit(100);
+  const details = await Promise.all(rows.map((row) => loadDisclosureFindingDetail(row.findingId)));
+  return details.filter((row): row is DisclosureFindingDetail => row !== null);
+}
+
+export async function loadDisclosurePublishCandidates(): Promise<DisclosureFindingDetail[]> {
+  const rows = await db
+    .select({ findingId: findingDisclosure.findingId })
+    .from(findingDisclosure)
+    .where(
+      or(
+        eq(findingDisclosure.state, "embargo-expired"),
+        and(
+          eq(findingDisclosure.state, "published"),
+          isNotNull(findingDisclosure.ghsaId),
+          isNull(findingDisclosure.ghsaPublishedAt),
+        ),
+      ),
+    )
+    .limit(50);
+  const details = await Promise.all(rows.map((row) => loadDisclosureFindingDetail(row.findingId)));
+  return details.filter((row): row is DisclosureFindingDetail => row !== null);
+}
+
 export type EvidenceBundleSlotProvenance = {
   producedBy: "reviewer_consensus" | "patch_verifier" | "reachability_gate";
   sourceGateOutcomeId: string | null;
@@ -3284,42 +4221,74 @@ export type PublicFindingEvidenceBundleRow = Pick<
 
 export const loadPublicFindingEvidenceBundle = cache(
   async (findingId: string): Promise<PublicFindingEvidenceBundleRow | null> => {
-    const rows = await db
-      .select({
-        findingId: findingValidationEvidenceBundles.findingId,
-        reviewId: findingValidationEvidenceBundles.reviewId,
-        reviewAttempt: findingValidationEvidenceBundles.reviewAttempt,
-        affectedSha: findingValidationEvidenceBundles.affectedSha,
-        pocSnippet: findingValidationEvidenceBundles.pocSnippet,
-        reproductionCommand: findingValidationEvidenceBundles.reproductionCommand,
-        callPathTrace: findingValidationEvidenceBundles.callPathTrace,
-        bundleStatus: findingValidationEvidenceBundles.bundleStatus,
-        createdAt: findingValidationEvidenceBundles.createdAt,
-        updatedAt: findingValidationEvidenceBundles.updatedAt,
-      })
-      .from(findingValidationEvidenceBundles)
-      .innerJoin(
-        findingStatus,
-        and(
-          eq(findingStatus.findingId, findingValidationEvidenceBundles.findingId),
-          eq(findingStatus.reviewId, findingValidationEvidenceBundles.reviewId),
-        ),
-      )
-      .innerJoin(reviews, eq(reviews.reviewId, findingValidationEvidenceBundles.reviewId))
-      .where(
-        and(
-          eq(findingValidationEvidenceBundles.findingId, findingId),
-          eq(reviews.publicReceipt, true),
-          eq(findingStatus.status, "closed"),
-          isNotNull(findingStatus.closureDetectedAt),
-          isNull(findingStatus.retractedAt),
-        ),
-      )
-      .orderBy(
-        desc(findingValidationEvidenceBundles.reviewAttempt),
-        desc(findingValidationEvidenceBundles.updatedAt),
-      )
-      .limit(1);
+    const disclosureGateEnabled = isDisclosureGateEnabled();
+    const visibilityCondition = disclosureGateEnabled
+      ? derivedPublicReceiptCondition
+      : eq(reviews.publicReceipt, true);
+    const selectColumns = {
+      findingId: findingValidationEvidenceBundles.findingId,
+      reviewId: findingValidationEvidenceBundles.reviewId,
+      reviewAttempt: findingValidationEvidenceBundles.reviewAttempt,
+      affectedSha: findingValidationEvidenceBundles.affectedSha,
+      pocSnippet: findingValidationEvidenceBundles.pocSnippet,
+      reproductionCommand: findingValidationEvidenceBundles.reproductionCommand,
+      callPathTrace: findingValidationEvidenceBundles.callPathTrace,
+      bundleStatus: findingValidationEvidenceBundles.bundleStatus,
+      createdAt: findingValidationEvidenceBundles.createdAt,
+      updatedAt: findingValidationEvidenceBundles.updatedAt,
+    };
+    const rows = await (disclosureGateEnabled
+      ? db
+          .select(selectColumns)
+          .from(findingValidationEvidenceBundles)
+          .innerJoin(
+            findingStatus,
+            and(
+              eq(findingStatus.findingId, findingValidationEvidenceBundles.findingId),
+              eq(findingStatus.reviewId, findingValidationEvidenceBundles.reviewId),
+            ),
+          )
+          .innerJoin(reviews, eq(reviews.reviewId, findingValidationEvidenceBundles.reviewId))
+          .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+          .where(
+            and(
+              eq(findingValidationEvidenceBundles.findingId, findingId),
+              visibilityCondition,
+              eq(findingStatus.status, "closed"),
+              isNotNull(findingStatus.closureDetectedAt),
+              isNull(findingStatus.retractedAt),
+            ),
+          )
+          .orderBy(
+            desc(findingValidationEvidenceBundles.reviewAttempt),
+            desc(findingValidationEvidenceBundles.updatedAt),
+          )
+          .limit(1)
+      : db
+          .select(selectColumns)
+          .from(findingValidationEvidenceBundles)
+          .innerJoin(
+            findingStatus,
+            and(
+              eq(findingStatus.findingId, findingValidationEvidenceBundles.findingId),
+              eq(findingStatus.reviewId, findingValidationEvidenceBundles.reviewId),
+            ),
+          )
+          .innerJoin(reviews, eq(reviews.reviewId, findingValidationEvidenceBundles.reviewId))
+          .where(
+            and(
+              eq(findingValidationEvidenceBundles.findingId, findingId),
+              visibilityCondition,
+              eq(findingStatus.status, "closed"),
+              isNotNull(findingStatus.closureDetectedAt),
+              isNull(findingStatus.retractedAt),
+            ),
+          )
+          .orderBy(
+            desc(findingValidationEvidenceBundles.reviewAttempt),
+            desc(findingValidationEvidenceBundles.updatedAt),
+          )
+          .limit(1));
 
     return rows[0] ?? null;
   },

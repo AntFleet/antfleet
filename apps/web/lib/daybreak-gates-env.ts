@@ -33,6 +33,16 @@ export function isEvidenceBundleEnabled(): boolean {
   return readBoolEnv("ANTFLEET_EVIDENCE_BUNDLE");
 }
 
+export function isDisclosureGateEnabled(): boolean {
+  return (
+    readBoolEnv("ANTFLEET_DISCLOSURE_GATE") && readBoolEnv("ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE")
+  );
+}
+
+export function isDisclosureSideTableEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE");
+}
+
 // Forward-compatible per-install resolvers. Until installations gains the
 // nullable boolean columns (planned in a follow-up to 0041) these just
 // return the env value. Once the columns exist, the inner lookup can
@@ -75,4 +85,13 @@ export async function isEvidenceBundleEnabledForInstall(
   void _installationId;
   void _repo;
   return isEvidenceBundleEnabled();
+}
+
+export async function isDisclosureGateEnabledForInstall(
+  _installationId: number | null,
+  _repo: string,
+): Promise<boolean> {
+  void _installationId;
+  void _repo;
+  return isDisclosureGateEnabled();
 }

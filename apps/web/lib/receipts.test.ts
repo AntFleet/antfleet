@@ -15,6 +15,7 @@ const SAMPLE: PublicReceiptRow = {
   prNumber: 14,
   closureSha: "1ee2fd9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e",
   closureCommentUrl: "https://github.com/example/repo/issues/14#issuecomment-1234",
+  ghsaHtmlUrl: null,
   closedAt: new Date("2026-05-17T08:00:00.000Z"), // 4 hours before BASE_NOW
 };
 

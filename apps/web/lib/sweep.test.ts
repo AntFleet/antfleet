@@ -10,6 +10,7 @@ function freshFinding(id: string, index: number, daysOld = 1) {
     findingId: id,
     findingIndex: index,
     prCommentId: 9001,
+    publicReceiptEligible: true,
     createdAt: new Date(NOW.getTime() - daysOld * 24 * 60 * 60 * 1000),
     lastPolledAt: null,
   };

@@ -90,6 +90,7 @@ function mockDbReturns(rows: unknown[]) {
     select: vi.fn().mockReturnThis(),
     from: vi.fn().mockReturnThis(),
     innerJoin: vi.fn().mockReturnThis(),
+    leftJoin: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     limit: vi.fn().mockResolvedValue(rows),
   };
@@ -180,5 +181,30 @@ describe("loadAnatomyBundle", () => {
     const result = await loadAnatomyBundle("abcd1234-0");
     expect(result!.retractedAt).toEqual(new Date("2026-05-30"));
     expect(result!.retractionReason).toBe("Both models misread a hardened pattern as unsafe.");
+  });
+
+  it("suppresses provider reasoning when a public finding shares a review with private disclosure", async () => {
+    const oldDisclosureFlag = process.env["ANTFLEET_DISCLOSURE_GATE"];
+    const oldBackfillFlag = process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "true";
+    process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = "true";
+    mockDbReturns([makeRow({ reviewHasPrivateDisclosure: true })]);
+
+    try {
+      const result = await loadAnatomyBundle("abcd1234-0");
+
+      expect(result).not.toBeNull();
+      expect(result!.reasoning.anthropic).toBeNull();
+      expect(result!.reasoning.openai).toBeNull();
+      expect(result!.source.file).toBe("src/handler.ts");
+    } finally {
+      if (oldDisclosureFlag === undefined) delete process.env["ANTFLEET_DISCLOSURE_GATE"];
+      else process.env["ANTFLEET_DISCLOSURE_GATE"] = oldDisclosureFlag;
+      if (oldBackfillFlag === undefined) {
+        delete process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+      } else {
+        process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = oldBackfillFlag;
+      }
+    }
   });
 });

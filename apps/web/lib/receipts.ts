@@ -1,7 +1,14 @@
 import { and, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import type { PublicReceiptDetailRow, PublicReceiptRow } from "@/db/queries";
-import { findingStatus, outgoingPrs, reviews, type OutgoingPr } from "@/db/schema";
+import {
+  findingDisclosure,
+  findingStatus,
+  outgoingPrs,
+  reviews,
+  type OutgoingPr,
+} from "@/db/schema";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { shortenRepoHash, shortenReviewId, shortenSha } from "./short-id";
 
 // Pure view-model for the public /receipts page. Lives apart from the DB
@@ -39,7 +46,7 @@ export function toDisplayReceipt(row: PublicReceiptRow, now: Date): DisplayRecei
     shaLabel: row.closureSha === null ? null : shortenSha(row.closureSha),
     relativeClosedAt: row.closedAt === null ? null : formatRelativeTime(now, row.closedAt),
     closedAtIso: row.closedAt === null ? null : row.closedAt.toISOString(),
-    receiptUrl: row.closureCommentUrl,
+    receiptUrl: row.closureCommentUrl ?? row.ghsaHtmlUrl,
   };
 }
 
@@ -160,16 +167,54 @@ export function mapReceiptEligibleRows(rows: readonly OutgoingPr[]): {
 // through: they are upstream PRs AntFleet itself opened, never private.
 // Same privacy contract as /receipts in the "known public" case, more
 // permissive than loadPublicReceiptsPage for the "unknown source" case.
-const publicReceiptGate = sql`NOT EXISTS (
+const legacyPublicReceiptGate = sql`NOT EXISTS (
   SELECT 1 FROM ${findingStatus}
   INNER JOIN ${reviews} ON ${reviews.reviewId} = ${findingStatus.reviewId}
   WHERE ${findingStatus.findingId} = ${outgoingPrs.sourceFindingId}
-    AND (${reviews.publicReceipt} = false OR ${findingStatus.retractedAt} IS NOT NULL)
+    AND (
+      ${findingStatus.retractedAt} IS NOT NULL
+      OR ${reviews.publicReceipt} = false
+    )
 )`;
+
+const disclosurePublicReceiptGate = sql`NOT EXISTS (
+  SELECT 1 FROM ${findingStatus}
+  INNER JOIN ${reviews} ON ${reviews.reviewId} = ${findingStatus.reviewId}
+  LEFT JOIN ${findingDisclosure} ON ${findingDisclosure.findingId} = ${findingStatus.findingId}
+  WHERE ${findingStatus.findingId} = ${outgoingPrs.sourceFindingId}
+    AND (
+      ${findingStatus.retractedAt} IS NOT NULL
+      OR ${findingDisclosure.findingId} IS NULL
+      OR NOT (
+        (
+          ${findingDisclosure.state} = 'published'
+          AND (
+            (
+              ${findingDisclosure.ghsaId} IS NULL
+              AND ${findingStatus.closureCommentUrl} IS NOT NULL
+            )
+            OR (
+              ${findingDisclosure.ghsaId} IS NOT NULL
+              AND ${findingDisclosure.ghsaPublishedAt} IS NOT NULL
+              AND ${findingDisclosure.ghsaHtmlUrl} IS NOT NULL
+            )
+          )
+        )
+        OR (
+          ${findingDisclosure.state} = 'none'
+          AND ${reviews.publicReceipt} = true
+        )
+      )
+    )
+)`;
+
+function publicReceiptGate() {
+  return isDisclosureGateEnabled() ? disclosurePublicReceiptGate : legacyPublicReceiptGate;
+}
 
 export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoReceiptsPage> {
   const receiptStatuses = ["merged", "closed_absorbed"];
-  const baseFilter = and(inArray(outgoingPrs.status, receiptStatuses), publicReceiptGate);
+  const baseFilter = and(inArray(outgoingPrs.status, receiptStatuses), publicReceiptGate());
   const rows = (await db
     .select()
     .from(outgoingPrs)
@@ -204,7 +249,7 @@ export async function loadCrossRepoReceiptsBetween(
     inArray(outgoingPrs.status, receiptStatuses),
     sql`${resolvedAt} >= ${since}`,
     sql`${resolvedAt} < ${until}`,
-    publicReceiptGate,
+    publicReceiptGate(),
   );
 
   const rows = (await db

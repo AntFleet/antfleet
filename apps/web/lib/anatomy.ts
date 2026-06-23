@@ -1,6 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/index";
-import { findingStatus, reviews } from "@/db/schema";
+import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { evidenceOverlaps } from "@/lib/disagreements";
 
 export type ProviderReasoning = {
@@ -46,33 +48,76 @@ export type AnatomyBundle = {
 };
 
 export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundle | null> {
-  const rows = await db
-    .select({
-      findingId: findingStatus.findingId,
-      findingIndex: findingStatus.findingIndex,
-      severity: findingStatus.severity,
-      category: findingStatus.category,
-      title: findingStatus.title,
-      status: findingStatus.status,
-      closureSha: findingStatus.closureSha,
-      closureCommentUrl: findingStatus.closureCommentUrl,
-      closedAt: findingStatus.closureDetectedAt,
-      createdAt: findingStatus.createdAt,
-      retractedAt: findingStatus.retractedAt,
-      retractionReason: findingStatus.retractionReason,
-      repoHash: reviews.repoHash,
-      prNumber: reviews.prNumber,
-      commitSha: reviews.commitSha,
-      owner: reviews.owner,
-      repo: reviews.repo,
-      installationId: reviews.installationId,
-      providerResponses: reviews.providerResponses,
-      agreementDecision: reviews.agreementDecision,
-    })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(and(eq(findingStatus.findingId, findingId), eq(reviews.publicReceipt, true)))
-    .limit(1);
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const visibilityCondition = disclosureGateEnabled
+    ? derivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const selectColumns = {
+    findingId: findingStatus.findingId,
+    findingIndex: findingStatus.findingIndex,
+    severity: findingStatus.severity,
+    category: findingStatus.category,
+    title: findingStatus.title,
+    status: findingStatus.status,
+    closureSha: findingStatus.closureSha,
+    closureCommentUrl: findingStatus.closureCommentUrl,
+    closedAt: findingStatus.closureDetectedAt,
+    createdAt: findingStatus.createdAt,
+    retractedAt: findingStatus.retractedAt,
+    retractionReason: findingStatus.retractionReason,
+    repoHash: reviews.repoHash,
+    prNumber: reviews.prNumber,
+    commitSha: reviews.commitSha,
+    owner: reviews.owner,
+    repo: reviews.repo,
+    installationId: reviews.installationId,
+    providerResponses: reviews.providerResponses,
+    agreementDecision: reviews.agreementDecision,
+    reviewHasPrivateDisclosure: sql<boolean>`EXISTS (
+      SELECT 1
+      FROM ${findingStatus} review_fs
+      LEFT JOIN ${findingDisclosure} review_fd
+        ON review_fd.finding_id = review_fs.finding_id
+      WHERE review_fs.review_id = ${reviews.reviewId}
+        AND (
+          review_fd.finding_id IS NULL
+          OR NOT (
+            (
+	              review_fd.state = 'published'
+	              AND (
+	                (
+	                  review_fd.ghsa_id IS NULL
+	                  AND review_fs.closure_comment_url IS NOT NULL
+	                )
+	                OR (
+	                  review_fd.ghsa_id IS NOT NULL
+	                  AND review_fd.ghsa_published_at IS NOT NULL
+	                  AND review_fd.ghsa_html_url IS NOT NULL
+	                )
+	              )
+            )
+            OR (
+              review_fd.state = 'none'
+              AND ${reviews.publicReceipt} = true
+            )
+          )
+        )
+    )`,
+  };
+  const rows = await (disclosureGateEnabled
+    ? db
+        .select(selectColumns)
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(and(eq(findingStatus.findingId, findingId), visibilityCondition))
+        .limit(1)
+    : db
+        .select(selectColumns)
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .where(and(eq(findingStatus.findingId, findingId), visibilityCondition))
+        .limit(1));
 
   const row = rows[0];
   if (row === undefined) return null;
@@ -80,6 +125,8 @@ export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundl
   const agreed = extractAgreedFinding(row.agreementDecision, row.findingIndex);
   const evidence = agreed?.evidence ?? [];
   const firstEvidence = evidence[0];
+  const canRenderProviderReasoning =
+    !disclosureGateEnabled || row.reviewHasPrivateDisclosure !== true;
 
   return {
     findingId: row.findingId,
@@ -96,8 +143,12 @@ export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundl
     retractedAt: row.retractedAt,
     retractionReason: row.retractionReason,
     reasoning: {
-      anthropic: extractProviderReasoning(row.providerResponses, "anthropic", evidence),
-      openai: extractProviderReasoning(row.providerResponses, "openai", evidence),
+      anthropic: canRenderProviderReasoning
+        ? extractProviderReasoning(row.providerResponses, "anthropic", evidence)
+        : null,
+      openai: canRenderProviderReasoning
+        ? extractProviderReasoning(row.providerResponses, "openai", evidence)
+        : null,
     },
     source: {
       owner: row.owner ?? "",
@@ -146,7 +197,7 @@ function extractProviderReasoning(
     for (const finding of findings) {
       if (!isRecord(finding)) continue;
       const evidence = parseEvidence(finding["evidence"]);
-      if (agreedEvidence.length === 0 || evidenceOverlaps(evidence, agreedEvidence)) {
+      if (agreedEvidence.length > 0 && evidenceOverlaps(evidence, agreedEvidence)) {
         return {
           provider: providerName,
           title: str(finding["title"]),

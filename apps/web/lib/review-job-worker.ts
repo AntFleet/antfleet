@@ -11,12 +11,17 @@ import {
   recordFindingEvidenceBundleSlot,
   recordGateOutcome,
   loadRepoThreatModel,
+  loadPrivateDisclosureFindingIndexes,
   updateReview,
   upsertRepoThreatModel,
 } from "@/db/queries";
+import { initializeDisclosureForFindings } from "@/lib/disclosure";
 import { applyReachabilityGate } from "@/lib/reachability-gate";
 import { getRepoThreatModelFilesWith, type RepoThreatModelSnapshot } from "@/lib/repo-threat-model";
 import {
+  isDisclosureGateEnabled,
+  isDisclosureGateEnabledForInstall,
+  isDisclosureSideTableEnabled,
   isEvidenceBundleEnabledForInstall,
   isReachabilityGateEnabledForInstall,
   isThreatModelEnabledForInstall,
@@ -337,7 +342,7 @@ async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
   }
 
   return {
-    ...payload,
+    ...(await redactReviewPayloadForPublicDisclosure(payload)),
     cached: !enqueued.isNew,
   };
 }
@@ -383,7 +388,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         failureModeTag: "internal",
       });
     }
-    return reviewResultPayload(cached, true);
+    return reviewResultPayload(await redactReviewPayloadForPublicDisclosure(cached), true);
   }
 
   const files = await getPublicChangedFiles({ owner, repo, prNumber, headSha: sha });
@@ -434,9 +439,12 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         applyReachabilityGate,
         recordGateOutcome,
         recordFindingEvidenceBundleSlot,
+        initializeDisclosureForFindings,
         isReachabilityGateEnabledForInstall,
         isThreatModelEnabledForInstall,
         isEvidenceBundleEnabledForInstall,
+        isDisclosureGateEnabledForInstall,
+        isDisclosureSideTableEnabled,
       },
     );
     if (outcome.kind === "completed" || outcome.kind === "skipped") {
@@ -451,7 +459,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
       failureModeTag: "internal",
     });
   }
-  return reviewResultPayload(payload, false);
+  return reviewResultPayload(await redactReviewPayloadForPublicDisclosure(payload), false);
 }
 
 async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverable> {
@@ -487,7 +495,10 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         failureModeTag: "internal",
       });
     }
-    return acpDeliverableFromReviewPayload(job, cached);
+    return acpDeliverableFromReviewPayload(
+      job,
+      await redactReviewPayloadForPublicDisclosure(cached),
+    );
   }
 
   const files = await getPublicChangedFiles({
@@ -544,9 +555,12 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         applyReachabilityGate,
         recordGateOutcome,
         recordFindingEvidenceBundleSlot,
+        initializeDisclosureForFindings,
         isReachabilityGateEnabledForInstall,
         isThreatModelEnabledForInstall,
         isEvidenceBundleEnabledForInstall,
+        isDisclosureGateEnabledForInstall,
+        isDisclosureSideTableEnabled,
       },
     );
     if (outcome.kind === "skipped") {
@@ -564,7 +578,10 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
       failureModeTag: "internal",
     });
   }
-  return acpDeliverableFromReviewPayload(job, payload);
+  return acpDeliverableFromReviewPayload(
+    job,
+    await redactReviewPayloadForPublicDisclosure(payload),
+  );
 }
 
 async function getPublicRepoThreatModelSnapshot(args: {
@@ -718,11 +735,13 @@ function acpDeliverableFromReviewPayload(
       mapFindingToAcpFinding({
         reviewId: payload.reviewId,
         index,
+        findingId: payload.findingIds[index] ?? null,
         finding,
         receiptUrl: null,
       }),
     ),
     reviewReceiptUrl,
+    receiptPending: agreement.withheldFindings > 0,
     includeTradingDisclaimer: shouldIncludeAcpTradingDisclaimer(job),
   });
 }
@@ -731,19 +750,109 @@ function readAgreementDecision(value: unknown): {
   mode: string | null;
   agreed: Parameters<typeof mapFindingToAcpFinding>[0]["finding"][];
   degraded: boolean;
+  withheldFindings: number;
 } {
   if (typeof value !== "object" || value === null) {
-    return { mode: null, agreed: [], degraded: false };
+    return { mode: null, agreed: [], degraded: false, withheldFindings: 0 };
   }
   const record = value as Record<string, unknown>;
   const agreed = Array.isArray(record["agreed"])
     ? (record["agreed"] as Parameters<typeof mapFindingToAcpFinding>[0]["finding"][])
     : [];
+  const disclosure =
+    typeof record["disclosure"] === "object" && record["disclosure"] !== null
+      ? (record["disclosure"] as Record<string, unknown>)
+      : {};
+  const withheldFindings =
+    typeof disclosure["withheldFindings"] === "number" &&
+    Number.isInteger(disclosure["withheldFindings"])
+      ? disclosure["withheldFindings"]
+      : 0;
   return {
     mode: typeof record["mode"] === "string" ? record["mode"] : null,
     agreed,
     degraded: record["degraded"] === true,
+    withheldFindings,
   };
+}
+
+async function redactReviewPayloadForPublicDisclosure(
+  payload: ReviewResponsePayload,
+): Promise<ReviewResponsePayload> {
+  if (!isDisclosureGateEnabled()) return payload;
+  const privateIndexes = await loadPrivateDisclosureFindingIndexes(payload.reviewId);
+  if (privateIndexes.length === 0) return payload;
+  const privateIndexSet = new Set(privateIndexes);
+  return {
+    ...payload,
+    agreementDecision: redactAgreementDecision(payload.agreementDecision, privateIndexSet),
+    findingIds: payload.findingIds.filter((_findingId, index) => !privateIndexSet.has(index)),
+  };
+}
+
+function redactAgreementDecision(value: unknown, privateIndexes: ReadonlySet<number>): unknown {
+  if (typeof value !== "object" || value === null || privateIndexes.size === 0) return value;
+  const record = value as Record<string, unknown>;
+  const agreed = Array.isArray(record["agreed"]) ? record["agreed"] : [];
+  const publicIndexMap = new Map<number, number>();
+  const publicAgreed = agreed.filter((_finding, index) => {
+    if (privateIndexes.has(index)) return false;
+    publicIndexMap.set(index, publicIndexMap.size);
+    return true;
+  });
+  const reachabilityGate = redactReachabilityGate(
+    record["reachabilityGate"],
+    privateIndexes,
+    publicIndexMap,
+  );
+  return {
+    mode: record["mode"],
+    agreed: publicAgreed,
+    degraded: record["degraded"] === true,
+    ...(typeof record["degradedReason"] === "string" || record["degradedReason"] === null
+      ? { degradedReason: record["degradedReason"] }
+      : {}),
+    ...(record["triage"] !== undefined ? { triage: record["triage"] } : {}),
+    ...(reachabilityGate !== undefined ? { reachabilityGate } : {}),
+    disclosure: {
+      ...(typeof record["disclosure"] === "object" && record["disclosure"] !== null
+        ? (record["disclosure"] as Record<string, unknown>)
+        : {}),
+      withheldFindings: privateIndexes.size,
+      reason: "private coordinated disclosure",
+    },
+  };
+}
+
+function redactReachabilityGate(
+  value: unknown,
+  privateIndexes: ReadonlySet<number>,
+  publicIndexMap: ReadonlyMap<number, number>,
+): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const downgrades = Array.isArray(record["downgrades"]) ? record["downgrades"] : [];
+  const publicDowngrades = downgrades.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const downgrade = entry as Record<string, unknown>;
+    const index = downgrade["index"];
+    if (typeof index !== "number" || !Number.isInteger(index) || privateIndexes.has(index)) {
+      return [];
+    }
+    const remappedIndex = publicIndexMap.get(index);
+    if (remappedIndex === undefined) return [];
+    return [
+      {
+        index: remappedIndex,
+        reason: typeof downgrade["reason"] === "string" ? downgrade["reason"] : "redacted",
+        ...(typeof downgrade["originalSeverity"] === "string"
+          ? { originalSeverity: downgrade["originalSeverity"] }
+          : {}),
+      },
+    ];
+  });
+  if (publicDowngrades.length === 0) return undefined;
+  return { downgrades: publicDowngrades };
 }
 
 function readModelIds(value: unknown): Record<string, string> {

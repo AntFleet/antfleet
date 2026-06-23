@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { TweetIntent } from "@/components/TweetIntent";
 import { db } from "@/db/index";
-import { findingStatus, reviews } from "@/db/schema";
+import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import {
   loadDisagreementDetail,
   redactSecrets,
@@ -17,17 +19,30 @@ import { shortenRepoHash } from "@/lib/short-id";
 type RelatedFinding = { findingId: string; title: string; severity: string; category: string };
 
 async function loadRelatedFindings(reviewId: string): Promise<RelatedFinding[]> {
-  const rows = await db
-    .select({
-      findingId: findingStatus.findingId,
-      title: findingStatus.title,
-      severity: findingStatus.severity,
-      category: findingStatus.category,
-    })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(and(eq(reviews.reviewId, reviewId), eq(reviews.publicReceipt, true)))
-    .limit(10);
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const visibilityCondition = disclosureGateEnabled
+    ? derivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const selectColumns = {
+    findingId: findingStatus.findingId,
+    title: findingStatus.title,
+    severity: findingStatus.severity,
+    category: findingStatus.category,
+  };
+  const rows = await (disclosureGateEnabled
+    ? db
+        .select(selectColumns)
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(and(eq(reviews.reviewId, reviewId), visibilityCondition))
+        .limit(10)
+    : db
+        .select(selectColumns)
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .where(and(eq(reviews.reviewId, reviewId), visibilityCondition))
+        .limit(10));
   return rows;
 }
 

@@ -267,6 +267,7 @@ export function validateTradingAcknowledgment(args: {
 export function mapFindingToAcpFinding(args: {
   reviewId: string;
   index: number;
+  findingId?: string | null;
   finding: Finding;
   status?: AcpReviewFinding["status"];
   receiptUrl?: string | null;
@@ -274,7 +275,7 @@ export function mapFindingToAcpFinding(args: {
   const { label: _internalLabel, ...finding } = args.finding;
   return {
     ...finding,
-    finding_id: `${args.reviewId}-${args.index}`,
+    finding_id: args.findingId ?? `${args.reviewId}-${args.index}`,
     status: args.status ?? "open",
     receipt_url: args.receiptUrl ?? null,
   };

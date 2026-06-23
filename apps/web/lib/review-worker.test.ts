@@ -140,10 +140,15 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     loadRepoThreatModel: vi.fn().mockResolvedValue(null),
     upsertRepoThreatModel: vi.fn().mockResolvedValue(undefined),
     recordFindingEvidenceBundleSlot: vi.fn().mockResolvedValue(undefined),
+    initializeDisclosureForFindings: vi
+      .fn()
+      .mockResolvedValue({ embargoedFindingIds: [], embargoedFindingIndexes: [] }),
+    isDisclosureSideTableEnabled: vi.fn().mockReturnValue(false),
     isReachabilityGateEnabledForInstall: vi.fn().mockResolvedValue(false),
     isPatchVerifyEnabledForInstall: vi.fn().mockResolvedValue(false),
     isThreatModelEnabledForInstall: vi.fn().mockResolvedValue(false),
     isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(false),
+    isDisclosureGateEnabledForInstall: vi.fn().mockResolvedValue(false),
     now: () => NOW,
     ...overrides,
   };
@@ -174,6 +179,76 @@ describe("runReviewWorker", () => {
     expect(deps.markReviewSucceeded).toHaveBeenCalledWith({ reviewId: "rev-1", now: NOW });
     expect(deps.markReviewFailedForRetry).not.toHaveBeenCalled();
     expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when disclosure initialization fails", async () => {
+    const deps = mkDeps({
+      isDisclosureGateEnabledForInstall: vi.fn().mockResolvedValue(true),
+      initializeDisclosureForFindings: vi.fn().mockRejectedValue(new Error("disclosure db down")),
+    });
+
+    const outcome = await runReviewWorker("rev-1", "webhook", deps);
+
+    expect(outcome).toMatchObject({
+      kind: "retried",
+      reviewId: "rev-1",
+      error: "disclosure db down",
+    });
+    expect(deps.postPRComment).not.toHaveBeenCalled();
+    expect(deps.markReviewSucceeded).not.toHaveBeenCalled();
+    expect(deps.markReviewFailedForRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewId: "rev-1",
+        error: "disclosure db down",
+      }),
+    );
+  });
+
+  it("withholds embargoed findings from public install comments before GHSA publication", async () => {
+    const calls: string[] = [];
+    const deps = mkDeps({
+      isDisclosureGateEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(true),
+      initializeDisclosureForFindings: vi.fn().mockImplementation(async () => {
+        calls.push("initialize");
+        return { embargoedFindingIds: ["rev-1-0"], embargoedFindingIndexes: [0] };
+      }),
+      recordFindingEvidenceBundleSlot: vi.fn().mockImplementation(async () => {
+        calls.push("evidence");
+      }),
+    });
+
+    const outcome = await runReviewWorker("rev-1", "webhook", deps);
+
+    expect(outcome.kind).toBe("done");
+    expect(deps.postPRComment).not.toHaveBeenCalled();
+    expect(deps.runPatchAgent).not.toHaveBeenCalled();
+    expect(calls).toEqual(["evidence", "initialize"]);
+  });
+
+  it("redacts only embargoed findings when a review has mixed disclosure states", async () => {
+    const privateFinding = mkFinding({
+      title: "Private live-protocol drain",
+      severity: "critical",
+    });
+    const publicFinding = mkFinding({ title: "Public low severity cleanup", severity: "low" });
+    const deps = mkDeps({
+      reviewPR: vi.fn().mockResolvedValue(mkBundle({ agreed: [privateFinding, publicFinding] })),
+      recordFindingStatuses: vi.fn().mockResolvedValue(["rev-1-0", "rev-1-1"]),
+      isDisclosureGateEnabledForInstall: vi.fn().mockResolvedValue(true),
+      initializeDisclosureForFindings: vi.fn().mockResolvedValue({
+        embargoedFindingIds: ["rev-1-0"],
+        embargoedFindingIndexes: [0],
+      }),
+    });
+
+    await runReviewWorker("rev-1", "webhook", deps);
+
+    expect(deps.postPRComment).toHaveBeenCalledTimes(1);
+    const body = (deps.postPRComment as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].body;
+    expect(body).toContain("Public low severity cleanup");
+    expect(body).not.toContain("Private live-protocol drain");
+    expect(deps.runPatchAgent).not.toHaveBeenCalled();
   });
 
   it("generates a repo threat model when the threat-model flag is enabled", async () => {

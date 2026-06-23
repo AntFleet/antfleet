@@ -1,7 +1,9 @@
 import { cache } from "react";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db/index";
-import { findingStatus, outgoingPrs, reviews } from "@/db/schema";
+import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import { findingDisclosure, findingStatus, outgoingPrs, reviews } from "@/db/schema";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 
 // Patches-landed + median-time-to-fix headline KPIs. Used by /receipts and /
 // hero strips. Two paths union into a per-finding map keyed by findingId:
@@ -28,22 +30,44 @@ export type PatchKpis = {
 };
 
 export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
-  const inRepoRows = await db
-    .select({
-      findingId: findingStatus.findingId,
-      repoHash: reviews.repoHash,
-      postedAt: findingStatus.createdAt,
-      resolvedAt: findingStatus.patchAcceptedAt,
-    })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
-    .where(
-      and(
-        eq(reviews.publicReceipt, true),
-        sql`${findingStatus.retractedAt} IS NULL`,
-        isNotNull(findingStatus.patchAcceptedAt),
-      ),
-    );
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const findingVisibilityGate = disclosureGateEnabled
+    ? derivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const inRepoRows = await (disclosureGateEnabled
+    ? db
+        .select({
+          findingId: findingStatus.findingId,
+          repoHash: reviews.repoHash,
+          postedAt: findingStatus.createdAt,
+          resolvedAt: findingStatus.patchAcceptedAt,
+        })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(
+          and(
+            findingVisibilityGate,
+            sql`${findingStatus.retractedAt} IS NULL`,
+            isNotNull(findingStatus.patchAcceptedAt),
+          ),
+        )
+    : db
+        .select({
+          findingId: findingStatus.findingId,
+          repoHash: reviews.repoHash,
+          postedAt: findingStatus.createdAt,
+          resolvedAt: findingStatus.patchAcceptedAt,
+        })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
+        .where(
+          and(
+            findingVisibilityGate,
+            sql`${findingStatus.retractedAt} IS NULL`,
+            isNotNull(findingStatus.patchAcceptedAt),
+          ),
+        ));
 
   // LEFT JOIN so orphan outgoing_prs (no matching finding_status row) survive
   // the join; filter hides them only if the matched source review is
@@ -53,29 +77,79 @@ export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
   // and /impact both render both, so the headline KPI must too. resolvedAt
   // coalesces merged_at and closure_detected_at; mapReceiptEligibleRows
   // uses the same priority.
-  const crossRepoRows = (await db
-    .select({
-      findingId: outgoingPrs.sourceFindingId,
-      upstreamOwner: outgoingPrs.upstreamOwner,
-      upstreamRepo: outgoingPrs.upstreamRepo,
-      postedAt: findingStatus.createdAt,
-      resolvedAt: sql<Date | string | null>`
-        COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt})
-      `.as("resolved_at"),
-    })
-    .from(outgoingPrs)
-    .leftJoin(findingStatus, eq(findingStatus.findingId, outgoingPrs.sourceFindingId))
-    .leftJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
-    .where(
-      and(
-        inArray(outgoingPrs.status, ["merged", "closed_absorbed"]),
-        sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) IS NOT NULL`,
-        sql`(
-          ${findingStatus.findingId} IS NULL
-          OR (${reviews.publicReceipt} = true AND ${findingStatus.retractedAt} IS NULL)
-        )`,
-      ),
-    )) as Array<{
+  const crossRepoRows = (await (disclosureGateEnabled
+    ? db
+        .select({
+          findingId: outgoingPrs.sourceFindingId,
+          upstreamOwner: outgoingPrs.upstreamOwner,
+          upstreamRepo: outgoingPrs.upstreamRepo,
+          postedAt: findingStatus.createdAt,
+          resolvedAt: sql<Date | string | null>`
+            COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt})
+          `.as("resolved_at"),
+        })
+        .from(outgoingPrs)
+        .leftJoin(findingStatus, eq(findingStatus.findingId, outgoingPrs.sourceFindingId))
+        .leftJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(
+          and(
+            inArray(outgoingPrs.status, ["merged", "closed_absorbed"]),
+            sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) IS NOT NULL`,
+            sql`(
+              ${findingStatus.findingId} IS NULL
+              OR (
+                ${findingStatus.retractedAt} IS NULL
+                AND (
+	                  (
+	                    ${findingDisclosure.state} = 'published'
+	                    AND (
+	                      (
+	                        ${findingDisclosure.ghsaId} IS NULL
+	                        AND ${findingStatus.closureCommentUrl} IS NOT NULL
+	                      )
+	                      OR (
+	                        ${findingDisclosure.ghsaId} IS NOT NULL
+	                        AND ${findingDisclosure.ghsaPublishedAt} IS NOT NULL
+	                        AND ${findingDisclosure.ghsaHtmlUrl} IS NOT NULL
+	                      )
+	                    )
+	                  )
+                  OR (
+                    ${findingDisclosure.state} = 'none'
+                    AND ${reviews.publicReceipt} = true
+                  )
+                )
+              )
+            )`,
+          ),
+        )
+    : db
+        .select({
+          findingId: outgoingPrs.sourceFindingId,
+          upstreamOwner: outgoingPrs.upstreamOwner,
+          upstreamRepo: outgoingPrs.upstreamRepo,
+          postedAt: findingStatus.createdAt,
+          resolvedAt: sql<Date | string | null>`
+            COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt})
+          `.as("resolved_at"),
+        })
+        .from(outgoingPrs)
+        .leftJoin(findingStatus, eq(findingStatus.findingId, outgoingPrs.sourceFindingId))
+        .leftJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
+        .where(
+          and(
+            inArray(outgoingPrs.status, ["merged", "closed_absorbed"]),
+            sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) IS NOT NULL`,
+            sql`(
+              ${findingStatus.findingId} IS NULL
+              OR (
+                ${findingStatus.retractedAt} IS NULL
+                AND ${reviews.publicReceipt} = true
+              )
+            )`,
+          ),
+        ))) as Array<{
     findingId: string;
     upstreamOwner: string;
     upstreamRepo: string;

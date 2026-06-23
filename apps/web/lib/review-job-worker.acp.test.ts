@@ -21,6 +21,7 @@ const queryMocks = vi.hoisted(() => ({
 const dbQueryMocks = vi.hoisted(() => ({
   enqueueReview: vi.fn(),
   hashRepo: vi.fn(),
+  loadPrivateDisclosureFindingIndexes: vi.fn(),
   loadRepoThreatModel: vi.fn(),
   markReviewSucceeded: vi.fn(),
   recordFindingStatuses: vi.fn(),
@@ -96,6 +97,11 @@ vi.mock("@/lib/github-files-public", () => ({
   }),
 }));
 vi.mock("@/lib/review-pipeline", () => reviewPipelineMocks);
+vi.mock("@/lib/disclosure", () => ({
+  initializeDisclosureForFindings: vi
+    .fn()
+    .mockResolvedValue({ embargoedFindingIds: [], embargoedFindingIndexes: [] }),
+}));
 vi.mock("@/lib/paywall/env", () => ({
   getReviewPriceUsdc: () => "1.00",
   // T2.3 shared kernel reads the price lazily via a thunk threaded through
@@ -140,6 +146,28 @@ vi.mock("@octokit/rest", () => ({
     paginate = octokitMocks.paginate;
   },
 }));
+
+// Minimum-viable Finding shape that satisfies acpReviewFindingSchema after
+// mapFindingToAcpFinding runs. The redaction tests need this because the
+// public finding survives into buildAcpReviewDeliverable's schema parse.
+function completeAcpFinding(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    title: "Stub finding",
+    category: "bug",
+    severity: "medium",
+    confidence: "medium",
+    evidence: [{ path: "src/x.ts", startLine: 1, endLine: 1, symbol: null, quote: null }],
+    reasoning: "stub",
+    reproduction: null,
+    recommendation: "stub",
+    whyTestsDoNotAlreadyCoverThis: "stub",
+    suggestedRegressionTest: null,
+    minimumFixScope: "stub",
+    requiresPolicyReview: false,
+    upstreamOrigin: null,
+    ...overrides,
+  };
+}
 
 const acpJob = {
   jobId: "af-acp-job",
@@ -189,6 +217,7 @@ describe("processReviewJob ACP rail", () => {
     repoVisibilityMocks.isPublicRepo.mockResolvedValue(true);
     dbQueryMocks.hashRepo.mockReturnValue("repo-hash");
     dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: false });
+    dbQueryMocks.loadPrivateDisclosureFindingIndexes.mockResolvedValue([]);
     dbQueryMocks.loadRepoThreatModel.mockResolvedValue(null);
     dbQueryMocks.upsertRepoThreatModel.mockResolvedValue(undefined);
     dbQueryMocks.markReviewSucceeded.mockResolvedValue(undefined);
@@ -268,6 +297,112 @@ describe("processReviewJob ACP rail", () => {
       expect.objectContaining({ status: "complete_no_findings" }),
       expect.any(Date),
     );
+  });
+
+  it("preserves original finding ids after ACP disclosure redaction", async () => {
+    const oldDisclosureFlag = process.env["ANTFLEET_DISCLOSURE_GATE"];
+    const oldBackfillFlag = process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "true";
+    process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = "true";
+    dbQueryMocks.loadPrivateDisclosureFindingIndexes.mockResolvedValue([0]);
+    paywallQueryMocks.loadReviewForResponse.mockResolvedValue({
+      reviewId: "review-1",
+      owner: "antfleet",
+      repo: "acp-fixture",
+      prNumber: 7,
+      commitSha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+      providerModelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
+      agreementDecision: {
+        mode: "unanimous",
+        agreed: [
+          completeAcpFinding({ title: "Private live-protocol drain", severity: "critical" }),
+          completeAcpFinding({ title: "Public cleanup", severity: "low" }),
+        ],
+        degraded: false,
+      },
+      publicReceipt: true,
+      isBenchmark: false,
+      prCommentUrl: null,
+      processingStatus: "done",
+      processingError: null,
+      timingMs: 1234,
+      costEstimatedUsd: "0.12",
+      findingIds: ["review-1-0", "review-1-1"],
+    });
+
+    try {
+      const { processReviewJob } = await import("./review-job-worker");
+      await processReviewJob("af-acp-job");
+
+      const deliverable = acpCliMocks.submitAcpDeliverable.mock.calls[0]?.[0].deliverable as {
+        findings: Array<{ finding_id: string; title: string }>;
+      };
+      expect(deliverable.findings).toEqual([
+        expect.objectContaining({ finding_id: "review-1-1", title: "Public cleanup" }),
+      ]);
+    } finally {
+      if (oldDisclosureFlag === undefined) delete process.env["ANTFLEET_DISCLOSURE_GATE"];
+      else process.env["ANTFLEET_DISCLOSURE_GATE"] = oldDisclosureFlag;
+      if (oldBackfillFlag === undefined) {
+        delete process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+      } else {
+        process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = oldBackfillFlag;
+      }
+    }
+  });
+
+  it("marks ACP deliverables receipt_pending when all findings are withheld", async () => {
+    const oldDisclosureFlag = process.env["ANTFLEET_DISCLOSURE_GATE"];
+    const oldBackfillFlag = process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "true";
+    process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = "true";
+    dbQueryMocks.loadPrivateDisclosureFindingIndexes.mockResolvedValue([0, 1]);
+    paywallQueryMocks.loadReviewForResponse.mockResolvedValue({
+      reviewId: "review-1",
+      owner: "antfleet",
+      repo: "acp-fixture",
+      prNumber: 7,
+      commitSha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+      providerModelIds: { anthropic: "claude-opus-4-7", openai: "gpt-5.5" },
+      agreementDecision: {
+        mode: "unanimous",
+        agreed: [
+          { title: "Private live-protocol drain", severity: "critical" },
+          { title: "Private consensus issue", severity: "high" },
+        ],
+        degraded: false,
+      },
+      publicReceipt: true,
+      isBenchmark: false,
+      prCommentUrl: null,
+      processingStatus: "done",
+      processingError: null,
+      timingMs: 1234,
+      costEstimatedUsd: "0.12",
+      findingIds: ["review-1-0", "review-1-1"],
+    });
+
+    try {
+      const { processReviewJob } = await import("./review-job-worker");
+      await processReviewJob("af-acp-job");
+
+      const deliverable = acpCliMocks.submitAcpDeliverable.mock.calls[0]?.[0].deliverable as {
+        status: string;
+        findings: Array<{ finding_id: string; title: string }>;
+        receipt: { receipt_note?: string };
+      };
+      expect(deliverable.status).toBe("receipt_pending");
+      expect(deliverable.findings).toEqual([]);
+      expect(deliverable.receipt.receipt_note).toContain("pending");
+    } finally {
+      if (oldDisclosureFlag === undefined) delete process.env["ANTFLEET_DISCLOSURE_GATE"];
+      else process.env["ANTFLEET_DISCLOSURE_GATE"] = oldDisclosureFlag;
+      if (oldBackfillFlag === undefined) {
+        delete process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+      } else {
+        process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = oldBackfillFlag;
+      }
+    }
   });
 
   it("submits ACP error payloads and preserves them on failed jobs", async () => {
