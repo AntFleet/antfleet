@@ -33,6 +33,7 @@ import {
   isEvidenceBundleEnabledForInstall as realIsEvidenceBundleEnabledForInstall,
   isReachabilityGateEnabledForInstall as realIsReachabilityGateEnabledForInstall,
   isPatchVerifyEnabledForInstall as realIsPatchVerifyEnabledForInstall,
+  isThreatModelEnabledForInstall as realIsThreatModelEnabledForInstall,
 } from "./daybreak-gates-env";
 import { alertCritical } from "./alert";
 import { logError, logInfo, messageOf } from "./log";
@@ -44,6 +45,7 @@ import {
 import {
   claimReviewForProcessing as realClaimReviewForProcessing,
   loadReviewQueueRow as realLoadReviewQueueRow,
+  loadRepoThreatModel as realLoadRepoThreatModel,
   makeFindingId,
   markReviewExhaustedIfStale as realMarkReviewExhaustedIfStale,
   markReviewFailedForRetry as realMarkReviewFailedForRetry,
@@ -56,11 +58,24 @@ import {
   recordPatchReviewComment as realRecordPatchReviewComment,
   setReviewComment as realSetReviewComment,
   setReviewPatchCost as realSetReviewPatchCost,
+  upsertRepoThreatModel as realUpsertRepoThreatModel,
   updateReview as realUpdateReview,
   type EvidenceBundleSlot,
   type ReviewProcessingStatus,
   type ReviewQueueRow,
 } from "@/db/queries";
+import {
+  generateRepoThreatModel,
+  getRepoThreatModelFilesWith,
+  parseRepoThreatModelDocument,
+  publicAccessForThreatModel,
+  repoThreatModelPersistence,
+  toReachabilityThreatModel,
+  updateRepoThreatModel,
+  type RepoThreatModelForReachability,
+  type RepoThreatModelSnapshot,
+  type ThreatModelPublicAccess,
+} from "./repo-threat-model";
 
 import { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS } from "./review-worker-config";
 // Re-exported so existing call sites (./review-retry.ts, tests) keep working
@@ -83,6 +98,7 @@ export type ClaimSource = "webhook" | "cron" | "api";
 export type WorkerDeps = {
   getInstallationToken: typeof realGetInstallationToken;
   getChangedFiles: typeof realGetChangedFiles;
+  getRepoThreatModelFiles: typeof realGetRepoThreatModelFiles;
   reviewPR: typeof realReviewPR;
   postPRComment: typeof realPostPRComment;
   runFirstReviewSummary: typeof realRunFirstReviewSummary;
@@ -110,9 +126,12 @@ export type WorkerDeps = {
   applyReachabilityGate: typeof realApplyReachabilityGate;
   applyPatchVerifier: typeof realApplyPatchVerifier;
   recordGateOutcome: typeof realRecordGateOutcome;
+  loadRepoThreatModel: typeof realLoadRepoThreatModel;
+  upsertRepoThreatModel: typeof realUpsertRepoThreatModel;
   recordFindingEvidenceBundleSlot: typeof realRecordFindingEvidenceBundleSlot;
   isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
   isPatchVerifyEnabledForInstall: typeof realIsPatchVerifyEnabledForInstall;
+  isThreatModelEnabledForInstall: typeof realIsThreatModelEnabledForInstall;
   isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
   now: () => Date;
 };
@@ -121,6 +140,7 @@ export function realWorkerDeps(): WorkerDeps {
   return {
     getInstallationToken: realGetInstallationToken,
     getChangedFiles: realGetChangedFiles,
+    getRepoThreatModelFiles: realGetRepoThreatModelFiles,
     reviewPR: realReviewPR,
     postPRComment: realPostPRComment,
     runFirstReviewSummary: realRunFirstReviewSummary,
@@ -144,9 +164,12 @@ export function realWorkerDeps(): WorkerDeps {
     applyReachabilityGate: realApplyReachabilityGate,
     applyPatchVerifier: realApplyPatchVerifier,
     recordGateOutcome: realRecordGateOutcome,
+    loadRepoThreatModel: realLoadRepoThreatModel,
+    upsertRepoThreatModel: realUpsertRepoThreatModel,
     recordFindingEvidenceBundleSlot: realRecordFindingEvidenceBundleSlot,
     isReachabilityGateEnabledForInstall: realIsReachabilityGateEnabledForInstall,
     isPatchVerifyEnabledForInstall: realIsPatchVerifyEnabledForInstall,
+    isThreatModelEnabledForInstall: realIsThreatModelEnabledForInstall,
     isEvidenceBundleEnabledForInstall: realIsEvidenceBundleEnabledForInstall,
     now: () => new Date(),
   };
@@ -382,6 +405,8 @@ export type ReviewKernelDeps = {
   reviewPR: typeof realReviewPR;
   updateReview: typeof realUpdateReview;
   recordFindingStatuses: typeof realRecordFindingStatuses;
+  loadRepoThreatModel: typeof realLoadRepoThreatModel;
+  upsertRepoThreatModel: typeof realUpsertRepoThreatModel;
   // Daybreak — reachability gate plumbing. The kernel-side hook runs on
   // every rail (install + paid + acp) because the gate question — "is this
   // bug reachable from a real entry point?" — is rail-agnostic. Disabled
@@ -392,6 +417,7 @@ export type ReviewKernelDeps = {
   // Resolver receives an installationId / repo so future per-install
   // overrides slot in without a churning signature.
   isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
+  isThreatModelEnabledForInstall: typeof realIsThreatModelEnabledForInstall;
   isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
 };
 
@@ -427,11 +453,14 @@ export type ReviewKernelInstallLane = {
 
 export type ReviewKernelArgs = {
   reviewId: string;
+  repoHash: string;
   owner: string;
   repo: string;
   prNumber: number;
   commitSha: string;
+  publicReceipt: boolean;
   files: Parameters<typeof realReviewPR>[0]["files"];
+  threatModelSnapshot?: RepoThreatModelSnapshot | null;
   // Forwarded into reviewPR — paid rails set this so the kernel respects
   // the rail's wall-clock budget.
   signal?: AbortSignal;
@@ -586,6 +615,127 @@ export async function runReviewKernel(
     });
   }
 
+  let threatModelForReachability: RepoThreatModelForReachability | null = null;
+  try {
+    const threatModelEnabled = await deps.isThreatModelEnabledForInstall(installationId, repo);
+    if (threatModelEnabled) {
+      const existing = await deps.loadRepoThreatModel(args.repoHash);
+      const existingDocument =
+        existing === null ? null : parseRepoThreatModelDocument(existing.model);
+      const publicAccess = publicAccessForThreatModel({
+        owner,
+        repo,
+        publicReceipt: args.publicReceipt,
+      });
+      let document = existingDocument;
+      let refreshCount = existing?.refreshCount ?? 1;
+      let shouldPersist = false;
+      let persistencePublicAccess = publicAccess;
+      let regeneratedFromSnapshot = false;
+
+      if (document === null) {
+        if (args.threatModelSnapshot === undefined || args.threatModelSnapshot === null) {
+          logInfo("repo_threat_model.generation_skipped", {
+            reviewId,
+            reason:
+              args.threatModelSnapshot === null
+                ? "repo_file_snapshot_failed"
+                : "repo_file_snapshot_unavailable",
+          });
+        } else {
+          document = generateRepoThreatModel({
+            owner,
+            repo,
+            repoHash: args.repoHash,
+            sha: commitSha,
+            files: args.threatModelSnapshot.files,
+          });
+          shouldPersist = true;
+          logInfo("repo_threat_model.generated", {
+            reviewId,
+            sourceFileCount: args.threatModelSnapshot.files.length,
+          });
+        }
+      } else if (
+        existing !== null &&
+        existing.publicAccess !== "public" &&
+        publicAccess === "public"
+      ) {
+        if (args.threatModelSnapshot === undefined || args.threatModelSnapshot === null) {
+          persistencePublicAccess = storedThreatModelPublicAccess(existing.publicAccess);
+          logInfo("repo_threat_model.publication_deferred", {
+            reviewId,
+            reason:
+              args.threatModelSnapshot === null
+                ? "repo_file_snapshot_failed"
+                : "repo_file_snapshot_unavailable",
+          });
+        } else {
+          document = generateRepoThreatModel({
+            owner,
+            repo,
+            repoHash: args.repoHash,
+            sha: commitSha,
+            files: args.threatModelSnapshot.files,
+          });
+          refreshCount += 1;
+          shouldPersist = true;
+          regeneratedFromSnapshot = true;
+          logInfo("repo_threat_model.regenerated_for_publication", {
+            reviewId,
+            sourceFileCount: args.threatModelSnapshot.files.length,
+          });
+        }
+      }
+
+      if (document !== null && existingDocument === null) {
+        shouldPersist = true;
+      }
+
+      if (document !== null && existing !== null) {
+        shouldPersist =
+          shouldPersist ||
+          existing.lastReviewedSha !== commitSha ||
+          existing.publicAccess !== persistencePublicAccess;
+      }
+
+      if (existingDocument !== null && !regeneratedFromSnapshot) {
+        const updated = updateRepoThreatModel({
+          existing: existingDocument,
+          sha: commitSha,
+          changedFiles: files,
+          repoPaths: args.threatModelSnapshot?.paths ?? null,
+        });
+        document = updated.document;
+        if (updated.changed) {
+          refreshCount += 1;
+          shouldPersist = true;
+          logInfo("repo_threat_model.refreshed", {
+            reviewId,
+            sections: updated.refreshedSections,
+          });
+        }
+      }
+
+      if (document !== null && shouldPersist) {
+        await deps.upsertRepoThreatModel(
+          repoThreatModelPersistence({
+            document,
+            sha: commitSha,
+            refreshCount,
+            publicAccess: persistencePublicAccess,
+          }),
+        );
+      }
+      threatModelForReachability = toReachabilityThreatModel(document);
+    }
+  } catch (err) {
+    logError("repo_threat_model.threw", {
+      reviewId,
+      message: messageOf(err),
+    });
+  }
+
   // Daybreak — reachability gate. Runs on EVERY rail (install + paid +
   // acp) — the question "is this bug reachable from a real entry point?"
   // is rail-agnostic. The resolver takes `installationId | null`; paid
@@ -650,6 +800,7 @@ export async function runReviewKernel(
           owner,
           repo,
           files,
+          threatModel: threatModelForReachability,
           signal: gateController.signal,
         });
         let capTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1310,14 +1461,44 @@ async function processClaimedRow(
     filenames: files.map((f) => f.filename),
   });
 
+  let threatModelSnapshot: RepoThreatModelSnapshot | null | undefined;
+  try {
+    const threatModelEnabled = await deps.isThreatModelEnabledForInstall(
+      row.installationId,
+      row.repo,
+    );
+    if (threatModelEnabled) {
+      threatModelSnapshot = await deps.getRepoThreatModelFiles({
+        installationToken,
+        owner: row.owner,
+        repo: row.repo,
+        sha: row.commitSha,
+      });
+      logInfo("repo_threat_model.files_fetched", {
+        reviewId,
+        fileCount: threatModelSnapshot.files.length,
+        pathCount: threatModelSnapshot.paths.length,
+      });
+    }
+  } catch (err) {
+    threatModelSnapshot = null;
+    logError("repo_threat_model.files_fetch_failed", {
+      reviewId,
+      message: messageOf(err),
+    });
+  }
+
   const kernelOutcome = await runReviewKernel(
     {
       reviewId,
+      repoHash: row.repoHash,
       owner: row.owner,
       repo: row.repo,
       prNumber: row.prNumber,
       commitSha: row.commitSha,
+      publicReceipt: row.publicReceipt,
       files,
+      threatModelSnapshot,
       // No cost cap on the installation rail — drawdown lives in the
       // paywall layer, not here.
       // No signal — the installation rail has no wall-clock budget.
@@ -1347,10 +1528,13 @@ async function processClaimedRow(
       reviewPR: deps.reviewPR,
       updateReview: deps.updateReview,
       recordFindingStatuses: deps.recordFindingStatuses,
+      loadRepoThreatModel: deps.loadRepoThreatModel,
+      upsertRepoThreatModel: deps.upsertRepoThreatModel,
       applyReachabilityGate: deps.applyReachabilityGate,
       recordGateOutcome: deps.recordGateOutcome,
       recordFindingEvidenceBundleSlot: deps.recordFindingEvidenceBundleSlot,
       isReachabilityGateEnabledForInstall: deps.isReachabilityGateEnabledForInstall,
+      isThreatModelEnabledForInstall: deps.isThreatModelEnabledForInstall,
       isEvidenceBundleEnabledForInstall: deps.isEvidenceBundleEnabledForInstall,
     },
   );
@@ -1413,9 +1597,29 @@ export function computeNextRetryAt(now: Date, attemptsAfterFailure: number): Dat
   return new Date(now.getTime() + seconds * 1000);
 }
 
+export async function realGetRepoThreatModelFiles(args: {
+  installationToken: string;
+  owner: string;
+  repo: string;
+  sha: string;
+}): Promise<RepoThreatModelSnapshot> {
+  return getRepoThreatModelFilesWith(makeOctokitForInstall(args.installationToken), {
+    owner: args.owner,
+    repo: args.repo,
+    sha: args.sha,
+  });
+}
+
 // Octokit instance helper — symmetric with the webhook handler's use of
 // the installation token for repo-visibility checks. Exposed so callers
 // outside this module can construct one without re-deriving the auth.
 export function makeOctokitForInstall(installationToken: string): Octokit {
   return new Octokit({ auth: installationToken });
+}
+
+function storedThreatModelPublicAccess(value: string): ThreatModelPublicAccess {
+  if (value === "public" || value === "live_protocol_review_required" || value === "private") {
+    return value;
+  }
+  return "private";
 }

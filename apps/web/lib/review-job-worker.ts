@@ -10,12 +10,16 @@ import {
   recordFindingStatuses,
   recordFindingEvidenceBundleSlot,
   recordGateOutcome,
+  loadRepoThreatModel,
   updateReview,
+  upsertRepoThreatModel,
 } from "@/db/queries";
 import { applyReachabilityGate } from "@/lib/reachability-gate";
+import { getRepoThreatModelFilesWith, type RepoThreatModelSnapshot } from "@/lib/repo-threat-model";
 import {
   isEvidenceBundleEnabledForInstall,
   isReachabilityGateEnabledForInstall,
+  isThreatModelEnabledForInstall,
 } from "@/lib/daybreak-gates-env";
 import { getInstallationToken } from "@/lib/github-app";
 import { alertCritical } from "@/lib/alert";
@@ -390,6 +394,14 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
     fileCount: files.length,
     filenames: files.map((f) => f.filename),
   });
+  const threatModelSnapshot = await getPublicRepoThreatModelSnapshot({
+    owner,
+    repo,
+    sha,
+    jobId: job.jobId,
+    reviewId: enqueued.reviewId,
+    rail: "x402",
+  });
 
   // Shared kernel (audit T2.3): same dispatch → reviewPR → persist (with
   // triage) → recordFindingStatuses surface the installation rail uses.
@@ -398,11 +410,14 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
     const outcome = await runReviewKernel(
       {
         reviewId: enqueued.reviewId,
+        repoHash,
         owner,
         repo,
         prNumber,
         commitSha: sha,
+        publicReceipt: true,
         files,
+        threatModelSnapshot,
         signal,
         rail: "x402",
         costCap: {
@@ -414,10 +429,13 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         reviewPR,
         updateReview,
         recordFindingStatuses,
+        loadRepoThreatModel,
+        upsertRepoThreatModel,
         applyReachabilityGate,
         recordGateOutcome,
         recordFindingEvidenceBundleSlot,
         isReachabilityGateEnabledForInstall,
+        isThreatModelEnabledForInstall,
         isEvidenceBundleEnabledForInstall,
       },
     );
@@ -485,6 +503,14 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
     fileCount: files.length,
     filenames: files.map((f) => f.filename),
   });
+  const threatModelSnapshot = await getPublicRepoThreatModelSnapshot({
+    owner,
+    repo,
+    sha: target.sha,
+    jobId: job.jobId,
+    reviewId: enqueued.reviewId,
+    rail: "acp",
+  });
 
   // Shared kernel (audit T2.3). ACP differs from x402 only in how it
   // handles an empty-files outcome: ACP cannot deliver an empty review
@@ -494,11 +520,14 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
     const outcome = await runReviewKernel(
       {
         reviewId: enqueued.reviewId,
+        repoHash,
         owner,
         repo,
         prNumber: target.prNumber,
         commitSha: target.sha,
+        publicReceipt: true,
         files,
+        threatModelSnapshot,
         signal,
         rail: "acp",
         costCap: {
@@ -510,10 +539,13 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         reviewPR,
         updateReview,
         recordFindingStatuses,
+        loadRepoThreatModel,
+        upsertRepoThreatModel,
         applyReachabilityGate,
         recordGateOutcome,
         recordFindingEvidenceBundleSlot,
         isReachabilityGateEnabledForInstall,
+        isThreatModelEnabledForInstall,
         isEvidenceBundleEnabledForInstall,
       },
     );
@@ -533,6 +565,41 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
     });
   }
   return acpDeliverableFromReviewPayload(job, payload);
+}
+
+async function getPublicRepoThreatModelSnapshot(args: {
+  owner: string;
+  repo: string;
+  sha: string;
+  jobId: string;
+  reviewId: string;
+  rail: "x402" | "acp";
+}): Promise<RepoThreatModelSnapshot | null | undefined> {
+  const enabled = await isThreatModelEnabledForInstall(null, args.repo);
+  if (!enabled) return undefined;
+  try {
+    const snapshot = await getRepoThreatModelFilesWith(makePublicOctokit(), {
+      owner: args.owner,
+      repo: args.repo,
+      sha: args.sha,
+    });
+    logInfo("repo_threat_model.files_fetched", {
+      jobId: args.jobId,
+      reviewId: args.reviewId,
+      rail: args.rail,
+      fileCount: snapshot.files.length,
+      pathCount: snapshot.paths.length,
+    });
+    return snapshot;
+  } catch (err) {
+    logError("repo_threat_model.files_fetch_failed", {
+      jobId: args.jobId,
+      reviewId: args.reviewId,
+      rail: args.rail,
+      message: messageOf(err),
+    });
+    return null;
+  }
 }
 
 async function resolveAcpReviewTarget(

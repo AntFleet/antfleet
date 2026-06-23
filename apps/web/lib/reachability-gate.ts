@@ -28,6 +28,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Finding } from "./review-types";
 import type { ChangedFile } from "./github-files";
 import { messageOf } from "./log";
+import type { RepoThreatModelForReachability } from "./repo-threat-model";
 
 export const REACHABILITY_MODEL = "claude-haiku-4-5";
 
@@ -76,6 +77,7 @@ export type RunReachabilityArgs = {
   // reachability past the changed-files set is a much harder problem and
   // out of scope for the MVP.
   files: readonly ChangedFile[];
+  threatModel?: RepoThreatModelForReachability | null;
   signal?: AbortSignal | null;
   // Test seam — overrides the SDK client wiring. Production callers leave
   // this unset and the helper constructs an Anthropic client from
@@ -104,6 +106,7 @@ export async function runReachabilityGate(args: RunReachabilityArgs): Promise<Re
       owner: args.owner,
       repo: args.repo,
       files: args.files,
+      threatModel: args.threatModel ?? null,
     });
     const response = await create(
       {
@@ -188,6 +191,7 @@ function buildReachabilityPrompt(args: {
   owner: string;
   repo: string;
   files: readonly ChangedFile[];
+  threatModel: RepoThreatModelForReachability | null;
 }): string {
   const ev = args.finding.evidence[0];
   const evidenceLine =
@@ -221,6 +225,7 @@ function buildReachabilityPrompt(args: {
       return `--- ${scrub(f.filename)}\n${scrub(preview)}${truncated}`;
     })
     .join("\n\n");
+  const threatModelBlock = buildThreatModelPromptBlock(args.threatModel, scrub);
 
   // Finding fields go inside the same untrusted block as the file
   // contents. Both are attacker-controllable (a PR author owns the files;
@@ -269,7 +274,34 @@ recommendation: ${scrub(args.finding.recommendation)}
 
 FILES (each truncated to first ${REACHABILITY_FILE_BUDGET} chars):
 ${fileBlocks}
+${threatModelBlock}
 </untrusted-${nonce}>`;
+}
+
+function buildThreatModelPromptBlock(
+  threatModel: RepoThreatModelForReachability | null,
+  scrub: (s: string) => string,
+): string {
+  if (threatModel === null || threatModel.entryPoints.items.length === 0) return "";
+  const lines = threatModel.entryPoints.items.slice(0, 25).map((item) => {
+    const line = item.line === null ? "?" : String(item.line);
+    return `- ${scrub(promptLine(item.kind))} ${scrub(promptLine(item.path))}:${line} - ${scrub(promptLine(item.summary))}`;
+  });
+  return `
+
+Persisted repo threat model entry points:
+${lines.join("\n")}
+`;
+}
+
+function promptLine(value: string): string {
+  return Array.from(value)
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127 ? " " : char;
+    })
+    .join("")
+    .slice(0, 240);
 }
 
 function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
@@ -384,6 +416,7 @@ export type ApplyReachabilityArgs = {
   owner: string;
   repo: string;
   files: readonly ChangedFile[];
+  threatModel?: RepoThreatModelForReachability | null;
   signal?: AbortSignal | null;
   // Test seam — substituted for runReachabilityGate.
   runGate?: (args: RunReachabilityArgs) => Promise<ReachabilityOutcome>;
@@ -419,6 +452,7 @@ export async function applyReachabilityGate(
       owner: args.owner,
       repo: args.repo,
       files: args.files,
+      threatModel: args.threatModel ?? null,
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
     });
     rows.push({ index: i, findingId: null, outcome });

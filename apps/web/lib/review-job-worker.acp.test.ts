@@ -21,11 +21,13 @@ const queryMocks = vi.hoisted(() => ({
 const dbQueryMocks = vi.hoisted(() => ({
   enqueueReview: vi.fn(),
   hashRepo: vi.fn(),
+  loadRepoThreatModel: vi.fn(),
   markReviewSucceeded: vi.fn(),
   recordFindingStatuses: vi.fn(),
   recordFindingEvidenceBundleSlot: vi.fn(),
   recordGateOutcome: vi.fn(),
   updateReview: vi.fn(),
+  upsertRepoThreatModel: vi.fn(),
 }));
 
 const paywallQueryMocks = vi.hoisted(() => ({
@@ -50,6 +52,10 @@ const githubFileMocks = vi.hoisted(() => ({
   getPublicChangedFiles: vi.fn(),
 }));
 
+const reviewPipelineMocks = vi.hoisted(() => ({
+  reviewPR: vi.fn(),
+}));
+
 const logMocks = vi.hoisted(() => ({
   logError: vi.fn(),
   logInfo: vi.fn(),
@@ -63,11 +69,33 @@ vi.mock("@/lib/acp/provider-cli", () => acpCliMocks);
 vi.mock("@/lib/github-files-public", () => ({
   getPublicChangedFiles: githubFileMocks.getPublicChangedFiles,
   makePublicOctokit: () => ({
-    rest: { pulls: { get: octokitMocks.pullsGet, list: octokitMocks.pullsList } },
+    rest: {
+      pulls: { get: octokitMocks.pullsGet, list: octokitMocks.pullsList },
+      git: {
+        getCommit: vi.fn().mockResolvedValue({
+          data: { tree: { sha: "tree-sha" } },
+        }),
+        getTree: vi.fn().mockResolvedValue({
+          data: {
+            tree: [{ path: "app/api/route.ts", type: "blob", size: 64, sha: "file-sha" }],
+          },
+        }),
+      },
+      repos: {
+        getContent: vi.fn().mockResolvedValue({
+          data: {
+            type: "file",
+            content: Buffer.from(
+              "export async function GET() { return Response.json({ ok: true }); }",
+            ).toString("base64"),
+          },
+        }),
+      },
+    },
     paginate: octokitMocks.paginate,
   }),
 }));
-vi.mock("@/lib/review-pipeline", () => ({ reviewPR: vi.fn() }));
+vi.mock("@/lib/review-pipeline", () => reviewPipelineMocks);
 vi.mock("@/lib/paywall/env", () => ({
   getReviewPriceUsdc: () => "1.00",
   // T2.3 shared kernel reads the price lazily via a thunk threaded through
@@ -161,6 +189,23 @@ describe("processReviewJob ACP rail", () => {
     repoVisibilityMocks.isPublicRepo.mockResolvedValue(true);
     dbQueryMocks.hashRepo.mockReturnValue("repo-hash");
     dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: false });
+    dbQueryMocks.loadRepoThreatModel.mockResolvedValue(null);
+    dbQueryMocks.upsertRepoThreatModel.mockResolvedValue(undefined);
+    dbQueryMocks.markReviewSucceeded.mockResolvedValue(undefined);
+    githubFileMocks.getPublicChangedFiles.mockResolvedValue([
+      { filename: "src/index.ts", status: "modified", contents: "export const x = 1;" },
+    ]);
+    reviewPipelineMocks.reviewPR.mockResolvedValue({
+      estimatedCostUsd: 0.25,
+      modelIds: { a: "model-a" },
+      perProvider: {},
+      agreementMode: "unanimous",
+      agreed: [],
+      disagreements: [],
+      degraded: false,
+      degradedReason: null,
+      totalMs: 100,
+    });
     octokitMocks.pullsGet.mockResolvedValue({
       data: { state: "open", head: { sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001" } },
     });
@@ -288,6 +333,33 @@ describe("processReviewJob ACP rail", () => {
         error: expect.objectContaining({ code: "no_reviewable_files" }),
       }),
     });
+  });
+
+  it("generates a first repo threat model from a public repo snapshot on ACP", async () => {
+    const oldFlag = process.env["ANTFLEET_THREAT_MODEL"];
+    process.env["ANTFLEET_THREAT_MODEL"] = "true";
+    try {
+      dbQueryMocks.enqueueReview.mockResolvedValueOnce({ reviewId: "review-1", isNew: true });
+
+      const { processReviewJob } = await import("./review-job-worker");
+      await processReviewJob("af-acp-job");
+
+      expect(dbQueryMocks.upsertRepoThreatModel).toHaveBeenCalledTimes(1);
+      expect(dbQueryMocks.upsertRepoThreatModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoHash: "repo-hash",
+          publicAccess: "public",
+          model: expect.objectContaining({
+            sections: expect.objectContaining({
+              entryPoints: expect.objectContaining({ items: expect.any(Array) }),
+            }),
+          }),
+        }),
+      );
+    } finally {
+      if (oldFlag === undefined) delete process.env["ANTFLEET_THREAT_MODEL"];
+      else process.env["ANTFLEET_THREAT_MODEL"] = oldFlag;
+    }
   });
 
   it("marks ambiguous ACP success submit failures without sending a second error", async () => {
