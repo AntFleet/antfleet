@@ -120,6 +120,7 @@ async function main() {
     "finding_id",
     "id",
     "model_id",
+    "review_attempt",
     "review_id",
     "stage",
     "verdict",

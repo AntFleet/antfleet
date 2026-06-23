@@ -24,10 +24,17 @@ export type PatchForRender = {
   // Daybreak — patch verifier verdict tag. Set to "verified" when the
   // verifier observed tests passing and (where available) the PoC no
   // longer reproducing. Set to "inconclusive" when verification ran but
-  // could not decide (no test runner detected, no PoC available, or the
-  // serverless / no-clone codepath). Undefined when the verifier is off
-  // (env flag disabled) — renderer treats undefined as "no claim made".
+  // could not decide. Undefined when the verifier is off (env flag
+  // disabled) — renderer treats undefined as "no claim made".
   verifyStatus?: "verified" | "inconclusive";
+  // Reason the verifier returned `inconclusive`. Only set when
+  // `verifyStatus === "inconclusive"`. The renderer uses this to scope
+  // the user-visible tag — "(unverified)" is reserved for genuine
+  // could-not-decide outcomes (test_timeout, poc_timeout, exception);
+  // softer outcomes (no test runner, no PoC available) render WITHOUT
+  // an alarming tag so legitimate patches don't get penalised by
+  // missing test infra.
+  verifyInconclusiveReason?: string | null;
 };
 
 export type ReviewMeta = {
@@ -154,7 +161,17 @@ function formatFinding(
         ev !== undefined &&
         ev.startLine !== null &&
         (ev.endLine === null || ev.endLine === ev.startLine);
-      const verifyTag = patch.verifyStatus === "inconclusive" ? " (unverified)" : "";
+      // Only tag "(unverified)" for inconclusive verdicts that signal
+      // genuine indecision. Soft outcomes — no test runner detected, no PoC
+      // available — leave the suggestion untagged so legit patches aren't
+      // penalised by missing test infra. The reason set comes from the
+      // verifier's InconclusiveReason enum (see patch-verifier.ts).
+      const SOFT_INCONCLUSIVE = new Set(["no_runner", "no_poc", "no_repo_url"]);
+      const verifyTag =
+        patch.verifyStatus === "inconclusive" &&
+        !SOFT_INCONCLUSIVE.has(patch.verifyInconclusiveReason ?? "")
+          ? " (unverified)"
+          : "";
       if (mode === "artifact") {
         lines.push("");
         lines.push(`<details>`);

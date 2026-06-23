@@ -832,17 +832,21 @@ export const reviewGateOutcomes = pgTable(
   "review_gate_outcomes",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    reviewId: uuid("review_id").notNull(),
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => reviews.reviewId, { onDelete: "cascade" }),
     findingId: text("finding_id"),
     stage: text("stage").notNull(),
     verdict: text("verdict").notNull(),
     evidence: jsonb("evidence").notNull().default({}),
     modelId: text("model_id"),
+    reviewAttempt: integer("review_attempt").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("review_gate_outcomes_review_idx").on(t.reviewId),
     index("review_gate_outcomes_stage_verdict_idx").on(t.stage, t.verdict),
+    index("review_gate_outcomes_review_finding_idx").on(t.reviewId, t.findingId),
   ],
 );
 

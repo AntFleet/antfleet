@@ -34,6 +34,24 @@ import { normalizePatchForApply } from "./patch-adapter";
 
 export type PatchVerifyVerdict = "verified" | "regressed" | "inconclusive";
 
+// Why an inconclusive outcome could not be decided. Surfaced to the
+// suggestion renderer so the user-visible tag distinguishes "we tried and
+// could not decide" (`(unverified)`) from "we did not have the inputs to
+// try" (`(no PoC)` / `(no tests)`) — the architect review flagged that
+// every patch was being tagged as "(unverified)" which eroded trust in
+// legit patches.
+export type InconclusiveReason =
+  | "no_runner"
+  | "no_poc"
+  | "test_timeout"
+  | "poc_timeout"
+  | "adapter_refused"
+  | "evidence_unreadable"
+  | "no_repo_url"
+  | "invalid_input"
+  | "setup_failed"
+  | "exception";
+
 export type RunnerKind = "pnpm" | "npm" | "go" | "pytest" | "none";
 
 export type PatchVerifyOutcome = {
@@ -51,6 +69,10 @@ export type PatchVerifyOutcome = {
   // here only as evidence for the gate-outcomes side table.
   worktreePath: string;
   error: string | null;
+  // Non-null only for `inconclusive` verdicts. Lets pr-comment.ts decide
+  // whether to tag the suggestion `(unverified)` (genuine indecision) vs.
+  // a softer note (no PoC, no test runner, killed by timeout, …).
+  inconclusiveReason: InconclusiveReason | null;
 };
 
 export type ExecResult = {
@@ -110,12 +132,48 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
       detector: "none",
       notes: "patch-verifier requires a repoUrl to clone from; skipping",
       ms: args.io.now() - t0,
+      kind: "no_repo_url",
+    });
+  }
+  // Argument-injection defense: every git invocation below puts repoUrl and
+  // sha straight into argv. A `--upload-pack=<path>` masquerading as a URL,
+  // or a sha starting with `-`, would be parsed as a git flag and could
+  // execute attacker-supplied binaries. We reject anything that does not
+  // look like a real http(s) URL or a 7-64 char hex sha BEFORE spawning git.
+  // Defense in depth: every git call also threads `--` between the
+  // subcommand and the user-derived positional (see runSetupSteps callers
+  // below).
+  if (!isSafeRepoUrl(args.repoUrl)) {
+    return inconclusive({
+      worktreePath: "(invalid-repo-url)",
+      detector: "none",
+      notes: `patch-verifier rejected unsafe repoUrl shape`,
+      ms: args.io.now() - t0,
+      kind: "invalid_input",
+    });
+  }
+  if (!isSafeSha(args.sha)) {
+    return inconclusive({
+      worktreePath: "(invalid-sha)",
+      detector: "none",
+      notes: "patch-verifier rejected non-hex sha",
+      ms: args.io.now() - t0,
+      kind: "invalid_input",
     });
   }
 
   let worktree: string | null = null;
+  let homeDir: string | null = null;
   try {
     worktree = await args.io.mkWorktreeRoot();
+    // Per-call HOME directory. Hardcoding HOME=/tmp in the subprocess env
+    // (the prior shape) let an attacker plant /tmp/.gitconfig or
+    // /tmp/.npmrc that subsequent verifier calls would inherit — git's
+    // `core.editor`/`core.fsmonitor` and npm's `script-shell` both trigger
+    // arbitrary command execution on the very next verifier invocation
+    // that runs git or npm. The per-call dir is created here and removed
+    // in the same finally block that tears down the worktree.
+    homeDir = await args.io.mkWorktreeRoot();
     // Fetch the exact reviewed SHA, not the repo's default branch HEAD.
     // The previous shape (`git clone --depth 1 <url>`) silently landed on
     // whatever the default branch is today, which made every old bench
@@ -123,19 +181,24 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
     // by SHA is the right model: `git fetch --depth 1 origin <sha>` is
     // supported by GitHub and any other Smart-HTTP server that has
     // `uploadpack.allowAnySHA1InWant=true` (GitHub's default).
+    const sandboxEnv = minimalEnv(homeDir);
     const initialised = await runSetupSteps(
       args.io,
       worktree,
       [
-        { command: "git", args: ["init", "--quiet", worktree] },
-        { command: "git", args: ["-C", worktree, "remote", "add", "origin", args.repoUrl] },
+        { command: "git", args: ["init", "--quiet", "--", worktree] },
         {
           command: "git",
-          args: ["-C", worktree, "fetch", "--depth", "1", "--quiet", "origin", args.sha],
+          args: ["-C", worktree, "remote", "add", "origin", "--", args.repoUrl],
         },
-        { command: "git", args: ["-C", worktree, "checkout", "--quiet", "FETCH_HEAD"] },
+        {
+          command: "git",
+          args: ["-C", worktree, "fetch", "--depth", "1", "--quiet", "origin", "--", args.sha],
+        },
+        { command: "git", args: ["-C", worktree, "checkout", "--quiet", "FETCH_HEAD", "--"] },
       ],
       timeoutMs,
+      sandboxEnv,
     );
     if (initialised.error !== null) {
       return inconclusive({
@@ -143,6 +206,7 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
         detector: "none",
         notes: initialised.error,
         ms: args.io.now() - t0,
+        kind: "setup_failed",
       });
     }
 
@@ -171,6 +235,7 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
             detector: "none",
             notes: `patch-adapter could not normalise: ${adapt.reason}`,
             ms: args.io.now() - t0,
+            kind: "adapter_refused",
           });
         }
       } catch (readErr) {
@@ -181,6 +246,7 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
           detector: "none",
           notes: `could not read evidence file '${evidencePath}': ${(readErr as Error).message}`,
           ms: args.io.now() - t0,
+          kind: "evidence_unreadable",
         });
       }
     }
@@ -192,10 +258,10 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
     const patchFile = await args.io.writeTempFile(normalisedPatch);
     const applied = await args.io.exec({
       command: "git",
-      args: ["-C", worktree, "apply", "--index", patchFile],
+      args: ["-C", worktree, "apply", "--index", "--", patchFile],
       cwd: worktree,
       timeoutMs,
-      env: minimalEnv(),
+      env: sandboxEnv,
     });
     if (applied.exitCode !== 0) {
       return {
@@ -211,6 +277,7 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
         notes: `git apply failed (exit ${applied.exitCode ?? "null"}): ${truncate(applied.stderr)}`,
         worktreePath: worktree,
         error: null,
+        inconclusiveReason: null,
       };
     }
 
@@ -221,10 +288,29 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
         detector: "none",
         notes: "no test runner detected (no pnpm-lock / package-lock / go.mod / pyproject)",
         ms: args.io.now() - t0,
+        kind: "no_runner",
       });
     }
 
-    const testStep = await runTestStep(args.io, worktree, detector, timeoutMs);
+    const testStep = await runTestStep(args.io, worktree, detector, timeoutMs, sandboxEnv);
+    // Distinguish a clean non-zero exit (real test failure → regressed,
+    // drop the patch) from a SIGKILL timeout (test suite exceeded the
+    // wall-clock cap → inconclusive, keep but tag, do NOT silently drop a
+    // legit patch just because the suite is slow). Detection: ExecResult
+    // sets `timedOut: true` on the subprocess kill path and reports
+    // exitCode null.
+    if (testStep.timedOut) {
+      return inconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: `tests killed after ${timeoutMs}ms — verifier cannot decide (testCmd=${detector.cmd})`,
+        ms: args.io.now() - t0,
+        testCmd: detector.cmd,
+        testExitCode: null,
+        testMs: testStep.ms,
+        kind: "test_timeout",
+      });
+    }
     if (testStep.exitCode !== 0) {
       return {
         verdict: "regressed",
@@ -239,6 +325,7 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
         notes: `tests failed after patch (exit ${testStep.exitCode ?? "null"}): ${truncate(testStep.stderr)}`,
         worktreePath: worktree,
         error: null,
+        inconclusiveReason: null,
       };
     }
 
@@ -247,14 +334,31 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
       return inconclusive({
         worktreePath: worktree,
         detector: detector.kind,
-        notes: `tests passed; no PoC command available → inconclusive (testCmd=${detector.cmd})`,
+        notes: `tests passed; no PoC command available (testCmd=${detector.cmd})`,
         ms: args.io.now() - t0,
         testCmd: detector.cmd,
         testExitCode: testStep.exitCode,
         testMs: testStep.ms,
+        // Distinguishes from "verifier ran the PoC and was ambiguous" so
+        // the suggestion comment can render tests-passed-no-poc patches
+        // WITHOUT an alarming "(unverified)" tag — that tag is reserved
+        // for the genuine could-not-decide path.
+        kind: "no_poc",
       });
     }
-    const pocStep = await runPocStep(args.io, worktree, pocCmd, timeoutMs);
+    const pocStep = await runPocStep(args.io, worktree, pocCmd, timeoutMs, sandboxEnv);
+    if (pocStep.timedOut) {
+      return inconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: `PoC killed after ${timeoutMs}ms — verifier cannot decide`,
+        ms: args.io.now() - t0,
+        testCmd: detector.cmd,
+        testExitCode: testStep.exitCode,
+        testMs: testStep.ms,
+        kind: "poc_timeout",
+      });
+    }
     const pocStillExploits = pocStep.exitCode === 0;
     if (pocStillExploits) {
       return {
@@ -270,6 +374,7 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
         notes: `tests passed but PoC still exits 0 → patch did NOT close the bug`,
         worktreePath: worktree,
         error: null,
+        inconclusiveReason: null,
       };
     }
     return {
@@ -285,6 +390,7 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
       notes: `tests passed; PoC no longer exits 0 (was reproducing pre-patch)`,
       worktreePath: worktree,
       error: null,
+      inconclusiveReason: null,
     };
   } catch (err) {
     return inconclusive({
@@ -293,13 +399,16 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
       notes: `verifier threw: ${err instanceof Error ? err.message : String(err)}`,
       ms: args.io.now() - t0,
       error: err instanceof Error ? err.message : String(err),
+      kind: "exception",
     });
   } finally {
-    if (worktree !== null) {
-      // Best-effort teardown; we never bubble cleanup failures because the
-      // worktree path lives under /tmp and the OS will reclaim it anyway.
+    // Tear down BOTH the worktree and the per-call HOME directory. Best
+    // effort — we never bubble cleanup failures because the OS will
+    // reclaim /tmp eventually anyway.
+    for (const dir of [worktree, homeDir]) {
+      if (dir === null) continue;
       try {
-        await args.io.removeDir(worktree);
+        await args.io.removeDir(dir);
       } catch {
         // swallow — see comment above
       }
@@ -315,6 +424,7 @@ async function runSetupSteps(
   worktree: string,
   steps: ReadonlyArray<{ command: string; args: string[] }>,
   timeoutMs: number,
+  env: Record<string, string>,
 ): Promise<{ error: string | null }> {
   for (const step of steps) {
     const result = await io.exec({
@@ -322,7 +432,7 @@ async function runSetupSteps(
       args: step.args,
       cwd: worktree,
       timeoutMs,
-      env: minimalEnv(),
+      env,
     });
     if (result.exitCode !== 0) {
       return {
@@ -344,10 +454,15 @@ async function detectRunner(
   worktree: string,
 ): Promise<{ kind: RunnerKind; cmd: string }> {
   if (await io.exists(join(worktree, "pnpm-lock.yaml"))) {
-    return { kind: "pnpm", cmd: "pnpm test" };
+    // --offline keeps a malicious pnpmfile.cjs / .npmrc from triggering a
+    // registry fetch (which would also let a malicious package execute
+    // postinstall scripts under the verifier process). The lockfile that
+    // shipped at the reviewed SHA must be self-sufficient for the test
+    // suite.
+    return { kind: "pnpm", cmd: "pnpm test --offline" };
   }
   if (await io.exists(join(worktree, "package-lock.json"))) {
-    return { kind: "npm", cmd: "npm test --silent" };
+    return { kind: "npm", cmd: "npm test --silent --offline" };
   }
   if (await io.exists(join(worktree, "go.mod"))) {
     return { kind: "go", cmd: "go test ./..." };
@@ -366,6 +481,7 @@ async function runTestStep(
   worktree: string,
   detector: { kind: RunnerKind; cmd: string },
   timeoutMs: number,
+  env: Record<string, string>,
 ): Promise<ExecResult> {
   const { command, args } = splitCommand(detector.cmd);
   return io.exec({
@@ -373,7 +489,7 @@ async function runTestStep(
     args,
     cwd: worktree,
     timeoutMs,
-    env: minimalEnv(),
+    env,
   });
 }
 
@@ -382,6 +498,7 @@ async function runPocStep(
   worktree: string,
   pocCmd: string,
   timeoutMs: number,
+  env: Record<string, string>,
 ): Promise<ExecResult> {
   const { command, args } = splitCommand(pocCmd);
   return io.exec({
@@ -389,7 +506,7 @@ async function runPocStep(
     args,
     cwd: worktree,
     timeoutMs,
-    env: minimalEnv(),
+    env,
   });
 }
 
@@ -440,20 +557,61 @@ export function sniffPocCommand(finding: Finding): string | null {
 // process inherits (ANTHROPIC_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN,
 // DATABASE_URL, etc.) so a malicious patch cannot exfiltrate them through
 // the test process. PATH is kept because most runners shell out to it.
-// HOME is rooted at a per-call temp dir so `~/.config` writes can't reach
-// the parent's dotfiles. NODE_ENV=test silences some optional bootstraps.
-export function minimalEnv(): Record<string, string> {
+// HOME is rooted at a per-call temp dir created by the caller so
+// `~/.config` writes and dotfile reads cannot reach the parent's
+// dotfiles OR persist across verifier invocations. XDG_*_HOME is pinned
+// to the same dir so XDG-aware tools follow.
+//
+// IMDS blocking: AWS_EC2_METADATA_DISABLED + GCE_METADATA_HOST cut off the
+// usual cloud-metadata SSRF vectors a malicious test script would reach
+// for to escalate from sandboxed RCE to credentials. They are a cheap
+// belt-and-suspenders alongside the secret strip — even if env hygiene
+// breaks, the metadata endpoint stays unreachable.
+export function minimalEnv(home: string = "/tmp"): Record<string, string> {
   return {
     PATH: process.env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin",
-    HOME: "/tmp",
+    HOME: home,
+    XDG_CONFIG_HOME: `${home}/.config`,
+    XDG_DATA_HOME: `${home}/.local/share`,
+    XDG_CACHE_HOME: `${home}/.cache`,
     NODE_ENV: "test",
     CI: "1",
     // Per `feedback_run_oxfmt_before_push` and similar, runners may probe
-    // for git identity. A bare global config under HOME=/tmp is enough.
+    // for git identity. A bare global config under per-call HOME is enough.
     GIT_TERMINAL_PROMPT: "0",
     // Prevent npm/pnpm from offering interactive prompts.
     npm_config_yes: "true",
+    // Block IMDSv1/v2 cloud metadata so a malicious test script in the
+    // patched repo cannot fetch ec2/gce role credentials. Effectively
+    // free; defense in depth alongside the secret-strip.
+    AWS_EC2_METADATA_DISABLED: "true",
+    GCE_METADATA_HOST: "invalid.localhost",
   };
+}
+
+// Defense-in-depth: validate user-derived strings before they reach `git`.
+// Even though `spawn` is invoked without `shell:true` (so no shell-meta
+// injection), `git` itself parses values that start with `-` as flags
+// (e.g. `--upload-pack=<binary>` runs arbitrary code on fetch). We refuse
+// anything that does not look like a real http(s) URL or a hex sha at the
+// front door; the `--` separator we thread into argv after the subcommand
+// is a second layer.
+export function isSafeRepoUrl(url: string): boolean {
+  if (url.length > 1024) return false;
+  if (url.startsWith("-")) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+  if (parsed.username.length > 0 || parsed.password.length > 0) return false;
+  return true;
+}
+
+export function isSafeSha(sha: string): boolean {
+  return /^[0-9a-fA-F]{7,64}$/u.test(sha);
 }
 
 // "pnpm test" → { command: "pnpm", args: ["test"] }. Naive whitespace split
@@ -474,6 +632,7 @@ function inconclusive(args: {
   detector: RunnerKind;
   notes: string;
   ms: number;
+  kind: InconclusiveReason;
   testCmd?: string | null;
   testExitCode?: number | null;
   testMs?: number | null;
@@ -492,6 +651,7 @@ function inconclusive(args: {
     notes: args.notes,
     worktreePath: args.worktreePath,
     error: args.error ?? null,
+    inconclusiveReason: args.kind,
   };
 }
 
@@ -662,12 +822,21 @@ export async function applyPatchVerifier<O extends VerifiablePatchOutcome>(
       continue;
     }
     // verified or inconclusive: tag in place so pr-comment can render
-    // "(unverified)" when applicable.
+    // "(unverified)" when applicable. The inconclusiveReason is plumbed
+    // through too — pr-comment uses it to decide whether to render the
+    // tag at all (soft outcomes like "no test runner" stay untagged).
     const tag = outcome.verdict === "verified" ? "verified" : "inconclusive";
+    const reason = outcome.verdict === "inconclusive" ? outcome.inconclusiveReason : null;
     const byEntry = args.outcome.byIndex.get(index);
-    if (byEntry !== undefined) byEntry["verifyStatus"] = tag;
+    if (byEntry !== undefined) {
+      byEntry["verifyStatus"] = tag;
+      byEntry["verifyInconclusiveReason"] = reason;
+    }
     const inlineEntry = args.outcome.inlineByIndex.get(index);
-    if (inlineEntry !== undefined) inlineEntry["verifyStatus"] = tag;
+    if (inlineEntry !== undefined) {
+      inlineEntry["verifyStatus"] = tag;
+      inlineEntry["verifyInconclusiveReason"] = reason;
+    }
   }
 
   return { outcome: args.outcome, rows, droppedIndexes };

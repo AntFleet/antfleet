@@ -64,17 +64,26 @@ export function normalizePatchForApply(args: {
     return { ok: true, patch: args.patch, adapted: false };
   }
 
-  const anchor = locateAnchor(args.fileContents, parsed.oldLines);
-  if (anchor === null) {
+  const located = locateAnchorDetailed(args.fileContents, parsed.oldLines, {
+    hint: parsed.hunkStart,
+  });
+  if (located.kind === "none") {
     return {
       ok: false,
       reason: "could not locate the patch's old-side block inside the evidence file",
     };
   }
+  if (located.kind === "ambiguous") {
+    return {
+      ok: false,
+      reason: `patch's old-side block matched ${located.matchCount} locations in the file — refusing to anchor without context`,
+    };
+  }
 
   const rebuilt = renderUnifiedDiff({
     path: evidencePath,
-    anchorLine: anchor,
+    anchorLine: located.startLine,
+    oldLineCount: located.spannedLines,
     oldLines: parsed.oldLines,
     newLines: parsed.newLines,
   });
@@ -172,30 +181,47 @@ function parseUnifiedDiff(text: string): ParsedDiff | null {
 }
 
 // Whitespace-tolerant search for `oldLines` as a contiguous block inside
-// `fileContents`. Returns the 1-based start line of the first match, or
-// null when no match exists.
+// `fileContents`. Returns the 1-based start line of the first match plus
+// the actual span (so a hunk header can record the right `-startLine,N`
+// pair even when blank lines were skipped during the match), or null when
+// no match exists.
 //
 // Whitespace tolerance keeps us robust against the model occasionally
 // indenting the suggestion slightly differently than the file does
 // (tabs vs spaces, leading-whitespace drift). The matcher is
 // patch-acceptance's `normalizeForCompare` so the heuristic is exactly
 // the one we already use for patch-shipped detection.
+//
+// `hint` (the model's stated hunk start, if any) is used purely as a
+// tiebreaker when multiple matches exist — we prefer the match nearest
+// the hint. We never use the hint as the answer; the file is authoritative.
 export function locateAnchor(fileContents: string, oldLines: string[]): number | null {
+  const detail = locateAnchorDetailed(fileContents, oldLines, { hint: null });
+  return detail.kind === "single" ? detail.startLine : null;
+}
+
+type LocateResult =
+  | { kind: "none" }
+  | { kind: "single"; startLine: number; spannedLines: number }
+  | { kind: "ambiguous"; matchCount: number; startLine: number; spannedLines: number };
+
+export function locateAnchorDetailed(
+  fileContents: string,
+  oldLines: string[],
+  opts: { hint: number | null },
+): LocateResult {
   // Pure-add suggestions have no old-side block to match. They CAN'T be
   // anchored unambiguously without context lines; refuse rather than
-  // applying to a guessed location. The caller treats null as "skip
-  // verifier — leave the patch as inconclusive at the worker layer".
-  if (oldLines.length === 0) return null;
+  // applying to a guessed location.
+  if (oldLines.length === 0) return { kind: "none" };
   const oldNorm = oldLines.map(normalizeForCompare).filter((l) => l.length > 0);
-  if (oldNorm.length === 0) return null;
+  if (oldNorm.length === 0) return { kind: "none" };
 
   const fileLines = fileContents.split("\n");
   const fileNorm = fileLines.map(normalizeForCompare);
 
+  const matches: Array<{ startLine: number; spannedLines: number }> = [];
   for (let i = 0; i + oldNorm.length <= fileLines.length; i++) {
-    // Walk a window of size oldNorm.length, advancing a pointer into
-    // oldNorm as we skip blank-or-comment-stripped file lines whose
-    // normalized form is empty.
     let oi = 0;
     let fi = i;
     while (fi < fileLines.length && oi < oldNorm.length) {
@@ -213,20 +239,57 @@ export function locateAnchor(fileContents: string, oldLines: string[]): number |
     }
     if (oi === oldNorm.length) {
       // 1-based line number — unified diff uses 1-based indexing.
-      return i + 1;
+      matches.push({ startLine: i + 1, spannedLines: fi - i });
+      // Skip past the matched span so overlapping matches don't double-count.
+      i = fi - 1;
     }
   }
-  return null;
+
+  if (matches.length === 0) return { kind: "none" };
+  if (matches.length === 1) {
+    const m = matches[0]!;
+    return { kind: "single", startLine: m.startLine, spannedLines: m.spannedLines };
+  }
+  // Multiple matches. The unified-diff envelope demands an unambiguous
+  // anchor. Short or repetitive old-side blocks (a single `return null;`
+  // line) trigger this; first-match would silently anchor wrong. We
+  // refuse here so the verifier records `inconclusive (adapter_refused)`
+  // rather than `regressed` on a wrong-anchor apply failure.
+  //
+  // Exception: if the model emitted a `hunkStart` hint and exactly one
+  // match is within ±20 lines of it, prefer that match. We never let the
+  // hint pick from multiple candidate matches that are all far from it —
+  // the hint is advisory, not authoritative.
+  if (opts.hint !== null) {
+    const near = matches.filter((m) => Math.abs(m.startLine - opts.hint!) <= 20);
+    if (near.length === 1) {
+      const m = near[0]!;
+      return { kind: "single", startLine: m.startLine, spannedLines: m.spannedLines };
+    }
+  }
+  return {
+    kind: "ambiguous",
+    matchCount: matches.length,
+    startLine: matches[0]!.startLine,
+    spannedLines: matches[0]!.spannedLines,
+  };
 }
 
 function renderUnifiedDiff(args: {
   path: string;
   anchorLine: number;
+  // The actual number of file lines the match spanned, which may exceed
+  // `oldLines.length` when blank lines were skipped during whitespace-
+  // tolerant matching. The hunk header MUST count the spanned lines —
+  // `git apply` reads `oldCount` consecutive lines from `anchor` and
+  // expects them to equal the patch's `-` block. Mismatch → corrupt-patch
+  // rejection. Caller computes this via locateAnchorDetailed.
+  oldLineCount: number;
   oldLines: string[];
   newLines: string[];
 }): string {
   const path = args.path;
-  const oldCount = args.oldLines.length;
+  const oldCount = args.oldLineCount;
   const newCount = args.newLines.length;
   // For pure-add hunks (oldCount === 0) the unified-diff convention is
   // `-0,0`; for pure-delete (newCount === 0) the new-side is `-anchor,0`.

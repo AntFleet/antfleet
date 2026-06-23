@@ -194,4 +194,38 @@ delta`;
     expect(locateAnchor(file, [])).toBeNull();
     expect(locateAnchor(file, ["   ", "\t"])).toBeNull();
   });
+
+  it("returns null when there are multiple anchor matches (ambiguous)", () => {
+    const ambiguous = `return null;
+unrelated line
+return null;
+`;
+    expect(locateAnchor(ambiguous, ["return null;"])).toBeNull();
+  });
+});
+
+describe("normalizePatchForApply ambiguity refusal", () => {
+  it("refuses to rebuild a patch whose old-side block matches multiple file locations", () => {
+    const file = `line a
+return null;
+line c
+return null;
+line e
+`;
+    const patch = `--- a/src/x.py
++++ b/src/x.py
+@@
+-return null;
++throw new Error("x");
+`;
+    const out = normalizePatchForApply({
+      patch,
+      evidencePath: "src/x.py",
+      fileContents: file,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.reason).toMatch(/matched \d+ locations/u);
+    }
+  });
 });

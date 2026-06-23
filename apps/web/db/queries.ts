@@ -3005,6 +3005,12 @@ export type GateOutcomeRow = {
   verdict: string;
   evidence: unknown;
   modelId: string | null;
+  // Review attempt this outcome was emitted from. The kernel re-runs the
+  // pipeline on retry, so the same finding can produce multiple rows
+  // over a review's lifetime. Stored so dup rows stay interpretable.
+  // Defaults to 1 for callers that don't track attempts (the bench
+  // dry-run, ad-hoc replays).
+  reviewAttempt?: number;
 };
 
 export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): Promise<void> {
@@ -3015,6 +3021,7 @@ export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): 
     verdict: row.verdict,
     evidence: row.evidence,
     modelId: row.modelId,
+    reviewAttempt: row.reviewAttempt ?? 1,
   };
   await db.insert(reviewGateOutcomes).values(values);
 }

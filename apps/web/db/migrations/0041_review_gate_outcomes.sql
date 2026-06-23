@@ -31,12 +31,18 @@
 
 CREATE TABLE IF NOT EXISTS "review_gate_outcomes" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "review_id" uuid NOT NULL,
+  "review_id" uuid NOT NULL REFERENCES "reviews" ("review_id") ON DELETE CASCADE,
   "finding_id" text,
   "stage" text NOT NULL,
   "verdict" text NOT NULL,
   "evidence" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "model_id" text,
+  -- Review attempt this row was emitted from. The kernel retry path
+  -- re-runs the entire pipeline on each attempt, so the same finding may
+  -- accumulate multiple gate-outcome rows over a review's lifetime. The
+  -- attempt column makes those duplicates interpretable as "attempt 1
+  -- said reachable; attempt 2 said unreachable" rather than mystery dupes.
+  "review_attempt" integer NOT NULL DEFAULT 1,
   "created_at" timestamp with time zone NOT NULL DEFAULT now()
 );
 
@@ -45,3 +51,6 @@ CREATE INDEX IF NOT EXISTS "review_gate_outcomes_review_idx"
 
 CREATE INDEX IF NOT EXISTS "review_gate_outcomes_stage_verdict_idx"
   ON "review_gate_outcomes" USING btree ("stage", "verdict");
+
+CREATE INDEX IF NOT EXISTS "review_gate_outcomes_review_finding_idx"
+  ON "review_gate_outcomes" USING btree ("review_id", "finding_id");

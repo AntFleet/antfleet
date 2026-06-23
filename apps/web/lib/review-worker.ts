@@ -252,7 +252,7 @@ export async function runReviewWorker(
   const attemptsAfterClaim = row.processingAttempts + 1;
 
   try {
-    await processClaimedRow(reviewId, dispatchRow, deps);
+    await processClaimedRow(reviewId, dispatchRow, deps, attemptsAfterClaim);
     await deps.markReviewSucceeded({ reviewId, now: deps.now() });
     logInfo("worker.completed", {
       reviewId,
@@ -432,6 +432,11 @@ export type ReviewKernelArgs = {
   // Optional install-only lane. Enables onboarder + patch agent + PR
   // comment + click-apply. Paid rails leave this undefined.
   installLane?: ReviewKernelInstallLane;
+  // Review attempt this invocation belongs to. Threaded into
+  // review_gate_outcomes rows so the side-table's duplicate-on-retry
+  // shape is queryable (which attempt produced which verdict). Callers
+  // who don't track attempts pass undefined → defaults to 1.
+  reviewAttempt?: number;
 };
 
 export async function runReviewKernel(
@@ -476,12 +481,31 @@ export async function runReviewKernel(
   // A throw inside the gate must NOT block the review. We catch + log
   // and proceed with the un-gated bundle. The applier itself fails open
   // per-finding ('uncertain' on any model/parse error).
-  let reachabilityOutcomes: Array<{ index: number; reason: string }> = [];
-  if (args.installLane !== undefined && !bundle.degraded && bundle.agreed.length > 0) {
-    const installationId = args.installLane.installationId;
+  // Reachability gate runs on EVERY rail (install + paid + acp) — the
+  // question "is this bug reachable from a real entry point?" is rail-
+  // agnostic. The architect review caught that the previous shape
+  // silently disabled the gate on paid rails despite the deps being
+  // wired. The resolver takes `installationId | null`; paid rails pass
+  // null and fall through to the env-default boolean (no per-install
+  // override available — by design).
+  //
+  // A throw inside the gate must NOT block the review. We catch + log
+  // and proceed with the un-gated bundle. The applier itself fails open
+  // per-finding ('uncertain' on any model/parse error).
+  let reachabilityOutcomes: Array<{ index: number; reason: string; originalSeverity: string }> = [];
+  let agreedRaw: typeof bundle.agreed | null = null;
+  if (!bundle.degraded && bundle.agreed.length > 0) {
+    const installationId = args.installLane?.installationId ?? null;
     try {
       const enabled = await deps.isReachabilityGateEnabledForInstall(installationId, repo);
       if (enabled) {
+        // Snapshot the raw consensus output BEFORE applying gate
+        // downgrades so the agreementDecision JSONB carries both the
+        // pre-gate audit trail (`agreedRawByGate`) and the post-gate
+        // shape (`agreed`). Downstream consumers reading
+        // `agreementDecision.agreed[i].severity` still see the canonical
+        // re-graded value; auditors can correlate against the raw shape.
+        agreedRaw = bundle.agreed.map((f) => ({ ...f }));
         const applied = await deps.applyReachabilityGate({
           agreed: bundle.agreed,
           owner,
@@ -489,28 +513,38 @@ export async function runReviewKernel(
           files,
           ...(signal !== undefined ? { signal } : {}),
         });
-        // Mutate the bundle's agreed array in place so all downstream
-        // consumers see the re-graded shape (agreementDecision JSONB,
-        // recordFindingStatuses, formatPRComment).
         bundle.agreed = applied.agreed;
-        reachabilityOutcomes = applied.downgrades;
+        // Per-finding canonical ids are not yet allocated at this point
+        // (recordFindingStatuses runs below). We compute the deterministic
+        // id via makeFindingId(reviewId, index) — the same convention
+        // recordFindingStatuses ultimately writes — so the side-table
+        // rows can be joined per-finding without waiting for the
+        // lifecycle write.
         for (const row of applied.rows) {
+          const findingId = makeFindingId(reviewId, row.index);
           try {
             await deps.recordGateOutcome(reviewId, {
-              findingId: row.findingId,
+              findingId,
               stage: "reachability",
               verdict: row.outcome.verdict,
               evidence: row.outcome,
               modelId: row.outcome.modelId,
+              reviewAttempt: args.reviewAttempt ?? 1,
             });
           } catch (persistErr) {
             // Non-fatal — gate outcome rows are observability-only.
             logError("reachability_gate.persist_failed", {
               reviewId,
+              findingId,
               message: messageOf(persistErr),
             });
           }
         }
+        reachabilityOutcomes = applied.downgrades.map((d) => ({
+          index: d.index,
+          reason: d.reason,
+          originalSeverity: agreedRaw![d.index]?.severity ?? "unknown",
+        }));
         logInfo("reachability_gate.completed", {
           reviewId,
           gated: applied.rows.length,
@@ -528,7 +562,8 @@ export async function runReviewKernel(
   // Full agreement-decision shape, shared across cost-cap + success
   // branches. Triage is included unconditionally — see the kernel
   // contract above. `agreed` here reflects the post-reachability-gate
-  // state when the gate fired; otherwise it is the raw consensus output.
+  // state when the gate fired; the architect-recommended `agreedRawByGate`
+  // field preserves the pre-gate consensus shape for auditability.
   const agreementDecision = {
     mode: bundle.agreementMode,
     agreed: bundle.agreed,
@@ -537,7 +572,9 @@ export async function runReviewKernel(
     degradedReason: bundle.degradedReason,
     triage: bundle.triage,
     reachabilityGate:
-      reachabilityOutcomes.length > 0 ? { downgrades: reachabilityOutcomes } : undefined,
+      reachabilityOutcomes.length > 0
+        ? { downgrades: reachabilityOutcomes, agreedRawByGate: agreedRaw }
+        : undefined,
   };
   const providerResponses: Record<string, unknown> = { perProvider: bundle.perProvider };
   if (rail !== undefined) providerResponses["rail"] = rail;
@@ -607,6 +644,7 @@ export async function runReviewKernel(
       bundle,
       files,
       findingIds,
+      reviewAttempt: args.reviewAttempt ?? 1,
       lane: args.installLane,
     });
   }
@@ -626,9 +664,10 @@ async function runInstallLane(args: {
   bundle: Awaited<ReturnType<typeof realReviewPR>>;
   files: Parameters<typeof realReviewPR>[0]["files"];
   findingIds: string[];
+  reviewAttempt: number;
   lane: ReviewKernelInstallLane;
 }): Promise<void> {
-  const { reviewId, owner, repo, prNumber, bundle, files, findingIds, lane } = args;
+  const { reviewId, owner, repo, prNumber, bundle, files, findingIds, reviewAttempt, lane } = args;
 
   // Onboarder summary fires regardless of agreed/degraded. It self-gates
   // on ONBOARDER_ENABLED + first-review-only. Failures are logged but
@@ -715,6 +754,7 @@ async function runInstallLane(args: {
               verdict: row.outcome.verdict,
               evidence: row.outcome,
               modelId: null,
+              reviewAttempt,
             });
           } catch (persistErr) {
             logError("patch_verify.persist_failed", {
@@ -987,6 +1027,7 @@ async function processClaimedRow(
   reviewId: string,
   row: ReviewQueueRow & { installationId: number; owner: string; repo: string },
   deps: WorkerDeps,
+  reviewAttempt: number,
 ): Promise<void> {
   const installationToken = await deps.getInstallationToken(row.installationId);
   const files = await deps.getChangedFiles({
@@ -1012,6 +1053,7 @@ async function processClaimedRow(
       // No cost cap on the installation rail — drawdown lives in the
       // paywall layer, not here.
       // No signal — the installation rail has no wall-clock budget.
+      reviewAttempt,
       installLane: {
         installationId: row.installationId,
         commitSha: row.commitSha,

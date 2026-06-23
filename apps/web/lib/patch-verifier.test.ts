@@ -26,8 +26,13 @@ function mkIo(
   } = {},
 ): PatchVerifierIo {
   const removed: string[] = [];
+  // mkWorktreeRoot is now called twice — once for the worktree, once for
+  // the per-call HOME dir — so return a fresh path each call. Tests
+  // already in scope only inspect the count of removeDir calls, not the
+  // paths, so unique synthetic paths are fine.
+  let seq = 0;
   return {
-    mkWorktreeRoot: vi.fn(async () => "/tmp/antfleet-pv-mock"),
+    mkWorktreeRoot: vi.fn(async () => `/tmp/antfleet-pv-mock-${seq++}`),
     removeDir: vi.fn(async (p: string) => {
       removed.push(p);
     }),
@@ -95,14 +100,14 @@ describe("runPatchVerifier", () => {
     const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc123",
+      sha: "abc1234",
       patch: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
       finding: mkFinding({ reproduction: "pytest tests/test_repro.py" }),
       io: mkIo({ exec, exists }),
     });
     expect(out.verdict).toBe("verified");
     expect(out.detector).toBe("pnpm");
-    expect(out.testCmd).toBe("pnpm test");
+    expect(out.testCmd).toBe("pnpm test --offline");
     expect(out.pocCmd).toBe("pytest tests/test_repro.py");
   });
 
@@ -118,7 +123,7 @@ describe("runPatchVerifier", () => {
     });
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc123",
+      sha: "abc1234",
       patch: "bogus",
       finding: mkFinding(),
       io: mkIo({ exec }),
@@ -166,7 +171,7 @@ describe("runPatchVerifier", () => {
     const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc123",
+      sha: "abc1234",
       patch: "diff…",
       finding: mkFinding(),
       io: mkIo({ exec, exists }),
@@ -196,7 +201,7 @@ describe("runPatchVerifier", () => {
     const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       patch: "diff",
       finding: mkFinding({ reproduction: "pytest tests/test_repro.py" }),
       io: mkIo({ exec, exists }),
@@ -222,7 +227,7 @@ describe("runPatchVerifier", () => {
     });
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       patch: "diff",
       finding: mkFinding(),
       io: mkIo({ exec, exists: vi.fn(async () => false) }),
@@ -251,7 +256,7 @@ describe("runPatchVerifier", () => {
     const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       patch: "diff",
       finding: mkFinding({ reproduction: null }),
       io: mkIo({ exec, exists }),
@@ -295,7 +300,7 @@ line 5
     const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       patch: brokenPatch,
       finding: mkFinding({
         evidence: [{ path: "src/x.py", startLine: 3, endLine: 4, symbol: null, quote: null }],
@@ -326,7 +331,7 @@ line 5
     const readFile = vi.fn(async () => file);
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       patch: brokenPatch,
       finding: mkFinding({
         evidence: [{ path: "src/x.py", startLine: 1, endLine: 1, symbol: null, quote: null }],
@@ -340,7 +345,7 @@ line 5
   it("returns inconclusive when repoUrl is null (e.g. serverless)", async () => {
     const out = await runPatchVerifier({
       repoUrl: null,
-      sha: "abc",
+      sha: "abcdef0",
       patch: "diff",
       finding: mkFinding(),
       io: mkIo(),
@@ -349,7 +354,7 @@ line 5
     expect(out.notes).toMatch(/requires a repoUrl/);
   });
 
-  it("always tears the worktree down in finally even after a throw", async () => {
+  it("tears down both the worktree AND the per-call HOME dir in finally", async () => {
     const removeDir = vi.fn(async () => {});
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => {
       throw new Error("exec crashed");
@@ -360,14 +365,52 @@ line 5
     };
     const out = await runPatchVerifier({
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       patch: "diff",
       finding: mkFinding(),
       io,
     });
     expect(out.verdict).toBe("inconclusive");
     expect(out.notes).toMatch(/verifier threw/);
-    expect(removeDir).toHaveBeenCalledTimes(1);
+    // Two cleanup calls: worktree + per-call HOME dir.
+    expect(removeDir).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects unsafe repoUrl (non-http scheme, leading dash)", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => ok());
+    for (const repoUrl of [
+      "--upload-pack=/bin/sh",
+      "file:///etc/passwd",
+      "ssh://github.com/o/r.git",
+      "https://user:pass@github.com/o/r.git",
+    ]) {
+      const out = await runPatchVerifier({
+        repoUrl,
+        sha: "abcdef0",
+        patch: "diff",
+        finding: mkFinding(),
+        io: mkIo({ exec }),
+      });
+      expect(out.verdict).toBe("inconclusive");
+      expect(out.notes).toMatch(/unsafe repoUrl/);
+      expect(out.inconclusiveReason).toBe("invalid_input");
+    }
+  });
+
+  it("rejects unsafe sha (non-hex, leading dash, too short)", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => ok());
+    for (const sha of ["--upload-pack=/bin/sh", "deadbe", "zzzzzzzz", ""]) {
+      const out = await runPatchVerifier({
+        repoUrl: "https://github.com/o/r.git",
+        sha,
+        patch: "diff",
+        finding: mkFinding(),
+        io: mkIo({ exec }),
+      });
+      expect(out.verdict).toBe("inconclusive");
+      expect(out.notes).toMatch(/non-hex sha/);
+      expect(out.inconclusiveReason).toBe("invalid_input");
+    }
   });
 });
 
@@ -434,6 +477,7 @@ describe("applyPatchVerifier", () => {
     notes: `outcome=${verdict}`,
     worktreePath: "/tmp/antfleet-pv-mock",
     error: null,
+    inconclusiveReason: verdict === "inconclusive" ? "test_timeout" : null,
   });
 
   function mkOutcomeMap() {
@@ -461,7 +505,7 @@ describe("applyPatchVerifier", () => {
     const result = await applyPatchVerifier({
       outcome,
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       findingAt: (i) => findings[i],
       findingIdAt: (i) => `fid-${i}`,
       runVerifier,
@@ -494,7 +538,7 @@ describe("applyPatchVerifier", () => {
     const result = await applyPatchVerifier({
       outcome,
       repoUrl: "https://github.com/o/r.git",
-      sha: "abc",
+      sha: "abcdef0",
       findingAt: () => undefined,
       findingIdAt: () => null,
       runVerifier,
@@ -518,9 +562,23 @@ describe("minimalEnv", () => {
     expect(env["DATABASE_URL"]).toBeUndefined();
     expect(env["NODE_ENV"]).toBe("test");
     expect(env["CI"]).toBe("1");
-    expect(env["HOME"]).toBe("/tmp");
+    expect(env["HOME"]).toBe("/tmp"); // default
     delete process.env["ANTHROPIC_API_KEY"];
     delete process.env["GITHUB_TOKEN"];
     delete process.env["DATABASE_URL"];
+  });
+
+  it("blocks IMDS metadata endpoints by env config", () => {
+    const env = minimalEnv();
+    expect(env["AWS_EC2_METADATA_DISABLED"]).toBe("true");
+    expect(env["GCE_METADATA_HOST"]).toBe("invalid.localhost");
+  });
+
+  it("threads the per-call HOME dir into HOME and all XDG_*_HOME slots", () => {
+    const env = minimalEnv("/tmp/antfleet-pv-home-xyz");
+    expect(env["HOME"]).toBe("/tmp/antfleet-pv-home-xyz");
+    expect(env["XDG_CONFIG_HOME"]).toBe("/tmp/antfleet-pv-home-xyz/.config");
+    expect(env["XDG_DATA_HOME"]).toBe("/tmp/antfleet-pv-home-xyz/.local/share");
+    expect(env["XDG_CACHE_HOME"]).toBe("/tmp/antfleet-pv-home-xyz/.cache");
   });
 });

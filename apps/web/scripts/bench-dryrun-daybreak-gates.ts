@@ -271,7 +271,13 @@ async function main(): Promise<void> {
         // makeFindingId); decoding the trailing integer is the cheapest
         // way to thread evidence into the verifier without re-querying.
         const idx = parseFindingIndex(status.findingId);
-        const agreed = idx !== null ? findings[idx] : undefined;
+        if (idx === null || !findingIdMatchesAgreed(idx, findings)) {
+          console.warn(
+            `[bench-dryrun] skipping ${status.findingId} — id shape did not pair with an agreed finding`,
+          );
+          continue;
+        }
+        const agreed = findings[idx];
         patchVerifyBudget--;
         try {
           const outcome = await runPatchVerifier({
@@ -357,6 +363,25 @@ function parseFindingIndex(findingId: string): number | null {
   if (m === null) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+// Parity check: a finding_id like `cf4e74ac-0` is meant to point at
+// agreed[0] in this review. Legacy or manually-seeded rows may have a
+// trailing-number shape that's NOT the index (e.g. UUIDs whose tail
+// digits happen to be small). When the trailing index points past the
+// agreed array, OR the candidate finding doesn't even have evidence
+// (the verifier requires evidence path), we treat the row as a
+// non-matching pair and skip — rather than feeding a wrong finding into
+// the verifier which would produce a misleading verdict.
+function findingIdMatchesAgreed(idx: number, findings: AgreedFinding[]): boolean {
+  if (idx < 0 || idx >= findings.length) return false;
+  const f = findings[idx];
+  if (f === undefined) return false;
+  // Pure-add-only patches won't match anything anyway — but the verifier
+  // refuses to anchor without an evidence path, so we drop the row at
+  // pairing time and log the skip rather than burn a verifier call.
+  if (f.evidence.length === 0) return false;
+  return true;
 }
 
 function extractAgreed(agreementDecision: unknown): AgreedFinding[] {

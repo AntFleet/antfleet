@@ -26,15 +26,15 @@ export function isPatchVerifyEnabled(): boolean {
 }
 
 // Forward-compatible per-install resolvers. Until installations gains the
-// nullable boolean columns (planned in 0041's installations addendum) these
-// just return the env value. Once the columns exist, the inner lookup can
+// nullable boolean columns (planned in a follow-up to 0041) these just
+// return the env value. Once the columns exist, the inner lookup can
 // land without churn at the call sites in review-worker.ts.
 //
-// The args are ignored today but the signature stays explicit so call
-// sites already pass installationId/repo and don't need a churning rename
-// when the override path lands.
+// installationId is nullable so paid rails (x402, ACP) which have no
+// known installation can still run the gate — they fall through to the
+// env-default boolean. The args are otherwise ignored today.
 export async function isReachabilityGateEnabledForInstall(
-  _installationId: number,
+  _installationId: number | null,
   _repo: string,
 ): Promise<boolean> {
   void _installationId;
@@ -43,7 +43,7 @@ export async function isReachabilityGateEnabledForInstall(
 }
 
 export async function isPatchVerifyEnabledForInstall(
-  _installationId: number,
+  _installationId: number | null,
   _repo: string,
 ): Promise<boolean> {
   void _installationId;
