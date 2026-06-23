@@ -51,6 +51,18 @@ function jsonText(obj: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(obj) }] };
 }
 
+function mkOutcome(verdict: ReachabilityOutcome["verdict"], reason: string): ReachabilityOutcome {
+  return {
+    verdict,
+    entryPoint: verdict === "reachable" ? { path: "h", line: 1, kind: "http" } : null,
+    callPath: [],
+    reason,
+    modelId: REACHABILITY_MODEL,
+    ms: 1,
+    error: null,
+  };
+}
+
 describe("runReachabilityGate", () => {
   it("parses a reachable verdict with entry point + call path", async () => {
     const create = vi.fn().mockResolvedValue(
@@ -193,18 +205,6 @@ describe("runReachabilityGate", () => {
   });
 
   it("applyReachabilityGate downgrades unreachable HIGH to LOW and skips LOW/MEDIUM", async () => {
-    const mkOutcome = (
-      verdict: ReachabilityOutcome["verdict"],
-      reason: string,
-    ): ReachabilityOutcome => ({
-      verdict,
-      entryPoint: verdict === "reachable" ? { path: "h", line: 1, kind: "http" } : null,
-      callPath: [],
-      reason,
-      modelId: REACHABILITY_MODEL,
-      ms: 1,
-      error: null,
-    });
     const runGate = vi
       .fn<typeof runReachabilityGate>()
       .mockResolvedValueOnce(mkOutcome("unreachable", "guarded by invariant"))

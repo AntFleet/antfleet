@@ -493,8 +493,8 @@ line 5
   });
 });
 
-describe("sniffPocCommand", () => {
-  const base = (reproduction: string | null): Finding => ({
+function mkPocFinding(reproduction: string | null): Finding {
+  return {
     title: "f",
     category: "security",
     severity: "high",
@@ -509,7 +509,11 @@ describe("sniffPocCommand", () => {
     minimumFixScope: "",
     requiresPolicyReview: false,
     upstreamOrigin: null,
-  });
+  };
+}
+
+describe("sniffPocCommand", () => {
+  const base = mkPocFinding;
 
   it("returns the command when it matches an allowed prefix", () => {
     expect(sniffPocCommand(base("pytest tests/test_exploit.py"))).toBe(
@@ -542,8 +546,8 @@ describe("sniffPocCommand", () => {
   });
 });
 
-describe("applyPatchVerifier", () => {
-  const mkOutcome = (verdict: PatchVerifyOutcome["verdict"]): PatchVerifyOutcome => ({
+function mkApplierOutcome(verdict: PatchVerifyOutcome["verdict"]): PatchVerifyOutcome {
+  return {
     verdict,
     detector: "pnpm",
     testCmd: "pnpm test",
@@ -557,16 +561,24 @@ describe("applyPatchVerifier", () => {
     worktreePath: "/tmp/antfleet-pv-mock",
     error: null,
     inconclusiveReason: verdict === "inconclusive" ? "test_timeout" : null,
-  });
+  };
+}
 
-  function mkOutcomeMap() {
-    const byIndex = new Map<number, { patch: string; modelId: string } & Record<string, unknown>>();
-    byIndex.set(0, { patch: "patch-0", modelId: "claude-opus-4-7" });
-    byIndex.set(1, { patch: "patch-1", modelId: "claude-opus-4-7" });
-    byIndex.set(2, { patch: "patch-2", modelId: "claude-opus-4-7" });
-    const inlineByIndex = new Map(byIndex);
-    return { byIndex, inlineByIndex };
-  }
+function mkApplierOutcomeMap(): {
+  byIndex: Map<number, { patch: string; modelId: string } & Record<string, unknown>>;
+  inlineByIndex: Map<number, { patch: string; modelId: string } & Record<string, unknown>>;
+} {
+  const byIndex = new Map<number, { patch: string; modelId: string } & Record<string, unknown>>();
+  byIndex.set(0, { patch: "patch-0", modelId: "claude-opus-4-7" });
+  byIndex.set(1, { patch: "patch-1", modelId: "claude-opus-4-7" });
+  byIndex.set(2, { patch: "patch-2", modelId: "claude-opus-4-7" });
+  const inlineByIndex = new Map(byIndex);
+  return { byIndex, inlineByIndex };
+}
+
+describe("applyPatchVerifier", () => {
+  const mkOutcome = mkApplierOutcome;
+  const mkOutcomeMap = mkApplierOutcomeMap;
 
   it("drops regressed entries from both maps and tags the rest with verifyStatus", async () => {
     const findings: Finding[] = [
