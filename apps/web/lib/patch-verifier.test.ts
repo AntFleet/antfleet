@@ -424,6 +424,32 @@ line 5
     expect(readFile).not.toHaveBeenCalled();
   });
 
+  it("refuses to dereference a symlinked evidence path", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (verb === "init" || verb === "remote" || verb === "fetch" || verb === "checkout")
+          return ok();
+      }
+      return ok();
+    });
+    const readFile = vi.fn(async () => "should not be read");
+    const isSymlink = vi.fn(async () => true);
+    const out = await runPatchVerifier({
+      repoUrl: "https://github.com/o/r.git",
+      sha: "abcdef0",
+      patch: "diff",
+      finding: mkFinding({
+        evidence: [{ path: "evidence-sink", startLine: 1, endLine: 1, symbol: null, quote: null }],
+      }),
+      io: { ...mkIo({ exec }), readFile, isSymlink },
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.notes).toMatch(/refused to follow symlink/);
+    expect(out.inconclusiveReason).toBe("invalid_input");
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
   it("refuses to read evidence files larger than the cap", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
       if (command === "git") {

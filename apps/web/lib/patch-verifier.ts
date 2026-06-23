@@ -25,7 +25,7 @@
 // the unit tests run hermetic. Production callers use realPatchVerifierIo.
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, readFile, access, stat } from "node:fs/promises";
+import { mkdtemp, rm, readFile, access, stat, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { spawn, type SpawnOptions } from "node:child_process";
@@ -109,6 +109,12 @@ export type PatchVerifierIo = {
   // Optional — used to size-cap evidence files before reading. Tests can
   // skip implementing this; production wiring sets it to a real `stat`.
   statSize?: (path: string) => Promise<number>;
+  // Optional — used to reject symlinked evidence paths before reading,
+  // closing a defense-in-depth gap where a tracked symlink could point
+  // at /etc/passwd and the path-traversal guard alone would allow it
+  // (resolvePath does not deref symlinks). Tests can omit; prod wiring
+  // sets it to lstat-based detection.
+  isSymlink?: (path: string) => Promise<boolean>;
   exec: (args: ExecArgs) => Promise<ExecResult>;
   // Used for the patch payload — written to a temp file and fed to
   // `git apply --index <file>` so the patch text is never exposed via the
@@ -253,6 +259,26 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
         });
       }
       try {
+        // Symlink rejection. resolvePath() does NOT dereference symlinks,
+        // so a tracked symlink in the worktree like
+        //   `evidence-sink -> /etc/passwd`
+        // would pass the startsWith check and `readFile` would dereference
+        // it to the target. We refuse explicitly via lstat: an evidence
+        // path that is itself a symlink is structurally suspicious — real
+        // source files are regular files. The kind stays `invalid_input`
+        // so callers can correlate with the traversal-rejection class.
+        if (args.io.isSymlink !== undefined) {
+          const isLink = await args.io.isSymlink(absoluteEvidence);
+          if (isLink) {
+            return inconclusive({
+              worktreePath: worktree,
+              detector: "none",
+              notes: `patch-verifier refused to follow symlink evidence path '${evidencePath}'`,
+              ms: args.io.now() - t0,
+              kind: "invalid_input",
+            });
+          }
+        }
         // Refuse to load huge files. The verifier doesn't need the whole
         // checked-in binary / lockfile, just enough to locate the patch's
         // old-side block.
@@ -727,6 +753,11 @@ export function realPatchVerifierIo(): PatchVerifierIo {
     },
     readFile: async (path) => readFile(path, "utf8"),
     statSize: async (path) => (await stat(path)).size,
+    // lstat (not stat) so we see the link itself, not the target. A
+    // symlink-to-symlink chain is still detected on the first hop;
+    // returning true on any link means the verifier refuses without
+    // dereferencing anything.
+    isSymlink: async (path) => (await lstat(path)).isSymbolicLink(),
     writeTempFile: async (contents) => {
       const dir = await mkdtemp(join(tmpdir(), "antfleet-pv-patch-"));
       const target = join(dir, `patch-${randomUUID()}.diff`);
