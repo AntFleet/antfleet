@@ -1,30 +1,46 @@
 import type { MetadataRoute } from "next";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db/index";
-import { findingStatus, reviews } from "@/db/schema";
+import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 
 const BASE = "https://www.antfleet.dev";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const anatomyRows = await db
-    .select({
-      findingId: findingStatus.findingId,
-      closedAt: findingStatus.closureDetectedAt,
-    })
-    .from(findingStatus)
-    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(
-      and(
-        eq(reviews.publicReceipt, true),
-        eq(findingStatus.status, "closed"),
-        isNotNull(findingStatus.closureSha),
-        // Retracted findings must not be advertised to crawlers — their
-        // /anatomy and /receipts pages emit noindex, so keeping them in the
-        // sitemap would send Google a contradictory "crawl me" signal.
-        isNull(findingStatus.retractedAt),
-      ),
-    )
-    .orderBy(desc(findingStatus.closureDetectedAt));
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const visibilityCondition = disclosureGateEnabled
+    ? derivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const sitemapCondition = and(
+    visibilityCondition,
+    eq(findingStatus.status, "closed"),
+    isNotNull(findingStatus.closureSha),
+    // Retracted findings must not be advertised to crawlers — their
+    // /anatomy and /receipts pages emit noindex, so keeping them in the
+    // sitemap would send Google a contradictory "crawl me" signal.
+    isNull(findingStatus.retractedAt),
+  );
+  const anatomyRows = await (disclosureGateEnabled
+    ? db
+        .select({
+          findingId: findingStatus.findingId,
+          closedAt: findingStatus.closureDetectedAt,
+        })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .where(sitemapCondition)
+        .orderBy(desc(findingStatus.closureDetectedAt))
+    : db
+        .select({
+          findingId: findingStatus.findingId,
+          closedAt: findingStatus.closureDetectedAt,
+        })
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .where(sitemapCondition)
+        .orderBy(desc(findingStatus.closureDetectedAt)));
 
   const staticPages: MetadataRoute.Sitemap = [
     { url: BASE, changeFrequency: "weekly", priority: 1 },

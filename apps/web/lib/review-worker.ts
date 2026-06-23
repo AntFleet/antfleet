@@ -24,6 +24,7 @@ import {
   applyReachabilityGate as realApplyReachabilityGate,
   type ReachabilityOutcome,
 } from "./reachability-gate";
+import { initializeDisclosureForFindings as realInitializeDisclosureForFindings } from "./disclosure";
 import {
   applyPatchVerifier as realApplyPatchVerifier,
   type PatchVerifyOutcome,
@@ -31,6 +32,8 @@ import {
 } from "./patch-verifier";
 import {
   isEvidenceBundleEnabledForInstall as realIsEvidenceBundleEnabledForInstall,
+  isDisclosureGateEnabledForInstall as realIsDisclosureGateEnabledForInstall,
+  isDisclosureSideTableEnabled as realIsDisclosureSideTableEnabled,
   isReachabilityGateEnabledForInstall as realIsReachabilityGateEnabledForInstall,
   isPatchVerifyEnabledForInstall as realIsPatchVerifyEnabledForInstall,
   isThreatModelEnabledForInstall as realIsThreatModelEnabledForInstall,
@@ -129,10 +132,13 @@ export type WorkerDeps = {
   loadRepoThreatModel: typeof realLoadRepoThreatModel;
   upsertRepoThreatModel: typeof realUpsertRepoThreatModel;
   recordFindingEvidenceBundleSlot: typeof realRecordFindingEvidenceBundleSlot;
+  initializeDisclosureForFindings: typeof realInitializeDisclosureForFindings;
+  isDisclosureSideTableEnabled: typeof realIsDisclosureSideTableEnabled;
   isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
   isPatchVerifyEnabledForInstall: typeof realIsPatchVerifyEnabledForInstall;
   isThreatModelEnabledForInstall: typeof realIsThreatModelEnabledForInstall;
   isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
+  isDisclosureGateEnabledForInstall: typeof realIsDisclosureGateEnabledForInstall;
   now: () => Date;
 };
 
@@ -167,10 +173,13 @@ export function realWorkerDeps(): WorkerDeps {
     loadRepoThreatModel: realLoadRepoThreatModel,
     upsertRepoThreatModel: realUpsertRepoThreatModel,
     recordFindingEvidenceBundleSlot: realRecordFindingEvidenceBundleSlot,
+    initializeDisclosureForFindings: realInitializeDisclosureForFindings,
+    isDisclosureSideTableEnabled: realIsDisclosureSideTableEnabled,
     isReachabilityGateEnabledForInstall: realIsReachabilityGateEnabledForInstall,
     isPatchVerifyEnabledForInstall: realIsPatchVerifyEnabledForInstall,
     isThreatModelEnabledForInstall: realIsThreatModelEnabledForInstall,
     isEvidenceBundleEnabledForInstall: realIsEvidenceBundleEnabledForInstall,
+    isDisclosureGateEnabledForInstall: realIsDisclosureGateEnabledForInstall,
     now: () => new Date(),
   };
 }
@@ -414,11 +423,14 @@ export type ReviewKernelDeps = {
   applyReachabilityGate: typeof realApplyReachabilityGate;
   recordGateOutcome: typeof realRecordGateOutcome;
   recordFindingEvidenceBundleSlot: typeof realRecordFindingEvidenceBundleSlot;
+  initializeDisclosureForFindings: typeof realInitializeDisclosureForFindings;
   // Resolver receives an installationId / repo so future per-install
   // overrides slot in without a churning signature.
   isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
   isThreatModelEnabledForInstall: typeof realIsThreatModelEnabledForInstall;
   isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
+  isDisclosureGateEnabledForInstall: typeof realIsDisclosureGateEnabledForInstall;
+  isDisclosureSideTableEnabled: typeof realIsDisclosureSideTableEnabled;
 };
 
 // Install-only lane deps. When the caller (installation rail) wires
@@ -461,6 +473,7 @@ export type ReviewKernelArgs = {
   publicReceipt: boolean;
   files: Parameters<typeof realReviewPR>[0]["files"];
   threatModelSnapshot?: RepoThreatModelSnapshot | null;
+  liveProtocolReviewRequired?: boolean;
   // Forwarded into reviewPR — paid rails set this so the kernel respects
   // the rail's wall-clock budget.
   signal?: AbortSignal;
@@ -605,6 +618,14 @@ export async function runReviewKernel(
   });
 
   const installationId = args.installLane?.installationId ?? null;
+  const reviewPublicAccess = publicAccessForThreatModel({
+    owner,
+    repo,
+    publicReceipt: args.publicReceipt,
+  });
+  const liveProtocolReviewRequired =
+    args.liveProtocolReviewRequired === true ||
+    (installationId === null && reviewPublicAccess === "live_protocol_review_required");
   let evidenceBundleEnabled = false;
   try {
     evidenceBundleEnabled = await deps.isEvidenceBundleEnabledForInstall(installationId, repo);
@@ -622,11 +643,7 @@ export async function runReviewKernel(
       const existing = await deps.loadRepoThreatModel(args.repoHash);
       const existingDocument =
         existing === null ? null : parseRepoThreatModelDocument(existing.model);
-      const publicAccess = publicAccessForThreatModel({
-        owner,
-        repo,
-        publicReceipt: args.publicReceipt,
-      });
+      const publicAccess = reviewPublicAccess;
       let document = existingDocument;
       let refreshCount = existing?.refreshCount ?? 1;
       let shouldPersist = false;
@@ -963,6 +980,7 @@ export async function runReviewKernel(
   // at least one agreed finding — degraded/empty consensus reviews
   // never surface findings to consumers.
   let findingIds: string[] = [];
+  let embargoedDisclosureIndexes = new Set<number>();
   if (!bundle.degraded && bundle.agreed.length > 0) {
     findingIds = await deps.recordFindingStatuses(
       reviewId,
@@ -994,6 +1012,41 @@ export async function runReviewKernel(
     }
   }
 
+  if (findingIds.length > 0) {
+    try {
+      const disclosureEnabled = await deps.isDisclosureGateEnabledForInstall(installationId, repo);
+      if (disclosureEnabled || deps.isDisclosureSideTableEnabled()) {
+        const disclosure = await deps.initializeDisclosureForFindings({
+          reviewId,
+          owner,
+          repo,
+          installationId,
+          commitSha,
+          prNumber,
+          publicReceipt: args.publicReceipt,
+          liveProtocolReviewRequired,
+          routeLiveProtocolEmbargo: disclosureEnabled,
+          agreementDecision,
+          providerResponses,
+          findings: bundle.agreed.map((finding, index) => ({
+            findingId: findingIds[index] ?? makeFindingId(reviewId, index),
+            findingIndex: index,
+            title: finding.title,
+            severity: finding.severity,
+            category: finding.category,
+          })),
+        });
+        embargoedDisclosureIndexes = new Set(disclosure.embargoedFindingIndexes);
+      }
+    } catch (persistErr) {
+      logError("disclosure.initialize_failed", {
+        reviewId,
+        message: messageOf(persistErr),
+      });
+      throw persistErr;
+    }
+  }
+
   // Flush the deferred reachability gate persistence now that the
   // canonical finding_ids are allocated. Done after recordFindingStatuses
   // so the side-table's finding_id can be joined back to finding_status
@@ -1022,11 +1075,45 @@ export async function runReviewKernel(
       findingIds,
       reviewAttempt: args.reviewAttempt ?? 1,
       evidenceBundleEnabled,
+      embargoedDisclosureIndexes,
       lane: args.installLane,
     });
   }
 
-  return { kind: "completed", bundle, findingIds };
+  return {
+    kind: "completed",
+    bundle: redactBundleForPublicDisclosure(bundle, embargoedDisclosureIndexes),
+    findingIds: redactFindingIdsForPublicDisclosure(findingIds, embargoedDisclosureIndexes),
+  };
+}
+
+type ReviewBundle = Awaited<ReturnType<typeof realReviewPR>>;
+
+function redactBundleForPublicDisclosure(
+  bundle: ReviewBundle,
+  embargoedIndexes: ReadonlySet<number>,
+): ReviewBundle {
+  if (embargoedIndexes.size === 0) return bundle;
+  return {
+    ...bundle,
+    agreed: publicAgreedFindings(bundle.agreed, embargoedIndexes),
+  };
+}
+
+function publicAgreedFindings(
+  findings: ReviewBundle["agreed"],
+  embargoedIndexes: ReadonlySet<number>,
+): ReviewBundle["agreed"] {
+  if (embargoedIndexes.size === 0) return findings;
+  return findings.filter((_finding, index) => !embargoedIndexes.has(index));
+}
+
+function redactFindingIdsForPublicDisclosure(
+  findingIds: string[],
+  embargoedIndexes: ReadonlySet<number>,
+): string[] {
+  if (embargoedIndexes.size === 0) return findingIds;
+  return findingIds.filter((_findingId, index) => !embargoedIndexes.has(index));
 }
 
 // Install-only lane: onboarder summary, patch agent, PR comment, click-
@@ -1043,6 +1130,7 @@ async function runInstallLane(args: {
   findingIds: string[];
   reviewAttempt: number;
   evidenceBundleEnabled: boolean;
+  embargoedDisclosureIndexes: ReadonlySet<number>;
   lane: ReviewKernelInstallLane;
 }): Promise<void> {
   const {
@@ -1055,35 +1143,51 @@ async function runInstallLane(args: {
     findingIds,
     reviewAttempt,
     evidenceBundleEnabled,
+    embargoedDisclosureIndexes,
     lane,
   } = args;
 
-  // Onboarder summary fires regardless of agreed/degraded. It self-gates
-  // on ONBOARDER_ENABLED + first-review-only. Failures are logged but
-  // never bubble; the review itself is the load-bearing outcome.
-  try {
-    const perProviderFindingCounts: Record<string, number> = {};
-    for (const p of bundle.perProvider) {
-      perProviderFindingCounts[p.name] = p.output?.findings.length ?? 0;
+  if (embargoedDisclosureIndexes.size === 0) {
+    // Onboarder summary fires regardless of agreed/degraded. It self-gates
+    // on ONBOARDER_ENABLED + first-review-only. Failures are logged but
+    // never bubble; the review itself is the load-bearing outcome.
+    try {
+      const perProviderFindingCounts: Record<string, number> = {};
+      for (const p of bundle.perProvider) {
+        perProviderFindingCounts[p.name] = p.output?.findings.length ?? 0;
+      }
+      await lane.runFirstReviewSummary({
+        installationId: lane.installationId,
+        owner,
+        repo,
+        prNumber,
+        perProviderFindingCounts,
+        agreedCount: bundle.agreed.length,
+        disagreementCount: bundle.disagreements.length,
+        modelIds: bundle.modelIds,
+      });
+    } catch (err) {
+      logError("onboarder.first_review_summary_dispatch_failed", {
+        reviewId,
+        message: messageOf(err),
+      });
     }
-    await lane.runFirstReviewSummary({
-      installationId: lane.installationId,
-      owner,
-      repo,
-      prNumber,
-      perProviderFindingCounts,
-      agreedCount: bundle.agreed.length,
-      disagreementCount: bundle.disagreements.length,
-      modelIds: bundle.modelIds,
-    });
-  } catch (err) {
-    logError("onboarder.first_review_summary_dispatch_failed", {
+  } else {
+    logInfo("disclosure.first_review_summary_suppressed", {
       reviewId,
-      message: messageOf(err),
+      withheldFindings: embargoedDisclosureIndexes.size,
     });
   }
 
   if (bundle.degraded || bundle.agreed.length === 0) return;
+  const publicAgreed = publicAgreedFindings(bundle.agreed, embargoedDisclosureIndexes);
+  if (publicAgreed.length === 0) {
+    logInfo("disclosure.public_comment_suppressed", {
+      reviewId,
+      withheldFindings: embargoedDisclosureIndexes.size,
+    });
+    return;
+  }
 
   // Patch Agent v1.5 — between agreement gate and comment post. Returns
   // null when the env flag is disabled OR when the per-install override
@@ -1091,18 +1195,25 @@ async function runInstallLane(args: {
   // A throw here is logged but never blocks comment posting — the spec
   // requires patch generation failure to be invisible to the caller.
   let patchOutcome: Awaited<ReturnType<typeof realRunPatchAgent>> = null;
-  try {
-    patchOutcome = await lane.runPatchAgent({
+  if (embargoedDisclosureIndexes.size === 0) {
+    try {
+      patchOutcome = await lane.runPatchAgent({
+        reviewId,
+        installationId: lane.installationId,
+        repo,
+        findings: bundle.agreed,
+        changedFiles: files,
+      });
+    } catch (err) {
+      logError("patch_agent.threw", {
+        reviewId,
+        message: messageOf(err),
+      });
+    }
+  } else {
+    logInfo("disclosure.patch_agent_suppressed", {
       reviewId,
-      installationId: lane.installationId,
-      repo,
-      findings: bundle.agreed,
-      changedFiles: files,
-    });
-  } catch (err) {
-    logError("patch_agent.threw", {
-      reviewId,
-      message: messageOf(err),
+      withheldFindings: embargoedDisclosureIndexes.size,
     });
   }
   if (patchOutcome !== null) {
@@ -1243,7 +1354,7 @@ async function runInstallLane(args: {
       message: messageOf(err),
     });
   }
-  const commentBody = formatPRComment(bundle.agreed, {
+  const commentBody = formatPRComment(publicAgreed, {
     reviewId,
     totalMs: bundle.totalMs,
     estimatedCostUsd: bundle.estimatedCostUsd,
@@ -1267,7 +1378,7 @@ async function runInstallLane(args: {
     reviewId,
     commentId: posted.id,
     commentUrl: posted.htmlUrl,
-    findingCount: bundle.agreed.length,
+    findingCount: publicAgreed.length,
     patchesIncluded: patchOutcome?.byIndex.size ?? 0,
   });
 
@@ -1533,9 +1644,12 @@ async function processClaimedRow(
       applyReachabilityGate: deps.applyReachabilityGate,
       recordGateOutcome: deps.recordGateOutcome,
       recordFindingEvidenceBundleSlot: deps.recordFindingEvidenceBundleSlot,
+      initializeDisclosureForFindings: deps.initializeDisclosureForFindings,
       isReachabilityGateEnabledForInstall: deps.isReachabilityGateEnabledForInstall,
       isThreatModelEnabledForInstall: deps.isThreatModelEnabledForInstall,
       isEvidenceBundleEnabledForInstall: deps.isEvidenceBundleEnabledForInstall,
+      isDisclosureGateEnabledForInstall: deps.isDisclosureGateEnabledForInstall,
+      isDisclosureSideTableEnabled: deps.isDisclosureSideTableEnabled,
     },
   );
   if (kernelOutcome.kind === "skipped") return;

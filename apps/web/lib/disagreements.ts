@@ -1,6 +1,7 @@
 import { and, count, desc, eq, lt, max, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import { reviews } from "@/db/schema";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { shortenReviewId } from "@/lib/short-id";
 
 export type DisagreementCategory = "solo_anthropic" | "solo_openai" | "mismatched_classification";
@@ -39,6 +40,10 @@ const SEVERITY_RANK: Record<string, number> = {
   high: 3,
   critical: 4,
 };
+
+function reviewPublicGate() {
+  return isDisclosureGateEnabled() ? sql<boolean>`false` : eq(reviews.publicReceipt, true);
+}
 
 type Evidence = ProviderFinding["evidence"][number];
 type IndexedFinding = ProviderFinding & { originalIndex: number };
@@ -174,7 +179,7 @@ export async function loadDisagreementsAggregate(): Promise<{
       lastCreatedAt: max(reviews.createdAt),
     })
     .from(reviews)
-    .where(and(eq(reviews.publicReceipt, true), sql`${reviews.providerResponses} IS NOT NULL`));
+    .where(and(reviewPublicGate(), sql`${reviews.providerResponses} IS NOT NULL`));
   const row = rows[0];
   return {
     totalReviewCount: row?.totalReviewCount ?? 0,
@@ -197,10 +202,7 @@ export async function loadDisagreementDetail(id: string): Promise<DisagreementRo
     })
     .from(reviews)
     .where(
-      and(
-        eq(reviews.publicReceipt, true),
-        sql`${reviews.reviewId}::text LIKE ${`${parsed.reviewIdShort}%`}`,
-      ),
+      and(reviewPublicGate(), sql`${reviews.reviewId}::text LIKE ${`${parsed.reviewIdShort}%`}`),
     )
     .limit(10);
 
@@ -533,9 +535,9 @@ async function loadPublicReviewSources(args?: {
 }): Promise<ReviewSource[]> {
   const where =
     args?.before === undefined
-      ? and(eq(reviews.publicReceipt, true), sql`${reviews.providerResponses} IS NOT NULL`)
+      ? and(reviewPublicGate(), sql`${reviews.providerResponses} IS NOT NULL`)
       : and(
-          eq(reviews.publicReceipt, true),
+          reviewPublicGate(),
           sql`${reviews.providerResponses} IS NOT NULL`,
           lt(reviews.createdAt, args.before),
         );

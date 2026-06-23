@@ -531,11 +531,18 @@ export const installations = pgTable(
     // patchAgentEnabled. Canary on AntFleet/aeon-bench before flipping
     // env-wide.
     patchAgentClickApplyEnabled: boolean("patch_agent_click_apply_enabled"),
+    // Coordinated disclosure gate. Operator-managed only: true means HIGH /
+    // CRITICAL findings for this repo enter the private disclosure state
+    // machine instead of surfacing immediately. Default false so existing
+    // installs keep byte-identical public receipt behavior until explicitly
+    // classified.
+    isLiveProtocol: boolean("is_live_protocol").notNull().default(false),
   },
   (t) => [
     unique("installations_install_repo_uniq").on(t.installationId, t.repo),
     index("installations_status_idx").on(t.status),
     index("installations_wallet_address_idx").on(t.walletAddress),
+    index("installations_live_protocol_idx").on(t.isLiveProtocol),
   ],
 );
 
@@ -911,6 +918,67 @@ export const repoThreatModel = pgTable(
   ],
 );
 
+// Coordinated disclosure state per finding. Public receipt eligibility is
+// derived from this row plus reviews.public_receipt: published findings are
+// public; non-disclosure findings inherit the legacy review-level flag.
+// Active embargo states remain private even when the source review was public.
+export const findingDisclosure = pgTable(
+  "finding_disclosure",
+  {
+    findingId: text("finding_id")
+      .primaryKey()
+      .references(() => findingStatus.findingId, { onDelete: "cascade" }),
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => reviews.reviewId, { onDelete: "cascade" }),
+    state: text("state").notNull().default("none"),
+    enteredAt: timestamp("entered_at", { withTimezone: true }).notNull().defaultNow(),
+    embargoExpiresAt: timestamp("embargo_expires_at", { withTimezone: true }),
+    cveId: text("cve_id"),
+    cveRequestedAt: timestamp("cve_requested_at", { withTimezone: true }),
+    ghsaId: text("ghsa_id"),
+    ghsaHtmlUrl: text("ghsa_html_url"),
+    ghsaPublishedAt: timestamp("ghsa_published_at", { withTimezone: true }),
+    ghsaReservationToken: text("ghsa_reservation_token"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    acknowledgedBy: text("acknowledged_by"),
+    forcedBy: text("forced_by"),
+    maintainerUrlCiphertext: text("maintainer_url_ciphertext"),
+    maintainerUrlLogId: text("maintainer_url_log_id"),
+    advisoryDraft: text("advisory_draft"),
+    advisoryDraftUpdatedAt: timestamp("advisory_draft_updated_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("finding_disclosure_review_idx").on(t.reviewId),
+    index("finding_disclosure_state_idx").on(t.state),
+    index("finding_disclosure_embargo_expires_idx").on(t.embargoExpiresAt),
+  ],
+);
+
+export const findingDisclosureLog = pgTable(
+  "finding_disclosure_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    findingId: text("finding_id")
+      .notNull()
+      .references(() => findingDisclosure.findingId, { onDelete: "cascade" }),
+    fromState: text("from_state"),
+    toState: text("to_state").notNull(),
+    actorType: text("actor_type").notNull(),
+    actorId: text("actor_id"),
+    reason: text("reason").notNull(),
+    atSha: text("at_sha").notNull(),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("finding_disclosure_log_finding_idx").on(t.findingId),
+    index("finding_disclosure_log_created_idx").on(t.createdAt),
+  ],
+);
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
@@ -958,3 +1026,7 @@ export type ScorecardSnapshot = typeof scorecardSnapshots.$inferSelect;
 export type NewScorecardSnapshot = typeof scorecardSnapshots.$inferInsert;
 export type ReviewGateOutcome = typeof reviewGateOutcomes.$inferSelect;
 export type NewReviewGateOutcome = typeof reviewGateOutcomes.$inferInsert;
+export type FindingDisclosure = typeof findingDisclosure.$inferSelect;
+export type NewFindingDisclosure = typeof findingDisclosure.$inferInsert;
+export type FindingDisclosureLog = typeof findingDisclosureLog.$inferSelect;
+export type NewFindingDisclosureLog = typeof findingDisclosureLog.$inferInsert;

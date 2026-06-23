@@ -1,9 +1,17 @@
 import { cache } from "react";
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import { db } from "@/db/index";
+import { reviewDerivedPublicReceiptCondition } from "@/db/public-receipt";
 import { reviews, findingStatus } from "@/db/schema";
+import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 
 export const GENERATOR_VERSION = "1.0.0";
+
+function reviewPublicGate() {
+  return isDisclosureGateEnabled()
+    ? reviewDerivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -123,7 +131,7 @@ export async function computeScorecardForWeek(weekEndingDate: Date): Promise<Sco
     .from(reviews)
     .where(
       and(
-        eq(reviews.publicReceipt, true),
+        reviewPublicGate(),
         gte(reviews.createdAt, weekStart),
         lt(reviews.createdAt, weekEndExclusive),
       ),
@@ -293,7 +301,7 @@ async function computeRolling4Week(
     .from(reviews)
     .where(
       and(
-        eq(reviews.publicReceipt, true),
+        reviewPublicGate(),
         gte(reviews.createdAt, fourWeeksStart),
         lt(reviews.createdAt, weekEndExclusive),
       ),
@@ -377,7 +385,7 @@ export const loadAllTimeAgreementRate = cache(async (): Promise<AllTimeAgreement
       providerResponses: reviews.providerResponses,
     })
     .from(reviews)
-    .where(eq(reviews.publicReceipt, true));
+    .where(reviewPublicGate());
 
   if (reviewRows.length === 0) return null;
 

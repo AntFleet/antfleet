@@ -2,6 +2,9 @@ import { describe, it, expect, afterEach } from "vitest";
 import {
   isEvidenceBundleEnabled,
   isEvidenceBundleEnabledForInstall,
+  isDisclosureGateEnabled,
+  isDisclosureGateEnabledForInstall,
+  isDisclosureSideTableEnabled,
   isReachabilityGateEnabled,
   isPatchVerifyEnabled,
   isThreatModelEnabled,
@@ -15,6 +18,8 @@ const KEYS = [
   "ANTFLEET_PATCH_VERIFY",
   "ANTFLEET_THREAT_MODEL",
   "ANTFLEET_EVIDENCE_BUNDLE",
+  "ANTFLEET_DISCLOSURE_GATE",
+  "ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE",
 ];
 
 afterEach(() => {
@@ -27,6 +32,7 @@ describe("daybreak-gates-env", () => {
     expect(isPatchVerifyEnabled()).toBe(false);
     expect(isThreatModelEnabled()).toBe(false);
     expect(isEvidenceBundleEnabled()).toBe(false);
+    expect(isDisclosureGateEnabled()).toBe(false);
   });
 
   it("ANTFLEET_REACHABILITY_GATE=true enables reachability only", () => {
@@ -35,6 +41,7 @@ describe("daybreak-gates-env", () => {
     expect(isPatchVerifyEnabled()).toBe(false);
     expect(isThreatModelEnabled()).toBe(false);
     expect(isEvidenceBundleEnabled()).toBe(false);
+    expect(isDisclosureGateEnabled()).toBe(false);
   });
 
   it("ANTFLEET_PATCH_VERIFY=1 enables patch verify only", () => {
@@ -43,6 +50,7 @@ describe("daybreak-gates-env", () => {
     expect(isPatchVerifyEnabled()).toBe(true);
     expect(isThreatModelEnabled()).toBe(false);
     expect(isEvidenceBundleEnabled()).toBe(false);
+    expect(isDisclosureGateEnabled()).toBe(false);
   });
 
   it("ANTFLEET_THREAT_MODEL=yes enables threat model only", () => {
@@ -51,6 +59,7 @@ describe("daybreak-gates-env", () => {
     expect(isPatchVerifyEnabled()).toBe(false);
     expect(isThreatModelEnabled()).toBe(true);
     expect(isEvidenceBundleEnabled()).toBe(false);
+    expect(isDisclosureGateEnabled()).toBe(false);
   });
 
   it("ANTFLEET_EVIDENCE_BUNDLE=on enables evidence bundles only", () => {
@@ -59,6 +68,20 @@ describe("daybreak-gates-env", () => {
     expect(isPatchVerifyEnabled()).toBe(false);
     expect(isThreatModelEnabled()).toBe(false);
     expect(isEvidenceBundleEnabled()).toBe(true);
+    expect(isDisclosureGateEnabled()).toBe(false);
+  });
+
+  it("ANTFLEET_DISCLOSURE_GATE requires backfill completion", () => {
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "true";
+    expect(isDisclosureGateEnabled()).toBe(false);
+    expect(isDisclosureSideTableEnabled()).toBe(false);
+    process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = "true";
+    expect(isReachabilityGateEnabled()).toBe(false);
+    expect(isPatchVerifyEnabled()).toBe(false);
+    expect(isThreatModelEnabled()).toBe(false);
+    expect(isEvidenceBundleEnabled()).toBe(false);
+    expect(isDisclosureSideTableEnabled()).toBe(true);
+    expect(isDisclosureGateEnabled()).toBe(true);
   });
 
   it("flags are case-insensitive and trim whitespace", () => {
@@ -66,10 +89,13 @@ describe("daybreak-gates-env", () => {
     process.env["ANTFLEET_PATCH_VERIFY"] = "Yes";
     process.env["ANTFLEET_THREAT_MODEL"] = "1";
     process.env["ANTFLEET_EVIDENCE_BUNDLE"] = "ON";
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "true";
+    process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = "true";
     expect(isReachabilityGateEnabled()).toBe(true);
     expect(isPatchVerifyEnabled()).toBe(true);
     expect(isThreatModelEnabled()).toBe(true);
     expect(isEvidenceBundleEnabled()).toBe(true);
+    expect(isDisclosureGateEnabled()).toBe(true);
   });
 
   it("unknown values read as disabled (fail-closed)", () => {
@@ -77,10 +103,12 @@ describe("daybreak-gates-env", () => {
     process.env["ANTFLEET_PATCH_VERIFY"] = "0";
     process.env["ANTFLEET_THREAT_MODEL"] = "false";
     process.env["ANTFLEET_EVIDENCE_BUNDLE"] = "nope";
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "later";
     expect(isReachabilityGateEnabled()).toBe(false);
     expect(isPatchVerifyEnabled()).toBe(false);
     expect(isThreatModelEnabled()).toBe(false);
     expect(isEvidenceBundleEnabled()).toBe(false);
+    expect(isDisclosureGateEnabled()).toBe(false);
   });
 
   it("per-install resolvers currently mirror the env flag", async () => {
@@ -88,9 +116,12 @@ describe("daybreak-gates-env", () => {
     process.env["ANTFLEET_PATCH_VERIFY"] = "false";
     process.env["ANTFLEET_THREAT_MODEL"] = "true";
     process.env["ANTFLEET_EVIDENCE_BUNDLE"] = "true";
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "true";
+    process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = "true";
     await expect(isReachabilityGateEnabledForInstall(1, "owner/repo")).resolves.toBe(true);
     await expect(isPatchVerifyEnabledForInstall(1, "owner/repo")).resolves.toBe(false);
     await expect(isThreatModelEnabledForInstall(1, "owner/repo")).resolves.toBe(true);
     await expect(isEvidenceBundleEnabledForInstall(1, "owner/repo")).resolves.toBe(true);
+    await expect(isDisclosureGateEnabledForInstall(1, "owner/repo")).resolves.toBe(true);
   });
 });

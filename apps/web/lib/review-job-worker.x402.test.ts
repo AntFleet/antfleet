@@ -17,6 +17,7 @@ const queryMocks = vi.hoisted(() => ({
 const dbQueryMocks = vi.hoisted(() => ({
   enqueueReview: vi.fn(),
   hashRepo: vi.fn(),
+  loadPrivateDisclosureFindingIndexes: vi.fn(),
   loadRepoThreatModel: vi.fn(),
   markReviewSucceeded: vi.fn(),
   recordFindingStatuses: vi.fn(),
@@ -49,6 +50,11 @@ vi.mock("@/db/queries", () => dbQueryMocks);
 vi.mock("@/lib/paywall/queries", () => paywallQueryMocks);
 vi.mock("@/lib/github-files-public", () => publicFilesMocks);
 vi.mock("@/lib/review-pipeline", () => reviewPipelineMocks);
+vi.mock("@/lib/disclosure", () => ({
+  initializeDisclosureForFindings: vi
+    .fn()
+    .mockResolvedValue({ embargoedFindingIds: [], embargoedFindingIndexes: [] }),
+}));
 vi.mock("@/lib/paywall/env", () => ({ getReviewPriceUsdc: () => "0.5" }));
 vi.mock("@/lib/github-app", () => ({ getInstallationToken: vi.fn() }));
 vi.mock("@/lib/repo-visibility", () => ({ isPublicRepo: vi.fn() }));
@@ -131,6 +137,7 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     queryMocks.markJobRunning.mockResolvedValue(true);
     dbQueryMocks.hashRepo.mockReturnValue("repo-hash");
     dbQueryMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: false });
+    dbQueryMocks.loadPrivateDisclosureFindingIndexes.mockResolvedValue([]);
     publicFilesMocks.getPublicChangedFiles.mockResolvedValue([
       { filename: "src/index.ts", patch: "@@ -1 +1 @@" },
     ]);
@@ -203,6 +210,72 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     expect(events).toEqual(["settle", "mark-settled", "mark-complete-settled"]);
     expect(queryMocks.markJobComplete).not.toHaveBeenCalled();
     expect(queryMocks.markX402JobFailedWithResultAndSettlement).not.toHaveBeenCalled();
+  });
+
+  it("redacts embargoed findings from cached x402 result payloads", async () => {
+    const oldDisclosureFlag = process.env["ANTFLEET_DISCLOSURE_GATE"];
+    const oldBackfillFlag = process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+    process.env["ANTFLEET_DISCLOSURE_GATE"] = "true";
+    process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = "true";
+    dbQueryMocks.loadPrivateDisclosureFindingIndexes.mockResolvedValue([0]);
+    paywallQueryMocks.loadReviewForResponse.mockResolvedValue({
+      reviewId: "review-1",
+      processingStatus: "done",
+      agreementDecision: {
+        mode: "unanimous",
+        agreed: [
+          { title: "Private live-protocol drain", severity: "critical" },
+          { title: "Public cleanup", severity: "low" },
+        ],
+        disagreements: [
+          {
+            providers: ["anthropic"],
+            finding: { title: "Private live-protocol drain", severity: "critical" },
+          },
+        ],
+        degraded: false,
+        reachabilityGate: {
+          downgrades: [
+            { index: 0, reason: "private evidence", originalSeverity: "critical" },
+            { index: 1, reason: "public evidence", originalSeverity: "low" },
+          ],
+          agreedRawByGate: [
+            { title: "Private live-protocol drain", severity: "critical" },
+            { title: "Public cleanup", severity: "low" },
+          ],
+        },
+      },
+      findingIds: ["review-1-0", "review-1-1"],
+    });
+
+    try {
+      const { processReviewJob } = await import("./review-job-worker");
+      await processReviewJob("job-x402");
+
+      const result = queryMocks.markX402JobCompleteSettled.mock.calls[0]?.[2] as Record<
+        string,
+        unknown
+      >;
+      const agreement = result["agreementDecision"] as Record<string, unknown>;
+      expect(agreement["agreed"]).toEqual([{ title: "Public cleanup", severity: "low" }]);
+      expect(agreement["disagreements"]).toBeUndefined();
+      expect(
+        (agreement["reachabilityGate"] as Record<string, unknown>)["agreedRawByGate"],
+      ).toBeUndefined();
+      expect((agreement["reachabilityGate"] as Record<string, unknown>)["downgrades"]).toEqual([
+        { index: 0, reason: "public evidence", originalSeverity: "low" },
+      ]);
+      expect(agreement["disclosure"]).toMatchObject({ withheldFindings: 1 });
+      expect(result["findingIds"]).toEqual(["review-1-1"]);
+    } finally {
+      if (oldDisclosureFlag === undefined) delete process.env["ANTFLEET_DISCLOSURE_GATE"];
+      else process.env["ANTFLEET_DISCLOSURE_GATE"] = oldDisclosureFlag;
+      if (oldBackfillFlag === undefined) {
+        delete process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"];
+      } else {
+        process.env["ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE"] = oldBackfillFlag;
+      }
+    }
   });
 
   it("marks settlement_failed and fails the job when post-review settlement fails", async () => {

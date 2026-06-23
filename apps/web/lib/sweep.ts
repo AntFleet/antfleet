@@ -386,6 +386,14 @@ async function processClosure(
   if (finding === undefined) {
     throw new Error("finding payload missing from JSONB extraction map");
   }
+  if (batch.prCommentId === null || !findingMeta.publicReceiptEligible) {
+    await deps.markFindingClosed({
+      findingId: decision.findingId,
+      closureSha: decision.closureSha,
+    });
+    return;
+  }
+
   // Cast to the public Finding shape — extractFindingsByIndex already
   // validated the shape; the loose unknown is just to keep this fn callable
   // from runClosurePass without leaking the type into its signature.
