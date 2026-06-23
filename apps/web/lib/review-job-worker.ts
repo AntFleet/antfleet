@@ -8,11 +8,15 @@ import {
   hashRepo,
   markReviewSucceeded,
   recordFindingStatuses,
+  recordFindingEvidenceBundleSlot,
   recordGateOutcome,
   updateReview,
 } from "@/db/queries";
 import { applyReachabilityGate } from "@/lib/reachability-gate";
-import { isReachabilityGateEnabledForInstall } from "@/lib/daybreak-gates-env";
+import {
+  isEvidenceBundleEnabledForInstall,
+  isReachabilityGateEnabledForInstall,
+} from "@/lib/daybreak-gates-env";
 import { getInstallationToken } from "@/lib/github-app";
 import { alertCritical } from "@/lib/alert";
 import { logError, logInfo, messageOf } from "@/lib/log";
@@ -397,6 +401,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         owner,
         repo,
         prNumber,
+        commitSha: sha,
         files,
         signal,
         rail: "x402",
@@ -411,7 +416,9 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         recordFindingStatuses,
         applyReachabilityGate,
         recordGateOutcome,
+        recordFindingEvidenceBundleSlot,
         isReachabilityGateEnabledForInstall,
+        isEvidenceBundleEnabledForInstall,
       },
     );
     if (outcome.kind === "completed" || outcome.kind === "skipped") {
@@ -490,6 +497,7 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         owner,
         repo,
         prNumber: target.prNumber,
+        commitSha: target.sha,
         files,
         signal,
         rail: "acp",
@@ -504,7 +512,9 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         recordFindingStatuses,
         applyReachabilityGate,
         recordGateOutcome,
+        recordFindingEvidenceBundleSlot,
         isReachabilityGateEnabledForInstall,
+        isEvidenceBundleEnabledForInstall,
       },
     );
     if (outcome.kind === "skipped") {

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { loadPublicReceiptDetail } from "@/db/queries";
+import { loadPublicFindingEvidenceBundle, loadPublicReceiptDetail } from "@/db/queries";
+import type { PublicReceiptDetailRow } from "@/db/queries";
+import { isEvidenceBundleEnabled } from "@/lib/daybreak-gates-env";
 import { toDisplayReceiptDetail } from "@/lib/receipts";
 
 // Single-receipt detail surface. Reads finding_status WHERE finding_id = id
@@ -31,6 +33,9 @@ export async function generateMetadata({
       robots: { index: false, follow: false },
     };
   }
+  if (!isPublicClosedReceipt(row)) {
+    return { title: "AntFleet · Receipt not found" };
+  }
   return {
     title: `AntFleet · ${row.title}`,
     description: `${row.category} · ${row.severity} — closed in ${row.closureSha?.slice(0, 7) ?? "main"}`,
@@ -49,13 +54,25 @@ export default async function ReceiptDetailPage({ params }: { params: Promise<Ro
   if (row.retractedAt !== null) {
     return <RetractedReceiptNotice findingId={row.findingId} reason={row.retractionReason} />;
   }
+  if (!isPublicClosedReceipt(row)) {
+    notFound();
+  }
+  const evidenceEnabled = isEvidenceBundleEnabled();
+  const bundle = evidenceEnabled ? await loadPublicFindingEvidenceBundle(id) : null;
   const detail = toDisplayReceiptDetail(row, new Date());
+  const status = evidenceStatus(bundle);
 
   return (
     <>
-      <Header detail={detail} />
+      <Header detail={detail} evidenceCompleteness={evidenceEnabled ? status : null} />
       <SectionDivider />
       <FindingBody detail={detail} />
+      {evidenceEnabled && (
+        <>
+          <SectionDivider />
+          <EvidenceBlock bundle={bundle} />
+        </>
+      )}
       <SectionDivider />
       <AgentAttribution detail={detail} />
       <SectionDivider />
@@ -118,7 +135,13 @@ function SectionDivider() {
   return <div className="border-t border-[var(--color-line)] my-16" />;
 }
 
-function Header({ detail }: { detail: ReturnType<typeof toDisplayReceiptDetail> }) {
+function Header({
+  detail,
+  evidenceCompleteness,
+}: {
+  detail: ReturnType<typeof toDisplayReceiptDetail>;
+  evidenceCompleteness: EvidenceStatus | null;
+}) {
   return (
     <section className="py-20 pb-12">
       <ContentWrap>
@@ -131,6 +154,9 @@ function Header({ detail }: { detail: ReturnType<typeof toDisplayReceiptDetail> 
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <Badge>{detail.finding.category}</Badge>
           <Badge>{detail.finding.severity}</Badge>
+          {evidenceCompleteness !== null && (
+            <Badge>{evidenceBadgeLabel(evidenceCompleteness)}</Badge>
+          )}
           {detail.shaLabel !== null && <Badge>closed in {detail.shaLabel}</Badge>}
           {detail.closureLagText !== null && <Badge>{detail.closureLagText}</Badge>}
         </div>
@@ -185,6 +211,87 @@ function FindingBody({ detail }: { detail: ReturnType<typeof toDisplayReceiptDet
         </div>
       </ContentWrap>
     </section>
+  );
+}
+
+type PublicEvidenceBundle = Awaited<ReturnType<typeof loadPublicFindingEvidenceBundle>>;
+type EvidenceStatus = "complete" | "partial" | "empty";
+
+function EvidenceBlock({ bundle }: { bundle: PublicEvidenceBundle }) {
+  const status = evidenceStatus(bundle);
+  const poc = slotText(bundle?.pocSnippet, "text");
+  const repro = slotText(bundle?.reproductionCommand, "command");
+  const trace = callPathLines(bundle?.callPathTrace);
+
+  return (
+    <section>
+      <ContentWrap>
+        <details className="rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg-elevated)]">
+          <summary className="cursor-pointer list-none px-5 py-4 flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+              Evidence
+            </span>
+            <Badge>{evidenceBadgeLabel(status)}</Badge>
+          </summary>
+          <div className="border-t border-[var(--color-line)] divide-y divide-[var(--color-line)]">
+            <EvidenceSlot label="PoC" value={poc} empty="not attached" />
+            <EvidenceSlot label="Repro" value={repro} empty="not attached" mono />
+            <div className="px-5 py-4 grid grid-cols-1 gap-2 sm:grid-cols-[120px_1fr] sm:gap-5">
+              <p className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
+                Call path
+              </p>
+              {trace.length > 0 ? (
+                <ol className="flex flex-col gap-1 font-mono text-xs text-[var(--color-ink)]">
+                  {trace.map((line, i) => (
+                    <li key={`${line}-${i}`}>{line}</li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="text-sm text-[var(--color-ink-subtle)]">not attached</p>
+              )}
+            </div>
+            {bundle !== null && (
+              <div className="px-5 py-3 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap gap-x-3 gap-y-1">
+                <span>sha {bundle.affectedSha.slice(0, 12)}</span>
+                <span>attempt {bundle.reviewAttempt}</span>
+                <span>updated {bundle.updatedAt.toISOString()}</span>
+              </div>
+            )}
+          </div>
+        </details>
+      </ContentWrap>
+    </section>
+  );
+}
+
+function EvidenceSlot({
+  label,
+  value,
+  empty,
+  mono = false,
+}: {
+  label: string;
+  value: string | null;
+  empty: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="px-5 py-4 grid grid-cols-1 gap-2 sm:grid-cols-[120px_1fr] sm:gap-5">
+      <p className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
+        {label}
+      </p>
+      <p
+        className={
+          value === null
+            ? "text-sm text-[var(--color-ink-subtle)]"
+            : mono
+              ? "font-mono text-xs text-[var(--color-ink)] break-words"
+              : "text-sm text-[var(--color-ink-muted)] leading-relaxed"
+        }
+      >
+        {value ?? empty}
+      </p>
+    </div>
   );
 }
 
@@ -335,6 +442,65 @@ function formatEvidencePath(ev: {
     return `${ev.path}:${ev.startLine}`;
   }
   return `${ev.path}:${ev.startLine}-${ev.endLine}`;
+}
+
+function evidenceStatus(bundle: PublicEvidenceBundle): EvidenceStatus {
+  const count = visibleEvidenceSlotCount(bundle);
+  if (count === 3) return "complete";
+  if (count > 0) return "partial";
+  return "empty";
+}
+
+function evidenceBadgeLabel(status: EvidenceStatus): string {
+  if (status === "complete") return "evidence complete";
+  if (status === "partial") return "evidence partial";
+  return "no evidence";
+}
+
+function isPublicClosedReceipt(row: PublicReceiptDetailRow): boolean {
+  return row.status === "closed" && row.closedAt !== null;
+}
+
+function visibleEvidenceSlotCount(bundle: PublicEvidenceBundle): number {
+  if (bundle === null) return 0;
+  return [
+    slotText(bundle.pocSnippet, "text"),
+    slotText(bundle.reproductionCommand, "command"),
+    callPathLines(bundle.callPathTrace).length > 0 ? "present" : null,
+  ].filter((value) => value !== null).length;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function slotText(slot: unknown, key: string): string | null {
+  const slotRecord = asRecord(slot);
+  const value = asRecord(slotRecord?.["value"]);
+  const text = value?.[key];
+  return typeof text === "string" && text.trim().length > 0 ? text : null;
+}
+
+function callPathLines(slot: unknown): string[] {
+  const slotRecord = asRecord(slot);
+  const value = asRecord(slotRecord?.["value"]);
+  if (value === null) return [];
+  const out: string[] = [];
+  const entry = asRecord(value["entryPoint"]);
+  if (entry !== null) {
+    const path = typeof entry["path"] === "string" ? entry["path"] : null;
+    const line = typeof entry["line"] === "number" ? entry["line"] : null;
+    const kind = typeof entry["kind"] === "string" ? entry["kind"] : "entry";
+    if (path !== null) out.push(`${kind}: ${path}${line === null ? "" : `:${line}`}`);
+  }
+  const callPath = value["callPath"];
+  if (Array.isArray(callPath)) {
+    for (const hop of callPath) {
+      if (typeof hop === "string" && hop.trim().length > 0) out.push(hop);
+    }
+  }
+  return out;
 }
 
 // Provider names in provider_responses don't always match the human-friendly

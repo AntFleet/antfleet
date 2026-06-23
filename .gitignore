@@ -2,6 +2,12 @@ node_modules/
 dist/
 coverage/
 .omc/
+!.omc/
+.omc/*
+!.omc/research/
+.omc/research/*
+!.omc/research/evidence-bundle-bench-report.md
+!.omc/research/evidence-bundle-launch-tweet.md
 .claude/
 .DS_Store
 .env

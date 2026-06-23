@@ -20,12 +20,17 @@ import {
 import { runPatchAgent as realRunPatchAgent } from "./patch-agent";
 import { isPatchAgentClickApplyEnabledForInstall as realIsPatchAgentClickApplyEnabledForInstall } from "./patch-agent-env";
 import { postPatchReviewComment as realPostPatchReviewComment } from "./patch-review-comment";
-import { applyReachabilityGate as realApplyReachabilityGate } from "./reachability-gate";
+import {
+  applyReachabilityGate as realApplyReachabilityGate,
+  type ReachabilityOutcome,
+} from "./reachability-gate";
 import {
   applyPatchVerifier as realApplyPatchVerifier,
+  type PatchVerifyOutcome,
   realPatchVerifierIo,
 } from "./patch-verifier";
 import {
+  isEvidenceBundleEnabledForInstall as realIsEvidenceBundleEnabledForInstall,
   isReachabilityGateEnabledForInstall as realIsReachabilityGateEnabledForInstall,
   isPatchVerifyEnabledForInstall as realIsPatchVerifyEnabledForInstall,
 } from "./daybreak-gates-env";
@@ -45,12 +50,14 @@ import {
   markReviewSucceeded as realMarkReviewSucceeded,
   markReviewTerminallyFailed as realMarkReviewTerminallyFailed,
   recordFindingStatuses as realRecordFindingStatuses,
+  recordFindingEvidenceBundleSlot as realRecordFindingEvidenceBundleSlot,
   recordGateOutcome as realRecordGateOutcome,
   recordPatchDecisions as realRecordPatchDecisions,
   recordPatchReviewComment as realRecordPatchReviewComment,
   setReviewComment as realSetReviewComment,
   setReviewPatchCost as realSetReviewPatchCost,
   updateReview as realUpdateReview,
+  type EvidenceBundleSlot,
   type ReviewProcessingStatus,
   type ReviewQueueRow,
 } from "@/db/queries";
@@ -103,8 +110,10 @@ export type WorkerDeps = {
   applyReachabilityGate: typeof realApplyReachabilityGate;
   applyPatchVerifier: typeof realApplyPatchVerifier;
   recordGateOutcome: typeof realRecordGateOutcome;
+  recordFindingEvidenceBundleSlot: typeof realRecordFindingEvidenceBundleSlot;
   isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
   isPatchVerifyEnabledForInstall: typeof realIsPatchVerifyEnabledForInstall;
+  isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
   now: () => Date;
 };
 
@@ -135,8 +144,10 @@ export function realWorkerDeps(): WorkerDeps {
     applyReachabilityGate: realApplyReachabilityGate,
     applyPatchVerifier: realApplyPatchVerifier,
     recordGateOutcome: realRecordGateOutcome,
+    recordFindingEvidenceBundleSlot: realRecordFindingEvidenceBundleSlot,
     isReachabilityGateEnabledForInstall: realIsReachabilityGateEnabledForInstall,
     isPatchVerifyEnabledForInstall: realIsPatchVerifyEnabledForInstall,
+    isEvidenceBundleEnabledForInstall: realIsEvidenceBundleEnabledForInstall,
     now: () => new Date(),
   };
 }
@@ -377,9 +388,11 @@ export type ReviewKernelDeps = {
   // by default in prod via env flag; on in bench.
   applyReachabilityGate: typeof realApplyReachabilityGate;
   recordGateOutcome: typeof realRecordGateOutcome;
+  recordFindingEvidenceBundleSlot: typeof realRecordFindingEvidenceBundleSlot;
   // Resolver receives an installationId / repo so future per-install
   // overrides slot in without a churning signature.
   isReachabilityGateEnabledForInstall: typeof realIsReachabilityGateEnabledForInstall;
+  isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
 };
 
 // Install-only lane deps. When the caller (installation rail) wires
@@ -407,6 +420,7 @@ export type ReviewKernelInstallLane = {
   // operator routes the install rail through a backing service.
   applyPatchVerifier: typeof realApplyPatchVerifier;
   recordGateOutcome: typeof realRecordGateOutcome;
+  recordFindingEvidenceBundleSlot: typeof realRecordFindingEvidenceBundleSlot;
   isPatchVerifyEnabledForInstall: typeof realIsPatchVerifyEnabledForInstall;
   now: () => Date;
 };
@@ -416,6 +430,7 @@ export type ReviewKernelArgs = {
   owner: string;
   repo: string;
   prNumber: number;
+  commitSha: string;
   files: Parameters<typeof realReviewPR>[0]["files"];
   // Forwarded into reviewPR — paid rails set this so the kernel respects
   // the rail's wall-clock budget.
@@ -439,11 +454,103 @@ export type ReviewKernelArgs = {
   reviewAttempt?: number;
 };
 
+type AgreedFinding = Awaited<ReturnType<typeof realReviewPR>>["agreed"][number];
+
+function evidenceSlot(args: {
+  producedBy: "reviewer_consensus" | "patch_verifier" | "reachability_gate";
+  sourceGateOutcomeId: string | null;
+  modelId: string | null;
+  reviewedSha: string;
+  reviewAttempt: number;
+  value: unknown;
+}): EvidenceBundleSlot {
+  return {
+    value: args.value,
+    provenance: {
+      producedBy: args.producedBy,
+      sourceGateOutcomeId: args.sourceGateOutcomeId,
+      modelId: args.modelId,
+      reviewedSha: args.reviewedSha,
+      producedAt: new Date().toISOString(),
+      reviewAttempt: args.reviewAttempt,
+    },
+  };
+}
+
+function callPathTraceSlot(args: {
+  outcome: ReachabilityOutcome;
+  sourceGateOutcomeId: string;
+  reviewedSha: string;
+  reviewAttempt: number;
+}): EvidenceBundleSlot | null {
+  if (args.outcome.entryPoint === null || args.outcome.callPath.length === 0) return null;
+  return evidenceSlot({
+    producedBy: "reachability_gate",
+    sourceGateOutcomeId: args.sourceGateOutcomeId,
+    modelId: args.outcome.modelId,
+    reviewedSha: args.reviewedSha,
+    reviewAttempt: args.reviewAttempt,
+    value: {
+      verdict: args.outcome.verdict,
+      entryPoint: args.outcome.entryPoint,
+      callPath: args.outcome.callPath,
+      reason: args.outcome.reason,
+    },
+  });
+}
+
+function patchVerifyEvidenceSlots(args: {
+  finding: AgreedFinding | undefined;
+  outcome: PatchVerifyOutcome;
+  sourceGateOutcomeId: string;
+  reviewerModelIds: Record<string, string>;
+  reviewedSha: string;
+  reviewAttempt: number;
+}): { pocSnippet: EvidenceBundleSlot | null; reproductionCommand: EvidenceBundleSlot | null } {
+  const command = publicVerifierCommand(args.outcome.pocCmd);
+  if (command === null) {
+    return { pocSnippet: null, reproductionCommand: null };
+  }
+  void args.finding;
+  return {
+    pocSnippet: evidenceSlot({
+      producedBy: "patch_verifier",
+      sourceGateOutcomeId: args.sourceGateOutcomeId,
+      modelId: null,
+      reviewedSha: args.reviewedSha,
+      reviewAttempt: args.reviewAttempt,
+      value: { text: command },
+    }),
+    reproductionCommand: evidenceSlot({
+      producedBy: "patch_verifier",
+      sourceGateOutcomeId: args.sourceGateOutcomeId,
+      modelId: null,
+      reviewedSha: args.reviewedSha,
+      reviewAttempt: args.reviewAttempt,
+      value: {
+        command,
+        pocExitCode: args.outcome.pocExitCode,
+        pocMs: args.outcome.pocMs,
+        verifierVerdict: args.outcome.verdict,
+        notes: args.outcome.notes,
+      },
+    }),
+  };
+}
+
+function publicVerifierCommand(command: string | null): string | null {
+  if (command === null) return null;
+  const trimmed = command.trim();
+  if (trimmed.length === 0 || trimmed.length > 1000) return null;
+  if (/[\r\n]/u.test(trimmed)) return null;
+  return trimmed;
+}
+
 export async function runReviewKernel(
   args: ReviewKernelArgs,
   deps: ReviewKernelDeps,
 ): Promise<ReviewKernelOutcome> {
-  const { reviewId, owner, repo, prNumber, files, signal, rail } = args;
+  const { reviewId, owner, repo, prNumber, commitSha, files, signal, rail } = args;
 
   if (files.length === 0) {
     const providerResponses: Record<string, unknown> = {
@@ -467,6 +574,17 @@ export async function runReviewKernel(
     prNumber,
     ...(signal !== undefined ? { signal } : {}),
   });
+
+  const installationId = args.installLane?.installationId ?? null;
+  let evidenceBundleEnabled = false;
+  try {
+    evidenceBundleEnabled = await deps.isEvidenceBundleEnabledForInstall(installationId, repo);
+  } catch (err) {
+    logError("evidence_bundle.gate_lookup_failed", {
+      reviewId,
+      message: messageOf(err),
+    });
+  }
 
   // Daybreak — reachability gate. Runs on EVERY rail (install + paid +
   // acp) — the question "is this bug reachable from a real entry point?"
@@ -504,7 +622,6 @@ export async function runReviewKernel(
   // apply for any findings the gate did decide on before the cap.
   const REACHABILITY_GATE_CAP_MS = 60_000;
   if (!bundle.degraded && bundle.agreed.length > 0) {
-    const installationId = args.installLane?.installationId ?? null;
     try {
       const enabled = await deps.isReachabilityGateEnabledForInstall(installationId, repo);
       if (enabled) {
@@ -566,8 +683,9 @@ export async function runReviewKernel(
         deferredGatePersistence = async (findingIds) => {
           for (const row of capturedRows) {
             const findingId = findingIds[row.index] ?? makeFindingId(reviewId, row.index);
+            let gateOutcomeId: string | null = null;
             try {
-              await deps.recordGateOutcome(reviewId, {
+              gateOutcomeId = await deps.recordGateOutcome(reviewId, {
                 findingId,
                 stage: "reachability",
                 verdict: row.outcome.verdict,
@@ -582,6 +700,31 @@ export async function runReviewKernel(
                 findingId,
                 message: messageOf(persistErr),
               });
+            }
+            if (evidenceBundleEnabled && gateOutcomeId !== null) {
+              const slot = callPathTraceSlot({
+                outcome: row.outcome,
+                sourceGateOutcomeId: gateOutcomeId,
+                reviewedSha: commitSha,
+                reviewAttempt: attempt,
+              });
+              if (slot !== null) {
+                try {
+                  await deps.recordFindingEvidenceBundleSlot({
+                    reviewId,
+                    findingId,
+                    reviewAttempt: attempt,
+                    affectedSha: commitSha,
+                    callPathTrace: slot,
+                  });
+                } catch (persistErr) {
+                  logError("evidence_bundle.reachability_persist_failed", {
+                    reviewId,
+                    findingId,
+                    message: messageOf(persistErr),
+                  });
+                }
+              }
             }
           }
         };
@@ -680,6 +823,26 @@ export async function runReviewKernel(
     );
   }
 
+  if (evidenceBundleEnabled && findingIds.length > 0) {
+    const attempt = args.reviewAttempt ?? 1;
+    for (const findingId of findingIds) {
+      try {
+        await deps.recordFindingEvidenceBundleSlot({
+          reviewId,
+          findingId,
+          reviewAttempt: attempt,
+          affectedSha: commitSha,
+        });
+      } catch (persistErr) {
+        logError("evidence_bundle.empty_persist_failed", {
+          reviewId,
+          findingId,
+          message: messageOf(persistErr),
+        });
+      }
+    }
+  }
+
   // Flush the deferred reachability gate persistence now that the
   // canonical finding_ids are allocated. Done after recordFindingStatuses
   // so the side-table's finding_id can be joined back to finding_status
@@ -707,6 +870,7 @@ export async function runReviewKernel(
       files,
       findingIds,
       reviewAttempt: args.reviewAttempt ?? 1,
+      evidenceBundleEnabled,
       lane: args.installLane,
     });
   }
@@ -727,9 +891,21 @@ async function runInstallLane(args: {
   files: Parameters<typeof realReviewPR>[0]["files"];
   findingIds: string[];
   reviewAttempt: number;
+  evidenceBundleEnabled: boolean;
   lane: ReviewKernelInstallLane;
 }): Promise<void> {
-  const { reviewId, owner, repo, prNumber, bundle, files, findingIds, reviewAttempt, lane } = args;
+  const {
+    reviewId,
+    owner,
+    repo,
+    prNumber,
+    bundle,
+    files,
+    findingIds,
+    reviewAttempt,
+    evidenceBundleEnabled,
+    lane,
+  } = args;
 
   // Onboarder summary fires regardless of agreed/degraded. It self-gates
   // on ONBOARDER_ENABLED + first-review-only. Failures are logged but
@@ -809,8 +985,9 @@ async function runInstallLane(args: {
           io: realPatchVerifierIo(),
         });
         for (const row of applied.rows) {
+          let gateOutcomeId: string | null = null;
           try {
-            await lane.recordGateOutcome(reviewId, {
+            gateOutcomeId = await lane.recordGateOutcome(reviewId, {
               findingId: row.findingId,
               stage: "patch_verify",
               verdict: row.outcome.verdict,
@@ -823,6 +1000,34 @@ async function runInstallLane(args: {
               reviewId,
               message: messageOf(persistErr),
             });
+          }
+          if (evidenceBundleEnabled && row.findingId !== null && gateOutcomeId !== null) {
+            const slots = patchVerifyEvidenceSlots({
+              finding: bundle.agreed[row.index],
+              outcome: row.outcome,
+              sourceGateOutcomeId: gateOutcomeId,
+              reviewerModelIds: bundle.modelIds,
+              reviewedSha: lane.commitSha,
+              reviewAttempt,
+            });
+            if (slots.pocSnippet !== null || slots.reproductionCommand !== null) {
+              try {
+                await lane.recordFindingEvidenceBundleSlot({
+                  reviewId,
+                  findingId: row.findingId,
+                  reviewAttempt,
+                  affectedSha: lane.commitSha,
+                  pocSnippet: slots.pocSnippet,
+                  reproductionCommand: slots.reproductionCommand,
+                });
+              } catch (persistErr) {
+                logError("evidence_bundle.patch_verify_persist_failed", {
+                  reviewId,
+                  findingId: row.findingId,
+                  message: messageOf(persistErr),
+                });
+              }
+            }
           }
         }
         if (applied.droppedIndexes.length > 0) {
@@ -1111,6 +1316,7 @@ async function processClaimedRow(
       owner: row.owner,
       repo: row.repo,
       prNumber: row.prNumber,
+      commitSha: row.commitSha,
       files,
       // No cost cap on the installation rail — drawdown lives in the
       // paywall layer, not here.
@@ -1132,6 +1338,7 @@ async function processClaimedRow(
         recordPatchProposedEvent: deps.recordPatchProposedEvent,
         applyPatchVerifier: deps.applyPatchVerifier,
         recordGateOutcome: deps.recordGateOutcome,
+        recordFindingEvidenceBundleSlot: deps.recordFindingEvidenceBundleSlot,
         isPatchVerifyEnabledForInstall: deps.isPatchVerifyEnabledForInstall,
         now: deps.now,
       },
@@ -1142,7 +1349,9 @@ async function processClaimedRow(
       recordFindingStatuses: deps.recordFindingStatuses,
       applyReachabilityGate: deps.applyReachabilityGate,
       recordGateOutcome: deps.recordGateOutcome,
+      recordFindingEvidenceBundleSlot: deps.recordFindingEvidenceBundleSlot,
       isReachabilityGateEnabledForInstall: deps.isReachabilityGateEnabledForInstall,
+      isEvidenceBundleEnabledForInstall: deps.isEvidenceBundleEnabledForInstall,
     },
   );
   if (kernelOutcome.kind === "skipped") return;
