@@ -20,6 +20,7 @@ import { db } from "./index";
 import {
   agentFindings,
   factoryLaunches,
+  findingValidationEvidenceBundles,
   findingStatus,
   installations,
   maintainerReactions,
@@ -30,7 +31,9 @@ import {
   reviews,
   type AgentFinding,
   type FactoryLaunch,
+  type FindingValidationEvidenceBundle,
   type NewAgentFinding,
+  type NewFindingValidationEvidenceBundle,
   type NewMaintainerReaction,
   type NewOnboardingEvent,
   type NewReview,
@@ -1332,6 +1335,7 @@ const DIGEST_SEVERITY_RANK: Record<string, number> = {
 export type PublicReceiptDetailRow = PublicReceiptRow & {
   reviewId: string;
   findingIndex: number;
+  status: string;
   prCommentUrl: string | null;
   reviewCreatedAt: Date;
   timingMs: number;
@@ -1355,6 +1359,7 @@ export const loadPublicReceiptDetail = cache(
       .select({
         findingId: findingStatus.findingId,
         findingIndex: findingStatus.findingIndex,
+        status: findingStatus.status,
         severity: findingStatus.severity,
         label: findingStatus.label,
         category: findingStatus.category,
@@ -3013,7 +3018,7 @@ export type GateOutcomeRow = {
   reviewAttempt?: number;
 };
 
-export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): Promise<void> {
+export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): Promise<string> {
   const values: NewReviewGateOutcome = {
     reviewId,
     findingId: row.findingId,
@@ -3023,5 +3028,159 @@ export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): 
     modelId: row.modelId,
     reviewAttempt: row.reviewAttempt ?? 1,
   };
-  await db.insert(reviewGateOutcomes).values(values);
+  const inserted = await db
+    .insert(reviewGateOutcomes)
+    .values(values)
+    .returning({ id: reviewGateOutcomes.id });
+  const first = inserted[0];
+  if (first === undefined) {
+    throw new Error("recordGateOutcome: insert returned no row");
+  }
+  return first.id;
 }
+
+export type EvidenceBundleSlotProvenance = {
+  producedBy: "reviewer_consensus" | "patch_verifier" | "reachability_gate";
+  sourceGateOutcomeId: string | null;
+  modelId: string | null;
+  reviewedSha: string;
+  producedAt: string;
+  reviewAttempt: number;
+};
+
+export type EvidenceBundleSlot = {
+  value: unknown;
+  provenance: EvidenceBundleSlotProvenance;
+};
+
+export type EvidenceBundleStatus = "complete" | "partial" | "empty";
+
+export type RecordFindingEvidenceBundleSlotInput = {
+  reviewId: string;
+  findingId: string;
+  reviewAttempt: number;
+  affectedSha: string;
+  pocSnippet?: EvidenceBundleSlot | null;
+  reproductionCommand?: EvidenceBundleSlot | null;
+  callPathTrace?: EvidenceBundleSlot | null;
+};
+
+function localBundleStatus(args: {
+  pocSnippet?: EvidenceBundleSlot | null;
+  reproductionCommand?: EvidenceBundleSlot | null;
+  callPathTrace?: EvidenceBundleSlot | null;
+}): EvidenceBundleStatus {
+  const countPresent = [
+    args.pocSnippet ?? null,
+    args.reproductionCommand ?? null,
+    args.callPathTrace ?? null,
+  ].filter((v) => v !== null).length;
+  if (countPresent === 3) return "complete";
+  if (countPresent === 0) return "empty";
+  return "partial";
+}
+
+const bundleStatusSql = sql<EvidenceBundleStatus>`CASE
+  WHEN (
+    (CASE WHEN COALESCE(excluded.poc_snippet, ${findingValidationEvidenceBundles.pocSnippet}) IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN COALESCE(excluded.reproduction_command, ${findingValidationEvidenceBundles.reproductionCommand}) IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN COALESCE(excluded.call_path_trace, ${findingValidationEvidenceBundles.callPathTrace}) IS NOT NULL THEN 1 ELSE 0 END)
+  ) = 3 THEN 'complete'
+  WHEN (
+    (CASE WHEN COALESCE(excluded.poc_snippet, ${findingValidationEvidenceBundles.pocSnippet}) IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN COALESCE(excluded.reproduction_command, ${findingValidationEvidenceBundles.reproductionCommand}) IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN COALESCE(excluded.call_path_trace, ${findingValidationEvidenceBundles.callPathTrace}) IS NOT NULL THEN 1 ELSE 0 END)
+  ) = 0 THEN 'empty'
+  ELSE 'partial'
+END`;
+
+export async function recordFindingEvidenceBundleSlot(
+  input: RecordFindingEvidenceBundleSlotInput,
+): Promise<void> {
+  const values: NewFindingValidationEvidenceBundle = {
+    reviewId: input.reviewId,
+    findingId: input.findingId,
+    reviewAttempt: input.reviewAttempt,
+    affectedSha: input.affectedSha,
+    pocSnippet: input.pocSnippet ?? null,
+    reproductionCommand: input.reproductionCommand ?? null,
+    callPathTrace: input.callPathTrace ?? null,
+    bundleStatus: localBundleStatus(input),
+  };
+
+  await db
+    .insert(findingValidationEvidenceBundles)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [
+        findingValidationEvidenceBundles.reviewId,
+        findingValidationEvidenceBundles.findingId,
+        findingValidationEvidenceBundles.reviewAttempt,
+      ],
+      set: {
+        affectedSha: sql`excluded.affected_sha`,
+        pocSnippet: sql`COALESCE(excluded.poc_snippet, ${findingValidationEvidenceBundles.pocSnippet})`,
+        reproductionCommand: sql`COALESCE(excluded.reproduction_command, ${findingValidationEvidenceBundles.reproductionCommand})`,
+        callPathTrace: sql`COALESCE(excluded.call_path_trace, ${findingValidationEvidenceBundles.callPathTrace})`,
+        bundleStatus: bundleStatusSql,
+        updatedAt: sql`now()`,
+      },
+    });
+}
+
+export type PublicFindingEvidenceBundleRow = Pick<
+  FindingValidationEvidenceBundle,
+  | "findingId"
+  | "reviewId"
+  | "reviewAttempt"
+  | "affectedSha"
+  | "pocSnippet"
+  | "reproductionCommand"
+  | "callPathTrace"
+  | "bundleStatus"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+export const loadPublicFindingEvidenceBundle = cache(
+  async (findingId: string): Promise<PublicFindingEvidenceBundleRow | null> => {
+    const rows = await db
+      .select({
+        findingId: findingValidationEvidenceBundles.findingId,
+        reviewId: findingValidationEvidenceBundles.reviewId,
+        reviewAttempt: findingValidationEvidenceBundles.reviewAttempt,
+        affectedSha: findingValidationEvidenceBundles.affectedSha,
+        pocSnippet: findingValidationEvidenceBundles.pocSnippet,
+        reproductionCommand: findingValidationEvidenceBundles.reproductionCommand,
+        callPathTrace: findingValidationEvidenceBundles.callPathTrace,
+        bundleStatus: findingValidationEvidenceBundles.bundleStatus,
+        createdAt: findingValidationEvidenceBundles.createdAt,
+        updatedAt: findingValidationEvidenceBundles.updatedAt,
+      })
+      .from(findingValidationEvidenceBundles)
+      .innerJoin(
+        findingStatus,
+        and(
+          eq(findingStatus.findingId, findingValidationEvidenceBundles.findingId),
+          eq(findingStatus.reviewId, findingValidationEvidenceBundles.reviewId),
+        ),
+      )
+      .innerJoin(reviews, eq(reviews.reviewId, findingValidationEvidenceBundles.reviewId))
+      .where(
+        and(
+          eq(findingValidationEvidenceBundles.findingId, findingId),
+          eq(reviews.publicReceipt, true),
+          eq(findingStatus.status, "closed"),
+          isNotNull(findingStatus.closureDetectedAt),
+          isNull(findingStatus.retractedAt),
+        ),
+      )
+      .orderBy(
+        desc(findingValidationEvidenceBundles.reviewAttempt),
+        desc(findingValidationEvidenceBundles.updatedAt),
+      )
+      .limit(1);
+
+    return rows[0] ?? null;
+  },
+);

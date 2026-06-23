@@ -1,12 +1,13 @@
 #!/usr/bin/env tsx
-// Bench dry-run for the Daybreak reachability + patch-verify gates.
+// Bench dry-run for the Daybreak reachability, patch-verify, and evidence
+// bundle gates.
 //
 // Reads recent agreed findings from bench-class reviews in the local dev DB,
 // runs each through the two gates with flags forcibly ON, and writes a
-// markdown report under .omc/research/. The DB write to review_gate_outcomes
-// is best-effort — if migration 0041 has not been applied locally, the
-// script still completes and the report still lands; the gate outcomes are
-// surfaced inline instead.
+// markdown reports under .omc/research/. The DB writes to review_gate_outcomes
+// and finding_validation_evidence_bundles are best-effort — if the migrations
+// have not been applied locally, the script still completes and the reports
+// still land; the gate outcomes are surfaced inline instead.
 //
 // Cost controls:
 //   - Reachability gate: cap N=12 calls (Haiku, ~$0.001 each).
@@ -39,6 +40,7 @@ dotenv.config({ path: resolve(selfDir, "../.env.local") });
 // has them set to false (bench, not prod).
 process.env["ANTFLEET_REACHABILITY_GATE"] = "true";
 process.env["ANTFLEET_PATCH_VERIFY"] = "true";
+process.env["ANTFLEET_EVIDENCE_BUNDLE"] = "true";
 
 const REACHABILITY_BUDGET = 12;
 const PATCH_VERIFY_BUDGET = 6;
@@ -89,8 +91,19 @@ type PatchVerifyRecord = {
   findingId: string;
   verdict: "verified" | "regressed" | "inconclusive";
   detector: string;
+  pocCmd: string | null;
   notes: string;
   ms: number;
+};
+
+type EvidenceBundleRecord = {
+  reviewId: string;
+  owner: string;
+  repo: string;
+  findingId: string;
+  pocSnippet: boolean;
+  reproductionCommand: boolean;
+  callPathTrace: boolean;
 };
 
 async function main(): Promise<void> {
@@ -99,7 +112,8 @@ async function main(): Promise<void> {
   const { sql, eq, and, gte } = await import("drizzle-orm");
   const { runReachabilityGate } = await import("@/lib/reachability-gate");
   const { runPatchVerifier, realPatchVerifierIo } = await import("@/lib/patch-verifier");
-  const { recordGateOutcome, makeFindingId } = await import("@/db/queries");
+  const { recordFindingEvidenceBundleSlot, recordGateOutcome, makeFindingId } =
+    await import("@/db/queries");
   const { getPublicChangedFiles, PublicRepoAccessError } =
     await import("@/lib/github-files-public");
   const filesCache = new Map<string, Awaited<ReturnType<typeof getPublicChangedFiles>> | null>();
@@ -175,18 +189,60 @@ async function main(): Promise<void> {
 
   const reachabilityRecords: ReachabilityRecord[] = [];
   const patchVerifyRecords: PatchVerifyRecord[] = [];
+  const evidenceBundleRecords = new Map<string, EvidenceBundleRecord>();
   const liveProtocolMutes: Array<{ owner: string; repo: string; findingTitle: string }> = [];
+  let evidenceWriteWarned = false;
+  const warnEvidenceWrite = (err: unknown) => {
+    if (evidenceWriteWarned) return;
+    evidenceWriteWarned = true;
+    console.warn(
+      `[bench-dryrun] recordFindingEvidenceBundleSlot skipped — migration 0042 likely not applied: ${
+        (err as Error).message
+      }`,
+    );
+  };
 
   let reachabilityBudget = REACHABILITY_BUDGET;
   let patchVerifyBudget = PATCH_VERIFY_BUDGET;
 
-  for (const [key, benchRows] of byRepo.entries()) {
-    const [owner, repo] = key.split("/");
+  for (const [repoKey, benchRows] of byRepo.entries()) {
+    const [owner, repo] = repoKey.split("/");
     if (owner === undefined || repo === undefined) continue;
     const isLiveLikely = LIVE_MAINNET_REPO_HINTS.some((h) => repo.toLowerCase().includes(h));
 
     for (const row of benchRows) {
       const findings = extractAgreed(row.agreementDecision);
+      const statusIdByIndex = new Map<number, string>();
+      for (const status of row.findingStatuses) {
+        const idx = parseFindingIndex(status.findingId);
+        if (idx !== null && findingIdMatchesAgreed(idx, findings)) {
+          statusIdByIndex.set(idx, status.findingId);
+        }
+      }
+      for (const [findingIdx] of findings.entries()) {
+        const findingId =
+          statusIdByIndex.get(findingIdx) ?? makeFindingId(row.reviewId, findingIdx);
+        const bundleKey = `${row.reviewId}:${findingId}`;
+        evidenceBundleRecords.set(bundleKey, {
+          reviewId: row.reviewId,
+          owner,
+          repo,
+          findingId,
+          pocSnippet: false,
+          reproductionCommand: false,
+          callPathTrace: false,
+        });
+        try {
+          await recordFindingEvidenceBundleSlot({
+            reviewId: row.reviewId,
+            findingId,
+            reviewAttempt: 1,
+            affectedSha: row.commitSha,
+          });
+        } catch (err) {
+          warnEvidenceWrite(err);
+        }
+      }
       const prFiles = await fetchFiles(owner, repo, row.prNumber, row.commitSha);
       for (const [findingIdx, finding] of findings.entries()) {
         if (reachabilityBudget <= 0) break;
@@ -248,13 +304,43 @@ async function main(): Promise<void> {
             // kernel uses (makeFindingId(reviewId, index)), so the
             // side-table's (review_id, finding_id) index can be joined
             // across bench + prod rows without a schema split.
-            await recordGateOutcome(row.reviewId, {
-              findingId: makeFindingId(row.reviewId, findingIdx),
+            const findingId =
+              statusIdByIndex.get(findingIdx) ?? makeFindingId(row.reviewId, findingIdx);
+            const gateOutcomeId = await recordGateOutcome(row.reviewId, {
+              findingId,
               stage: "reachability",
               verdict: outcome.verdict,
               evidence: outcome,
               modelId: outcome.modelId,
             });
+            if (outcome.entryPoint !== null && outcome.callPath.length > 0) {
+              try {
+                await recordFindingEvidenceBundleSlot({
+                  reviewId: row.reviewId,
+                  findingId,
+                  reviewAttempt: 1,
+                  affectedSha: row.commitSha,
+                  callPathTrace: evidenceSlot({
+                    producedBy: "reachability_gate",
+                    sourceGateOutcomeId: gateOutcomeId,
+                    modelId: outcome.modelId,
+                    reviewedSha: row.commitSha,
+                    reviewAttempt: 1,
+                    value: {
+                      verdict: outcome.verdict,
+                      entryPoint: outcome.entryPoint,
+                      callPath: outcome.callPath,
+                      reason: outcome.reason,
+                    },
+                  }),
+                });
+                const bundleKey = `${row.reviewId}:${findingId}`;
+                const bundle = evidenceBundleRecords.get(bundleKey);
+                if (bundle !== undefined) bundle.callPathTrace = true;
+              } catch (err) {
+                warnEvidenceWrite(err);
+              }
+            }
           } catch (writeErr) {
             console.warn(
               `[bench-dryrun] recordGateOutcome (reachability) skipped — migration 0041 likely not applied: ${
@@ -319,17 +405,59 @@ async function main(): Promise<void> {
             findingId: status.findingId,
             verdict: outcome.verdict,
             detector: outcome.detector,
+            pocCmd: outcome.pocCmd,
             notes: outcome.notes,
             ms: outcome.ms,
           });
           try {
-            await recordGateOutcome(row.reviewId, {
+            const gateOutcomeId = await recordGateOutcome(row.reviewId, {
               findingId: status.findingId,
               stage: "patch_verify",
               verdict: outcome.verdict,
               evidence: outcome,
               modelId: null,
             });
+            const publicCommand = publicVerifierCommand(outcome.pocCmd);
+            if (publicCommand !== null) {
+              try {
+                await recordFindingEvidenceBundleSlot({
+                  reviewId: row.reviewId,
+                  findingId: status.findingId,
+                  reviewAttempt: 1,
+                  affectedSha: row.commitSha,
+                  pocSnippet: evidenceSlot({
+                    producedBy: "patch_verifier",
+                    sourceGateOutcomeId: gateOutcomeId,
+                    modelId: null,
+                    reviewedSha: row.commitSha,
+                    reviewAttempt: 1,
+                    value: { text: publicCommand },
+                  }),
+                  reproductionCommand: evidenceSlot({
+                    producedBy: "patch_verifier",
+                    sourceGateOutcomeId: gateOutcomeId,
+                    modelId: null,
+                    reviewedSha: row.commitSha,
+                    reviewAttempt: 1,
+                    value: {
+                      command: publicCommand,
+                      pocExitCode: outcome.pocExitCode,
+                      pocMs: outcome.pocMs,
+                      verifierVerdict: outcome.verdict,
+                      notes: outcome.notes,
+                    },
+                  }),
+                });
+                const bundleKey = `${row.reviewId}:${status.findingId}`;
+                const bundle = evidenceBundleRecords.get(bundleKey);
+                if (bundle !== undefined) {
+                  bundle.reproductionCommand = true;
+                  bundle.pocSnippet = true;
+                }
+              } catch (err) {
+                warnEvidenceWrite(err);
+              }
+            }
           } catch (writeErr) {
             console.warn(
               `[bench-dryrun] recordGateOutcome (patch_verify) skipped — migration 0041 likely not applied: ${
@@ -360,6 +488,50 @@ async function main(): Promise<void> {
     "utf8",
   );
   console.log(`[bench-dryrun] report written to ${reportPath}`);
+
+  const evidenceReportPath = resolve(
+    selfDir,
+    "../../../.omc/research/evidence-bundle-bench-report.md",
+  );
+  writeFileSync(
+    evidenceReportPath,
+    renderEvidenceBundleReport({
+      records: [...evidenceBundleRecords.values()],
+      benchRowCount: rows.length,
+      benchRepoCount: byRepo.size,
+    }),
+    "utf8",
+  );
+  console.log(`[bench-dryrun] evidence report written to ${evidenceReportPath}`);
+}
+
+function evidenceSlot(args: {
+  producedBy: "reviewer_consensus" | "patch_verifier" | "reachability_gate";
+  sourceGateOutcomeId: string | null;
+  modelId: string | null;
+  reviewedSha: string;
+  reviewAttempt: number;
+  value: unknown;
+}) {
+  return {
+    value: args.value,
+    provenance: {
+      producedBy: args.producedBy,
+      sourceGateOutcomeId: args.sourceGateOutcomeId,
+      modelId: args.modelId,
+      reviewedSha: args.reviewedSha,
+      producedAt: new Date().toISOString(),
+      reviewAttempt: args.reviewAttempt,
+    },
+  };
+}
+
+function publicVerifierCommand(command: string | null): string | null {
+  if (command === null) return null;
+  const trimmed = command.trim();
+  if (trimmed.length === 0 || trimmed.length > 1000) return null;
+  if (/[\r\n]/u.test(trimmed)) return null;
+  return trimmed;
 }
 
 function parseFindingIndex(findingId: string): number | null {
@@ -617,6 +789,55 @@ function renderReport(args: {
   lines.push(
     "4. Prod flags remain OFF — flip via env after this report is reviewed and migration 0041 has been applied to prod.",
   );
+  lines.push("");
+  return lines.join("\n");
+}
+
+function renderEvidenceBundleReport(args: {
+  records: EvidenceBundleRecord[];
+  benchRowCount: number;
+  benchRepoCount: number;
+}): string {
+  const byRepo = new Map<string, { complete: number; partial: number; empty: number }>();
+  const tally = (key: string) =>
+    byRepo.get(key) ?? {
+      complete: 0,
+      partial: 0,
+      empty: 0,
+    };
+
+  for (const r of args.records) {
+    const key = `${r.owner}/${r.repo}`;
+    const slotCount =
+      Number(r.pocSnippet) + Number(r.reproductionCommand) + Number(r.callPathTrace);
+    const status = slotCount === 3 ? "complete" : slotCount === 0 ? "empty" : "partial";
+    const t = tally(key);
+    t[status]++;
+    byRepo.set(key, t);
+  }
+
+  const lines: string[] = [];
+  lines.push("# Evidence bundle bench report");
+  lines.push("");
+  lines.push(`Generated: bench dry-run script with all Daybreak flags ON`);
+  lines.push(
+    `Scope: ${args.benchRowCount} recent bench reviews across ${args.benchRepoCount} bench repos.`,
+  );
+  lines.push("");
+  lines.push("| Repo | complete | partial | empty |");
+  lines.push("| --- | ---: | ---: | ---: |");
+  for (const [repo, t] of byRepo.entries()) {
+    lines.push(`| ${repo} | ${t.complete} | ${t.partial} | ${t.empty} |`);
+  }
+  if (args.records.length === 0) {
+    lines.push("| _none_ | 0 | 0 | 0 |");
+  }
+  lines.push("");
+  lines.push("## Slot semantics");
+  lines.push("");
+  lines.push("- complete: PoC snippet, reproduction command, and call-path trace all attached.");
+  lines.push("- partial: one or two evidence slots attached.");
+  lines.push("- empty: bundle row exists but no evidence slot was attachable in this run.");
   lines.push("");
   return lines.join("\n");
 }

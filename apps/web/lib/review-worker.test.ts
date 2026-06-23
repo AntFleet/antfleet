@@ -123,9 +123,11 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
       rows: [],
       droppedIndexes: [],
     })),
-    recordGateOutcome: vi.fn().mockResolvedValue(undefined),
+    recordGateOutcome: vi.fn().mockResolvedValue("gate-outcome-1"),
+    recordFindingEvidenceBundleSlot: vi.fn().mockResolvedValue(undefined),
     isReachabilityGateEnabledForInstall: vi.fn().mockResolvedValue(false),
     isPatchVerifyEnabledForInstall: vi.fn().mockResolvedValue(false),
+    isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(false),
     now: () => NOW,
     ...overrides,
   };
@@ -166,6 +168,143 @@ describe("runReviewWorker", () => {
     expect(deps.setReviewComment).not.toHaveBeenCalled();
     expect(deps.markReviewSucceeded).not.toHaveBeenCalled();
     expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates empty evidence bundle rows for persisted findings when enabled", async () => {
+    const deps = mkDeps({
+      isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(true),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    expect(deps.recordFindingEvidenceBundleSlot).toHaveBeenCalledWith({
+      reviewId: "rev-1",
+      findingId: "rev-1-0",
+      reviewAttempt: 1,
+      affectedSha: "abc123",
+    });
+  });
+
+  it("fills reachability call-path evidence after the gate outcome lands", async () => {
+    const deps = mkDeps({
+      isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isReachabilityGateEnabledForInstall: vi.fn().mockResolvedValue(true),
+      applyReachabilityGate: vi.fn().mockResolvedValue({
+        agreed: [mkFinding()],
+        downgrades: [],
+        rows: [
+          {
+            index: 0,
+            findingId: null,
+            outcome: {
+              verdict: "reachable",
+              entryPoint: { path: "src/api.ts", line: 12, kind: "http" },
+              callPath: ["src/api.ts:12", "src/handler.ts:42"],
+              reason: "http handler reaches src/handler.ts:42",
+              modelId: "claude-haiku-4-5",
+              ms: 25,
+              error: null,
+            },
+          },
+        ],
+      }),
+      recordGateOutcome: vi.fn().mockResolvedValue("gate-reach-1"),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    const slotCall = (deps.recordFindingEvidenceBundleSlot as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0])
+      .find((arg) => arg.callPathTrace !== undefined);
+    expect(slotCall).toMatchObject({
+      reviewId: "rev-1",
+      findingId: "rev-1-0",
+      affectedSha: "abc123",
+      callPathTrace: {
+        provenance: {
+          producedBy: "reachability_gate",
+          sourceGateOutcomeId: "gate-reach-1",
+          modelId: "claude-haiku-4-5",
+        },
+        value: {
+          entryPoint: { path: "src/api.ts", line: 12, kind: "http" },
+          callPath: ["src/api.ts:12", "src/handler.ts:42"],
+        },
+      },
+    });
+  });
+
+  it("fills public PoC and reproduction command evidence from patch verification", async () => {
+    const finding = mkFinding({
+      reproduction: "do not publish this raw reviewer text\nSECRET=abc",
+    });
+    const deps = mkDeps({
+      reviewPR: vi.fn().mockResolvedValue(mkBundle({ agreed: [finding] })),
+      isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isPatchVerifyEnabledForInstall: vi.fn().mockResolvedValue(true),
+      runPatchAgent: vi.fn().mockResolvedValue({
+        decisions: [
+          {
+            findingId: "rev-1-0",
+            patch: "-old\n+new\n",
+            modelId: "claude-opus-4-7",
+            gateOutcome: null,
+            candidates: { opus: "-old\n+new\n", gpt5: "-old\n+other\n" },
+            skipReasons: { opus: null, gpt5: null },
+            selector: "deterministic-opus",
+          },
+        ],
+        byIndex: new Map([[0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }]]),
+        inlineByIndex: new Map([[0, { patch: "-old\n+new\n", modelId: "claude-opus-4-7" }]]),
+        elapsedMs: 1,
+      }),
+      applyPatchVerifier: vi.fn().mockImplementation(async ({ outcome }) => ({
+        outcome,
+        droppedIndexes: [],
+        rows: [
+          {
+            findingId: "rev-1-0",
+            index: 0,
+            outcome: {
+              verdict: "verified",
+              detector: "pytest",
+              testCmd: "pytest",
+              testExitCode: 0,
+              testMs: 120,
+              pocCmd: "pytest tests/test_repro.py",
+              pocExitCode: 1,
+              pocMs: 30,
+              ms: 150,
+              notes: "tests passed; PoC no longer exits 0",
+              worktreePath: "/tmp/antfleet-pv-test",
+              error: null,
+              inconclusiveReason: null,
+            },
+          },
+        ],
+      })),
+      recordGateOutcome: vi.fn().mockResolvedValue("gate-patch-1"),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    const slotCall = (deps.recordFindingEvidenceBundleSlot as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0])
+      .find((arg) => arg.reproductionCommand !== undefined);
+    expect(slotCall).toMatchObject({
+      reviewId: "rev-1",
+      findingId: "rev-1-0",
+      affectedSha: "abc123",
+      pocSnippet: {
+        provenance: {
+          producedBy: "patch_verifier",
+          sourceGateOutcomeId: "gate-patch-1",
+        },
+        value: { text: "pytest tests/test_repro.py" },
+      },
+      reproductionCommand: {
+        provenance: {
+          producedBy: "patch_verifier",
+          sourceGateOutcomeId: "gate-patch-1",
+        },
+        value: { command: "pytest tests/test_repro.py" },
+      },
+    });
+    expect(JSON.stringify(slotCall)).not.toContain("SECRET=abc");
   });
 
   it("does not mark done when the posted comment pointer fails to persist", async () => {

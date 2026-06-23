@@ -850,10 +850,41 @@ export const reviewGateOutcomes = pgTable(
   ],
 );
 
+// Public receipt validation evidence bundle. One row per finding/attempt,
+// fed additively by the Daybreak reachability and patch-verify gates. Kept
+// separate from finding_status per the side-table deferral gate: this is
+// public-proof material, not lifecycle state.
+export const findingValidationEvidenceBundles = pgTable(
+  "finding_validation_evidence_bundles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => reviews.reviewId, { onDelete: "cascade" }),
+    findingId: text("finding_id").notNull(),
+    reviewAttempt: integer("review_attempt").notNull().default(1),
+    affectedSha: text("affected_sha").notNull(),
+    pocSnippet: jsonb("poc_snippet"),
+    reproductionCommand: jsonb("reproduction_command"),
+    callPathTrace: jsonb("call_path_trace"),
+    bundleStatus: text("bundle_status").notNull().default("empty"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("finding_validation_evidence_bundle_uniq").on(t.reviewId, t.findingId, t.reviewAttempt),
+    index("finding_validation_evidence_bundle_finding_idx").on(t.findingId),
+    index("finding_validation_evidence_bundle_status_idx").on(t.bundleStatus),
+  ],
+);
+
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;
 export type FindingStatus = typeof findingStatus.$inferSelect;
 export type NewFindingStatus = typeof findingStatus.$inferInsert;
+export type FindingValidationEvidenceBundle = typeof findingValidationEvidenceBundles.$inferSelect;
+export type NewFindingValidationEvidenceBundle =
+  typeof findingValidationEvidenceBundles.$inferInsert;
 export type MaintainerReaction = typeof maintainerReactions.$inferSelect;
 export type NewMaintainerReaction = typeof maintainerReactions.$inferInsert;
 export type OnboardingEvent = typeof onboardingEvents.$inferSelect;

@@ -1,6 +1,6 @@
-// Daybreak gates — flag readers for the reachability gate and the patch
-// verifier. Two env flags, both default OFF in prod; the bench dry-run
-// flips them in-process to true.
+// Daybreak gates — flag readers for the reachability gate, patch verifier,
+// and public evidence-bundle writer. Env flags default OFF in prod; bench
+// scripts flip them in-process to true.
 //
 // Mirrors the patch-agent-env.ts shape so future per-install overrides
 // (installations.reachabilityGateEnabled / installations.patchVerifyEnabled)
@@ -23,6 +23,10 @@ export function isReachabilityGateEnabled(): boolean {
 
 export function isPatchVerifyEnabled(): boolean {
   return readBoolEnv("ANTFLEET_PATCH_VERIFY");
+}
+
+export function isEvidenceBundleEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_EVIDENCE_BUNDLE");
 }
 
 // Forward-compatible per-install resolvers. Until installations gains the
@@ -49,4 +53,13 @@ export async function isPatchVerifyEnabledForInstall(
   void _installationId;
   void _repo;
   return isPatchVerifyEnabled();
+}
+
+export async function isEvidenceBundleEnabledForInstall(
+  _installationId: number | null,
+  _repo: string,
+): Promise<boolean> {
+  void _installationId;
+  void _repo;
+  return isEvidenceBundleEnabled();
 }
