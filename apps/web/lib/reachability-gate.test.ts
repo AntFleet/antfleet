@@ -364,6 +364,34 @@ describe("runReachabilityGate", () => {
     expect(captured[0]).toMatch(/\[fence-stripped\]/u);
   });
 
+  it("applyReachabilityGate stops iterating once the signal is aborted", async () => {
+    const controller = new AbortController();
+    const runGate = vi.fn<typeof runReachabilityGate>().mockImplementation(async () => {
+      // Abort after the first call resolves so the second iteration sees
+      // the aborted signal and breaks.
+      controller.abort();
+      return {
+        verdict: "uncertain",
+        entryPoint: null,
+        callPath: [],
+        reason: "x",
+        modelId: REACHABILITY_MODEL,
+        ms: 1,
+        error: null,
+      };
+    });
+    const result = await applyReachabilityGate({
+      agreed: [mkFinding({ title: "h1" }), mkFinding({ title: "h2" }), mkFinding({ title: "h3" })],
+      owner: "antfleet",
+      repo: "bench-x",
+      files: [mkFile()],
+      signal: controller.signal,
+      runGate,
+    });
+    expect(runGate).toHaveBeenCalledTimes(1); // h2/h3 short-circuited
+    expect(result.rows).toHaveLength(1);
+  });
+
   it("applyReachabilityGate keeps severity on `uncertain`", async () => {
     const runGate = vi.fn<typeof runReachabilityGate>().mockResolvedValue({
       verdict: "uncertain",

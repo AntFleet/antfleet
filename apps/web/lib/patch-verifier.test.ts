@@ -397,6 +397,59 @@ line 5
     }
   });
 
+  it("rejects an evidence path that escapes the worktree (path traversal)", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (verb === "init" || verb === "remote" || verb === "fetch" || verb === "checkout")
+          return ok();
+      }
+      return ok();
+    });
+    const readFile = vi.fn(async () => "should not be read");
+    const out = await runPatchVerifier({
+      repoUrl: "https://github.com/o/r.git",
+      sha: "abcdef0",
+      patch: "diff",
+      finding: mkFinding({
+        evidence: [
+          { path: "../../../etc/passwd", startLine: 1, endLine: 1, symbol: null, quote: null },
+        ],
+      }),
+      io: { ...mkIo({ exec }), readFile },
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.notes).toMatch(/out-of-worktree evidence path/);
+    expect(out.inconclusiveReason).toBe("invalid_input");
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses to read evidence files larger than the cap", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git") {
+        const verb = gitVerb(args);
+        if (verb === "init" || verb === "remote" || verb === "fetch" || verb === "checkout")
+          return ok();
+      }
+      return ok();
+    });
+    const readFile = vi.fn(async () => "should not be read");
+    const statSize = vi.fn(async () => 5_000_000); // 5 MiB
+    const out = await runPatchVerifier({
+      repoUrl: "https://github.com/o/r.git",
+      sha: "abcdef0",
+      patch: "diff",
+      finding: mkFinding({
+        evidence: [{ path: "src/x.py", startLine: 1, endLine: 1, symbol: null, quote: null }],
+      }),
+      io: { ...mkIo({ exec }), readFile, statSize },
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.notes).toMatch(/exceeds adapter cap/);
+    expect(out.inconclusiveReason).toBe("evidence_unreadable");
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
   it("rejects unsafe sha (non-hex, leading dash, too short)", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => ok());
     for (const sha of ["--upload-pack=/bin/sh", "deadbe", "zzzzzzzz", ""]) {

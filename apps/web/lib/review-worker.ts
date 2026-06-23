@@ -468,32 +468,31 @@ export async function runReviewKernel(
     ...(signal !== undefined ? { signal } : {}),
   });
 
-  // Daybreak — reachability gate. A third independent axis on top of the
-  // Opus + GPT-5 consensus. Runs ONLY on the install rail (the only path
-  // with a known installationId for the per-install override) and only
-  // when the flag resolver returns true. Outcomes are persisted into
-  // review_gate_outcomes; on `unreachable`, the matching agreed finding
-  // is re-graded to LOW with the reason appended to the title BEFORE
-  // agreementDecision is persisted. We deliberately keep the consensus
-  // stage itself untouched — this is a downstream re-grade, not a
-  // re-vote.
+  // Daybreak — reachability gate. Runs on EVERY rail (install + paid +
+  // acp) — the question "is this bug reachable from a real entry point?"
+  // is rail-agnostic. The resolver takes `installationId | null`; paid
+  // rails pass null and fall through to the env-default boolean (no
+  // per-install override available — by design). On `unreachable`, the
+  // matching agreed finding is re-graded to LOW with the reason
+  // appended to the title BEFORE `agreementDecision` is persisted. We
+  // deliberately keep the consensus stage itself untouched — this is a
+  // downstream re-grade, not a re-vote.
   //
   // A throw inside the gate must NOT block the review. We catch + log
   // and proceed with the un-gated bundle. The applier itself fails open
   // per-finding ('uncertain' on any model/parse error).
-  // Reachability gate runs on EVERY rail (install + paid + acp) — the
-  // question "is this bug reachable from a real entry point?" is rail-
-  // agnostic. The architect review caught that the previous shape
-  // silently disabled the gate on paid rails despite the deps being
-  // wired. The resolver takes `installationId | null`; paid rails pass
-  // null and fall through to the env-default boolean (no per-install
-  // override available — by design).
   //
-  // A throw inside the gate must NOT block the review. We catch + log
-  // and proceed with the un-gated bundle. The applier itself fails open
-  // per-finding ('uncertain' on any model/parse error).
+  // Persistence of the per-finding gate outcomes is DEFERRED until after
+  // `recordFindingStatuses` runs (~50 lines below). That ordering matters
+  // because `recordFindingStatuses` preserves legacy finding_ids on
+  // retried reviews — computing the id here via `makeFindingId(reviewId,
+  // index)` would silently break the side-table join for any review
+  // whose first attempt landed before this PR. The closure captures the
+  // gate rows; the worker calls it after `findingIds` is allocated and
+  // we read the canonical id from there.
   let reachabilityOutcomes: Array<{ index: number; reason: string; originalSeverity: string }> = [];
   let agreedRaw: typeof bundle.agreed | null = null;
+  let deferredGatePersistence: ((findingIds: readonly string[]) => Promise<void>) | null = null;
   // Per-rail wall-clock cap on the gate. Each Haiku call has its own
   // 45s timeout + retries inside the SDK, but the applier runs them
   // sequentially across N HIGH/CRITICAL findings. During an Anthropic
@@ -516,55 +515,76 @@ export async function runReviewKernel(
         // `agreementDecision.agreed[i].severity` still see the canonical
         // re-graded value; auditors can correlate against the raw shape.
         agreedRaw = bundle.agreed.map((f) => ({ ...f }));
+        // Gate-local AbortController so the cap actually CANCELS the
+        // in-flight Haiku call instead of just timing out the worker's
+        // await. Without this, a slow Anthropic call keeps billing
+        // tokens and burning a connection slot for ~2 more minutes
+        // (45s SDK timeout × 1+retries) after we've already moved on.
+        // The applier loop checks `signal.aborted` between findings to
+        // short-circuit post-cap iterations.
+        const gateController = new AbortController();
+        const outerSignal = signal;
+        if (outerSignal !== undefined) {
+          // Propagate an outer-rail abort into the gate too.
+          outerSignal.addEventListener("abort", () => gateController.abort(), { once: true });
+        }
         const applierPromise = deps.applyReachabilityGate({
           agreed: bundle.agreed,
           owner,
           repo,
           files,
-          ...(signal !== undefined ? { signal } : {}),
+          signal: gateController.signal,
         });
-        const applied = await Promise.race([
-          applierPromise,
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () =>
-                reject(
-                  Object.assign(
-                    new Error(`reachability gate exceeded ${REACHABILITY_GATE_CAP_MS}ms cap`),
-                    { failureModeTag: "timeout" },
-                  ),
-                ),
-              REACHABILITY_GATE_CAP_MS,
-            ),
-          ),
-        ]);
+        let capTimer: ReturnType<typeof setTimeout> | null = null;
+        const capPromise = new Promise<never>((_, reject) => {
+          capTimer = setTimeout(() => {
+            gateController.abort();
+            reject(
+              Object.assign(
+                new Error(`reachability gate exceeded ${REACHABILITY_GATE_CAP_MS}ms cap`),
+                { failureModeTag: "timeout" },
+              ),
+            );
+          }, REACHABILITY_GATE_CAP_MS);
+        });
+        // Mute the loser's rejection on the happy path to silence
+        // unhandledRejection warnings in stricter runtimes.
+        applierPromise.catch(() => undefined);
+        const applied = await Promise.race([applierPromise, capPromise]).finally(() => {
+          if (capTimer !== null) clearTimeout(capTimer);
+        });
         bundle.agreed = applied.agreed;
-        // Per-finding canonical ids are not yet allocated at this point
-        // (recordFindingStatuses runs below). We compute the deterministic
-        // id via makeFindingId(reviewId, index) — the same convention
-        // recordFindingStatuses ultimately writes — so the side-table
-        // rows can be joined per-finding without waiting for the
-        // lifecycle write.
-        for (const row of applied.rows) {
-          const findingId = makeFindingId(reviewId, row.index);
-          try {
-            await deps.recordGateOutcome(reviewId, {
-              findingId,
-              stage: "reachability",
-              verdict: row.outcome.verdict,
-              evidence: row.outcome,
-              modelId: row.outcome.modelId,
-              reviewAttempt: args.reviewAttempt ?? 1,
-            });
-          } catch (persistErr) {
-            // Non-fatal — gate outcome rows are observability-only.
-            logError("reachability_gate.persist_failed", {
-              reviewId,
-              findingId,
-              message: messageOf(persistErr),
-            });
+        // Defer per-finding persistence until `recordFindingStatuses`
+        // allocates the canonical finding_ids (which preserves legacy
+        // short-form ids on retries). The closure captures the gate
+        // rows; the worker invokes it below with the allocated array.
+        // Fallback to makeFindingId(reviewId, index) when the array is
+        // shorter than expected (defensive — shouldn't happen given
+        // recordFindingStatuses returns one id per agreed finding).
+        const capturedRows = applied.rows;
+        const attempt = args.reviewAttempt ?? 1;
+        deferredGatePersistence = async (findingIds) => {
+          for (const row of capturedRows) {
+            const findingId = findingIds[row.index] ?? makeFindingId(reviewId, row.index);
+            try {
+              await deps.recordGateOutcome(reviewId, {
+                findingId,
+                stage: "reachability",
+                verdict: row.outcome.verdict,
+                evidence: row.outcome,
+                modelId: row.outcome.modelId,
+                reviewAttempt: attempt,
+              });
+            } catch (persistErr) {
+              // Non-fatal — gate outcome rows are observability-only.
+              logError("reachability_gate.persist_failed", {
+                reviewId,
+                findingId,
+                message: messageOf(persistErr),
+              });
+            }
           }
-        }
+        };
         reachabilityOutcomes = applied.downgrades.map((d) => ({
           index: d.index,
           reason: d.reason,
@@ -658,6 +678,23 @@ export async function runReviewKernel(
         category: f.category,
       })),
     );
+  }
+
+  // Flush the deferred reachability gate persistence now that the
+  // canonical finding_ids are allocated. Done after recordFindingStatuses
+  // so the side-table's finding_id can be joined back to finding_status
+  // even on retried reviews where the lifecycle preserves legacy ids.
+  if (deferredGatePersistence !== null) {
+    try {
+      await deferredGatePersistence(findingIds);
+    } catch (persistErr) {
+      // Defensive — the closure already catches per-row; an outer
+      // throw would only come from a bug, but we log and proceed.
+      logError("reachability_gate.deferred_persist_failed", {
+        reviewId,
+        message: messageOf(persistErr),
+      });
+    }
   }
 
   if (args.installLane !== undefined) {

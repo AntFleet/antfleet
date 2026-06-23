@@ -407,6 +407,11 @@ export async function applyReachabilityGate(
   const downgrades: Array<{ index: number; reason: string }> = [];
 
   for (let i = 0; i < out.length; i++) {
+    // Per-iteration abort check — when the kernel's wall-clock cap
+    // fires, the AbortController it owns is aborted. Stopping the loop
+    // here keeps us from firing another Haiku call (and burning more
+    // tokens) just to throw away the result.
+    if (args.signal !== undefined && args.signal !== null && args.signal.aborted) break;
     const finding = out[i]!;
     if (finding.severity !== "high" && finding.severity !== "critical") continue;
     const outcome = await runner({

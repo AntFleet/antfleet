@@ -25,12 +25,20 @@
 // the unit tests run hermetic. Production callers use realPatchVerifierIo.
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, readFile, access } from "node:fs/promises";
+import { mkdtemp, rm, readFile, access, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath, sep } from "node:path";
 import { spawn, type SpawnOptions } from "node:child_process";
 import type { Finding } from "./review-types";
 import { normalizePatchForApply } from "./patch-adapter";
+
+// Hard cap on evidence-file size the adapter will read. The model
+// occasionally cites a file path that turns out to be a checked-in
+// binary or a multi-MB lockfile; reading the whole thing wastes memory
+// without helping `normalizePatchForApply`. Strict enough to keep the
+// verifier process small under fan-out, generous enough that any real
+// source file fits.
+const EVIDENCE_FILE_MAX_BYTES = 1_048_576; // 1 MiB
 
 export type PatchVerifyVerdict = "verified" | "regressed" | "inconclusive";
 
@@ -98,6 +106,9 @@ export type PatchVerifierIo = {
   removeDir: (path: string) => Promise<void>;
   exists: (path: string) => Promise<boolean>;
   readFile: (path: string) => Promise<string>;
+  // Optional — used to size-cap evidence files before reading. Tests can
+  // skip implementing this; production wiring sets it to a real `stat`.
+  statSize?: (path: string) => Promise<number>;
   exec: (args: ExecArgs) => Promise<ExecResult>;
   // Used for the patch payload — written to a temp file and fed to
   // `git apply --index <file>` so the patch text is never exposed via the
@@ -220,8 +231,44 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
     const evidencePath = evidence?.path ?? null;
     let normalisedPatch = args.patch;
     if (evidencePath !== null) {
+      // Path traversal defense. `evidencePath` is attacker-controllable
+      // via PR contents (a malicious PR author writes a finding evidence
+      // path of `../../etc/passwd`). join() resolves traversal but
+      // doesn't refuse; resolve+startsWith confirms the file lives
+      // strictly under the worktree. The trailing `+ sep` matters so a
+      // sibling `/tmp/antfleet-pv-xxxxabc` doesn't sneak through when
+      // worktree is `/tmp/antfleet-pv-xxxx`.
+      const absoluteWorktree = resolvePath(worktree);
+      const absoluteEvidence = resolvePath(absoluteWorktree, evidencePath);
+      if (
+        !absoluteEvidence.startsWith(absoluteWorktree + sep) &&
+        absoluteEvidence !== absoluteWorktree
+      ) {
+        return inconclusive({
+          worktreePath: worktree,
+          detector: "none",
+          notes: `patch-verifier rejected out-of-worktree evidence path '${evidencePath}'`,
+          ms: args.io.now() - t0,
+          kind: "invalid_input",
+        });
+      }
       try {
-        const fileBytes = await args.io.readFile(join(worktree, evidencePath));
+        // Refuse to load huge files. The verifier doesn't need the whole
+        // checked-in binary / lockfile, just enough to locate the patch's
+        // old-side block.
+        if (args.io.statSize !== undefined) {
+          const size = await args.io.statSize(absoluteEvidence);
+          if (size > EVIDENCE_FILE_MAX_BYTES) {
+            return inconclusive({
+              worktreePath: worktree,
+              detector: "none",
+              notes: `evidence file '${evidencePath}' is ${size} bytes — exceeds adapter cap`,
+              ms: args.io.now() - t0,
+              kind: "evidence_unreadable",
+            });
+          }
+        }
+        const fileBytes = await args.io.readFile(absoluteEvidence);
         const adapt = normalizePatchForApply({
           patch: args.patch,
           evidencePath,
@@ -679,6 +726,7 @@ export function realPatchVerifierIo(): PatchVerifierIo {
       }
     },
     readFile: async (path) => readFile(path, "utf8"),
+    statSize: async (path) => (await stat(path)).size,
     writeTempFile: async (contents) => {
       const dir = await mkdtemp(join(tmpdir(), "antfleet-pv-patch-"));
       const target = join(dir, `patch-${randomUUID()}.diff`);
