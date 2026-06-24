@@ -147,7 +147,6 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
 }
 
 function SarifSection({ repos }: { repos: string[] }) {
-  const sarifUiEnabled = process.env["ANTFLEET_SARIF_INGEST_UI"] === "true";
   return (
     <section>
       <ContentWrap>
@@ -160,16 +159,11 @@ function SarifSection({ repos }: { repos: string[] }) {
           </span>
         </div>
         <p className="mb-5 max-w-xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
-          Drop scanner output here to validate existing backlog claims through AntFleet&apos;s
-          reachability and patch-verification gates. Export emits AntFleet findings as SARIF v2.1.0
-          for GitHub Code Scanning.
+          Validate scanner backlog claims through AntFleet&apos;s reachability and
+          patch-verification gates, and emit AntFleet findings as SARIF v2.1.0 for GitHub Code
+          Scanning.
         </p>
-        {sarifUiEnabled && <SarifIntegrationPanel repos={repos} />}
-        <pre className="mt-5 overflow-x-auto rounded-md border border-[var(--color-line)] bg-[var(--color-bg-elevated)] p-4 font-mono text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
-          {`curl -L https://www.antfleet.dev/api/repos/OWNER/REPO/findings.sarif -o antfleet.sarif
-github/codeql-action/upload-sarif@v4
-  sarif_file: antfleet.sarif`}
-        </pre>
+        <SarifIntegrationPanel repos={repos} />
       </ContentWrap>
     </section>
   );
