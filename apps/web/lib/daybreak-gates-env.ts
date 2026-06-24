@@ -54,6 +54,16 @@ export function isSarifExportEnabled(): boolean {
   return readBoolEnv("ANTFLEET_SARIF_EXPORT");
 }
 
+// Direct push to GitHub Code Scanning from the AntFleet worker. v2 path.
+// Default OFF in prod. Reads ANTFLEET_CODESCANNING_PAT for the upload
+// credential (needs the `security_events:write` scope — a PAT, not the
+// installation token, because most GitHub App installs don't grant
+// security_events). When OFF, the v1 customer-owned workflow is still
+// the supported path.
+export function isCodeScanningPushEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_CODESCANNING_PUSH");
+}
+
 // Forward-compatible per-install resolvers. Until installations gains the
 // nullable boolean columns (planned in a follow-up to 0041) these just
 // return the env value. Once the columns exist, the inner lookup can

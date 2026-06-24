@@ -8,7 +8,9 @@ import {
   type CreateSarifImportBatchInput,
 } from "@/db/queries";
 import type { NewSarifFinding } from "@/db/schema";
-import { isSarifIngestEnabledForInstall } from "./daybreak-gates-env";
+import { isCodeScanningPushEnabled, isSarifIngestEnabledForInstall } from "./daybreak-gates-env";
+import { triggerCodeScanningPush } from "./codescanning-trigger";
+import { logInfo, logWarn } from "./log";
 import type { ChangedFile } from "./github-files";
 import {
   assertExpectedGithubCloneHost,
@@ -75,6 +77,7 @@ export type SarifIngestDeps = {
     sha: string | null;
   }) => Promise<PatchVerifyVerdict | null>;
   enabled: (installationId: number | null, repo: string) => Promise<boolean>;
+  codeScanningPush?: typeof triggerCodeScanningPush;
 };
 
 const DEFAULT_DEPS: SarifIngestDeps = {
@@ -218,6 +221,45 @@ export async function ingestSarif(
     inconclusiveCount: stats.inconclusiveCount,
     errorCount: stats.errorCount,
   });
+
+  // v2: opportunistic push of AntFleet's findings into GitHub Code
+  // Scanning. Only fires when (a) the flag is on, (b) the just-finished
+  // batch promoted at least one finding to `real`, and (c) the SARIF
+  // claims carried a valid 40-hex revisionId we can attach as
+  // commit_sha. Errors are logged, never propagated — the customer-owned
+  // workflow (codescanning.yml) remains the supported path either way.
+  if (isCodeScanningPushEnabled() && stats.realCount > 0) {
+    try {
+      const outcome = await (deps.codeScanningPush ?? triggerCodeScanningPush)({
+        owner: input.owner,
+        repo: input.repo,
+        commitSha: parsed.sourceRevision,
+      });
+      if (outcome.kind === "accepted") {
+        logInfo("sarif_ingest.codescanning_push.accepted", {
+          batchId,
+          owner: input.owner,
+          repo: input.repo,
+          analysisId: outcome.id,
+        });
+      } else {
+        logWarn("sarif_ingest.codescanning_push.skipped", {
+          batchId,
+          owner: input.owner,
+          repo: input.repo,
+          outcome,
+        });
+      }
+    } catch (err) {
+      logWarn("sarif_ingest.codescanning_push.errored", {
+        batchId,
+        owner: input.owner,
+        repo: input.repo,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return { batchId, stats, parsed };
 }
 

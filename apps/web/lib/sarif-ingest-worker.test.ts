@@ -202,6 +202,127 @@ describe("ingestSarif", () => {
     expect(deps.createBatch).not.toHaveBeenCalled();
     expect(deps.resolveCloneUrl).not.toHaveBeenCalled();
   });
+
+  it("fires codeScanningPush only when the flag is on AND a finding promoted to real", async () => {
+    const previous = process.env["ANTFLEET_CODESCANNING_PUSH"];
+    process.env["ANTFLEET_CODESCANNING_PUSH"] = "true";
+    try {
+      const codeScanningPush = vi.fn(async () => ({
+        kind: "accepted" as const,
+        id: "analysis-1",
+        url: "https://api.github.com/x/analysis-1",
+      }));
+      const deps = depsFor({
+        reachability: reachable,
+        patchAndVerify: vi.fn(async () => "verified" as const),
+        codeScanningPush,
+      });
+      await ingestSarif(
+        {
+          owner: "AntFleet",
+          repo: "bench",
+          installationId: 1,
+          sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
+          sourceKind: "upload",
+          tokenUse: tokenUse(),
+        },
+        deps,
+      );
+      expect(codeScanningPush).toHaveBeenCalledWith({
+        owner: "AntFleet",
+        repo: "bench",
+        commitSha: "1111111111111111111111111111111111111111",
+      });
+    } finally {
+      if (previous === undefined) delete process.env["ANTFLEET_CODESCANNING_PUSH"];
+      else process.env["ANTFLEET_CODESCANNING_PUSH"] = previous;
+    }
+  });
+
+  it("does NOT call codeScanningPush when the flag is off", async () => {
+    const previous = process.env["ANTFLEET_CODESCANNING_PUSH"];
+    delete process.env["ANTFLEET_CODESCANNING_PUSH"];
+    try {
+      const codeScanningPush = vi.fn();
+      const deps = depsFor({
+        reachability: reachable,
+        patchAndVerify: vi.fn(async () => "verified" as const),
+        codeScanningPush,
+      });
+      await ingestSarif(
+        {
+          owner: "AntFleet",
+          repo: "bench",
+          installationId: 1,
+          sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
+          sourceKind: "upload",
+          tokenUse: tokenUse(),
+        },
+        deps,
+      );
+      expect(codeScanningPush).not.toHaveBeenCalled();
+    } finally {
+      if (previous !== undefined) process.env["ANTFLEET_CODESCANNING_PUSH"] = previous;
+    }
+  });
+
+  it("does NOT call codeScanningPush when no findings promoted to real", async () => {
+    const previous = process.env["ANTFLEET_CODESCANNING_PUSH"];
+    process.env["ANTFLEET_CODESCANNING_PUSH"] = "true";
+    try {
+      const codeScanningPush = vi.fn();
+      const deps = depsFor({
+        reachability: vi.fn(async () => ({ agreed: [], downgrades: [], rows: [] })),
+        codeScanningPush,
+      });
+      await ingestSarif(
+        {
+          owner: "AntFleet",
+          repo: "bench",
+          installationId: 1,
+          sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
+          sourceKind: "upload",
+          tokenUse: tokenUse(),
+        },
+        deps,
+      );
+      expect(codeScanningPush).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env["ANTFLEET_CODESCANNING_PUSH"];
+      else process.env["ANTFLEET_CODESCANNING_PUSH"] = previous;
+    }
+  });
+
+  it("does not fail the worker when codeScanningPush throws", async () => {
+    const previous = process.env["ANTFLEET_CODESCANNING_PUSH"];
+    process.env["ANTFLEET_CODESCANNING_PUSH"] = "true";
+    try {
+      const codeScanningPush = vi.fn(async () => {
+        throw new Error("network down");
+      });
+      const deps = depsFor({
+        reachability: reachable,
+        patchAndVerify: vi.fn(async () => "verified" as const),
+        codeScanningPush,
+      });
+      const result = await ingestSarif(
+        {
+          owner: "AntFleet",
+          repo: "bench",
+          installationId: 1,
+          sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
+          sourceKind: "upload",
+          tokenUse: tokenUse(),
+        },
+        deps,
+      );
+      expect(result.stats.realCount).toBe(1);
+      expect(codeScanningPush).toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env["ANTFLEET_CODESCANNING_PUSH"];
+      else process.env["ANTFLEET_CODESCANNING_PUSH"] = previous;
+    }
+  });
 });
 
 const reachable = vi.fn(async () => ({
