@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import * as dotenv from "dotenv";
-import { assertSafeToApply } from "./safety";
+import { assertSafeToApply, splitSqlStatements } from "./safety";
 
 const selfPath = fileURLToPath(import.meta.url);
 const selfDir = dirname(selfPath);
@@ -24,24 +24,7 @@ type MigrationSql = {
 };
 
 export function migration0047Statements(sqlText = sqlFile): string[] {
-  const uncommented = sqlText
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("--"))
-    .join("\n");
-  const statements: string[] = [];
-  let current = "";
-  for (const char of uncommented) {
-    if (char === ";") {
-      const statement = current.trim();
-      if (statement.length > 0) statements.push(statement);
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  const statement = current.trim();
-  if (statement.length > 0) statements.push(statement);
-  return statements;
+  return splitSqlStatements(sqlText);
 }
 
 export async function applyMigration0047(sql: MigrationSql, sqlText = sqlFile): Promise<void> {
