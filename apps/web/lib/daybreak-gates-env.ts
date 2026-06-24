@@ -9,6 +9,9 @@
 // helpers read the env flag only — keeps the shape stable while still
 // gating prod behind a single env variable.
 
+import { and, eq } from "drizzle-orm";
+import { installations } from "@/db/schema";
+
 const TRUE_VALUES = new Set(["true", "1", "yes", "on"]);
 
 function readBoolEnv(key: string): boolean {
@@ -105,12 +108,17 @@ export async function isDisclosureGateEnabledForInstall(
 }
 
 export async function isSarifIngestEnabledForInstall(
-  _installationId: number | null,
-  _repo: string,
+  installationId: number | null,
+  repo: string,
 ): Promise<boolean> {
-  void _installationId;
-  void _repo;
-  return isSarifIngestEnabled();
+  if (!isSarifIngestEnabled() || installationId === null) return false;
+  const { db } = await import("@/db");
+  const rows = await db
+    .select({ status: installations.status })
+    .from(installations)
+    .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
+    .limit(1);
+  return rows[0]?.status === "approved";
 }
 
 export async function isSarifExportEnabledForInstall(

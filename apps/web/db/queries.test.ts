@@ -37,6 +37,7 @@ vi.mock("./index", () => ({ db: dbMocks.db }));
 import {
   isMissingPatchRationaleColumnError,
   isMissingPatchSkipReasonColumnError,
+  isPublicSarifExportEligible,
   loadReviewsReadyForRetry,
   makeFindingId,
   normalizeActivityWindow,
@@ -124,6 +125,40 @@ describe("summarizeRoastFindings", () => {
       findingCount: 1,
       highestSeverity: null,
     });
+  });
+});
+
+describe("isPublicSarifExportEligible", () => {
+  const closedAt = new Date("2026-06-24T00:00:00.000Z");
+
+  it("includes only closed, non-retracted, terminally disclosed findings", () => {
+    expect(
+      isPublicSarifExportEligible({
+        status: "closed",
+        closureDetectedAt: closedAt,
+        retractedAt: null,
+        disclosureState: "published",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["open", "open", closedAt, null, "published"],
+    ["missing closure evidence", "closed", null, null, "published"],
+    ["embargoed none", "closed", closedAt, null, "none"],
+    ["reported", "closed", closedAt, null, "reported"],
+    ["triaged", "closed", closedAt, null, "triaged"],
+    ["fix_in_progress", "closed", closedAt, null, "fix_in_progress"],
+    ["retracted", "closed", closedAt, closedAt, "published"],
+  ])("excludes %s findings", (_label, status, closureDetectedAt, retractedAt, disclosureState) => {
+    expect(
+      isPublicSarifExportEligible({
+        status: status as string,
+        closureDetectedAt: closureDetectedAt as Date | null,
+        retractedAt: retractedAt as Date | null,
+        disclosureState: disclosureState as string,
+      }),
+    ).toBe(false);
   });
 });
 

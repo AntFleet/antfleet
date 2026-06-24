@@ -20,7 +20,6 @@ type Result = {
 
 export function SarifIntegrationPanel({ repos }: Props) {
   const [repo, setRepo] = useState(repos[0] ?? "");
-  const [url, setUrl] = useState("");
   const [fileText, setFileText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,8 +35,8 @@ export function SarifIntegrationPanel({ repos }: Props) {
       setError("repo must be owner/repo");
       return;
     }
-    if ((fileText === null || fileText.length === 0) && url.length === 0) {
-      setError("upload a SARIF file or paste an HTTPS URL");
+    if (fileText === null || fileText.length === 0) {
+      setError("upload or paste SARIF JSON");
       return;
     }
     setBusy(true);
@@ -47,7 +46,7 @@ export function SarifIntegrationPanel({ repos }: Props) {
       const res = await fetch(`/api/repos/${parsed.owner}/${parsed.repo}/sarif`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(fileText !== null ? { sarif: fileText } : { url }),
+        body: JSON.stringify({ sarif: fileText }),
       });
       const body = (await res.json()) as unknown;
       if (!res.ok) {
@@ -91,17 +90,6 @@ export function SarifIntegrationPanel({ repos }: Props) {
               setFileText(file === undefined ? null : await file.text());
             }}
             className="text-xs text-[var(--color-ink-muted)]"
-          />
-        </label>
-        <label className="grid gap-1">
-          <span className="font-mono text-[11px] uppercase tracking-widest text-[var(--color-ink-subtle)]">
-            Or HTTPS URL
-          </span>
-          <input
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://example.com/results.sarif"
-            className="rounded-md border border-[var(--color-line)] bg-white px-3 py-2 font-mono text-xs text-[var(--color-ink)]"
           />
         </label>
         <label className="flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">

@@ -6,6 +6,7 @@ import {
   type SarifConfirmationResult,
   type SarifIngestDeps,
 } from "./sarif-ingest-worker";
+import { MAX_SARIF_FINDINGS_PER_BATCH, SarifLimitError } from "./sarif-types";
 
 const fixtureDir = join(process.cwd(), "test/fixtures/sarif");
 
@@ -48,27 +49,10 @@ describe("ingestSarif", () => {
     });
   });
 
-  it("marks reachable claims real after the reachability gate", async () => {
+  it("marks reachable claims real only after verified patch verification", async () => {
     const deps = depsFor({
-      reachability: vi.fn(async () => ({
-        agreed: [],
-        downgrades: [],
-        rows: [
-          {
-            index: 0,
-            findingId: null,
-            outcome: {
-              verdict: "reachable" as const,
-              entryPoint: null,
-              callPath: ["entry", "sink"],
-              reason: "reachable from handler",
-              modelId: "reachability",
-              ms: 1,
-              error: null,
-            },
-          },
-        ],
-      })),
+      reachability: reachable,
+      patchAndVerify: vi.fn(async () => "verified" as const),
     });
 
     const result = await ingestSarif(
@@ -84,7 +68,98 @@ describe("ingestSarif", () => {
 
     expect(result.stats.realCount).toBe(1);
   });
+
+  it.each([
+    ["null", async () => null],
+    ["regressed", async () => "regressed" as const],
+    [
+      "threw",
+      async () => {
+        throw new Error("verifier unavailable");
+      },
+    ],
+  ])(
+    "keeps reachable claims inconclusive when patch verifier %s",
+    async (_label, patchAndVerify) => {
+      const updates: Array<{ validationVerdict?: string; patchVerifyVerdict?: string | null }> = [];
+      const deps = depsFor({
+        reachability: reachable,
+        patchAndVerify: vi.fn(patchAndVerify),
+        updateFinding: vi.fn(async (input) => {
+          updates.push(input);
+        }),
+      });
+
+      const result = await ingestSarif(
+        {
+          owner: "AntFleet",
+          repo: "bench",
+          installationId: 1,
+          sarifText: readFileSync(join(fixtureDir, "snyk.sarif"), "utf8"),
+          sourceKind: "upload",
+        },
+        deps,
+      );
+
+      expect(result.stats).toMatchObject({ realCount: 0, inconclusiveCount: 1, errorCount: 0 });
+      expect(updates[0]).toMatchObject({ validationVerdict: "inconclusive" });
+    },
+  );
+
+  it("keeps reachable claims inconclusive when patch verifier is absent", async () => {
+    const deps = depsFor({ reachability: reachable });
+
+    const result = await ingestSarif(
+      {
+        owner: "AntFleet",
+        repo: "bench",
+        installationId: 1,
+        sarifText: readFileSync(join(fixtureDir, "snyk.sarif"), "utf8"),
+        sourceKind: "upload",
+      },
+      deps,
+    );
+
+    expect(result.stats).toMatchObject({ realCount: 0, inconclusiveCount: 1, errorCount: 0 });
+  });
+
+  it("rejects oversized batches before creating DB rows", async () => {
+    const deps = depsFor({});
+    await expect(
+      ingestSarif(
+        {
+          owner: "AntFleet",
+          repo: "bench",
+          installationId: 1,
+          sarifText: JSON.stringify(largeSarif(MAX_SARIF_FINDINGS_PER_BATCH + 1)),
+          sourceKind: "upload",
+        },
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(SarifLimitError);
+    expect(deps.createBatch).not.toHaveBeenCalled();
+  });
 });
+
+const reachable = vi.fn(async () => ({
+  agreed: [],
+  downgrades: [],
+  rows: [
+    {
+      index: 0,
+      findingId: null,
+      outcome: {
+        verdict: "reachable" as const,
+        entryPoint: null,
+        callPath: ["entry", "sink"],
+        reason: "reachable from handler",
+        modelId: "reachability",
+        ms: 1,
+        error: null,
+      },
+    },
+  ],
+}));
 
 function depsFor(overrides: Partial<SarifIngestDeps>): SarifIngestDeps {
   return {
@@ -99,5 +174,32 @@ function depsFor(overrides: Partial<SarifIngestDeps>): SarifIngestDeps {
     })),
     enabled: vi.fn(async () => true),
     ...overrides,
+  };
+}
+
+function largeSarif(resultCount: number): Record<string, unknown> {
+  const remaining = Array.from({ length: resultCount }, (_value, index) => index);
+  const runs = [];
+  while (remaining.length > 0) {
+    const indexes = remaining.splice(0, 5000);
+    runs.push({
+      tool: { driver: { name: "CodeQL", rules: [] } },
+      results: indexes.map((index) => ({
+        ruleId: "rule",
+        message: { text: `message ${index}` },
+        locations: [
+          {
+            physicalLocation: {
+              artifactLocation: { uri: `src/${index}.ts` },
+              region: { startLine: 1, snippet: { text: "const x = 1;" } },
+            },
+          },
+        ],
+      })),
+    });
+  }
+  return {
+    version: "2.1.0",
+    runs,
   };
 }

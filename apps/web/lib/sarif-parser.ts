@@ -1,14 +1,31 @@
 import { createHash } from "node:crypto";
-import type { NormalizedSarifFinding, SarifParseResult, SarifSeverity } from "./sarif-types";
+import {
+  MAX_SARIF_BYTES,
+  MAX_SARIF_FINDINGS_PER_BATCH,
+  MAX_SARIF_PATH_BYTES,
+  MAX_SARIF_RESULTS_PER_RUN,
+  MAX_SARIF_RUNS,
+  MAX_SARIF_TEXT_FIELD_BYTES,
+  SarifLimitError,
+  type NormalizedSarifFinding,
+  type SarifParseResult,
+  type SarifSeverity,
+} from "./sarif-types";
 
 type JsonRecord = Record<string, unknown>;
 
 export function parseSarif(input: string | JsonRecord): SarifParseResult {
+  if (typeof input === "string" && Buffer.byteLength(input, "utf8") > MAX_SARIF_BYTES) {
+    throw new SarifLimitError("MAX_SARIF_BYTES", `SARIF JSON exceeds ${MAX_SARIF_BYTES} bytes`);
+  }
   const root = typeof input === "string" ? (JSON.parse(input) as unknown) : input;
   if (!isRecord(root)) throw new Error("SARIF root must be an object");
   if (root["version"] !== "2.1.0") throw new Error("only SARIF version 2.1.0 is supported");
   const runs = asArray(root["runs"]);
   if (runs.length === 0) throw new Error("SARIF must contain at least one run");
+  if (runs.length > MAX_SARIF_RUNS) {
+    throw new SarifLimitError("MAX_SARIF_RUNS", `runs.length must be <= ${MAX_SARIF_RUNS}`);
+  }
 
   const findings: NormalizedSarifFinding[] = [];
   let firstToolName = "unknown";
@@ -23,14 +40,35 @@ export function parseSarif(input: string | JsonRecord): SarifParseResult {
     const sourceTool = detectTool(toolName, runValue);
     const rules = rulesById(driver);
     const results = asArray(runValue["results"]);
+    if (results.length > MAX_SARIF_RESULTS_PER_RUN) {
+      throw new SarifLimitError(
+        "MAX_SARIF_RESULTS_PER_RUN",
+        `run ${runIndex} results.length must be <= ${MAX_SARIF_RESULTS_PER_RUN}`,
+      );
+    }
 
     results.forEach((resultValue, resultIndex) => {
       if (!isRecord(resultValue)) return;
+      if (findings.length >= MAX_SARIF_FINDINGS_PER_BATCH) {
+        throw new SarifLimitError(
+          "MAX_SARIF_FINDINGS_PER_BATCH",
+          `total findings must be <= ${MAX_SARIF_FINDINGS_PER_BATCH}`,
+        );
+      }
+      enforceResultFieldCaps(resultValue);
       const ruleId = text(resultValue["ruleId"]) ?? text(resultValue["rule"]) ?? "unknown-rule";
       const rule = rules.get(ruleId) ?? {};
       const location = firstPhysicalLocation(resultValue);
-      const artifactUri = location?.artifactUri ?? "unknown";
-      const message = messageText(resultValue["message"]) ?? ruleMessage(rule) ?? ruleId;
+      const artifactUri = checkedText(
+        "MAX_SARIF_PATH_BYTES",
+        location?.artifactUri ?? "unknown",
+        MAX_SARIF_PATH_BYTES,
+      );
+      const message = checkedText(
+        "MAX_SARIF_TEXT_FIELD_BYTES",
+        messageText(resultValue["message"]) ?? ruleMessage(rule) ?? ruleId,
+        MAX_SARIF_TEXT_FIELD_BYTES,
+      );
       const level =
         text(resultValue["level"]) ??
         text(asRecord(rule["defaultConfiguration"])?.["level"]) ??
@@ -47,7 +85,14 @@ export function parseSarif(input: string | JsonRecord): SarifParseResult {
         artifactUri,
         startLine: location?.startLine ?? null,
         endLine: location?.endLine ?? location?.startLine ?? null,
-        regionSnippet: location?.snippet ?? null,
+        regionSnippet:
+          location?.snippet === undefined || location.snippet === null
+            ? null
+            : checkedText(
+                "MAX_SARIF_TEXT_FIELD_BYTES",
+                location.snippet,
+                MAX_SARIF_TEXT_FIELD_BYTES,
+              ),
         helpUri: text(resultValue["helpUri"]) ?? text(rule["helpUri"]) ?? null,
         cwe: cweFrom(rule, resultValue),
         tags: tagsFrom(rule, resultValue),
@@ -108,6 +153,25 @@ function firstPhysicalLocation(result: JsonRecord): {
     };
   }
   return null;
+}
+
+function enforceResultFieldCaps(result: JsonRecord): void {
+  const message = messageText(result["message"]);
+  if (message !== null) {
+    checkedText("MAX_SARIF_TEXT_FIELD_BYTES", message, MAX_SARIF_TEXT_FIELD_BYTES);
+  }
+  for (const location of asArray(result["locations"])) {
+    const physical = asRecord(asRecord(location)?.["physicalLocation"]);
+    const artifact = asRecord(physical?.["artifactLocation"]);
+    const uri = text(artifact?.["uri"]);
+    if (uri !== null) {
+      checkedText("MAX_SARIF_PATH_BYTES", uri, MAX_SARIF_PATH_BYTES);
+    }
+    const snippet = messageText(asRecord(asRecord(physical?.["region"])?.["snippet"]) ?? null);
+    if (snippet !== null) {
+      checkedText("MAX_SARIF_TEXT_FIELD_BYTES", snippet, MAX_SARIF_TEXT_FIELD_BYTES);
+    }
+  }
 }
 
 function detectTool(toolName: string, run: JsonRecord): NormalizedSarifFinding["sourceTool"] {
@@ -233,4 +297,11 @@ function text(value: unknown): string | null {
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function checkedText(limitName: string, value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") > maxBytes) {
+    throw new SarifLimitError(limitName, `field must be <= ${maxBytes} bytes`);
+  }
+  return value;
 }

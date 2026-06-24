@@ -3202,6 +3202,25 @@ export async function isInstallApproved(installationId: number, repo: string): P
   return rows[0]?.status === "approved";
 }
 
+export async function isInstallApprovedForRepo(args: {
+  installationId: number;
+  owner: string;
+  repo: string;
+}): Promise<boolean> {
+  const rows = await db
+    .select({ status: installations.status })
+    .from(installations)
+    .where(
+      and(
+        eq(installations.installationId, args.installationId),
+        eq(installations.owner, args.owner),
+        eq(installations.repo, args.repo),
+      ),
+    )
+    .limit(1);
+  return rows[0]?.status === "approved";
+}
+
 export type InstallRow = {
   id: string;
   // Nullable on agent-onboarded rows that haven't yet completed the GitHub
@@ -4449,6 +4468,24 @@ export type PublicSarifFindingExportRow = {
   } | null;
 };
 
+export const SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES = ["published"] as const;
+
+export function isPublicSarifExportEligible(row: {
+  status: string;
+  closureDetectedAt: Date | null;
+  retractedAt: Date | null;
+  disclosureState: string | null;
+}): boolean {
+  return (
+    row.status === "closed" &&
+    row.closureDetectedAt !== null &&
+    row.retractedAt === null &&
+    SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES.includes(
+      row.disclosureState as (typeof SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES)[number],
+    )
+  );
+}
+
 export async function loadPublicSarifFindingsForRepo(args: {
   owner: string;
   repo: string;
@@ -4457,6 +4494,16 @@ export async function loadPublicSarifFindingsForRepo(args: {
   const visibilityCondition = disclosureGateEnabled
     ? derivedPublicReceiptCondition
     : eq(reviews.publicReceipt, true);
+  const disclosureTerminalCondition = inArray(
+    findingDisclosure.state,
+    SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES,
+  );
+  const sarifExportEligibilityCondition = and(
+    eq(findingStatus.status, "closed"),
+    isNotNull(findingStatus.closureDetectedAt),
+    isNull(findingStatus.retractedAt),
+    disclosureTerminalCondition,
+  );
   const selectColumns = {
     findingId: findingStatus.findingId,
     title: findingStatus.title,
@@ -4495,7 +4542,7 @@ export async function loadPublicSarifFindingsForRepo(args: {
             eq(reviews.owner, args.owner),
             eq(reviews.repo, args.repo),
             visibilityCondition,
-            isNull(findingStatus.retractedAt),
+            sarifExportEligibilityCondition,
           ),
         )
         .orderBy(desc(findingStatus.createdAt))
@@ -4503,6 +4550,7 @@ export async function loadPublicSarifFindingsForRepo(args: {
         .select(selectColumns)
         .from(findingStatus)
         .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
         .leftJoin(
           findingValidationEvidenceBundles,
           and(
@@ -4515,7 +4563,7 @@ export async function loadPublicSarifFindingsForRepo(args: {
             eq(reviews.owner, args.owner),
             eq(reviews.repo, args.repo),
             visibilityCondition,
-            isNull(findingStatus.retractedAt),
+            sarifExportEligibilityCondition,
           ),
         )
         .orderBy(desc(findingStatus.createdAt)));

@@ -7,13 +7,18 @@ import {
   validateSarifForGithub,
   type ExportableFinding,
 } from "@/lib/sarif-export";
+import { signSarifIngestToken, verifySarifIngestToken } from "@/lib/sarif-auth-token";
 
 const root = process.cwd();
 const fixtureDir = join(root, "test/fixtures/sarif");
 
 function main() {
+  process.env["ANTFLEET_SARIF_INGEST_HMAC_SECRET"] ??= "local-sarif-e2e-stub-secret";
   const codeql = parseSarif(readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"));
   const snyk = parseSarif(readFileSync(join(fixtureDir, "snyk.sarif"), "utf8"));
+  const stubInstall = { installationId: 424242, owner: "AntFleet", repo: "bench-sarif-export" };
+  const authToken = signSarifIngestToken(stubInstall, new Date("2026-06-24T00:00:00.000Z"));
+  const authVerified = verifySarifIngestToken(authToken, new Date("2026-06-24T00:01:00.000Z"));
   const exportSarif = findingsToSarif({
     owner: "AntFleet",
     repo: "bench-sarif-export",
@@ -32,6 +37,11 @@ function main() {
     "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
     `| codeql-fixture | ${codeql.sourceToolName} | ${codeql.findings.length} | 0 | 0 | ${codeql.findings.length} | 0 | Parsed CodeQL dialect; live reachability/patch gates not fired without bench DB migration. |`,
     `| snyk-fixture | ${snyk.sourceToolName} | ${snyk.findings.length} | 0 | 0 | ${snyk.findings.length} | 0 | Parsed Snyk dialect; live reachability/patch gates not fired without bench DB migration. |`,
+    "",
+    "## Stub install auth",
+    "",
+    `- Stub installation: ${stubInstall.installationId} ${stubInstall.owner}/${stubInstall.repo}`,
+    `- Signed SARIF ingest token verification: ${authVerified.kind}`,
     "",
     "## Export validation",
     "",

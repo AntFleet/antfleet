@@ -9,19 +9,18 @@ import {
 import type { NewSarifFinding } from "@/db/schema";
 import { isSarifIngestEnabledForInstall } from "./daybreak-gates-env";
 import type { ChangedFile } from "./github-files";
+import { runPatchAgent } from "./patch-agent";
 import { applyReachabilityGate, type ApplyReachabilityResult } from "./reachability-gate";
-import {
-  applyPatchVerifier,
-  realPatchVerifierIo,
-  type VerifiablePatchOutcome,
-} from "./patch-verifier";
+import { applyPatchVerifier, realPatchVerifierIo, type PatchVerifyVerdict } from "./patch-verifier";
 import { parseSarif } from "./sarif-parser";
 import type { Finding } from "./review-types";
-import type {
-  NormalizedSarifFinding,
-  SarifBatchStats,
-  SarifParseResult,
-  SarifValidationVerdict,
+import {
+  MAX_SARIF_FINDINGS_PER_BATCH,
+  SarifLimitError,
+  type NormalizedSarifFinding,
+  type SarifBatchStats,
+  type SarifParseResult,
+  type SarifValidationVerdict,
 } from "./sarif-types";
 
 export type ConfirmationVerdict = "real" | "false_positive" | "inconclusive";
@@ -58,9 +57,13 @@ export type SarifIngestDeps = {
   patchAndVerify?: (args: {
     claim: NormalizedSarifFinding;
     finding: Finding;
+    changedFile: ChangedFile;
+    installationId: number | null;
+    owner: string;
+    repo: string;
     repoUrl: string | null;
     sha: string | null;
-  }) => Promise<string | null>;
+  }) => Promise<PatchVerifyVerdict | null>;
   enabled: (installationId: number | null, repo: string) => Promise<boolean>;
 };
 
@@ -76,7 +79,7 @@ const DEFAULT_DEPS: SarifIngestDeps = {
       repo: "unknown",
       files: [changedFile],
     }),
-  patchAndVerify: async () => null,
+  patchAndVerify: defaultPatchAndVerify,
   enabled: isSarifIngestEnabledForInstall,
 };
 
@@ -89,6 +92,12 @@ export async function ingestSarif(
   }
 
   const parsed = parseSarif(input.sarifText);
+  if (parsed.findings.length > MAX_SARIF_FINDINGS_PER_BATCH) {
+    throw new SarifLimitError(
+      "MAX_SARIF_FINDINGS_PER_BATCH",
+      `worker batch must be <= ${MAX_SARIF_FINDINGS_PER_BATCH} findings`,
+    );
+  }
   const batchInput: CreateSarifImportBatchInput = {
     installationId: input.installationId,
     owner: input.owner,
@@ -139,14 +148,22 @@ export async function ingestSarif(
             firstRow?.outcome,
           );
         } else if (reachabilityVerdict === "reachable") {
-          patchVerifyVerdict =
-            (await deps.patchAndVerify?.({
-              claim,
-              finding,
-              repoUrl: input.repoUrl ?? null,
-              sha: input.sha ?? parsed.sourceRevision,
-            })) ?? null;
-          verdict = patchVerifyVerdict === "regressed" ? "inconclusive" : "real";
+          try {
+            patchVerifyVerdict =
+              (await deps.patchAndVerify?.({
+                claim,
+                finding,
+                changedFile,
+                installationId: input.installationId,
+                owner: input.owner,
+                repo: input.repo,
+                repoUrl: input.repoUrl ?? null,
+                sha: input.sha ?? parsed.sourceRevision,
+              })) ?? null;
+          } catch {
+            patchVerifyVerdict = null;
+          }
+          verdict = sarifVerdictFromPatchVerify(patchVerifyVerdict);
         } else {
           verdict = "inconclusive";
         }
@@ -180,20 +197,37 @@ export async function ingestSarif(
 }
 
 export async function defaultPatchAndVerify(args: {
-  outcome: VerifiablePatchOutcome;
+  claim: NormalizedSarifFinding;
   finding: Finding;
+  changedFile: ChangedFile;
+  installationId: number | null;
+  owner: string;
+  repo: string;
   repoUrl: string | null;
-  sha: string;
-}): Promise<string | null> {
+  sha: string | null;
+}): Promise<PatchVerifyVerdict | null> {
+  if (args.installationId === null || args.sha === null) return null;
+  const outcome = await runPatchAgent({
+    reviewId: `sarif-${args.claim.externalFingerprint.slice(0, 32)}`,
+    installationId: args.installationId,
+    repo: args.repo,
+    findings: [args.finding],
+    changedFiles: [args.changedFile],
+  });
+  if (outcome === null || outcome.byIndex.size === 0) return null;
   const result = await applyPatchVerifier({
-    outcome: args.outcome,
+    outcome,
     repoUrl: args.repoUrl,
     sha: args.sha,
-    findingAt: () => args.finding,
-    findingIdAt: () => null,
+    findingAt: (index) => (index === 0 ? args.finding : undefined),
+    findingIdAt: () => args.claim.externalFingerprint,
     io: realPatchVerifierIo(),
   });
   return result.rows[0]?.outcome.verdict ?? null;
+}
+
+function sarifVerdictFromPatchVerify(verdict: string | null | undefined): SarifValidationVerdict {
+  return verdict === "verified" ? "real" : "inconclusive";
 }
 
 function toDbFinding(batchId: string, claim: NormalizedSarifFinding): NewSarifFinding {

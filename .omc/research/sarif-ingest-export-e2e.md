@@ -1,6 +1,6 @@
 # SARIF ingest/export E2E report
 
-Generated: 2026-06-24T03:54:33.070Z
+Generated: 2026-06-24T04:16:09.602Z
 
 ## Fixture ingest
 
@@ -8,6 +8,11 @@ Generated: 2026-06-24T03:54:33.070Z
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | codeql-fixture | CodeQL | 1 | 0 | 0 | 1 | 0 | Parsed CodeQL dialect; live reachability/patch gates not fired without bench DB migration. |
 | snyk-fixture | Snyk Code | 1 | 0 | 0 | 1 | 0 | Parsed Snyk dialect; live reachability/patch gates not fired without bench DB migration. |
+
+## Stub install auth
+
+- Stub installation: 424242 AntFleet/bench-sarif-export
+- Signed SARIF ingest token verification: ok
 
 ## Export validation
 
