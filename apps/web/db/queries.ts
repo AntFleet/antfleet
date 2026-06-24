@@ -63,6 +63,7 @@ import { writePostDraft } from "@/lib/post-drafts";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { LIFECYCLE_PRESERVE_COLUMNS, reconcilableTrailingRows } from "./finding-lifecycle";
 import type { DisclosureActorType, DisclosureState } from "@/lib/disclosure-types";
+import { SARIF_TOKEN_USE_GC_BATCH_SIZE } from "@/lib/sarif-token-use-gc";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -3477,11 +3478,24 @@ export async function consumeSarifIngestTokenUse(
 }
 
 export async function purgeOldSarifIngestTokenUses(cutoff: Date): Promise<number> {
-  const deleted = await db
-    .delete(sarifIngestTokenUse)
-    .where(lt(sarifIngestTokenUse.usedAt, cutoff))
-    .returning({ jti: sarifIngestTokenUse.jti });
-  return deleted.length;
+  const result = await db.execute(sql`
+    DELETE FROM ${sarifIngestTokenUse}
+    WHERE ${sarifIngestTokenUse.jti} IN (
+      SELECT ${sarifIngestTokenUse.jti}
+      FROM ${sarifIngestTokenUse}
+      WHERE ${sarifIngestTokenUse.usedAt} < ${cutoff}
+      LIMIT ${SARIF_TOKEN_USE_GC_BATCH_SIZE}
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING ${sarifIngestTokenUse.jti}
+  `);
+  return rowCount(result);
+}
+
+function rowCount(result: unknown): number {
+  if (Array.isArray(result)) return result.length;
+  const rows = (result as { rows?: unknown[] }).rows;
+  return Array.isArray(rows) ? rows.length : 0;
 }
 
 export async function insertSarifFindings(rows: NewSarifFinding[]): Promise<void> {

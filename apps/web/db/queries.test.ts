@@ -17,12 +17,19 @@ const dbMocks = vi.hoisted(() => {
   });
   const selectFrom = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from: selectFrom }));
+  const executeCalls: unknown[] = [];
+  const execute = vi.fn((query: unknown) => {
+    executeCalls.push(query);
+    return Promise.resolve({ rows: [{ jti: "expired" }] });
+  });
   return {
-    db: { update, select },
+    db: { execute, update, select },
     setCalls,
     set,
     update,
     where,
+    execute,
+    executeCalls,
     select,
     selectFrom,
     selectWhere,
@@ -41,15 +48,19 @@ import {
   loadReviewsReadyForRetry,
   makeFindingId,
   normalizeActivityWindow,
+  purgeOldSarifIngestTokenUses,
   recordPatchDecisions,
   summarizeRoastFindings,
 } from "./queries";
 import { MAX_PROCESSING_ATTEMPTS } from "@/lib/review-worker-config";
+import { SARIF_TOKEN_USE_GC_BATCH_SIZE } from "@/lib/sarif-token-use-gc";
 
 const NOW = new Date("2026-05-19T12:00:00.000Z");
 
 beforeEach(() => {
   dbMocks.setCalls.length = 0;
+  dbMocks.executeCalls.length = 0;
+  dbMocks.execute.mockClear();
   dbMocks.update.mockClear();
   dbMocks.set.mockClear();
   dbMocks.where.mockClear();
@@ -109,6 +120,24 @@ describe("normalizeActivityWindow", () => {
   });
 });
 
+describe("purgeOldSarifIngestTokenUses", () => {
+  it("deletes one locked batch of expired SARIF token-use rows", async () => {
+    const deleted = await purgeOldSarifIngestTokenUses(new Date("2026-06-24T11:00:00.000Z"));
+
+    expect(deleted).toBe(1);
+    expect(dbMocks.execute).toHaveBeenCalledTimes(1);
+
+    const sqlText = stringifySql(dbMocks.executeCalls[0]);
+    expect(sqlText).toContain("DELETE FROM");
+    expect(sqlText).toContain("WHERE");
+    expect(sqlText).toContain("IN");
+    expect(sqlText).toContain("LIMIT");
+    expect(sqlText).toContain(String(SARIF_TOKEN_USE_GC_BATCH_SIZE));
+    expect(sqlText).toContain("FOR UPDATE SKIP LOCKED");
+    expect(sqlText).toContain("RETURNING");
+  });
+});
+
 describe("summarizeRoastFindings", () => {
   it("counts findings and picks the highest severity by rank", () => {
     expect(
@@ -127,6 +156,26 @@ describe("summarizeRoastFindings", () => {
     });
   });
 });
+
+function stringifySql(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  if (typeof value !== "object") return String(value);
+
+  const withStrings = value as { strings?: unknown[] };
+  if (Array.isArray(withStrings.strings)) return withStrings.strings.map(stringifySql).join(" ");
+
+  const withChunks = value as { queryChunks?: unknown[] };
+  if (Array.isArray(withChunks.queryChunks)) {
+    return withChunks.queryChunks.map(stringifySql).join(" ");
+  }
+
+  const withValue = value as { value?: unknown };
+  if (Array.isArray(withValue.value)) return withValue.value.map(stringifySql).join(" ");
+  if (withValue.value !== undefined) return stringifySql(withValue.value);
+
+  return String(value);
+}
 
 describe("isPublicSarifExportEligible", () => {
   const closedAt = new Date("2026-06-24T00:00:00.000Z");
