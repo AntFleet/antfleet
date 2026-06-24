@@ -104,6 +104,37 @@ describe("/api/repos/[owner]/[repo]/sarif", () => {
     );
     expect(deps.ingest).not.toHaveBeenCalledWith(expect.objectContaining({ sha: "abc1234" }));
   });
+
+  it("consumes a concurrent replay before SARIF parse or clone resolution", async () => {
+    const used = new Set<string>();
+    const parseSarif = vi.fn();
+    const resolveCloneUrl = vi.fn(async () => "https://github.com/AntFleet/bench.git");
+    const ingest = vi.fn(async (input) => {
+      parseSarif(input.sarifText);
+      await resolveCloneUrl();
+      return ingestResult();
+    });
+    const deps = depsFor({
+      consumeTokenUse: vi.fn(async (tokenUse) => {
+        await Promise.resolve();
+        if (used.has(tokenUse.jti)) return "replay";
+        used.add(tokenUse.jti);
+        return "consumed";
+      }),
+      ingest,
+    });
+
+    const [first, second] = await Promise.all([
+      handleSarifIngest(req({ sarif: minimalSarif() }), ctx, deps),
+      handleSarifIngest(req({ sarif: minimalSarif() }), ctx, deps),
+    ]);
+
+    expect([first.status, second.status].toSorted()).toEqual([202, 401]);
+    expect(deps.consumeTokenUse).toHaveBeenCalledTimes(2);
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(parseSarif).toHaveBeenCalledTimes(1);
+    expect(resolveCloneUrl).toHaveBeenCalledTimes(1);
+  });
 });
 
 function depsFor(overrides: Partial<SarifRouteDeps> = {}): SarifRouteDeps {
@@ -121,23 +152,28 @@ function depsFor(overrides: Partial<SarifRouteDeps> = {}): SarifRouteDeps {
     })),
     enabled: vi.fn(async () => true),
     hasRepoAccess: vi.fn(async () => true),
-    ingest: vi.fn(async () => ({
-      batchId: "00000000-0000-4000-8000-000000000001",
-      parsed: {
-        sourceTool: "codeql" as const,
-        sourceToolName: "CodeQL",
-        sourceRevision: null,
-        findings: [],
-      },
-      stats: {
-        totalClaims: 0,
-        realCount: 0,
-        falsePositiveCount: 0,
-        inconclusiveCount: 0,
-        errorCount: 0,
-      },
-    })),
+    consumeTokenUse: vi.fn(async (): Promise<"consumed" | "replay"> => "consumed"),
+    ingest: vi.fn(async () => ingestResult()),
     ...overrides,
+  };
+}
+
+function ingestResult(): Awaited<ReturnType<SarifRouteDeps["ingest"]>> {
+  return {
+    batchId: "00000000-0000-4000-8000-000000000001",
+    parsed: {
+      sourceTool: "codeql" as const,
+      sourceToolName: "CodeQL",
+      sourceRevision: null,
+      findings: [],
+    },
+    stats: {
+      totalClaims: 0,
+      realCount: 0,
+      falsePositiveCount: 0,
+      inconclusiveCount: 0,
+      errorCount: 0,
+    },
   };
 }
 

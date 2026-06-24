@@ -45,7 +45,7 @@ export type SarifIngestInput = {
   sourceKind: "upload" | "url" | "code_scanning";
   sourceUrl?: string | null;
   fileBlobRef?: string | null;
-  tokenUse?: SarifIngestTokenUse | null;
+  tokenUse: SarifIngestTokenUse | null;
 };
 
 export type SarifIngestDeps = {
@@ -101,6 +101,9 @@ export async function ingestSarif(
   if (!(await deps.enabled(input.installationId, input.repo))) {
     throw new Error("ANTFLEET_SARIF_INGEST is disabled");
   }
+  if (input.tokenUse === null || input.tokenUse === undefined) {
+    throw new Error("SARIF ingest token use must be consumed before parsing");
+  }
 
   const parsed = parseSarif(input.sarifText);
   if (parsed.findings.length > MAX_SARIF_FINDINGS_PER_BATCH) {
@@ -129,9 +132,10 @@ export async function ingestSarif(
     sourceRevision: parsed.sourceRevision,
     sourceUrl: input.sourceUrl ?? null,
     fileBlobRef: input.fileBlobRef ?? null,
+    ingestTokenJti: input.tokenUse.jti,
     totalClaims: parsed.findings.length,
   };
-  const batchId = await deps.createBatch(batchInput, input.tokenUse ?? null);
+  const batchId = await deps.createBatch(batchInput);
   await deps.insertFindings(parsed.findings.map((claim) => toDbFinding(batchId, claim)));
 
   const stats: SarifBatchStats = {

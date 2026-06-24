@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { isInstallApprovedForRepo } from "@/db/queries";
+import { consumeSarifIngestTokenUse, isInstallApprovedForRepo } from "@/db/queries";
 import { isSarifIngestEnabledForInstall } from "@/lib/daybreak-gates-env";
 import {
   ingestSarif,
-  SarifIngestTokenReplayError,
   type SarifIngestDeps,
   type SarifIngestInput,
 } from "@/lib/sarif-ingest-worker";
@@ -30,6 +29,7 @@ export type SarifRouteDeps = {
     owner: string;
     repo: string;
   }) => Promise<boolean>;
+  consumeTokenUse: (tokenUse: SarifIngestTokenUse) => Promise<"consumed" | "replay">;
   ingest: (input: SarifIngestInput) => Promise<Awaited<ReturnType<typeof ingestSarif>>>;
 };
 
@@ -37,6 +37,7 @@ const DEFAULT_DEPS: SarifRouteDeps = {
   authenticate: authenticateSarifRequest,
   enabled: isSarifIngestEnabledForInstall,
   hasRepoAccess: isInstallApprovedForRepo,
+  consumeTokenUse: consumeSarifIngestTokenUse,
   ingest: (input) => ingestSarif(input),
 };
 
@@ -56,17 +57,22 @@ export async function handleSarifIngest(
   const auth = deps.authenticate(req);
   if (auth === "misconfigured") return json(500, { error: "server_misconfigured" });
   if (auth === "missing" || auth === "invalid") return json(401, { error: "unauthorized" });
-  if (!(await deps.enabled(auth.installationId, repo))) {
-    return json(403, { error: "sarif_ingest_disabled" });
-  }
-  if (auth.owner !== owner || auth.repo !== repo) {
-    return json(403, { error: "repo_forbidden" });
-  }
-  const allowed = await deps.hasRepoAccess({ installationId: auth.installationId, owner, repo });
-  if (!allowed) return json(403, { error: "repo_forbidden" });
 
   try {
-    const body = await readJsonWithCap(req);
+    const bodyText = await readBodyTextWithCap(req);
+    if (!(await deps.enabled(auth.installationId, repo))) {
+      return json(403, { error: "sarif_ingest_disabled" });
+    }
+    if (auth.owner !== owner || auth.repo !== repo) {
+      return json(403, { error: "repo_forbidden" });
+    }
+    const allowed = await deps.hasRepoAccess({ installationId: auth.installationId, owner, repo });
+    if (!allowed) return json(403, { error: "repo_forbidden" });
+
+    const consumeResult = await deps.consumeTokenUse(auth.tokenUse);
+    if (consumeResult === "replay") return json(401, { error: "token_replay" });
+
+    const body = JSON.parse(bodyText) as unknown;
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
       return json(400, { error: "invalid_body" });
     }
@@ -94,9 +100,6 @@ export async function handleSarifIngest(
   } catch (err) {
     if (err instanceof SarifLimitError) {
       return json(413, { error: "sarif_too_large", message: err.message });
-    }
-    if (err instanceof SarifIngestTokenReplayError) {
-      return json(401, { error: "token_replay" });
     }
     return json(400, { error: "sarif_ingest_failed", message: messageOf(err) });
   }
@@ -134,7 +137,7 @@ function authenticateSarifRequest(
   }
 }
 
-async function readJsonWithCap(req: NextRequest): Promise<unknown> {
+async function readBodyTextWithCap(req: NextRequest): Promise<string> {
   const contentLength = req.headers.get("content-length");
   if (contentLength !== null) {
     const bytes = Number(contentLength);
@@ -142,8 +145,7 @@ async function readJsonWithCap(req: NextRequest): Promise<unknown> {
       throw new SarifLimitError("MAX_SARIF_BYTES", `request body exceeds ${MAX_SARIF_BYTES} bytes`);
     }
   }
-  const text = req.body === null ? "" : await readBodyStreamWithCap(req.body);
-  return JSON.parse(text);
+  return req.body === null ? "" : await readBodyStreamWithCap(req.body);
 }
 
 async function readBodyStreamWithCap(body: ReadableStream<Uint8Array>): Promise<string> {

@@ -33,6 +33,7 @@ describe("ingestSarif", () => {
         installationId: 1,
         sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
         sourceKind: "upload",
+        tokenUse: tokenUse(),
       },
       deps,
     );
@@ -63,6 +64,7 @@ describe("ingestSarif", () => {
         installationId: 1,
         sarifText: readFileSync(join(fixtureDir, "snyk.sarif"), "utf8"),
         sourceKind: "upload",
+        tokenUse: tokenUse(),
       },
       deps,
     );
@@ -85,6 +87,7 @@ describe("ingestSarif", () => {
         installationId: 1,
         sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
         sourceKind: "upload",
+        tokenUse: tokenUse(),
         ...({
           repoUrl: "https://attacker.test/repo.git",
           sha: "ffffffffffffffffffffffffffffffffffffffff",
@@ -134,6 +137,7 @@ describe("ingestSarif", () => {
           installationId: 1,
           sarifText: readFileSync(join(fixtureDir, "snyk.sarif"), "utf8"),
           sourceKind: "upload",
+          tokenUse: tokenUse(),
         },
         deps,
       );
@@ -153,6 +157,7 @@ describe("ingestSarif", () => {
         installationId: 1,
         sarifText: readFileSync(join(fixtureDir, "snyk.sarif"), "utf8"),
         sourceKind: "upload",
+        tokenUse: tokenUse(),
       },
       deps,
     );
@@ -170,11 +175,32 @@ describe("ingestSarif", () => {
           installationId: 1,
           sarifText: JSON.stringify(largeSarif(MAX_SARIF_FINDINGS_PER_BATCH + 1)),
           sourceKind: "upload",
+          tokenUse: tokenUse(),
         },
         deps,
       ),
     ).rejects.toBeInstanceOf(SarifLimitError);
     expect(deps.createBatch).not.toHaveBeenCalled();
+  });
+
+  it("requires a consumed token use before parsing SARIF", async () => {
+    const deps = depsFor({});
+
+    await expect(
+      ingestSarif(
+        {
+          owner: "AntFleet",
+          repo: "bench",
+          installationId: 1,
+          sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
+          sourceKind: "upload",
+          tokenUse: null,
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/token use must be consumed before parsing/u);
+    expect(deps.createBatch).not.toHaveBeenCalled();
+    expect(deps.resolveCloneUrl).not.toHaveBeenCalled();
   });
 });
 
@@ -212,6 +238,15 @@ function depsFor(overrides: Partial<SarifIngestDeps>): SarifIngestDeps {
     })),
     enabled: vi.fn(async () => true),
     ...overrides,
+  };
+}
+
+function tokenUse() {
+  return {
+    jti: "00000000-0000-4000-8000-000000000123",
+    keyId: "sarif-hmac-v1",
+    installationId: 1,
+    repo: "AntFleet/bench",
   };
 }
 

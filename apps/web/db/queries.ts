@@ -3435,6 +3435,7 @@ export type CreateSarifImportBatchInput = Pick<
   | "sourceRevision"
   | "sourceUrl"
   | "fileBlobRef"
+  | "ingestTokenJti"
   | "totalClaims"
 >;
 
@@ -3449,31 +3450,38 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
 }
 
-export async function createSarifImportBatch(
-  input: CreateSarifImportBatchInput,
-  tokenUse?: NewSarifIngestTokenUse | null,
-): Promise<string> {
-  return await db.transaction(async (tx) => {
-    if (tokenUse !== undefined && tokenUse !== null) {
-      try {
-        await tx.insert(sarifIngestTokenUse).values({
-          jti: tokenUse.jti,
-          installationId: tokenUse.installationId,
-          repo: tokenUse.repo,
-        });
-      } catch (err) {
-        if (isUniqueViolation(err)) throw new SarifIngestTokenReplayError();
-        throw err;
-      }
-    }
-    const inserted = await tx
-      .insert(sarifImportBatch)
-      .values({ ...input, status: "pending" })
-      .returning({ id: sarifImportBatch.id });
-    const first = inserted[0];
-    if (first === undefined) throw new Error("createSarifImportBatch: insert returned no row");
-    return first.id;
-  });
+export async function createSarifImportBatch(input: CreateSarifImportBatchInput): Promise<string> {
+  const inserted = await db
+    .insert(sarifImportBatch)
+    .values({ ...input, status: "pending" })
+    .returning({ id: sarifImportBatch.id });
+  const first = inserted[0];
+  if (first === undefined) throw new Error("createSarifImportBatch: insert returned no row");
+  return first.id;
+}
+
+export async function consumeSarifIngestTokenUse(
+  tokenUse: NewSarifIngestTokenUse,
+): Promise<"consumed" | "replay"> {
+  try {
+    await db.insert(sarifIngestTokenUse).values({
+      jti: tokenUse.jti,
+      installationId: tokenUse.installationId,
+      repo: tokenUse.repo,
+    });
+    return "consumed";
+  } catch (err) {
+    if (isUniqueViolation(err)) return "replay";
+    throw err;
+  }
+}
+
+export async function purgeOldSarifIngestTokenUses(cutoff: Date): Promise<number> {
+  const deleted = await db
+    .delete(sarifIngestTokenUse)
+    .where(lt(sarifIngestTokenUse.usedAt, cutoff))
+    .returning({ jti: sarifIngestTokenUse.jti });
+  return deleted.length;
 }
 
 export async function insertSarifFindings(rows: NewSarifFinding[]): Promise<void> {

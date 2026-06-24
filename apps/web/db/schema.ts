@@ -918,6 +918,17 @@ export const repoThreatModel = pgTable(
   ],
 );
 
+export const sarifIngestTokenUse = pgTable(
+  "sarif_ingest_token_use",
+  {
+    jti: text("jti").primaryKey(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+    repo: text("repo").notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("sarif_ingest_token_use_used_at_idx").on(t.usedAt)],
+);
+
 export const sarifImportBatch = pgTable(
   "sarif_import_batch",
   {
@@ -931,6 +942,7 @@ export const sarifImportBatch = pgTable(
     sourceRevision: text("source_revision"),
     sourceUrl: text("source_url"),
     fileBlobRef: text("file_blob_ref"),
+    ingestTokenJti: text("ingest_token_jti"),
     status: text("status").notNull().default("pending"),
     totalClaims: integer("total_claims").notNull().default(0),
     realCount: integer("real_count").notNull().default(0),
@@ -946,17 +958,6 @@ export const sarifImportBatch = pgTable(
     index("sarif_import_batch_repo_idx").on(t.repoHash, t.createdAt),
     index("sarif_import_batch_status_idx").on(t.status, t.createdAt),
   ],
-);
-
-export const sarifIngestTokenUse = pgTable(
-  "sarif_ingest_token_use",
-  {
-    jti: text("jti").primaryKey(),
-    installationId: bigint("installation_id", { mode: "number" }).notNull(),
-    repo: text("repo").notNull(),
-    usedAt: timestamp("used_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [index("sarif_ingest_token_use_used_at_idx").on(t.usedAt)],
 );
 
 export const sarifFinding = pgTable(
