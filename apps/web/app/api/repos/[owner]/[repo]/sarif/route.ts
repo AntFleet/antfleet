@@ -5,10 +5,12 @@ import { isInstallApprovedForRepo } from "@/db/queries";
 import { isSarifIngestEnabledForInstall } from "@/lib/daybreak-gates-env";
 import {
   ingestSarif,
+  SarifIngestTokenReplayError,
   type SarifIngestDeps,
   type SarifIngestInput,
 } from "@/lib/sarif-ingest-worker";
 import { verifySarifIngestToken, type SarifIngestAuth } from "@/lib/sarif-auth-token";
+import type { SarifIngestTokenUse } from "@/lib/sarif-auth-token";
 import { MAX_SARIF_BYTES, SarifLimitError } from "@/lib/sarif-types";
 
 export const runtime = "nodejs";
@@ -16,8 +18,12 @@ export const dynamic = "force-dynamic";
 
 type RouteParams = { owner: string; repo: string };
 
+type VerifiedSarifIngestAuth = SarifIngestAuth & { tokenUse: SarifIngestTokenUse };
+
 export type SarifRouteDeps = {
-  authenticate: (req: NextRequest) => SarifIngestAuth | "missing" | "invalid" | "misconfigured";
+  authenticate: (
+    req: NextRequest,
+  ) => VerifiedSarifIngestAuth | "missing" | "invalid" | "misconfigured";
   enabled: SarifIngestDeps["enabled"];
   hasRepoAccess: (args: {
     installationId: number;
@@ -78,8 +84,7 @@ export async function handleSarifIngest(
       sourceKind: "upload",
       sourceUrl: null,
       fileBlobRef: `sha256:${digest}`,
-      repoUrl: typeof record["repoUrl"] === "string" ? record["repoUrl"] : null,
-      sha: typeof record["sha"] === "string" ? record["sha"] : null,
+      tokenUse: auth.tokenUse,
     });
     return json(202, {
       batch_id: result.batchId,
@@ -89,6 +94,9 @@ export async function handleSarifIngest(
   } catch (err) {
     if (err instanceof SarifLimitError) {
       return json(413, { error: "sarif_too_large", message: err.message });
+    }
+    if (err instanceof SarifIngestTokenReplayError) {
+      return json(401, { error: "token_replay" });
     }
     return json(400, { error: "sarif_ingest_failed", message: messageOf(err) });
   }
@@ -115,12 +123,12 @@ function messageOf(err: unknown): string {
 
 function authenticateSarifRequest(
   req: NextRequest,
-): SarifIngestAuth | "missing" | "invalid" | "misconfigured" {
+): VerifiedSarifIngestAuth | "missing" | "invalid" | "misconfigured" {
   const authHeader = req.headers.get("authorization");
   if (authHeader === null || !authHeader.startsWith("Bearer ")) return "missing";
   try {
     const result = verifySarifIngestToken(authHeader.slice("Bearer ".length));
-    return result.kind === "ok" ? result.payload : "invalid";
+    return result.kind === "ok" ? { ...result.payload, tokenUse: result.tokenUse } : "invalid";
   } catch {
     return "misconfigured";
   }

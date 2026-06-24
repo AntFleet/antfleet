@@ -50,9 +50,10 @@ describe("ingestSarif", () => {
   });
 
   it("marks reachable claims real only after verified patch verification", async () => {
+    const patchAndVerify = vi.fn(async () => "verified" as const);
     const deps = depsFor({
       reachability: reachable,
-      patchAndVerify: vi.fn(async () => "verified" as const),
+      patchAndVerify,
     });
 
     const result = await ingestSarif(
@@ -67,6 +68,42 @@ describe("ingestSarif", () => {
     );
 
     expect(result.stats.realCount).toBe(1);
+  });
+
+  it("uses the installation-resolved clone URL and SARIF revision for patch verification", async () => {
+    const patchAndVerify = vi.fn(async () => "verified" as const);
+    const deps = depsFor({
+      reachability: reachable,
+      resolveCloneUrl: vi.fn(async () => "https://github.com/AntFleet/bench.git"),
+      patchAndVerify,
+    });
+
+    await ingestSarif(
+      {
+        owner: "AntFleet",
+        repo: "bench",
+        installationId: 1,
+        sarifText: readFileSync(join(fixtureDir, "codeql.sarif"), "utf8"),
+        sourceKind: "upload",
+        ...({
+          repoUrl: "https://attacker.test/repo.git",
+          sha: "ffffffffffffffffffffffffffffffffffffffff",
+        } as Record<string, unknown>),
+      },
+      deps,
+    );
+
+    expect(deps.resolveCloneUrl).toHaveBeenCalledWith({
+      installationId: 1,
+      owner: "AntFleet",
+      repo: "bench",
+    });
+    expect(patchAndVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoUrl: "https://github.com/AntFleet/bench.git",
+        sha: "1111111111111111111111111111111111111111",
+      }),
+    );
   });
 
   it.each([
@@ -167,6 +204,7 @@ function depsFor(overrides: Partial<SarifIngestDeps>): SarifIngestDeps {
     insertFindings: vi.fn(async () => undefined),
     updateFinding: vi.fn(async () => undefined),
     finishBatch: vi.fn(async () => undefined),
+    resolveCloneUrl: vi.fn(async () => "https://github.com/AntFleet/bench.git"),
     reachability: vi.fn(async () => ({
       agreed: [],
       downgrades: [],

@@ -3,17 +3,23 @@ import {
   finishSarifImportBatch,
   hashRepo,
   insertSarifFindings,
+  SarifIngestTokenReplayError,
   updateSarifFindingValidation,
   type CreateSarifImportBatchInput,
 } from "@/db/queries";
 import type { NewSarifFinding } from "@/db/schema";
 import { isSarifIngestEnabledForInstall } from "./daybreak-gates-env";
 import type { ChangedFile } from "./github-files";
+import {
+  assertExpectedGithubCloneHost,
+  resolveInstallRepoCloneUrl,
+} from "./install-repo-clone-url";
 import { runPatchAgent } from "./patch-agent";
 import { applyReachabilityGate, type ApplyReachabilityResult } from "./reachability-gate";
 import { applyPatchVerifier, realPatchVerifierIo, type PatchVerifyVerdict } from "./patch-verifier";
 import { parseSarif } from "./sarif-parser";
 import type { Finding } from "./review-types";
+import type { SarifIngestTokenUse } from "./sarif-auth-token";
 import {
   MAX_SARIF_FINDINGS_PER_BATCH,
   SarifLimitError,
@@ -39,8 +45,7 @@ export type SarifIngestInput = {
   sourceKind: "upload" | "url" | "code_scanning";
   sourceUrl?: string | null;
   fileBlobRef?: string | null;
-  repoUrl?: string | null;
-  sha?: string | null;
+  tokenUse?: SarifIngestTokenUse | null;
 };
 
 export type SarifIngestDeps = {
@@ -48,6 +53,11 @@ export type SarifIngestDeps = {
   insertFindings: typeof insertSarifFindings;
   updateFinding: typeof updateSarifFindingValidation;
   finishBatch: typeof finishSarifImportBatch;
+  resolveCloneUrl: (args: {
+    installationId: number;
+    owner: string;
+    repo: string;
+  }) => Promise<string>;
   confirmation?: (claim: NormalizedSarifFinding) => Promise<SarifConfirmationResult>;
   reachability: (args: {
     claim: NormalizedSarifFinding;
@@ -72,6 +82,7 @@ const DEFAULT_DEPS: SarifIngestDeps = {
   insertFindings: insertSarifFindings,
   updateFinding: updateSarifFindingValidation,
   finishBatch: finishSarifImportBatch,
+  resolveCloneUrl: resolveInstallRepoCloneUrl,
   reachability: async ({ finding, changedFile }) =>
     applyReachabilityGate({
       agreed: [finding],
@@ -98,6 +109,16 @@ export async function ingestSarif(
       `worker batch must be <= ${MAX_SARIF_FINDINGS_PER_BATCH} findings`,
     );
   }
+  const repoUrl =
+    input.installationId === null
+      ? null
+      : await deps.resolveCloneUrl({
+          installationId: input.installationId,
+          owner: input.owner,
+          repo: input.repo,
+        });
+  if (repoUrl !== null) assertExpectedGithubCloneHost(repoUrl);
+  const verifierSha = safeRevisionSha(parsed.sourceRevision);
   const batchInput: CreateSarifImportBatchInput = {
     installationId: input.installationId,
     owner: input.owner,
@@ -110,7 +131,7 @@ export async function ingestSarif(
     fileBlobRef: input.fileBlobRef ?? null,
     totalClaims: parsed.findings.length,
   };
-  const batchId = await deps.createBatch(batchInput);
+  const batchId = await deps.createBatch(batchInput, input.tokenUse ?? null);
   await deps.insertFindings(parsed.findings.map((claim) => toDbFinding(batchId, claim)));
 
   const stats: SarifBatchStats = {
@@ -157,8 +178,8 @@ export async function ingestSarif(
                 installationId: input.installationId,
                 owner: input.owner,
                 repo: input.repo,
-                repoUrl: input.repoUrl ?? null,
-                sha: input.sha ?? parsed.sourceRevision,
+                repoUrl,
+                sha: verifierSha,
               })) ?? null;
           } catch {
             patchVerifyVerdict = null;
@@ -207,6 +228,7 @@ export async function defaultPatchAndVerify(args: {
   sha: string | null;
 }): Promise<PatchVerifyVerdict | null> {
   if (args.installationId === null || args.sha === null) return null;
+  if (args.repoUrl !== null) assertExpectedGithubCloneHost(args.repoUrl);
   const outcome = await runPatchAgent({
     reviewId: `sarif-${args.claim.externalFingerprint.slice(0, 32)}`,
     installationId: args.installationId,
@@ -226,8 +248,14 @@ export async function defaultPatchAndVerify(args: {
   return result.rows[0]?.outcome.verdict ?? null;
 }
 
+export { SarifIngestTokenReplayError };
+
 function sarifVerdictFromPatchVerify(verdict: string | null | undefined): SarifValidationVerdict {
   return verdict === "verified" ? "real" : "inconclusive";
+}
+
+function safeRevisionSha(revision: string | null): string | null {
+  return revision !== null && /^[0-9a-f]{40}$/u.test(revision) ? revision : null;
 }
 
 function toDbFinding(batchId: string, claim: NormalizedSarifFinding): NewSarifFinding {

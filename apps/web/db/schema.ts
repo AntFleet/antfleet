@@ -948,6 +948,17 @@ export const sarifImportBatch = pgTable(
   ],
 );
 
+export const sarifIngestTokenUse = pgTable(
+  "sarif_ingest_token_use",
+  {
+    jti: text("jti").primaryKey(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+    repo: text("repo").notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("sarif_ingest_token_use_used_at_idx").on(t.usedAt)],
+);
+
 export const sarifFinding = pgTable(
   "sarif_finding",
   {
@@ -1058,6 +1069,8 @@ export type RepoThreatModel = typeof repoThreatModel.$inferSelect;
 export type NewRepoThreatModel = typeof repoThreatModel.$inferInsert;
 export type SarifImportBatch = typeof sarifImportBatch.$inferSelect;
 export type NewSarifImportBatch = typeof sarifImportBatch.$inferInsert;
+export type SarifIngestTokenUse = typeof sarifIngestTokenUse.$inferSelect;
+export type NewSarifIngestTokenUse = typeof sarifIngestTokenUse.$inferInsert;
 export type SarifFinding = typeof sarifFinding.$inferSelect;
 export type NewSarifFinding = typeof sarifFinding.$inferInsert;
 export type MaintainerReaction = typeof maintainerReactions.$inferSelect;

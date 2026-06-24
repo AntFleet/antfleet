@@ -20,7 +20,17 @@ describe("/api/repos/[owner]/[repo]/sarif", () => {
 
   it("rejects an authenticated installation token for a different repo", async () => {
     const deps = depsFor({
-      authenticate: () => ({ installationId: 123, owner: "Other", repo: "bench" }),
+      authenticate: () => ({
+        installationId: 123,
+        owner: "Other",
+        repo: "bench",
+        tokenUse: {
+          jti: "00000000-0000-4000-8000-000000000123",
+          keyId: "sarif-hmac-v1",
+          installationId: 123,
+          repo: "Other/bench",
+        },
+      }),
     });
     const res = await handleSarifIngest(req({ sarif: minimalSarif() }), ctx, deps);
 
@@ -66,7 +76,12 @@ describe("/api/repos/[owner]/[repo]/sarif", () => {
   it("uses the authenticated installation id instead of any body field", async () => {
     const deps = depsFor();
     const res = await handleSarifIngest(
-      req({ installationId: 999, sarif: minimalSarif(), sha: "abc1234" }),
+      req({
+        installationId: 999,
+        sarif: minimalSarif(),
+        repoUrl: "https://attacker.test/repo.git",
+        sha: "abc1234",
+      }),
       ctx,
       deps,
     );
@@ -79,14 +94,31 @@ describe("/api/repos/[owner]/[repo]/sarif", () => {
         repo: "bench",
         sourceKind: "upload",
         sourceUrl: null,
+        tokenUse: expect.objectContaining({ jti: "00000000-0000-4000-8000-000000000123" }),
       }),
     );
+    expect(deps.ingest).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoUrl: "https://attacker.test/repo.git",
+      }),
+    );
+    expect(deps.ingest).not.toHaveBeenCalledWith(expect.objectContaining({ sha: "abc1234" }));
   });
 });
 
 function depsFor(overrides: Partial<SarifRouteDeps> = {}): SarifRouteDeps {
   return {
-    authenticate: vi.fn(() => ({ installationId: 123, owner: "AntFleet", repo: "bench" })),
+    authenticate: vi.fn(() => ({
+      installationId: 123,
+      owner: "AntFleet",
+      repo: "bench",
+      tokenUse: {
+        jti: "00000000-0000-4000-8000-000000000123",
+        keyId: "sarif-hmac-v1",
+        installationId: 123,
+        repo: "AntFleet/bench",
+      },
+    })),
     enabled: vi.fn(async () => true),
     hasRepoAccess: vi.fn(async () => true),
     ingest: vi.fn(async () => ({

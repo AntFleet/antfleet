@@ -47,11 +47,13 @@ import {
   type NewReviewGateOutcome,
   type NewRepoThreatModel,
   type NewSarifFinding,
+  type NewSarifIngestTokenUse,
   type NewSarifImportBatch,
   type OnboardingEvent,
   type RepoThreatModel,
   type RoastSubmission,
   scorecardSnapshots,
+  sarifIngestTokenUse,
 } from "./schema";
 import {
   derivedPublicReceiptCondition,
@@ -3436,14 +3438,42 @@ export type CreateSarifImportBatchInput = Pick<
   | "totalClaims"
 >;
 
-export async function createSarifImportBatch(input: CreateSarifImportBatchInput): Promise<string> {
-  const inserted = await db
-    .insert(sarifImportBatch)
-    .values({ ...input, status: "pending" })
-    .returning({ id: sarifImportBatch.id });
-  const first = inserted[0];
-  if (first === undefined) throw new Error("createSarifImportBatch: insert returned no row");
-  return first.id;
+export class SarifIngestTokenReplayError extends Error {
+  constructor() {
+    super("SARIF ingest token was already used");
+    this.name = "SarifIngestTokenReplayError";
+  }
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
+}
+
+export async function createSarifImportBatch(
+  input: CreateSarifImportBatchInput,
+  tokenUse?: NewSarifIngestTokenUse | null,
+): Promise<string> {
+  return await db.transaction(async (tx) => {
+    if (tokenUse !== undefined && tokenUse !== null) {
+      try {
+        await tx.insert(sarifIngestTokenUse).values({
+          jti: tokenUse.jti,
+          installationId: tokenUse.installationId,
+          repo: tokenUse.repo,
+        });
+      } catch (err) {
+        if (isUniqueViolation(err)) throw new SarifIngestTokenReplayError();
+        throw err;
+      }
+    }
+    const inserted = await tx
+      .insert(sarifImportBatch)
+      .values({ ...input, status: "pending" })
+      .returning({ id: sarifImportBatch.id });
+    const first = inserted[0];
+    if (first === undefined) throw new Error("createSarifImportBatch: insert returned no row");
+    return first.id;
+  });
 }
 
 export async function insertSarifFindings(rows: NewSarifFinding[]): Promise<void> {
