@@ -43,6 +43,14 @@ export function isDisclosureSideTableEnabled(): boolean {
   return readBoolEnv("ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE");
 }
 
+export function isSarifIngestEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_SARIF_INGEST");
+}
+
+export function isSarifExportEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_SARIF_EXPORT");
+}
+
 // Forward-compatible per-install resolvers. Until installations gains the
 // nullable boolean columns (planned in a follow-up to 0041) these just
 // return the env value. Once the columns exist, the inner lookup can
@@ -94,4 +102,22 @@ export async function isDisclosureGateEnabledForInstall(
   void _installationId;
   void _repo;
   return isDisclosureGateEnabled();
+}
+
+export async function isSarifIngestEnabledForInstall(
+  _installationId: number | null,
+  _repo: string,
+): Promise<boolean> {
+  void _installationId;
+  void _repo;
+  return isSarifIngestEnabled();
+}
+
+export async function isSarifExportEnabledForInstall(
+  _installationId: number | null,
+  _repo: string,
+): Promise<boolean> {
+  void _installationId;
+  void _repo;
+  return isSarifExportEnabled();
 }

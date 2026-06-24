@@ -30,6 +30,8 @@ import {
   outgoingPrs,
   reviewGateOutcomes,
   roastSubmissions,
+  sarifFinding,
+  sarifImportBatch,
   reviews,
   repoThreatModel,
   type AgentFinding,
@@ -44,6 +46,8 @@ import {
   type NewReview,
   type NewReviewGateOutcome,
   type NewRepoThreatModel,
+  type NewSarifFinding,
+  type NewSarifImportBatch,
   type OnboardingEvent,
   type RepoThreatModel,
   type RoastSubmission,
@@ -3399,6 +3403,135 @@ export async function recordGateOutcome(reviewId: string, row: GateOutcomeRow): 
   return first.id;
 }
 
+export type CreateSarifImportBatchInput = Pick<
+  NewSarifImportBatch,
+  | "installationId"
+  | "owner"
+  | "repo"
+  | "repoHash"
+  | "sourceTool"
+  | "sourceKind"
+  | "sourceRevision"
+  | "sourceUrl"
+  | "fileBlobRef"
+  | "totalClaims"
+>;
+
+export async function createSarifImportBatch(input: CreateSarifImportBatchInput): Promise<string> {
+  const inserted = await db
+    .insert(sarifImportBatch)
+    .values({ ...input, status: "pending" })
+    .returning({ id: sarifImportBatch.id });
+  const first = inserted[0];
+  if (first === undefined) throw new Error("createSarifImportBatch: insert returned no row");
+  return first.id;
+}
+
+export async function insertSarifFindings(rows: NewSarifFinding[]): Promise<void> {
+  if (rows.length === 0) return;
+  await db.insert(sarifFinding).values(rows).onConflictDoNothing();
+}
+
+export type UpdateSarifFindingValidationInput = {
+  batchId: string;
+  externalFingerprint: string;
+  validationVerdict: string;
+  confirmationVerdict?: string | null;
+  reachabilityVerdict?: string | null;
+  patchVerifyVerdict?: string | null;
+  closureReceipt?: unknown;
+  linkedFindingStatusId?: string | null;
+};
+
+export async function updateSarifFindingValidation(
+  input: UpdateSarifFindingValidationInput,
+): Promise<void> {
+  await db
+    .update(sarifFinding)
+    .set({
+      validationVerdict: input.validationVerdict,
+      confirmationVerdict: input.confirmationVerdict,
+      reachabilityVerdict: input.reachabilityVerdict,
+      patchVerifyVerdict: input.patchVerifyVerdict,
+      closureReceipt: input.closureReceipt,
+      linkedFindingStatusId: input.linkedFindingStatusId,
+      processedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(sarifFinding.batchId, input.batchId),
+        eq(sarifFinding.externalFingerprint, input.externalFingerprint),
+      ),
+    );
+}
+
+export async function finishSarifImportBatch(
+  batchId: string,
+  args: {
+    status: string;
+    realCount: number;
+    falsePositiveCount: number;
+    inconclusiveCount: number;
+    errorCount: number;
+  },
+): Promise<void> {
+  await db
+    .update(sarifImportBatch)
+    .set({
+      status: args.status,
+      realCount: args.realCount,
+      falsePositiveCount: args.falsePositiveCount,
+      inconclusiveCount: args.inconclusiveCount,
+      errorCount: args.errorCount,
+      finishedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(sarifImportBatch.id, batchId));
+}
+
+export type SarifBatchSummary = {
+  id: string;
+  sourceTool: string;
+  sourceKind: string;
+  sourceRevision: string | null;
+  status: string;
+  totalClaims: number;
+  realCount: number;
+  falsePositiveCount: number;
+  inconclusiveCount: number;
+  errorCount: number;
+  createdAt: Date;
+  finishedAt: Date | null;
+};
+
+export async function listSarifImportBatchesForRepo(args: {
+  owner: string;
+  repo: string;
+  limit?: number;
+}): Promise<SarifBatchSummary[]> {
+  const rows = await db
+    .select({
+      id: sarifImportBatch.id,
+      sourceTool: sarifImportBatch.sourceTool,
+      sourceKind: sarifImportBatch.sourceKind,
+      sourceRevision: sarifImportBatch.sourceRevision,
+      status: sarifImportBatch.status,
+      totalClaims: sarifImportBatch.totalClaims,
+      realCount: sarifImportBatch.realCount,
+      falsePositiveCount: sarifImportBatch.falsePositiveCount,
+      inconclusiveCount: sarifImportBatch.inconclusiveCount,
+      errorCount: sarifImportBatch.errorCount,
+      createdAt: sarifImportBatch.createdAt,
+      finishedAt: sarifImportBatch.finishedAt,
+    })
+    .from(sarifImportBatch)
+    .where(and(eq(sarifImportBatch.owner, args.owner), eq(sarifImportBatch.repo, args.repo)))
+    .orderBy(desc(sarifImportBatch.createdAt))
+    .limit(args.limit ?? 10);
+  return rows;
+}
+
 export type RepoThreatModelUpsertInput = {
   repoHash: string;
   owner: string;
@@ -4293,3 +4426,124 @@ export const loadPublicFindingEvidenceBundle = cache(
     return rows[0] ?? null;
   },
 );
+
+export type PublicSarifFindingExportRow = {
+  findingId: string;
+  title: string;
+  severity: string;
+  category: string;
+  status: string;
+  closureSha: string | null;
+  patchAcceptedSha: string | null;
+  reviewId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  commitSha: string;
+  evidenceBundle: {
+    affectedSha: string;
+    pocSnippet: unknown;
+    reproductionCommand: unknown;
+    callPathTrace: unknown;
+    bundleStatus: string;
+  } | null;
+};
+
+export async function loadPublicSarifFindingsForRepo(args: {
+  owner: string;
+  repo: string;
+}): Promise<PublicSarifFindingExportRow[]> {
+  const disclosureGateEnabled = isDisclosureGateEnabled();
+  const visibilityCondition = disclosureGateEnabled
+    ? derivedPublicReceiptCondition
+    : eq(reviews.publicReceipt, true);
+  const selectColumns = {
+    findingId: findingStatus.findingId,
+    title: findingStatus.title,
+    severity: findingStatus.severity,
+    category: findingStatus.category,
+    status: findingStatus.status,
+    closureSha: findingStatus.closureSha,
+    patchAcceptedSha: findingStatus.patchAcceptedSha,
+    reviewId: reviews.reviewId,
+    owner: reviews.owner,
+    repo: reviews.repo,
+    prNumber: reviews.prNumber,
+    commitSha: reviews.commitSha,
+    evidenceAffectedSha: findingValidationEvidenceBundles.affectedSha,
+    pocSnippet: findingValidationEvidenceBundles.pocSnippet,
+    reproductionCommand: findingValidationEvidenceBundles.reproductionCommand,
+    callPathTrace: findingValidationEvidenceBundles.callPathTrace,
+    bundleStatus: findingValidationEvidenceBundles.bundleStatus,
+  };
+
+  const rows = await (disclosureGateEnabled
+    ? db
+        .select(selectColumns)
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .leftJoin(
+          findingValidationEvidenceBundles,
+          and(
+            eq(findingValidationEvidenceBundles.reviewId, findingStatus.reviewId),
+            eq(findingValidationEvidenceBundles.findingId, findingStatus.findingId),
+          ),
+        )
+        .where(
+          and(
+            eq(reviews.owner, args.owner),
+            eq(reviews.repo, args.repo),
+            visibilityCondition,
+            isNull(findingStatus.retractedAt),
+          ),
+        )
+        .orderBy(desc(findingStatus.createdAt))
+    : db
+        .select(selectColumns)
+        .from(findingStatus)
+        .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+        .leftJoin(
+          findingValidationEvidenceBundles,
+          and(
+            eq(findingValidationEvidenceBundles.reviewId, findingStatus.reviewId),
+            eq(findingValidationEvidenceBundles.findingId, findingStatus.findingId),
+          ),
+        )
+        .where(
+          and(
+            eq(reviews.owner, args.owner),
+            eq(reviews.repo, args.repo),
+            visibilityCondition,
+            isNull(findingStatus.retractedAt),
+          ),
+        )
+        .orderBy(desc(findingStatus.createdAt)));
+
+  return rows
+    .filter((row) => row.owner !== null && row.repo !== null)
+    .map((row) => ({
+      findingId: row.findingId,
+      title: row.title,
+      severity: row.severity,
+      category: row.category,
+      status: row.status,
+      closureSha: row.closureSha,
+      patchAcceptedSha: row.patchAcceptedSha,
+      reviewId: row.reviewId,
+      owner: row.owner!,
+      repo: row.repo!,
+      prNumber: row.prNumber,
+      commitSha: row.commitSha,
+      evidenceBundle:
+        row.evidenceAffectedSha === null
+          ? null
+          : {
+              affectedSha: row.evidenceAffectedSha,
+              pocSnippet: row.pocSnippet,
+              reproductionCommand: row.reproductionCommand,
+              callPathTrace: row.callPathTrace,
+              bundleStatus: row.bundleStatus!,
+            },
+    }));
+}

@@ -1,0 +1,26 @@
+name: Upload AntFleet SARIF
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  upload-antfleet-sarif:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download AntFleet SARIF
+        run: |
+          curl --fail --location \
+            "https://www.antfleet.dev/api/repos/${GITHUB_REPOSITORY}/findings.sarif" \
+            --output antfleet.sarif
+
+      - name: Upload AntFleet SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: antfleet.sarif
+          category: antfleet

@@ -918,6 +918,74 @@ export const repoThreatModel = pgTable(
   ],
 );
 
+export const sarifImportBatch = pgTable(
+  "sarif_import_batch",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: bigint("installation_id", { mode: "number" }),
+    owner: text("owner").notNull(),
+    repo: text("repo").notNull(),
+    repoHash: text("repo_hash").notNull(),
+    sourceTool: text("source_tool").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceRevision: text("source_revision"),
+    sourceUrl: text("source_url"),
+    fileBlobRef: text("file_blob_ref"),
+    status: text("status").notNull().default("pending"),
+    totalClaims: integer("total_claims").notNull().default(0),
+    realCount: integer("real_count").notNull().default(0),
+    falsePositiveCount: integer("false_positive_count").notNull().default(0),
+    inconclusiveCount: integer("inconclusive_count").notNull().default(0),
+    errorCount: integer("error_count").notNull().default(0),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("sarif_import_batch_repo_idx").on(t.repoHash, t.createdAt),
+    index("sarif_import_batch_status_idx").on(t.status, t.createdAt),
+  ],
+);
+
+export const sarifFinding = pgTable(
+  "sarif_finding",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    batchId: uuid("batch_id")
+      .notNull()
+      .references(() => sarifImportBatch.id, { onDelete: "cascade" }),
+    externalFingerprint: text("external_fingerprint").notNull(),
+    sourceTool: text("source_tool").notNull(),
+    ruleId: text("rule_id").notNull(),
+    ruleName: text("rule_name"),
+    level: text("level").notNull().default("warning"),
+    severity: text("severity").notNull().default("medium"),
+    message: text("message").notNull(),
+    artifactUri: text("artifact_uri").notNull(),
+    startLine: integer("start_line"),
+    endLine: integer("end_line"),
+    originalClaim: jsonb("original_claim").notNull(),
+    normalizedClaim: jsonb("normalized_claim").notNull(),
+    validationVerdict: text("validation_verdict").notNull().default("pending"),
+    confirmationVerdict: text("confirmation_verdict"),
+    reachabilityVerdict: text("reachability_verdict"),
+    patchVerifyVerdict: text("patch_verify_verdict"),
+    closureReceipt: jsonb("closure_receipt"),
+    linkedFindingStatusId: uuid("linked_finding_status_id").references(() => findingStatus.id, {
+      onDelete: "set null",
+    }),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("sarif_finding_batch_idx").on(t.batchId),
+    index("sarif_finding_validation_idx").on(t.validationVerdict, t.processedAt),
+    uniqueIndex("sarif_finding_batch_fingerprint_uniq").on(t.batchId, t.externalFingerprint),
+  ],
+);
+
 // Coordinated disclosure state per finding. Public receipt eligibility is
 // derived from this row plus reviews.public_receipt: published findings are
 // public; non-disclosure findings inherit the legacy review-level flag.
@@ -988,6 +1056,10 @@ export type NewFindingValidationEvidenceBundle =
   typeof findingValidationEvidenceBundles.$inferInsert;
 export type RepoThreatModel = typeof repoThreatModel.$inferSelect;
 export type NewRepoThreatModel = typeof repoThreatModel.$inferInsert;
+export type SarifImportBatch = typeof sarifImportBatch.$inferSelect;
+export type NewSarifImportBatch = typeof sarifImportBatch.$inferInsert;
+export type SarifFinding = typeof sarifFinding.$inferSelect;
+export type NewSarifFinding = typeof sarifFinding.$inferInsert;
 export type MaintainerReaction = typeof maintainerReactions.$inferSelect;
 export type NewMaintainerReaction = typeof maintainerReactions.$inferInsert;
 export type OnboardingEvent = typeof onboardingEvents.$inferSelect;
