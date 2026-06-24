@@ -180,35 +180,58 @@ function stringifySql(value: unknown): string {
 describe("isPublicSarifExportEligible", () => {
   const closedAt = new Date("2026-06-24T00:00:00.000Z");
 
-  it("includes only closed, non-retracted, terminally disclosed findings", () => {
+  it("includes a closed, non-retracted, terminally disclosed live-protocol finding", () => {
     expect(
       isPublicSarifExportEligible({
         status: "closed",
         closureDetectedAt: closedAt,
         retractedAt: null,
         disclosureState: "published",
+        isLiveProtocol: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("includes a closed non-live-protocol finding even when disclosure state is 'none'", () => {
+    // Bench repos never go through the disclosure flow — their public
+    // receipt IS the disclosure event. Historic rows backfilled to
+    // state='none' on 2026-06-23 must still be exportable.
+    expect(
+      isPublicSarifExportEligible({
+        status: "closed",
+        closureDetectedAt: closedAt,
+        retractedAt: null,
+        disclosureState: "none",
+        isLiveProtocol: false,
       }),
     ).toBe(true);
   });
 
   it.each([
-    ["open", "open", closedAt, null, "published"],
-    ["missing closure evidence", "closed", null, null, "published"],
-    ["embargoed none", "closed", closedAt, null, "none"],
-    ["reported", "closed", closedAt, null, "reported"],
-    ["triaged", "closed", closedAt, null, "triaged"],
-    ["fix_in_progress", "closed", closedAt, null, "fix_in_progress"],
-    ["retracted", "closed", closedAt, closedAt, "published"],
-  ])("excludes %s findings", (_label, status, closureDetectedAt, retractedAt, disclosureState) => {
-    expect(
-      isPublicSarifExportEligible({
-        status: status as string,
-        closureDetectedAt: closureDetectedAt as Date | null,
-        retractedAt: retractedAt as Date | null,
-        disclosureState: disclosureState as string,
-      }),
-    ).toBe(false);
-  });
+    ["open", "open", closedAt, null, "published", true],
+    ["missing closure evidence", "closed", null, null, "published", true],
+    ["live-protocol embargoed none", "closed", closedAt, null, "none", true],
+    ["live-protocol reported", "closed", closedAt, null, "reported", true],
+    ["live-protocol triaged", "closed", closedAt, null, "triaged", true],
+    ["live-protocol fix_in_progress", "closed", closedAt, null, "fix_in_progress", true],
+    ["retracted", "closed", closedAt, closedAt, "published", false],
+    ["non-live-protocol reported", "closed", closedAt, null, "reported", false],
+    ["non-live-protocol triaged", "closed", closedAt, null, "triaged", false],
+    ["non-live-protocol fix_in_progress", "closed", closedAt, null, "fix_in_progress", false],
+  ])(
+    "excludes %s findings",
+    (_label, status, closureDetectedAt, retractedAt, disclosureState, isLiveProtocol) => {
+      expect(
+        isPublicSarifExportEligible({
+          status: status as string,
+          closureDetectedAt: closureDetectedAt as Date | null,
+          retractedAt: retractedAt as Date | null,
+          disclosureState: disclosureState as string,
+          isLiveProtocol: isLiveProtocol as boolean,
+        }),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("recordPatchDecisions", () => {

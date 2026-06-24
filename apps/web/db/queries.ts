@@ -4522,19 +4522,31 @@ export type PublicSarifFindingExportRow = {
 
 export const SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES = ["published"] as const;
 
+// Finding-disclosure states that count as "no embargo required" for SARIF
+// export when the install is NOT a live protocol. Bench repos and other
+// non-live-protocol installs never go through the disclosure flow — their
+// public_receipt boolean IS the disclosure event — so historic rows have
+// state='none' (from the 2026-06-23 backfill) and should still be exportable.
+// Live-protocol findings stay strictly gated on a terminal disclosure state.
+export const SARIF_EXPORT_NON_LIVE_PROTOCOL_PRE_DISCLOSURE_STATES = ["none"] as const;
+
 export function isPublicSarifExportEligible(row: {
   status: string;
   closureDetectedAt: Date | null;
   retractedAt: Date | null;
   disclosureState: string | null;
+  isLiveProtocol: boolean;
 }): boolean {
-  return (
-    row.status === "closed" &&
-    row.closureDetectedAt !== null &&
-    row.retractedAt === null &&
-    SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES.includes(
-      row.disclosureState as (typeof SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES)[number],
-    )
+  if (row.status !== "closed" || row.closureDetectedAt === null || row.retractedAt !== null) {
+    return false;
+  }
+  const terminal = SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES.includes(
+    row.disclosureState as (typeof SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES)[number],
+  );
+  if (terminal) return true;
+  if (row.isLiveProtocol) return false;
+  return SARIF_EXPORT_NON_LIVE_PROTOCOL_PRE_DISCLOSURE_STATES.includes(
+    row.disclosureState as (typeof SARIF_EXPORT_NON_LIVE_PROTOCOL_PRE_DISCLOSURE_STATES)[number],
   );
 }
 
@@ -4546,15 +4558,25 @@ export async function loadPublicSarifFindingsForRepo(args: {
   const visibilityCondition = disclosureGateEnabled
     ? derivedPublicReceiptCondition
     : eq(reviews.publicReceipt, true);
+  // SARIF export eligibility:
+  //   (a) finding is closed + non-retracted + has a closure timestamp, AND
+  //   (b) EITHER the disclosure flow reached a terminal state ('published'),
+  //       OR the install is NOT a live protocol AND the row is in a
+  //       pre-disclosure state ('none'). Live-protocol findings remain
+  //       strictly gated — embargoed leaks were the H1 audit blocker.
   const disclosureTerminalCondition = inArray(
     findingDisclosure.state,
     SARIF_EXPORT_TERMINAL_DISCLOSURE_STATES,
+  );
+  const nonLiveProtocolPreDisclosureCondition = and(
+    eq(installations.isLiveProtocol, false),
+    inArray(findingDisclosure.state, SARIF_EXPORT_NON_LIVE_PROTOCOL_PRE_DISCLOSURE_STATES),
   );
   const sarifExportEligibilityCondition = and(
     eq(findingStatus.status, "closed"),
     isNotNull(findingStatus.closureDetectedAt),
     isNull(findingStatus.retractedAt),
-    disclosureTerminalCondition,
+    or(disclosureTerminalCondition, nonLiveProtocolPreDisclosureCondition),
   );
   const selectColumns = {
     findingId: findingStatus.findingId,
@@ -4583,6 +4605,14 @@ export async function loadPublicSarifFindingsForRepo(args: {
         .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
         .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
         .leftJoin(
+          installations,
+          and(
+            eq(installations.installationId, reviews.installationId),
+            eq(installations.owner, reviews.owner),
+            eq(installations.repo, reviews.repo),
+          ),
+        )
+        .leftJoin(
           findingValidationEvidenceBundles,
           and(
             eq(findingValidationEvidenceBundles.reviewId, findingStatus.reviewId),
@@ -4603,6 +4633,14 @@ export async function loadPublicSarifFindingsForRepo(args: {
         .from(findingStatus)
         .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
         .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
+        .leftJoin(
+          installations,
+          and(
+            eq(installations.installationId, reviews.installationId),
+            eq(installations.owner, reviews.owner),
+            eq(installations.repo, reviews.repo),
+          ),
+        )
         .leftJoin(
           findingValidationEvidenceBundles,
           and(
