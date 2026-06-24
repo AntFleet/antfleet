@@ -32,6 +32,10 @@
     {
       "path": "/api/cron/regression-fixtures",
       "schedule": "0 4 * * 1"
+    },
+    {
+      "path": "/api/cron/sarif-token-use-gc",
+      "schedule": "17 * * * *"
     }
   ]
 }

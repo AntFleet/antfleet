@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "semanticVersion": "2.22.5",
+          "rules": [
+            {
+              "id": "js/sql-injection",
+              "name": "SQL query built from user-controlled sources",
+              "shortDescription": { "text": "SQL query built from user-controlled sources" },
+              "helpUri": "https://codeql.github.com/codeql-query-help/javascript/js-sql-injection/",
+              "defaultConfiguration": { "level": "error" },
+              "properties": {
+                "security-severity": "8.8",
+                "precision": "high",
+                "tags": ["security", "external/cwe/cwe-089"]
+              }
+            }
+          ]
+        }
+      },
+      "invocations": [
+        { "executionSuccessful": true, "revisionId": "1111111111111111111111111111111111111111" }
+      ],
+      "results": [
+        {
+          "ruleId": "js/sql-injection",
+          "level": "error",
+          "message": { "text": "This query depends on a user-provided value." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/routes/search.ts", "uriBaseId": "%SRCROOT%" },
+                "region": {
+                  "startLine": 42,
+                  "endLine": 42,
+                  "snippet": { "text": "db.query(`select * from users where q = ${req.query.q}`)" }
+                }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "abc123" }
+        }
+      ]
+    }
+  ]
+}

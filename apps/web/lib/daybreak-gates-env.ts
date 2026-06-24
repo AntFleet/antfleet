@@ -9,6 +9,9 @@
 // helpers read the env flag only — keeps the shape stable while still
 // gating prod behind a single env variable.
 
+import { and, eq } from "drizzle-orm";
+import { installations } from "@/db/schema";
+
 const TRUE_VALUES = new Set(["true", "1", "yes", "on"]);
 
 function readBoolEnv(key: string): boolean {
@@ -41,6 +44,14 @@ export function isDisclosureGateEnabled(): boolean {
 
 export function isDisclosureSideTableEnabled(): boolean {
   return readBoolEnv("ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE");
+}
+
+export function isSarifIngestEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_SARIF_INGEST");
+}
+
+export function isSarifExportEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_SARIF_EXPORT");
 }
 
 // Forward-compatible per-install resolvers. Until installations gains the
@@ -94,4 +105,27 @@ export async function isDisclosureGateEnabledForInstall(
   void _installationId;
   void _repo;
   return isDisclosureGateEnabled();
+}
+
+export async function isSarifIngestEnabledForInstall(
+  installationId: number | null,
+  repo: string,
+): Promise<boolean> {
+  if (!isSarifIngestEnabled() || installationId === null) return false;
+  const { db } = await import("@/db");
+  const rows = await db
+    .select({ status: installations.status })
+    .from(installations)
+    .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
+    .limit(1);
+  return rows[0]?.status === "approved";
+}
+
+export async function isSarifExportEnabledForInstall(
+  _installationId: number | null,
+  _repo: string,
+): Promise<boolean> {
+  void _installationId;
+  void _repo;
+  return isSarifExportEnabled();
 }

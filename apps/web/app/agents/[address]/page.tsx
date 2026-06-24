@@ -19,6 +19,7 @@ import { formatRelativeTime } from "@/lib/receipts";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
 import { CopyBadgeSnippet } from "./CopyBadgeSnippet";
 import { TweetIntent } from "@/components/TweetIntent";
+import { SarifIntegrationPanel } from "./SarifIntegrationPanel";
 
 const SITE_URL = "https://www.antfleet.dev";
 
@@ -91,6 +92,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
   const publicFindingCount = Math.max(detail.findings.length, submissions.length);
   const latestActivityAt = latestAgentActivityAt(detail.findings, submissions);
   const upstreamFixes = agentUpstreamFixes(detail.crossRepoMerges, submissions);
+  const repos = agentRepos(detail.findings, submissions);
 
   return (
     <>
@@ -126,6 +128,8 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
         </>
       )}
       <SectionDivider />
+      <SarifSection repos={repos} />
+      <SectionDivider />
       <FindingsSection
         findings={detail.findings}
         submissionCount={submissions.length}
@@ -139,6 +143,35 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
         </>
       )}
     </>
+  );
+}
+
+function SarifSection({ repos }: { repos: string[] }) {
+  const sarifUiEnabled = process.env["ANTFLEET_SARIF_INGEST_UI"] === "true";
+  return (
+    <section>
+      <ContentWrap>
+        <div className="mb-5 flex items-baseline justify-between gap-4">
+          <h2 className="text-xs font-mono uppercase tracking-widest text-[var(--color-ink-subtle)]">
+            SARIF backlog
+          </h2>
+          <span className="font-mono text-[11px] text-[var(--color-ink-subtle)]">
+            CodeQL · Snyk · Semgrep
+          </span>
+        </div>
+        <p className="mb-5 max-w-xl text-sm leading-relaxed text-[var(--color-ink-muted)]">
+          Drop scanner output here to validate existing backlog claims through AntFleet&apos;s
+          reachability and patch-verification gates. Export emits AntFleet findings as SARIF v2.1.0
+          for GitHub Code Scanning.
+        </p>
+        {sarifUiEnabled && <SarifIntegrationPanel repos={repos} />}
+        <pre className="mt-5 overflow-x-auto rounded-md border border-[var(--color-line)] bg-[var(--color-bg-elevated)] p-4 font-mono text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+          {`curl -L https://www.antfleet.dev/api/repos/OWNER/REPO/findings.sarif -o antfleet.sarif
+github/codeql-action/upload-sarif@v4
+  sarif_file: antfleet.sarif`}
+        </pre>
+      </ContentWrap>
+    </section>
   );
 }
 
@@ -580,6 +613,17 @@ function parseRepoFullName(repoFullName: string): { owner: string; repo: string 
   const [owner, repo] = repoFullName.split("/");
   if (owner === undefined || repo === undefined || owner === "" || repo === "") return null;
   return { owner, repo };
+}
+
+function agentRepos(findings: AgentFinding[], submissions: AgentSubmission[]): string[] {
+  return [
+    ...new Set(
+      [
+        ...findings.map((finding) => finding.repoFullName),
+        ...submissions.map((submission) => submission.repoFullName),
+      ].filter((repo): repo is string => repo !== null && repo.includes("/")),
+    ),
+  ].toSorted();
 }
 
 function closureMethodForSubmission(submission: AgentSubmission): string {

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Snyk Code",
+          "semanticVersion": "1.1294.0",
+          "rules": [
+            {
+              "id": "javascript/NoSQLInjection",
+              "name": "Unsanitized input from HTTP request in NoSQL query",
+              "shortDescription": { "text": "NoSQL injection" },
+              "defaultConfiguration": { "level": "warning" },
+              "properties": {
+                "severity": "high",
+                "categories": ["Security"],
+                "tags": ["security", "CWE-943"]
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "javascript/NoSQLInjection",
+          "message": { "text": "Unsanitized input from an HTTP request flows into a NoSQL query." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "api/users.js" },
+                "region": {
+                  "startLine": 17,
+                  "snippet": { "text": "User.find({ name: req.query.name })" }
+                }
+              }
+            }
+          ],
+          "properties": { "severity": "high", "priorityScore": 750 }
+        }
+      ]
+    }
+  ]
+}
