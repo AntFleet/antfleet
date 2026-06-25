@@ -149,6 +149,7 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     isThreatModelEnabledForInstall: vi.fn().mockResolvedValue(false),
     isEvidenceBundleEnabledForInstall: vi.fn().mockResolvedValue(false),
     isDisclosureGateEnabledForInstall: vi.fn().mockResolvedValue(false),
+    getRepoCyberTier: vi.fn().mockResolvedValue("default" as const),
     now: () => NOW,
     ...overrides,
   };
@@ -1154,6 +1155,80 @@ describe("runReviewWorker", () => {
       const evtArg = (deps.recordPatchProposedEvent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
       expect(evtArg.reviewCommentId).toBeNull();
       expect(evtArg.reviewCommentUrl).toBeNull();
+    });
+  });
+
+  // Cyber-tier branch coverage (Code audit pass-6, severity medium).
+  // Pre-pass-6 the worker tests only exercised the default-tier path; a
+  // regression in any cyber branch (prompt routing, publicReceipt
+  // materialization, disclosure cyber trigger, empty-files materialization)
+  // would pass the rest of the suite. These tests pin each branch.
+  describe("cyber-tier branch coverage", () => {
+    it("with cyber tier: forces publicReceipt=false, passes tier:'cyber' to reviewPR, embargoes every finding even when disclosure flags are off", async () => {
+      const deps = mkDeps({
+        getRepoCyberTier: vi.fn().mockResolvedValue("cyber" as const),
+        isDisclosureGateEnabledForInstall: vi.fn().mockResolvedValue(false),
+        isDisclosureSideTableEnabled: vi.fn().mockReturnValue(false),
+        initializeDisclosureForFindings: vi.fn().mockResolvedValue({
+          embargoedFindingIds: ["rev-1-0"],
+          embargoedFindingIndexes: [0],
+        }),
+      });
+
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+
+      expect(outcome.kind).toBe("done");
+      // publicReceipt materialization at processing time.
+      const updateCalls = (deps.updateReview as ReturnType<typeof vi.fn>).mock.calls;
+      const publicReceiptUpdates = updateCalls.filter(
+        (call) => (call[1] as { publicReceipt?: boolean }).publicReceipt === false,
+      );
+      expect(publicReceiptUpdates.length).toBeGreaterThanOrEqual(1);
+      // Prompt routing: tier flows into reviewPR.
+      const reviewPRArg = (deps.reviewPR as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(reviewPRArg?.tier).toBe("cyber");
+      // Disclosure fires EVEN with disclosure flags off.
+      expect(deps.initializeDisclosureForFindings).toHaveBeenCalledTimes(1);
+      const discArg = (deps.initializeDisclosureForFindings as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0];
+      expect(discArg?.cyberTier).toBe("cyber");
+      expect(discArg?.publicReceipt).toBe(false);
+    });
+
+    it("with cyber tier + empty files: still forces publicReceipt=false before the skip update", async () => {
+      const deps = mkDeps({
+        getRepoCyberTier: vi.fn().mockResolvedValue("cyber" as const),
+        getChangedFiles: vi.fn().mockResolvedValue([]),
+      });
+
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+
+      expect(outcome.kind).toBe("done");
+      const updateCalls = (deps.updateReview as ReturnType<typeof vi.fn>).mock.calls;
+      // First call MUST be the publicReceipt=false materialization,
+      // before the skip-update for the empty-files outcome.
+      const firstCallInput = updateCalls[0]?.[1] as { publicReceipt?: boolean };
+      expect(firstCallInput?.publicReceipt).toBe(false);
+      // reviewPR is never called on the empty-files path.
+      expect(deps.reviewPR).not.toHaveBeenCalled();
+    });
+
+    it("with default tier: no publicReceipt materialization, no cyber preamble, disclosure not forced", async () => {
+      const deps = mkDeps({
+        getRepoCyberTier: vi.fn().mockResolvedValue("default" as const),
+      });
+
+      await runReviewWorker("rev-1", "webhook", deps);
+
+      const updateCalls = (deps.updateReview as ReturnType<typeof vi.fn>).mock.calls;
+      const hasMaterialization = updateCalls.some(
+        (call) => (call[1] as { publicReceipt?: boolean }).publicReceipt === false,
+      );
+      expect(hasMaterialization).toBe(false);
+      const reviewPRArg = (deps.reviewPR as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(reviewPRArg?.tier).toBe("default");
+      // With disclosure flags off AND cyber=default, disclosure init is skipped.
+      expect(deps.initializeDisclosureForFindings).not.toHaveBeenCalled();
     });
   });
 });

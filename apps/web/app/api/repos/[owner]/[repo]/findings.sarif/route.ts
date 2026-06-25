@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { loadPublicSarifFindingsForRepo } from "@/db/queries";
+import { isCyberTierRepo } from "@/lib/cyber-tier";
 import { isSarifExportEnabled } from "@/lib/daybreak-gates-env";
 import { findingsToSarif, validateSarifForGithub } from "@/lib/sarif-export";
 
@@ -20,6 +21,16 @@ export async function GET(
     );
   }
   const { owner, repo } = await params;
+  // Cyber-tier repos are excluded from the public SARIF export entirely
+  // (not "empty SARIF" — 404, to avoid confirming the repo's existence
+  // as a tracked target). When ANTFLEET_CYBER_TIER is OFF this check
+  // always returns false, so behavior is byte-identical to pre-cyber-tier.
+  if (await isCyberTierRepo(owner, repo)) {
+    return NextResponse.json(
+      { error: "sarif_export_disabled" },
+      { status: 404, headers: { "Cache-Control": "no-store" } },
+    );
+  }
   const rows = await loadPublicSarifFindingsForRepo({ owner, repo });
   const baseUrl = req.nextUrl.origin === "null" ? undefined : req.nextUrl.origin;
   const sarif = findingsToSarif({ owner, repo, findings: rows, baseUrl });

@@ -64,6 +64,11 @@ export async function reviewPR(args: {
   prNumber: number;
   mode?: AgreementMode;
   signal?: AbortSignal;
+  // Cyber tier (Daybreak follow-up). When 'cyber' the prompt's defender-
+  // context preamble is prepended, authorizing minimal PoC + repro detail
+  // in findings. Defaults to 'default' so existing call sites are
+  // byte-identical to pre-cyber-tier behavior.
+  tier?: "default" | "cyber";
 }): Promise<ReviewBundle> {
   const mode: AgreementMode = args.mode ?? "unanimous";
   const t0 = Date.now();
@@ -116,6 +121,7 @@ export async function reviewPR(args: {
     featureId: `pr-${args.prNumber}`,
     featureTitle: `${args.owner}/${args.repo} PR #${args.prNumber} (changed files)`,
     files: args.files.map((f) => ({ path: f.filename, contents: f.contents })),
+    ...(args.tier !== undefined ? { tier: args.tier } : {}),
   });
 
   const tasks = STACK.map(async ({ name, modelId, provider }): Promise<PerProviderResult> => {

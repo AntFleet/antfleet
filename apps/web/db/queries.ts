@@ -34,6 +34,7 @@ import {
   sarifImportBatch,
   reviews,
   repoThreatModel,
+  repoTierChangeLog,
   type AgentFinding,
   type FactoryLaunch,
   type FindingValidationEvidenceBundle,
@@ -60,7 +61,13 @@ import {
   reviewDerivedPublicReceiptCondition,
 } from "./public-receipt";
 import { writePostDraft } from "@/lib/post-drafts";
-import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
+import { isDisclosureGateEnabled, isCyberTierEnabled } from "@/lib/daybreak-gates-env";
+import {
+  nonCyberTierRepoCondition,
+  nonCyberTierRepoConditionFor,
+  nonCyberTierRepoConditionForFullName,
+  rawCyberTierExclusionForFullName,
+} from "@/lib/cyber-tier";
 import { LIFECYCLE_PRESERVE_COLUMNS, reconcilableTrailingRows } from "./finding-lifecycle";
 import type { DisclosureActorType, DisclosureState } from "@/lib/disclosure-types";
 import { SARIF_TOKEN_USE_GC_BATCH_SIZE } from "@/lib/sarif-token-use-gc";
@@ -443,6 +450,12 @@ export type UpdateReviewInput = {
   agreementDecision?: unknown;
   timingMs?: number;
   costEstimatedUsd?: number;
+  // Cyber-tier materialization (architect audit pass-4): the worker
+  // must be able to force publicReceipt=false at processing time when
+  // a repo flips to cyber after enqueue. Without this column, an
+  // enqueue-default → flip-cyber → flip-back sequence would leave the
+  // row's publicReceipt=true even though the review ran under cyber.
+  publicReceipt?: boolean;
 };
 
 export async function updateReview(reviewId: string, input: UpdateReviewInput): Promise<void> {
@@ -1256,11 +1269,13 @@ export async function loadPublicReceiptsPage(args: {
       ? and(
           eq(findingStatus.status, "closed"),
           disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+          nonCyberTierRepoCondition(),
           isNull(findingStatus.retractedAt),
         )
       : and(
           eq(findingStatus.status, "closed"),
           disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+          nonCyberTierRepoCondition(),
           isNull(findingStatus.retractedAt),
           lt(findingStatus.closureDetectedAt, args.before),
         );
@@ -1268,6 +1283,7 @@ export async function loadPublicReceiptsPage(args: {
   const totalConditions = and(
     eq(findingStatus.status, "closed"),
     disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    nonCyberTierRepoCondition(),
     isNull(findingStatus.retractedAt),
   );
 
@@ -1374,6 +1390,7 @@ export async function loadTopClosuresBetween(
   const baseConditions = and(
     eq(findingStatus.status, "closed"),
     disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    nonCyberTierRepoCondition(),
     gte(findingStatus.closureDetectedAt, since),
     lt(findingStatus.closureDetectedAt, until),
   );
@@ -1465,9 +1482,10 @@ export type PublicReceiptDetailRow = PublicReceiptRow & {
 export const loadPublicReceiptDetail = cache(
   async (findingId: string): Promise<PublicReceiptDetailRow | null> => {
     const disclosureGateEnabled = isDisclosureGateEnabled();
-    const visibilityCondition = disclosureGateEnabled
-      ? derivedPublicReceiptCondition
-      : eq(reviews.publicReceipt, true);
+    const visibilityCondition = and(
+      disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+      nonCyberTierRepoCondition(),
+    );
     const baseSelectColumns = {
       findingId: findingStatus.findingId,
       findingIndex: findingStatus.findingIndex,
@@ -1552,6 +1570,13 @@ export type PublicReviewReceiptRow = {
 export async function loadPublicReviewReceipt(
   reviewId: string,
 ): Promise<PublicReviewReceiptRow | null> {
+  // Cyber-tier repos hide the review entirely from the public review
+  // receipt endpoint. Flag-gated SQL fragment — empty when OFF.
+  const cyberTierExclusion = sql`AND NOT EXISTS (
+    SELECT 1 FROM repo_tier
+    WHERE owner_lc = lower(r.owner) AND repo_lc = lower(r.repo) AND tier = 'cyber'
+  )`;
+  const cyberExclude = isCyberTierEnabled() ? cyberTierExclusion : sql``;
   const result = await db.execute(
     isDisclosureGateEnabled()
       ? sql`
@@ -1623,6 +1648,7 @@ export async function loadPublicReviewReceipt(
           )
           WHERE r.review_id = ${reviewId}
             AND r.public_receipt = true
+            ${cyberExclude}
             AND NOT EXISTS (
               SELECT 1
               FROM finding_status review_fs
@@ -1702,6 +1728,7 @@ export async function loadPublicReviewReceipt(
           )
           WHERE r.review_id = ${reviewId}
             AND r.public_receipt = true
+            ${cyberExclude}
           GROUP BY r.review_id, j.job_id
           ORDER BY j.created_at DESC NULLS LAST
           LIMIT 1
@@ -1827,12 +1854,15 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
   const since24h = new Date(now.getTime() - ms24h);
   const since7d = new Date(now.getTime() - ms7d);
   const disclosureGateEnabled = isDisclosureGateEnabled();
-  const reviewPublicGate = disclosureGateEnabled
-    ? reviewDerivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
-  const findingPublicGate = disclosureGateEnabled
-    ? derivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+  const cyberTierGate = nonCyberTierRepoCondition();
+  const reviewPublicGate = and(
+    disclosureGateEnabled ? reviewDerivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    cyberTierGate,
+  );
+  const findingPublicGate = and(
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    cyberTierGate,
+  );
 
   const [
     lastSweep,
@@ -2345,12 +2375,15 @@ export async function activityWindow(
   );
 
   const disclosureGateEnabled = isDisclosureGateEnabled();
-  const publicGate = disclosureGateEnabled
-    ? reviewDerivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
-  const findingPublicGate = disclosureGateEnabled
-    ? derivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+  const cyberTierGate = nonCyberTierRepoCondition();
+  const publicGate = and(
+    disclosureGateEnabled ? reviewDerivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    cyberTierGate,
+  );
+  const findingPublicGate = and(
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    cyberTierGate,
+  );
 
   const reviewsCountQuery = db
     .select({ value: count() })
@@ -2524,7 +2557,11 @@ export async function loadPublicBenchmarksPage(args: {
   const reviewPublicGate = isDisclosureGateEnabled()
     ? reviewDerivedPublicReceiptCondition
     : eq(reviews.publicReceipt, true);
-  const baseConditions = and(eq(reviews.isBenchmark, true), reviewPublicGate);
+  const baseConditions = and(
+    eq(reviews.isBenchmark, true),
+    reviewPublicGate,
+    nonCyberTierRepoCondition(),
+  );
   const recentConditions =
     args.before === undefined
       ? baseConditions
@@ -2602,6 +2639,11 @@ export type AgentDetail = {
   benchmarkReviews: AgentBenchmarkReference[];
   crossRepoMerges: AgentCrossRepoMerge[];
   threatModels: AgentThreatModelReference[];
+  // True when any covered repo is classified `cyber` in repo_tier AND the
+  // ANTFLEET_CYBER_TIER flag is on. The agent page renders a single
+  // "Cyber" pill near the header when true — does NOT identify which
+  // specific repo so existence-hiding on the per-repo basis is preserved.
+  hasCyberTierRepo: boolean;
 };
 
 export type AgentBenchmarkReference = {
@@ -2641,10 +2683,24 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
   // must never resolve to an /agents/[address] page.
   if (address.toLowerCase().startsWith("roast:")) return null;
   const normalized = address.toLowerCase();
+  // Cyber-tier exclusion: agent_findings rows for cyber-classified repos
+  // must NOT reach the public agent page. Without this filter, the page
+  // header would render the cyber repo name and the finding bodies
+  // would expose title / summary / evidence — defeating the spec's
+  // existence-hiding invariant. (Code + security audit pass-1, severity
+  // high, visibility / information-disclosure.) Same filter is applied
+  // to the v1 API surfaces (/api/v1/findings, .../[id], and
+  // /api/v1/agents/[address]/findings) so cyber rows are hidden from
+  // every public agent_findings consumer.
   const findings = await db
     .select()
     .from(agentFindings)
-    .where(sql`lower(${agentFindings.agentTokenAddress}) = ${normalized}`)
+    .where(
+      and(
+        sql`lower(${agentFindings.agentTokenAddress}) = ${normalized}`,
+        nonCyberTierRepoConditionForFullName(sql`${agentFindings.repoFullName}`),
+      ),
+    )
     .orderBy(desc(agentFindings.publishedAt));
 
   if (findings.length === 0) return null;
@@ -2674,6 +2730,7 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
         and(
           eq(reviews.isBenchmark, true),
           reviewPublicGate,
+          nonCyberTierRepoCondition(),
           benchRepoName === null
             ? sql`false`
             : sql`lower(${reviews.repo}) = ${benchRepoName.toLowerCase()}`,
@@ -2684,6 +2741,14 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
     // (not the -bench fork). The /receipts page already surfaces these
     // globally; here we just slice them by the upstream_repo matching the
     // agent name, so the agent page becomes the per-agent attribution view.
+    //
+    // Cyber-tier exclusion via NOT EXISTS subquery on the source review's
+    // repo (NOT the upstream repo — the upstream is the maintainer's
+    // repo and is necessarily public). If the source review's repo is
+    // cyber-classified, the outgoing PR row is hidden from the agent
+    // page even when the upstream merge would normally surface it on
+    // /receipts. Security audit pass-6, severity high,
+    // cross-repo-receipt-bypass. Mirrors the gate in lib/receipts.ts.
     db
       .select({
         id: outgoingPrs.id,
@@ -2702,6 +2767,21 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
         and(
           inArray(outgoingPrs.status, ["merged", "closed_absorbed"]),
           sql`lower(${outgoingPrs.upstreamRepo}) = ${first.agentName.toLowerCase()}`,
+          isCyberTierEnabled()
+            ? sql<boolean>`(
+                ${outgoingPrs.sourceFindingId} IS NULL
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM ${findingStatus} src_fs
+                  INNER JOIN ${reviews} src_r ON src_r.review_id = src_fs.review_id
+                  INNER JOIN repo_tier src_rt
+                    ON src_rt.owner_lc = lower(src_r.owner)
+                    AND src_rt.repo_lc = lower(src_r.repo)
+                  WHERE src_fs.finding_id = ${outgoingPrs.sourceFindingId}
+                    AND src_rt.tier = 'cyber'
+                )
+              )`
+            : sql<boolean>`true`,
         ),
       )
       .orderBy(
@@ -2727,6 +2807,38 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
     return { owner: owner!, repo: repo! };
   });
   const threatModels = await loadPublicRepoThreatModelsForRepos(coveredRepos);
+
+  // Cyber-tier badge presence — true when ANY repo touched by this
+  // agent is classified 'cyber'. CRITICAL: this query MUST NOT use
+  // `coveredRepos` (derived from the cyber-FILTERED `findings`) — if it
+  // did, cyber rows would have been removed before the lookup runs and
+  // the badge would never appear. Instead query agent_findings directly
+  // (without the cyber filter) joined to repo_tier. Returns false when
+  // the flag is off (the join returns no rows because the table is
+  // ignored). (Code + architect audit pass-2, severity medium, ui-spec
+  // / agent-badge-derivation.)
+  let hasCyberTierRepo = false;
+  if (isCyberTierEnabled()) {
+    // PK-sargable form on repo_tier (owner_lc, repo_lc) — see
+    // lib/cyber-tier.ts comment for the runtime-cost note.
+    const cyberRows = await db.execute(sql`
+      SELECT 1
+      FROM agent_findings af
+      WHERE lower(af.agent_token_address) = ${normalized}
+        AND af.agent_token_address NOT LIKE 'roast:%'
+        AND EXISTS (
+          SELECT 1 FROM repo_tier
+          WHERE owner_lc = split_part(lower(af.repo_full_name), '/', 1)
+            AND repo_lc = split_part(lower(af.repo_full_name), '/', 2)
+            AND tier = 'cyber'
+        )
+      LIMIT 1
+    `);
+    const rowsArr = Array.isArray(cyberRows)
+      ? cyberRows
+      : ((cyberRows as { rows?: unknown[] }).rows ?? []);
+    hasCyberTierRepo = rowsArr.length > 0;
+  }
 
   const crossRepoMerges: AgentCrossRepoMerge[] = mergedOutgoingRows
     .filter((r) => {
@@ -2756,6 +2868,7 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
     benchmarkReviews: benchmarkRows,
     crossRepoMerges,
     threatModels,
+    hasCyberTierRepo,
   };
 });
 
@@ -2781,10 +2894,19 @@ export type FactoryLaunchAgentDetail = {
 export const loadFactoryLaunchDetail = cache(
   async (address: string): Promise<FactoryLaunchAgentDetail | null> => {
     const normalized = address.toLowerCase();
+    // Cyber-tier exclusion: the public /agents/[address] page falls back
+    // to this loader for factory-launched agents. Without the filter, a
+    // cyber-classified factory launch's repo_full_name would render on
+    // the public page header. (Code audit pass-5, severity high.)
     const rows = await db
       .select()
       .from(factoryLaunches)
-      .where(sql`lower(${factoryLaunches.tokenAddress}) = ${normalized}`)
+      .where(
+        and(
+          sql`lower(${factoryLaunches.tokenAddress}) = ${normalized}`,
+          nonCyberTierRepoConditionForFullName(sql`${factoryLaunches.repoFullName}`),
+        ),
+      )
       .limit(1);
     const launch = rows[0];
     if (launch === undefined) return null;
@@ -2811,6 +2933,11 @@ export type FactoryLaunchIndexRow = {
 // Existing findings-bound rows take precedence — we don't want a "depth" agent
 // (autonomopoly) to also show up as an "auto-stub".
 export async function loadFactoryLaunchIndex(): Promise<FactoryLaunchIndexRow[]> {
+  // Cyber-tier exclusion: factory launches with a cyber-classified
+  // repo_full_name must NOT appear on the /agents directory. Without
+  // this filter the agent index page leaks repo identifiers for
+  // factory-launched cyber agents. (Security audit pass-4, severity
+  // high, information-disclosure.)
   const rows = await db
     .select({
       tokenAddress: factoryLaunches.tokenAddress,
@@ -2822,9 +2949,12 @@ export async function loadFactoryLaunchIndex(): Promise<FactoryLaunchIndexRow[]>
     })
     .from(factoryLaunches)
     .where(
-      sql`lower(${factoryLaunches.tokenAddress}) NOT IN (
-        SELECT lower(${agentFindings.agentTokenAddress}) FROM ${agentFindings}
-      )`,
+      and(
+        sql`lower(${factoryLaunches.tokenAddress}) NOT IN (
+          SELECT lower(${agentFindings.agentTokenAddress}) FROM ${agentFindings}
+        )`,
+        nonCyberTierRepoConditionForFullName(sql`${factoryLaunches.repoFullName}`),
+      ),
     )
     .orderBy(desc(factoryLaunches.deployedAt));
   return rows.map((r) => ({
@@ -2859,6 +2989,13 @@ type RawWeeklyFeatureRow = Omit<WeeklyFeatureRow, "weekStart" | "featuredAt"> & 
  * finding is missing — defensive read since finding_id is FK-by-convention).
  */
 export async function loadCurrentWeeklyFeature(): Promise<WeeklyFeatureRow | null> {
+  // Cyber-tier exclusion: the homepage (/) renders this loader's
+  // result in `ReceiptOfTheWeekCard` with the finding title + summary.
+  // Without filtering, a cyber-classified repo's curated feature could
+  // leak even after the repo flipped to cyber (the weekly_features row
+  // persists). Security audit pass-4, severity high,
+  // information-disclosure.
+  const cyberExclude = rawCyberTierExclusionForFullName(sql`${agentFindings.repoFullName}`);
   const result = await db.execute(sql`
     WITH current_week AS (
       SELECT date_trunc('week', now() AT TIME ZONE 'UTC')::date AS this_monday
@@ -2877,6 +3014,7 @@ export async function loadCurrentWeeklyFeature(): Promise<WeeklyFeatureRow | nul
     FROM weekly_features wf
     JOIN ${agentFindings} ON ${agentFindings.findingId} = wf.finding_id
     JOIN current_week cw ON wf.week_start = cw.this_monday
+    WHERE true ${cyberExclude}
     LIMIT 1
   `);
   const rows = Array.isArray(result)
@@ -3106,6 +3244,11 @@ export async function loadAgentIndex(): Promise<AgentIndexRow[]> {
   // The `roast:%` filter matches the canonical convention from runbook §3:
   // roast findings share this table for storage convenience but are
   // surfaced at /roasts/[id], not /agents.
+  // Cyber-tier exclusion: aggregate by agent over public agent_findings
+  // rows only. Without this filter, /agents would surface an agent row
+  // for an address whose only findings are cyber-classified, leaking
+  // the agent name + finding count via the public index page. Security
+  // audit pass-4, severity medium.
   const rows = await db
     .select({
       agentTokenAddress: agentFindings.agentTokenAddress,
@@ -3115,7 +3258,12 @@ export async function loadAgentIndex(): Promise<AgentIndexRow[]> {
       severities: sql<string[]>`array_agg(${agentFindings.severity})`.as("severities"),
     })
     .from(agentFindings)
-    .where(sql`lower(${agentFindings.agentTokenAddress}) NOT LIKE 'roast:%'`)
+    .where(
+      and(
+        sql`lower(${agentFindings.agentTokenAddress}) NOT LIKE 'roast:%'`,
+        nonCyberTierRepoConditionForFullName(sql`${agentFindings.repoFullName}`),
+      ),
+    )
     .groupBy(agentFindings.agentTokenAddress, agentFindings.agentName)
     .orderBy(sql`max(${agentFindings.publishedAt}) desc`);
 
@@ -3318,16 +3466,37 @@ export type ScorecardSnapshotRow = {
   payload: ScorecardPayload;
 };
 
+// Cyber-tier staleness: returns the latest `repo_tier_change_log.changed_at`
+// timestamp, or null if there are no tier changes (or the flag is off).
+// Snapshots generated BEFORE this timestamp were computed under a
+// different cyber-visibility regime and must not be served verbatim.
+// (Architect audit pass-9, severity medium, operational-architecture.)
+async function latestCyberTierChangeAt(): Promise<Date | null> {
+  if (!isCyberTierEnabled()) return null;
+  const rows = await db
+    .select({ changedAt: repoTierChangeLog.changedAt })
+    .from(repoTierChangeLog)
+    .orderBy(desc(repoTierChangeLog.changedAt))
+    .limit(1);
+  return rows[0]?.changedAt ?? null;
+}
+
 export async function loadScorecardSnapshot(
   yyyyMmDd: string,
 ): Promise<ScorecardSnapshotRow | null> {
-  const rows = await db
-    .select()
-    .from(scorecardSnapshots)
-    .where(eq(scorecardSnapshots.yyyyMmDd, yyyyMmDd))
-    .limit(1);
+  const [rows, cyberCutoff] = await Promise.all([
+    db.select().from(scorecardSnapshots).where(eq(scorecardSnapshots.yyyyMmDd, yyyyMmDd)).limit(1),
+    latestCyberTierChangeAt(),
+  ]);
   if (rows.length === 0) return null;
   const row = rows[0];
+  // Staleness: if a tier change happened after this snapshot was
+  // generated, the snapshot may include data that's now privacy-hidden.
+  // Skip serving it. Weekly cron + an on-demand backfill regenerate
+  // fresh snapshots under the current cyber filter.
+  if (cyberCutoff !== null && row.generatedAt.getTime() < cyberCutoff.getTime()) {
+    return null;
+  }
   return {
     yyyyMmDd: row.yyyyMmDd,
     generatedAt: row.generatedAt,
@@ -3344,15 +3513,25 @@ export async function loadScorecardIndex(args: {
   const conditions =
     args.before !== undefined ? lt(scorecardSnapshots.yyyyMmDd, args.before) : undefined;
 
-  const rows = await db
-    .select()
-    .from(scorecardSnapshots)
-    .where(conditions)
-    .orderBy(desc(scorecardSnapshots.yyyyMmDd))
-    .limit(fetchLimit);
+  const [rows, cyberCutoff] = await Promise.all([
+    db
+      .select()
+      .from(scorecardSnapshots)
+      .where(conditions)
+      .orderBy(desc(scorecardSnapshots.yyyyMmDd))
+      .limit(fetchLimit),
+    latestCyberTierChangeAt(),
+  ]);
 
-  const hasMore = rows.length > args.limit;
-  const page = hasMore ? rows.slice(0, args.limit) : rows;
+  // Filter stale snapshots BEFORE the limit decision so pagination
+  // remains stable: a stale row in the page would shrink it but
+  // `hasMore` would still be true from the over-fetch.
+  const fresh =
+    cyberCutoff === null
+      ? rows
+      : rows.filter((r) => r.generatedAt.getTime() >= cyberCutoff.getTime());
+  const hasMore = fresh.length > args.limit;
+  const page = hasMore ? fresh.slice(0, args.limit) : fresh;
 
   return {
     rows: page.map((row) => ({
@@ -3682,6 +3861,10 @@ export async function loadPublicRepoThreatModelsForRepos(
 ): Promise<AgentThreatModelReference[]> {
   if (repos.length === 0) return [];
   const keys = repos.map((r) => `${r.owner.toLowerCase()}/${r.repo.toLowerCase()}`);
+  // Defense-in-depth: even if a repo's publicAccess row is stale from
+  // before being flipped to cyber tier, the cyber-tier exclusion here
+  // hides it on the public render. When ANTFLEET_CYBER_TIER is OFF the
+  // condition collapses to `true` and behavior is byte-identical.
   const rows = await db
     .select({
       owner: repoThreatModel.owner,
@@ -3698,6 +3881,7 @@ export async function loadPublicRepoThreatModelsForRepos(
           sql<string>`lower(${repoThreatModel.owner}) || '/' || lower(${repoThreatModel.repo})`,
           keys,
         ),
+        nonCyberTierRepoConditionFor(sql`${repoThreatModel.owner}`, sql`${repoThreatModel.repo}`),
       ),
     )
     .orderBy(desc(repoThreatModel.updatedAt));
@@ -4426,9 +4610,15 @@ export type PublicFindingEvidenceBundleRow = Pick<
 export const loadPublicFindingEvidenceBundle = cache(
   async (findingId: string): Promise<PublicFindingEvidenceBundleRow | null> => {
     const disclosureGateEnabled = isDisclosureGateEnabled();
-    const visibilityCondition = disclosureGateEnabled
-      ? derivedPublicReceiptCondition
-      : eq(reviews.publicReceipt, true);
+    // Cyber-tier exclusion is layered with the existing visibility gate.
+    // The render layer (FindingValidationBundleSection / agent page) ALSO
+    // redacts PoC + repro + trace for cyber-tier findings — defense in
+    // depth so the bundle row never reaches the page even if the render
+    // redaction has a bug. See lib/cyber-tier.ts.
+    const visibilityCondition = and(
+      disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+      nonCyberTierRepoCondition(),
+    );
     const selectColumns = {
       findingId: findingValidationEvidenceBundles.findingId,
       reviewId: findingValidationEvidenceBundles.reviewId,
@@ -4555,9 +4745,13 @@ export async function loadPublicSarifFindingsForRepo(args: {
   repo: string;
 }): Promise<PublicSarifFindingExportRow[]> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
-  const visibilityCondition = disclosureGateEnabled
-    ? derivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+  // Cyber-tier exclusion at the DB layer, even though the route already
+  // 404s for cyber repos. Defense in depth: if a future caller forgets
+  // the route-level guard, the query still returns zero rows.
+  const visibilityCondition = and(
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    nonCyberTierRepoCondition(),
+  );
   // SARIF export eligibility:
   //   (a) finding is closed + non-retracted + has a closure timestamp, AND
   //   (b) EITHER the disclosure flow reached a terminal state ('published'),

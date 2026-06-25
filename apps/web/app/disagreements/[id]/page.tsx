@@ -6,6 +6,7 @@ import { db } from "@/db/index";
 import { derivedPublicReceiptCondition } from "@/db/public-receipt";
 import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
+import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
 import {
   loadDisagreementDetail,
   redactSecrets,
@@ -20,9 +21,10 @@ type RelatedFinding = { findingId: string; title: string; severity: string; cate
 
 async function loadRelatedFindings(reviewId: string): Promise<RelatedFinding[]> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
-  const visibilityCondition = disclosureGateEnabled
-    ? derivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+  const visibilityCondition = and(
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    nonCyberTierRepoCondition(),
+  );
   const selectColumns = {
     findingId: findingStatus.findingId,
     title: findingStatus.title,

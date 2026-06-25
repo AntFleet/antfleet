@@ -8,7 +8,7 @@ import {
   reviews,
   type OutgoingPr,
 } from "@/db/schema";
-import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
+import { isCyberTierEnabled, isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { shortenRepoHash, shortenReviewId, shortenSha } from "./short-id";
 
 // Pure view-model for the public /receipts page. Lives apart from the DB
@@ -208,8 +208,30 @@ const disclosurePublicReceiptGate = sql`NOT EXISTS (
     )
 )`;
 
+// Cyber-tier exclusion for cross-repo receipts. Hides an outgoing-PR row
+// whenever its source review's repo is classified cyber. Defense-in-depth
+// alongside the public-receipt gate. When ANTFLEET_CYBER_TIER is OFF the
+// fragment collapses to `true` and behavior is byte-identical.
+const cyberTierExclusionForOutgoingPrs = sql`(
+  ${outgoingPrs.sourceFindingId} IS NULL
+  OR NOT EXISTS (
+    SELECT 1
+    FROM ${findingStatus} cyber_fs
+    INNER JOIN ${reviews} cyber_r ON cyber_r.review_id = cyber_fs.review_id
+    INNER JOIN repo_tier cyber_rt
+      ON cyber_rt.owner_lc = lower(cyber_r.owner)
+      AND cyber_rt.repo_lc = lower(cyber_r.repo)
+    WHERE cyber_fs.finding_id = ${outgoingPrs.sourceFindingId}
+      AND cyber_rt.tier = 'cyber'
+  )
+)`;
+
 function publicReceiptGate() {
-  return isDisclosureGateEnabled() ? disclosurePublicReceiptGate : legacyPublicReceiptGate;
+  const visibility = isDisclosureGateEnabled()
+    ? disclosurePublicReceiptGate
+    : legacyPublicReceiptGate;
+  if (!isCyberTierEnabled()) return visibility;
+  return and(visibility, cyberTierExclusionForOutgoingPrs);
 }
 
 export async function loadCrossRepoReceipts(limit: number): Promise<CrossRepoReceiptsPage> {

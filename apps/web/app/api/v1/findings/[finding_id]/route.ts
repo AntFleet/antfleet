@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { agentFindings } from "@/db/schema";
 import { DETAIL_CACHE, jsonError, jsonOk, optionsResponse } from "@/lib/api-v1/responses";
 import { serializeFinding, type FindingRow } from "@/lib/api-v1/serialize";
+import { nonCyberTierRepoConditionForFullName } from "@/lib/cyber-tier";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +19,8 @@ export type FindingDetailDeps = {
 const DEFAULT_DEPS: FindingDetailDeps = {
   async getFinding(findingId) {
     if (findingId.toLowerCase().startsWith("roast:")) return null;
+    // Cyber-tier exclusion: direct finding-id lookups must also 404 for
+    // cyber-classified repos. (Code + security audit pass-1, high.)
     const rows = await db
       .select()
       .from(agentFindings)
@@ -25,6 +28,7 @@ const DEFAULT_DEPS: FindingDetailDeps = {
         and(
           eq(agentFindings.findingId, findingId),
           sql`${agentFindings.agentTokenAddress} NOT LIKE 'roast:%'`,
+          nonCyberTierRepoConditionForFullName(sql`${agentFindings.repoFullName}`),
         ),
       )
       .limit(1);

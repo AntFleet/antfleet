@@ -6,6 +6,7 @@ import { agentFindings } from "@/db/schema";
 import { decodeCursor, encodeCursor } from "@/lib/api-v1/cursor";
 import { jsonError, jsonOk, LIST_CACHE, optionsResponse } from "@/lib/api-v1/responses";
 import { serializeFinding, type FindingRow } from "@/lib/api-v1/serialize";
+import { nonCyberTierRepoConditionForFullName } from "@/lib/cyber-tier";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +30,13 @@ export type FindingsDeps = {
 
 const DEFAULT_DEPS: FindingsDeps = {
   async listFindings(query, cursor) {
-    const filters = [sql`${agentFindings.agentTokenAddress} NOT LIKE 'roast:%'`];
+    // Cyber-tier exclusion is added FIRST so it's always present even if
+    // future optional filters short-circuit. (Code + security audit
+    // pass-1, severity high, information-disclosure.)
+    const filters = [
+      sql`${agentFindings.agentTokenAddress} NOT LIKE 'roast:%'`,
+      nonCyberTierRepoConditionForFullName(sql`${agentFindings.repoFullName}`),
+    ];
     if (query.agent_token_address) {
       filters.push(
         sql`lower(${agentFindings.agentTokenAddress}) = ${query.agent_token_address.toLowerCase()}`,

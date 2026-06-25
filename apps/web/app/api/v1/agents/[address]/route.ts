@@ -10,7 +10,14 @@ import {
   type AgentDetailRow,
   type AgentListRow,
 } from "@/lib/api-v1/serialize";
-import { loadAgentSubmissionStats } from "@/lib/agent-submissions";
+import { loadAgentSubmissionStatsExcludingCyber } from "@/lib/agent-submissions";
+import { isCyberTierRepo, rawCyberTierExclusionForFullName } from "@/lib/cyber-tier";
+
+function splitRepoFullName(fullName: string): [string, string] {
+  const slash = fullName.indexOf("/");
+  if (slash <= 0 || slash === fullName.length - 1) return [fullName, ""];
+  return [fullName.slice(0, slash), fullName.slice(slash + 1)];
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,8 +56,20 @@ const DEFAULT_DEPS: AgentDetailDeps = {
     const registry = findAgentByAddress(address);
     let base: AgentListRow | null = null;
     if (registry !== null) {
+      // Hardcoded registry repo can still be classified cyber. Hide the
+      // detail endpoint entirely (404) when the registry entry maps to
+      // a cyber-classified repo. (Security audit pass-4, severity high,
+      // information-disclosure.)
+      if (registry.repo !== null && (await isCyberTierRepo(...splitRepoFullName(registry.repo)))) {
+        return null;
+      }
       base = registryAgentRow(registry);
     } else {
+      // Cyber-tier exclusion on factory directory lookup: a cyber-
+      // classified factory-launched repo's owner/repo + token must not
+      // be returned via the public v1 agent detail endpoint. (Security
+      // audit pass-4, severity high, information-disclosure.)
+      const factoryCyberExclude = rawCyberTierExclusionForFullName(sql`repo_full_name`);
       const factoryResult = await db.execute(sql`
         SELECT
           token_address AS address,
@@ -60,6 +79,7 @@ const DEFAULT_DEPS: AgentDetailDeps = {
         FROM factory_launches
         WHERE lower(token_address) = ${normalized}
           AND prelaunch_status = 'published'
+          ${factoryCyberExclude}
         LIMIT 1
       `);
       const factory = sqlRows<FactoryRow>(factoryResult)[0];
@@ -80,6 +100,7 @@ const DEFAULT_DEPS: AgentDetailDeps = {
             FROM agent_findings
             WHERE lower(agent_token_address) = ${normalized}
               AND agent_token_address NOT LIKE 'roast:%'
+              ${rawCyberTierExclusionForFullName(sql`repo_full_name`)}
           )
           SELECT
             latest.agent_token_address AS address,
@@ -113,10 +134,17 @@ const DEFAULT_DEPS: AgentDetailDeps = {
       }
     }
 
+    // Cyber-tier exclusion threaded into the agent_findings count + max
+    // subqueries so cyber-classified rows do not contribute to the
+    // public agent's `findingsCount` / `latestFindingAt`. Drift snapshot
+    // counts are not gated — drift is a property of the agent identity
+    // (token address), not the repo, and the existing identity-drift
+    // surfaces are unrelated to cyber-repo existence hiding.
+    const cyberExclude = rawCyberTierExclusionForFullName(sql`repo_full_name`);
     const statsResult = await db.execute(sql`
       SELECT
-        (SELECT count(*)::int FROM agent_findings WHERE lower(agent_token_address) = ${normalized} AND agent_token_address NOT LIKE 'roast:%') AS findings_count,
-        (SELECT max(published_at) FROM agent_findings WHERE lower(agent_token_address) = ${normalized} AND agent_token_address NOT LIKE 'roast:%') AS latest_finding_at,
+        (SELECT count(*)::int FROM agent_findings WHERE lower(agent_token_address) = ${normalized} AND agent_token_address NOT LIKE 'roast:%' ${cyberExclude}) AS findings_count,
+        (SELECT max(published_at) FROM agent_findings WHERE lower(agent_token_address) = ${normalized} AND agent_token_address NOT LIKE 'roast:%' ${cyberExclude}) AS latest_finding_at,
         (SELECT count(*)::int FROM drift_snapshots WHERE lower(agent_token_address) = ${normalized}) AS snapshots_count,
         (SELECT observed_at FROM drift_snapshots WHERE lower(agent_token_address) = ${normalized} ORDER BY observed_at DESC, id ASC LIMIT 1) AS latest_observed_at,
         (SELECT drift_score FROM drift_snapshots WHERE lower(agent_token_address) = ${normalized} ORDER BY observed_at DESC, id ASC LIMIT 1) AS latest_drift_score
@@ -130,10 +158,10 @@ const DEFAULT_DEPS: AgentDetailDeps = {
     };
     return {
       ...base,
-      ...applySubmissionStats(base.address, {
+      ...(await applySubmissionStats(base.address, {
         findingsCount: numberFromSql(stats.findings_count),
         latestFindingAt: stats.latest_finding_at,
-      }),
+      })),
       drift: {
         snapshotsCount: numberFromSql(stats.snapshots_count),
         latestObservedAt: stats.latest_observed_at,
@@ -167,11 +195,14 @@ function numberFromSql(value: number | string): number {
   return typeof value === "number" ? value : Number.parseInt(value, 10);
 }
 
-function applySubmissionStats(
+async function applySubmissionStats(
   address: string,
   stats: { findingsCount: number; latestFindingAt: Date | string | null },
-): { findingsCount: number; latestFindingAt: Date | string | null } {
-  const submissions = loadAgentSubmissionStats(address);
+): Promise<{ findingsCount: number; latestFindingAt: Date | string | null }> {
+  // Cyber-aware variant: excludes static submissions whose repoFullName
+  // is cyber-classified so the v1 detail endpoint doesn't surface
+  // hidden activity. (Code audit pass-6, severity medium.)
+  const submissions = await loadAgentSubmissionStatsExcludingCyber(address);
   if (submissions.total === 0) return stats;
   return {
     findingsCount: Math.max(stats.findingsCount, submissions.total),

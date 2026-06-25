@@ -2,6 +2,7 @@ import { and, count, desc, eq, lt, max, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import { reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
+import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
 import { shortenReviewId } from "@/lib/short-id";
 
 export type DisagreementCategory = "solo_anthropic" | "solo_openai" | "mismatched_classification";
@@ -42,7 +43,14 @@ const SEVERITY_RANK: Record<string, number> = {
 };
 
 function reviewPublicGate() {
-  return isDisclosureGateEnabled() ? sql<boolean>`false` : eq(reviews.publicReceipt, true);
+  // Cyber-tier exclusion AND'd in defense-in-depth. Without it, the
+  // disagreement archive / detail / RSS / OG image loaders would expose
+  // cyber-repo reviewer findings on an unauthenticated public surface
+  // whenever ANTFLEET_CYBER_TIER is on (security audit pass-1, high).
+  return and(
+    isDisclosureGateEnabled() ? sql<boolean>`false` : eq(reviews.publicReceipt, true),
+    nonCyberTierRepoCondition(),
+  );
 }
 
 type Evidence = ProviderFinding["evidence"][number];

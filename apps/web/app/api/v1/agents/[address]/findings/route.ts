@@ -7,6 +7,17 @@ import { findAgentByAddress } from "@/lib/agent-registry";
 import { decodeCursor, encodeCursor } from "@/lib/api-v1/cursor";
 import { jsonError, jsonOk, LIST_CACHE, optionsResponse } from "@/lib/api-v1/responses";
 import { serializeFinding, type FindingRow } from "@/lib/api-v1/serialize";
+import {
+  isCyberTierRepo,
+  nonCyberTierRepoConditionForFullName,
+  rawCyberTierExclusionForFullName,
+} from "@/lib/cyber-tier";
+
+function splitRepoFullNameForCyber(fullName: string): [string, string] {
+  const slash = fullName.indexOf("/");
+  if (slash <= 0 || slash === fullName.length - 1) return [fullName, ""];
+  return [fullName.slice(0, slash), fullName.slice(slash + 1)];
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,27 +40,49 @@ export type AgentFindingsDeps = {
 
 const DEFAULT_DEPS: AgentFindingsDeps = {
   async agentExists(address) {
-    if (findAgentByAddress(address) !== null) return true;
+    const registry = findAgentByAddress(address);
+    if (registry !== null) {
+      // Cyber-tier exclusion for the hardcoded registry path too: a
+      // registry agent whose repo is cyber-classified must not be
+      // confirmed to exist. (Security audit pass-5, severity medium.)
+      if (registry.repo !== null) {
+        const [owner, repo] = splitRepoFullNameForCyber(registry.repo);
+        if (await isCyberTierRepo(owner, repo)) return false;
+      }
+      return true;
+    }
+    // Cyber-tier exclusion: existence check must NOT return true for an
+    // agent whose only findings are cyber-classified. Without this
+    // filter the endpoint would return 200 with an empty `data` array
+    // for cyber-only agents, creating an existence oracle. (Code +
+    // security audit pass-2, severity medium, existence-probe.)
+    const cyberExclude = rawCyberTierExclusionForFullName(sql`repo_full_name`);
     const result = await db.execute(sql`
       SELECT address FROM (
         SELECT token_address AS address
         FROM factory_launches
         WHERE lower(token_address) = ${address.toLowerCase()}
           AND prelaunch_status = 'published'
+          ${cyberExclude}
         UNION ALL
         SELECT agent_token_address AS address
         FROM agent_findings
         WHERE lower(agent_token_address) = ${address.toLowerCase()}
           AND agent_token_address NOT LIKE 'roast:%'
+          ${cyberExclude}
       ) agents
       LIMIT 1
     `);
     return sqlRows<unknown>(result).length > 0;
   },
   async listFindings(address, query, cursor) {
+    // Cyber-tier exclusion: prevents enumeration of cyber-classified
+    // repo findings via the per-agent listing. (Code + security audit
+    // pass-1, severity high.)
     const filters = [
       sql`lower(${agentFindings.agentTokenAddress}) = ${address.toLowerCase()}`,
       sql`${agentFindings.agentTokenAddress} NOT LIKE 'roast:%'`,
+      nonCyberTierRepoConditionForFullName(sql`${agentFindings.repoFullName}`),
     ];
     if (query.severity) filters.push(eq(agentFindings.severity, query.severity));
     if (query.since) filters.push(gte(agentFindings.publishedAt, new Date(query.since)));

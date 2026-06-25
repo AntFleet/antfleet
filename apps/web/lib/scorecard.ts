@@ -4,13 +4,17 @@ import { db } from "@/db/index";
 import { reviewDerivedPublicReceiptCondition } from "@/db/public-receipt";
 import { reviews, findingStatus } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
+import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
 
 export const GENERATOR_VERSION = "1.0.0";
 
 function reviewPublicGate() {
-  return isDisclosureGateEnabled()
-    ? reviewDerivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+  return and(
+    isDisclosureGateEnabled()
+      ? reviewDerivedPublicReceiptCondition
+      : eq(reviews.publicReceipt, true),
+    nonCyberTierRepoCondition(),
+  );
 }
 
 // ---------------------------------------------------------------------------

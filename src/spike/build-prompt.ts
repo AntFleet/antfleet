@@ -6,15 +6,42 @@
 
 export type PromptFile = { path: string; contents: string };
 
+// Cyber tier (Daybreak follow-up). When omitted or "default" the prompt
+// is byte-identical to the legacy pre-cyber-tier output — important so
+// existing empirical V2/V3 verdicts still apply on default-tier repos.
+// When "cyber" a defender-context preamble is prepended that explicitly
+// authorizes minimal PoC + reproduction technical detail; output is
+// routed only through coordinated-disclosure private channels.
+//
+// Defense in depth: the visibility / finding-emit layer ALSO reads the
+// cyber tier (apps/web/lib/cyber-tier.ts + lib/disclosure.ts). Neither
+// path alone is sufficient — a misrouted prompt on a default-tier repo
+// still gets default visibility; a misrouted visibility on a cyber-tier
+// repo still gets default prompt.
+export type CyberTier = "default" | "cyber";
+
 export type BuildSpikePromptArgs = {
   projectName: string;
   projectRoot: string;
   featureId: string;
   featureTitle: string;
   files: PromptFile[];
+  tier?: CyberTier;
 };
 
+const CYBER_TIER_PREAMBLE = `This review is operating under the AntFleet Cyber tier — the repo is operated
+by a verified defender on a sensitive system, and your output is routed only
+through coordinated-disclosure private channels (never published). For each
+finding, include a minimal proof-of-concept and reproduction path sufficient
+for the maintainer to reproduce the issue against a known commit. Do not
+withhold technical detail required to make the finding actionable. You are
+still bound by the rule that findings must be evidence-driven — do not invent
+vulnerabilities to satisfy the brief.
+
+`;
+
 export function buildSpikePrompt(args: BuildSpikePromptArgs): string {
+  const cyberPrefix = args.tier === "cyber" ? CYBER_TIER_PREAMBLE : "";
   const blocks = args.files.map((f) => `--- ${f.path}\n${f.contents}`);
   // Smart-contract supplement, conditional on Solidity in the bundle. Ports
   // the soft category-list pattern from open-evmbench's antfleet_reference
@@ -34,7 +61,7 @@ these categories alongside the ones above where they apply):
 - oracle misuse (price manipulation, stale data, single-source trust)
 - accounting errors (rounding bias, fee math, over/underflow)`
     : "";
-  return `You are reviewing one semantic feature for fleet.
+  return `${cyberPrefix}You are reviewing one semantic feature for fleet.
 
 Return strict JSON only. No markdown fences.
 
