@@ -230,7 +230,13 @@ export function publicAccessForThreatModel(args: {
   owner: string;
   repo: string;
   publicReceipt: boolean;
+  cyberTier?: "default" | "cyber";
 }): ThreatModelPublicAccess {
+  // Cyber tier hides the threat model entirely — not even the collapsed
+  // public view (entry points / trust boundaries / sinks) is rendered.
+  // Default tier path is byte-identical when cyberTier is omitted or
+  // 'default' (existing callers pre-cyber-tier).
+  if (args.cyberTier === "cyber") return "private";
   if (!args.publicReceipt) return "private";
   const name = `${args.owner}/${args.repo}`.toLowerCase();
   if (operatorApprovedPublicRepo(name)) return "public";

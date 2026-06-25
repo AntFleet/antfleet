@@ -115,6 +115,34 @@ describe("repo threat model", () => {
     }
   });
 
+  it("cyber tier hides the threat model regardless of publicReceipt or allowlist", () => {
+    const oldAllowlist = process.env["ANTFLEET_PUBLIC_THREAT_MODEL_REPOS"];
+    process.env["ANTFLEET_PUBLIC_THREAT_MODEL_REPOS"] = "antfleet/bench-cyber";
+    try {
+      expect(
+        publicAccessForThreatModel({
+          owner: "AntFleet",
+          repo: "bench-cyber",
+          publicReceipt: true,
+          cyberTier: "cyber",
+        }),
+      ).toBe("private");
+      // Defense in depth: even an operator-approved repo on the
+      // allowlist hides the model when classified cyber.
+      expect(
+        publicAccessForThreatModel({
+          owner: "AntFleet",
+          repo: "bench-cyber",
+          publicReceipt: true,
+          cyberTier: "default",
+        }),
+      ).toBe("public");
+    } finally {
+      if (oldAllowlist === undefined) delete process.env["ANTFLEET_PUBLIC_THREAT_MODEL_REPOS"];
+      else process.env["ANTFLEET_PUBLIC_THREAT_MODEL_REPOS"] = oldAllowlist;
+    }
+  });
+
   it("allows explicit operator approval for public threat-model disclosure", () => {
     const oldAllowlist = process.env["ANTFLEET_PUBLIC_THREAT_MODEL_REPOS"];
     process.env["ANTFLEET_PUBLIC_THREAT_MODEL_REPOS"] = "balancer/balancer-v3-monorepo";

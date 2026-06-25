@@ -4,6 +4,7 @@ import { db } from "@/db/index";
 import { derivedPublicReceiptCondition } from "@/db/public-receipt";
 import { findingDisclosure, findingStatus, outgoingPrs, reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
+import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
 
 // Patches-landed + median-time-to-fix headline KPIs. Used by /receipts and /
 // hero strips. Two paths union into a per-finding map keyed by findingId:
@@ -31,9 +32,11 @@ export type PatchKpis = {
 
 export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
   const disclosureGateEnabled = isDisclosureGateEnabled();
-  const findingVisibilityGate = disclosureGateEnabled
-    ? derivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+  const cyberTierGate = nonCyberTierRepoCondition();
+  const findingVisibilityGate = and(
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    cyberTierGate,
+  );
   const inRepoRows = await (disclosureGateEnabled
     ? db
         .select({
@@ -96,6 +99,7 @@ export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
           and(
             inArray(outgoingPrs.status, ["merged", "closed_absorbed"]),
             sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) IS NOT NULL`,
+            cyberTierGate,
             sql`(
               ${findingStatus.findingId} IS NULL
               OR (
@@ -141,6 +145,7 @@ export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
           and(
             inArray(outgoingPrs.status, ["merged", "closed_absorbed"]),
             sql`COALESCE(${outgoingPrs.mergedAt}, ${outgoingPrs.closureDetectedAt}) IS NOT NULL`,
+            cyberTierGate,
             sql`(
               ${findingStatus.findingId} IS NULL
               OR (

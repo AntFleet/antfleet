@@ -4,14 +4,16 @@ import { db } from "@/db/index";
 import { derivedPublicReceiptCondition } from "@/db/public-receipt";
 import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
+import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
 
 const BASE = "https://www.antfleet.dev";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
-  const visibilityCondition = disclosureGateEnabled
-    ? derivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+  const visibilityCondition = and(
+    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    nonCyberTierRepoCondition(),
+  );
   const sitemapCondition = and(
     visibilityCondition,
     eq(findingStatus.status, "closed"),

@@ -3,6 +3,7 @@ import { db } from "@/db/index";
 import { agentFindings, driftSnapshots } from "@/db/schema";
 import { loadRepoSubmissionStats } from "./agent-submissions";
 import type { AgentRegistryEntry } from "./agent-registry";
+import { isCyberTierRepo } from "./cyber-tier";
 import { writePostDraft } from "./post-drafts";
 
 const USER_AGENT = "antfleet-depth-track";
@@ -226,11 +227,29 @@ export async function loadDriftSnapshots(address: string): Promise<
 }
 
 export async function countFindingsForRepo(repoFullName: string): Promise<number> {
+  // Cyber-tier exclusion: when a repo is classified cyber the public
+  // /badge/[owner]/[repo].svg surface must NOT reveal the finding count
+  // — neither agent_findings rows NOR the static submission ledger may
+  // contribute. The badge renders "0 findings, not yet reviewed" which
+  // is the same shape as any unreviewed repo, so existence is hidden.
+  // Code audit pass-2 + pass-4: pass-4 caught the bug that the prior
+  // fix still returned submission totals (could be nonzero, revealing
+  // a known-tracked repo). When ANTFLEET_CYBER_TIER is OFF this branch
+  // never runs and behavior is byte-identical.
+  if (await isCyberTierRepo(...repoFullNameToOwnerRepo(repoFullName))) {
+    return 0;
+  }
   const rows = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(agentFindings)
     .where(sql`lower(${agentFindings.repoFullName}) = ${repoFullName.toLowerCase()}`);
   return Math.max(rows[0]?.count ?? 0, loadRepoSubmissionStats(repoFullName).total);
+}
+
+function repoFullNameToOwnerRepo(fullName: string): [string, string] {
+  const slash = fullName.indexOf("/");
+  if (slash <= 0 || slash === fullName.length - 1) return [fullName, ""];
+  return [fullName.slice(0, slash), fullName.slice(slash + 1)];
 }
 
 export function isNearThreshold(score: number, threshold: number): boolean {

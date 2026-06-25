@@ -18,8 +18,10 @@ import {
 import { formatRelativeTime } from "@/lib/receipts";
 import { renderFindingMarkdown, severityLabel, shortAddress } from "@/lib/agent-findings";
 import { CopyBadgeSnippet } from "./CopyBadgeSnippet";
+import { CyberTierBadge } from "./CyberTierBadge";
 import { TweetIntent } from "@/components/TweetIntent";
 import { SarifIntegrationPanel } from "./SarifIntegrationPanel";
+import { loadCyberTierFullNameSet } from "@/lib/cyber-tier";
 
 const SITE_URL = "https://www.antfleet.dev";
 
@@ -87,8 +89,34 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
     return <FactoryLaunchStubPage stub={stub} now={now} />;
   }
 
-  const registryEntry = findAgentByAddress(address);
-  const submissions = loadAgentSubmissions(detail.agentTokenAddress);
+  const registryEntryCandidate = findAgentByAddress(address);
+  // Cyber-tier exclusion: registry entries and static submissions are
+  // ungated data sources. The cyber-aware loadAgentDetail already
+  // filters cyber-tier findings, but the registry badge embed,
+  // submissions section, public finding count, latest activity, and
+  // SARIF repo list would otherwise re-introduce the cyber repo's
+  // identifier here. Filter both sources by isCyberTierRepo before
+  // they're used anywhere on the page. (Security audit pass-6,
+  // severity high, agent-page-information-disclosure.) Uses the
+  // batched loadCyberTierFullNameSet to do ONE repo_tier query per
+  // render instead of N — addresses architect pass-7 medium
+  // n+1 lookups.
+  const submissionsAll = loadAgentSubmissions(detail.agentTokenAddress);
+  const cyberFullNames = await loadCyberTierFullNameSet([
+    ...submissionsAll.map((s) => s.repoFullName),
+    ...(registryEntryCandidate?.repo !== undefined && registryEntryCandidate.repo !== null
+      ? [registryEntryCandidate.repo]
+      : []),
+  ]);
+  const submissions: AgentSubmission[] = submissionsAll.filter(
+    (s) => !cyberFullNames.has(s.repoFullName.toLowerCase()),
+  );
+  const registryEntry =
+    registryEntryCandidate !== null &&
+    registryEntryCandidate.repo !== null &&
+    cyberFullNames.has(registryEntryCandidate.repo.toLowerCase())
+      ? null
+      : registryEntryCandidate;
   const publicFindingCount = Math.max(detail.findings.length, submissions.length);
   const latestActivityAt = latestAgentActivityAt(detail.findings, submissions);
   const upstreamFixes = agentUpstreamFixes(detail.crossRepoMerges, submissions);
@@ -102,6 +130,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<Rout
         publicFindingCount={publicFindingCount}
         latestActivityAt={latestActivityAt}
         upstreamFixCount={upstreamFixes.length}
+        hasCyberTierRepo={detail.hasCyberTierRepo}
       />
       {registryEntry !== null && (
         <>
@@ -647,6 +676,7 @@ function Header({
   publicFindingCount,
   latestActivityAt,
   upstreamFixCount,
+  hasCyberTierRepo,
 }: {
   detail: {
     agentName: string;
@@ -658,6 +688,7 @@ function Header({
   publicFindingCount: number;
   latestActivityAt: Date;
   upstreamFixCount: number;
+  hasCyberTierRepo: boolean;
 }) {
   const relative = formatRelativeTime(now, latestActivityAt);
   const hasOpenPr = detail.findings.some(
@@ -682,6 +713,7 @@ function Header({
           )}
           {hasMergedPr && <Badge>upstream merged</Badge>}
           {hasOpenPr && !hasMergedPr && <Badge>upstream PR open</Badge>}
+          {hasCyberTierRepo && <CyberTierBadge />}
           <Badge>updated {relative}</Badge>
         </div>
         <div className="mt-6 font-mono text-[11px] text-[var(--color-ink-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1 break-all">

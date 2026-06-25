@@ -6,7 +6,9 @@ import {
   integer,
   jsonb,
   numeric,
+  pgEnum,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -1037,6 +1039,51 @@ export const findingDisclosure = pgTable(
   ],
 );
 
+// Daybreak follow-up — repo cyber tier (migration 0048). Stricter posture
+// for verified defenders / sensitive systems. Repo-scoped, not install-
+// scoped: multiple installs of the same upstream repo share the tier and
+// the strictest-wins property is enforced by having a single row keyed on
+// lowercased (owner, repo).
+//
+// Reads always go through lib/cyber-tier.ts (flag-gated via
+// ANTFLEET_CYBER_TIER). Writes are ONLY allowed through the operator
+// admin module (lib/cyber-tier-admin.ts) — webhook, install flow, and
+// any future self-service settings UI are forbidden. The grep-test in
+// lib/cyber-tier-admin.test.ts enforces the single import.
+export const cyberTierEnum = pgEnum("cyber_tier", ["default", "cyber"]);
+
+export const repoTier = pgTable(
+  "repo_tier",
+  {
+    ownerLc: text("owner_lc").notNull(),
+    repoLc: text("repo_lc").notNull(),
+    tier: cyberTierEnum("tier").notNull().default("default"),
+    setBy: text("set_by").notNull(),
+    setAt: timestamp("set_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.ownerLc, t.repoLc] }), index("repo_tier_tier_idx").on(t.tier)],
+);
+
+export const repoTierChangeLog = pgTable(
+  "repo_tier_change_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerLc: text("owner_lc").notNull(),
+    repoLc: text("repo_lc").notNull(),
+    oldTier: cyberTierEnum("old_tier").notNull(),
+    newTier: cyberTierEnum("new_tier").notNull(),
+    reason: text("reason").notNull(),
+    actor: text("actor").notNull(),
+    changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("repo_tier_change_log_repo_idx").on(t.ownerLc, t.repoLc, t.changedAt),
+    // Global latest-change index for scorecard staleness check.
+    // (Architect audit pass-10, severity medium.)
+    index("repo_tier_change_log_changed_at_idx").on(t.changedAt),
+  ],
+);
+
 export const findingDisclosureLog = pgTable(
   "finding_disclosure_log",
   {
@@ -1058,6 +1105,12 @@ export const findingDisclosureLog = pgTable(
     index("finding_disclosure_log_created_idx").on(t.createdAt),
   ],
 );
+
+export type CyberTier = (typeof cyberTierEnum.enumValues)[number];
+export type RepoTier = typeof repoTier.$inferSelect;
+export type NewRepoTier = typeof repoTier.$inferInsert;
+export type RepoTierChangeLog = typeof repoTierChangeLog.$inferSelect;
+export type NewRepoTierChangeLog = typeof repoTierChangeLog.$inferInsert;
 
 export type Review = typeof reviews.$inferSelect;
 export type NewReview = typeof reviews.$inferInsert;

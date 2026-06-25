@@ -4,6 +4,7 @@ import { db } from "@/db/index";
 import { weeklyFeatures } from "@/db/schema";
 import { agentFindings } from "@/db/schema";
 import { severityLabel } from "@/lib/agent-findings";
+import { rawCyberTierExclusionForFullName } from "@/lib/cyber-tier";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,13 @@ type DigestWeekRow = {
 };
 
 async function loadAllDigestWeeks(): Promise<DigestWeekRow[]> {
+  // Cyber-tier exclusion: the weekly digest page renders finding titles
+  // + severity for every featured finding. Without filtering, a cyber-
+  // classified repo's finding could leak via the digest if it was
+  // curated before the repo flipped to cyber, OR via concurrent curator
+  // runs. The drift detector in lib/cyber-tier-visibility.contract.test.ts
+  // caught this surface in pass-3.
+  const cyberExclude = rawCyberTierExclusionForFullName(sql`${agentFindings.repoFullName}`);
   const result = await db.execute(sql`
     SELECT
       wf.week_start AS "weekStart",
@@ -33,6 +41,7 @@ async function loadAllDigestWeeks(): Promise<DigestWeekRow[]> {
       ${agentFindings.severity} AS "severity"
     FROM ${weeklyFeatures} wf
     JOIN ${agentFindings} ON ${agentFindings.findingId} = wf.finding_id
+    WHERE true ${cyberExclude}
     ORDER BY wf.week_start DESC
   `);
   const rows = Array.isArray(result)

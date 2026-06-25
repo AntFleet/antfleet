@@ -5,6 +5,7 @@ import { verifyGitHubSignature } from "@/lib/github-signature";
 import { getInstallationToken } from "@/lib/github-app";
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
+import { getRepoCyberTier } from "@/lib/cyber-tier";
 import { logError, logInfo, logWarn, messageOf } from "@/lib/log";
 import { isWelcomeIssue, recordPartnerReply, runWelcomeOnInstall } from "@/lib/onboarder";
 import { runReviewWorker } from "@/lib/review-worker";
@@ -374,10 +375,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // Mission 6 — benchmark-class detection runs in parallel: a repo with
   // BENCHMARK.md at root opts into /benchmarks regardless of close state.
   const visibilityOctokit = new Octokit({ auth: installationToken });
-  const [publicReceipt, isBenchmark] = await Promise.all([
+  const [publicReceiptCandidate, isBenchmark, cyberTier] = await Promise.all([
     isPublicRepo(visibilityOctokit, pr.repository.owner.login, pr.repository.name),
     isBenchmarkRepo(visibilityOctokit, pr.repository.owner.login, pr.repository.name),
+    getRepoCyberTier(pr.repository.owner.login, pr.repository.name),
   ]);
+  // Cyber tier MUST materialize publicReceipt=false at enqueue time so
+  // the persisted row matches reality even if the repo is later
+  // downgraded back to default tier or if a future public consumer
+  // forgets the side-table cyber filter. (Architect + security audit
+  // pass-1, severity medium/high, materialization.)
+  const publicReceipt = cyberTier === "cyber" ? false : publicReceiptCandidate;
 
   // Mission 7 — durable queuing. enqueueReview is idempotent on the
   // (repo_hash, pr_number, commit_sha) triple. A duplicate delivery

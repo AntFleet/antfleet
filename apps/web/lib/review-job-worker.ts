@@ -16,9 +16,11 @@ import {
   upsertRepoThreatModel,
 } from "@/db/queries";
 import { initializeDisclosureForFindings } from "@/lib/disclosure";
+import { getRepoCyberTier } from "@/lib/cyber-tier";
 import { applyReachabilityGate } from "@/lib/reachability-gate";
 import { getRepoThreatModelFilesWith, type RepoThreatModelSnapshot } from "@/lib/repo-threat-model";
 import {
+  isCyberTierEnabled,
   isDisclosureGateEnabled,
   isDisclosureGateEnabledForInstall,
   isDisclosureSideTableEnabled,
@@ -291,10 +293,15 @@ async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
   }
 
   const repoHash = hashRepo(owner, repo);
-  const [publicReceipt, isBenchmark] = await Promise.all([
+  const [publicReceiptCandidate, isBenchmark, cyberTierEffective] = await Promise.all([
     isPublicRepo(octokit as Parameters<typeof isPublicRepo>[0], owner, repo),
     isBenchmarkRepo(octokit as Parameters<typeof isBenchmarkRepo>[0], owner, repo),
+    getRepoCyberTier(owner, repo),
   ]);
+  // Cyber tier materializes publicReceipt=false at enqueue time on the
+  // generic install/API job path too (matches webhook + x402 + acp).
+  // (Architect audit pass-3, severity medium, materialization.)
+  const publicReceipt = cyberTierEffective === "cyber" ? false : publicReceiptCandidate;
 
   const enqueued = await enqueueReview({
     repoHash,
@@ -360,6 +367,12 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
   const sha = job.sha;
 
   const repoHash = hashRepo(owner, repo);
+  // Cyber tier materializes publicReceipt=false at enqueue time so paid
+  // rails honor the tier even if the visibility filters later miss a
+  // surface. Default tier keeps the historic x402 behavior of
+  // publicReceipt=true. (Audit pass-1, materialization.)
+  const cyberTierEffective = await getRepoCyberTier(owner, repo);
+  const publicReceiptForRow = cyberTierEffective !== "cyber";
   const enqueued = await enqueueReview({
     repoHash,
     prNumber,
@@ -375,7 +388,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
     installationId: null,
     owner,
     repo,
-    publicReceipt: true,
+    publicReceipt: publicReceiptForRow,
     isBenchmark: false,
   });
   await markX402JobReviewLinked(db, job.jobId, enqueued.reviewId);
@@ -420,7 +433,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         repo,
         prNumber,
         commitSha: sha,
-        publicReceipt: true,
+        publicReceipt: publicReceiptForRow,
         files,
         threatModelSnapshot,
         signal,
@@ -445,6 +458,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         isEvidenceBundleEnabledForInstall,
         isDisclosureGateEnabledForInstall,
         isDisclosureSideTableEnabled,
+        getRepoCyberTier,
       },
     );
     if (outcome.kind === "completed" || outcome.kind === "skipped") {
@@ -467,6 +481,10 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
   const repo = job.repoName;
   const target = await resolveAcpReviewTarget(job);
   const repoHash = hashRepo(owner, repo);
+  // Cyber tier materializes publicReceipt=false at enqueue time. Mirrors
+  // the x402 path. (Audit pass-1, materialization.)
+  const cyberTierEffective = await getRepoCyberTier(owner, repo);
+  const publicReceiptForRow = cyberTierEffective !== "cyber";
   const enqueued = await enqueueReview({
     repoHash,
     prNumber: target.prNumber,
@@ -482,7 +500,7 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
     installationId: null,
     owner,
     repo,
-    publicReceipt: true,
+    publicReceipt: publicReceiptForRow,
     isBenchmark: false,
   });
   await markAcpJobReviewLinked(db, job.jobId, enqueued.reviewId);
@@ -536,7 +554,7 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         repo,
         prNumber: target.prNumber,
         commitSha: target.sha,
-        publicReceipt: true,
+        publicReceipt: publicReceiptForRow,
         files,
         threatModelSnapshot,
         signal,
@@ -561,6 +579,7 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         isEvidenceBundleEnabledForInstall,
         isDisclosureGateEnabledForInstall,
         isDisclosureSideTableEnabled,
+        getRepoCyberTier,
       },
     );
     if (outcome.kind === "skipped") {
@@ -779,7 +798,18 @@ function readAgreementDecision(value: unknown): {
 async function redactReviewPayloadForPublicDisclosure(
   payload: ReviewResponsePayload,
 ): Promise<ReviewResponsePayload> {
-  if (!isDisclosureGateEnabled()) return payload;
+  // Gate on the UNION of every policy flag that could write a private
+  // disclosure row: the disclosure gate, the side-table backfill flag,
+  // and the cyber tier flag. Cyber tier writes embargo rows from
+  // `initializeDisclosureForFindings` independent of the disclosure
+  // gate (review-worker.ts:1036), so omitting it from this union
+  // recreates the pass-5 leak. Including ALL THREE preserves the
+  // "byte-identical when all flags off" contract while still redacting
+  // whenever any policy is active. (Security audit pass-5 high +
+  // architect audit pass-6 medium.)
+  if (!isCyberTierEnabled() && !isDisclosureGateEnabled() && !isDisclosureSideTableEnabled()) {
+    return payload;
+  }
   const privateIndexes = await loadPrivateDisclosureFindingIndexes(payload.reviewId);
   if (privateIndexes.length === 0) return payload;
   const privateIndexSet = new Set(privateIndexes);

@@ -3,10 +3,11 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { AUTONOMOPOLY_AGENT } from "@/lib/agent-registry";
-import { loadAgentSubmissionStats } from "@/lib/agent-submissions";
+import { loadAgentSubmissionStatsExcludingCyber } from "@/lib/agent-submissions";
 import { decodeCursor, encodeCursor } from "@/lib/api-v1/cursor";
 import { jsonError, jsonOk, LIST_CACHE, optionsResponse } from "@/lib/api-v1/responses";
 import { iso, serializeAgent, type AgentListRow } from "@/lib/api-v1/serialize";
+import { rawCyberTierExclusionForFullName } from "@/lib/cyber-tier";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +36,13 @@ export type AgentsDeps = {
 
 const DEFAULT_DEPS: AgentsDeps = {
   async listAgents(query, cursor) {
+    // Cyber-tier exclusion threaded through every directory CTE so
+    // registry/factory agent rows with cyber-classified repos are also
+    // hidden, not just findings-derived rows. Without this, the public
+    // /agents directory and v1 API would still surface the agent name +
+    // repo_full_name for a cyber-classified registry/factory agent.
+    // (Security audit pass-4, severity high, information-disclosure.)
+    const cyberExclude = rawCyberTierExclusionForFullName(sql`repo_full_name`);
     const result = await db.execute(sql`
       WITH registry_directory AS (
         SELECT
@@ -43,6 +51,7 @@ const DEFAULT_DEPS: AgentsDeps = {
           ${AUTONOMOPOLY_AGENT.repo}::text AS repo_full_name,
           'registry'::text AS source,
           '2026-05-19T00:00:00.000Z'::timestamptz AS first_seen_at
+        WHERE true ${rawCyberTierExclusionForFullName(sql`${AUTONOMOPOLY_AGENT.repo}::text`)}
       ),
       factory_directory AS (
         SELECT
@@ -53,11 +62,13 @@ const DEFAULT_DEPS: AgentsDeps = {
           deployed_at AS first_seen_at
         FROM factory_launches
         WHERE prelaunch_status = 'published'
+          ${cyberExclude}
       ),
       public_findings AS (
         SELECT *
         FROM agent_findings
         WHERE lower(agent_token_address) NOT LIKE 'roast:%'
+          ${cyberExclude}
       ),
       finding_stats AS (
         SELECT
@@ -118,10 +129,13 @@ const DEFAULT_DEPS: AgentsDeps = {
       ORDER BY directory.first_seen_at DESC, directory.address ASC
       LIMIT ${query.limit + 1}
     `);
-    return pageAgents(
+    // Submission stats are static-side-table data — must be cyber-
+    // filtered separately from the DB CTEs since they don't pass
+    // through the SQL gate. (Code audit pass-6, severity medium.)
+    const decorated = await Promise.all(
       sqlRows<SqlAgentRow>(result).map(agentRowFromSql).map(applySubmissionStats),
-      query.limit,
     );
+    return pageAgents(decorated, query.limit);
   },
 };
 
@@ -194,8 +208,8 @@ function agentRowFromSql(row: SqlAgentRow): AgentListRow {
   };
 }
 
-function applySubmissionStats(row: AgentListRow): AgentListRow {
-  const submissions = loadAgentSubmissionStats(row.address);
+async function applySubmissionStats(row: AgentListRow): Promise<AgentListRow> {
+  const submissions = await loadAgentSubmissionStatsExcludingCyber(row.address);
   if (submissions.total === 0) return row;
   return {
     ...row,

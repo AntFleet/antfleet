@@ -25,6 +25,7 @@ import {
   type ReachabilityOutcome,
 } from "./reachability-gate";
 import { initializeDisclosureForFindings as realInitializeDisclosureForFindings } from "./disclosure";
+import { getRepoCyberTier as realGetRepoCyberTier } from "./cyber-tier";
 import {
   applyPatchVerifier as realApplyPatchVerifier,
   type PatchVerifyOutcome,
@@ -139,6 +140,7 @@ export type WorkerDeps = {
   isThreatModelEnabledForInstall: typeof realIsThreatModelEnabledForInstall;
   isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
   isDisclosureGateEnabledForInstall: typeof realIsDisclosureGateEnabledForInstall;
+  getRepoCyberTier: typeof realGetRepoCyberTier;
   now: () => Date;
 };
 
@@ -180,6 +182,7 @@ export function realWorkerDeps(): WorkerDeps {
     isThreatModelEnabledForInstall: realIsThreatModelEnabledForInstall,
     isEvidenceBundleEnabledForInstall: realIsEvidenceBundleEnabledForInstall,
     isDisclosureGateEnabledForInstall: realIsDisclosureGateEnabledForInstall,
+    getRepoCyberTier: realGetRepoCyberTier,
     now: () => new Date(),
   };
 }
@@ -431,6 +434,7 @@ export type ReviewKernelDeps = {
   isEvidenceBundleEnabledForInstall: typeof realIsEvidenceBundleEnabledForInstall;
   isDisclosureGateEnabledForInstall: typeof realIsDisclosureGateEnabledForInstall;
   isDisclosureSideTableEnabled: typeof realIsDisclosureSideTableEnabled;
+  getRepoCyberTier: typeof realGetRepoCyberTier;
 };
 
 // Install-only lane deps. When the caller (installation rail) wires
@@ -594,6 +598,19 @@ export async function runReviewKernel(
 ): Promise<ReviewKernelOutcome> {
   const { reviewId, owner, repo, prNumber, commitSha, files, signal, rail } = args;
 
+  // Resolve cyber tier BEFORE the empty-files branch so the
+  // publicReceipt materialization fires even when the review never
+  // produces findings. (Code audit pass-5, severity medium,
+  // concurrency.) An empty review on a repo that flipped to cyber
+  // between enqueue and processing would otherwise keep
+  // `reviews.publicReceipt=true`, and a later flip back to default
+  // would un-hide a row that was processed under cyber policy.
+  const cyberTierForReview = await deps.getRepoCyberTier(owner, repo);
+  const effectivePublicReceipt = cyberTierForReview === "cyber" ? false : args.publicReceipt;
+  if (cyberTierForReview === "cyber" && args.publicReceipt) {
+    await deps.updateReview(reviewId, { publicReceipt: false });
+  }
+
   if (files.length === 0) {
     const providerResponses: Record<string, unknown> = {
       status: "skipped",
@@ -609,20 +626,26 @@ export async function runReviewKernel(
     return { kind: "skipped" };
   }
 
+  const installationId = args.installLane?.installationId ?? null;
   const bundle = await deps.reviewPR({
     files,
     owner,
     repo,
     prNumber,
+    tier: cyberTierForReview,
     ...(signal !== undefined ? { signal } : {}),
   });
 
-  const installationId = args.installLane?.installationId ?? null;
   const reviewPublicAccess = publicAccessForThreatModel({
     owner,
     repo,
-    publicReceipt: args.publicReceipt,
+    publicReceipt: effectivePublicReceipt,
+    cyberTier: cyberTierForReview,
   });
+  // The cyber tier was already resolved above (before reviewPR) so the
+  // prompt-routing layer and the visibility/embargo layer use exactly
+  // the same value within one review — defense in depth (per the design
+  // note: "neither path alone is sufficient").
   const liveProtocolReviewRequired =
     args.liveProtocolReviewRequired === true ||
     (installationId === null && reviewPublicAccess === "live_protocol_review_required");
@@ -1015,7 +1038,20 @@ export async function runReviewKernel(
   if (findingIds.length > 0) {
     try {
       const disclosureEnabled = await deps.isDisclosureGateEnabledForInstall(installationId, repo);
-      if (disclosureEnabled || deps.isDisclosureSideTableEnabled()) {
+      // Cyber tier is its OWN trigger for disclosure init: even if the
+      // disclosure-gate / backfill flags are off, a cyber-tier repo MUST
+      // embargo every finding. Otherwise an operator enabling cyber tier
+      // without first flipping the disclosure flags would leave cyber
+      // findings publicly post-able from the install lane. (Architect
+      // audit pass-1, severity high, flag-boundary.)
+      const cyberTierForDisclosure = cyberTierForReview === "cyber";
+      if (disclosureEnabled || deps.isDisclosureSideTableEnabled() || cyberTierForDisclosure) {
+        // Use the SAME tier value resolved before reviewPR (and consumed
+        // by the prompt-routing layer). An operator flip mid-review must
+        // not split prompt and disclosure: if the model saw the cyber
+        // preamble it generated PoC/repro detail, so disclosure MUST
+        // embargo. (Code + security audit pass-1, severity high,
+        // race-condition / consistency.)
         const disclosure = await deps.initializeDisclosureForFindings({
           reviewId,
           owner,
@@ -1023,9 +1059,10 @@ export async function runReviewKernel(
           installationId,
           commitSha,
           prNumber,
-          publicReceipt: args.publicReceipt,
+          publicReceipt: effectivePublicReceipt,
           liveProtocolReviewRequired,
           routeLiveProtocolEmbargo: disclosureEnabled,
+          cyberTier: cyberTierForReview,
           agreementDecision,
           providerResponses,
           findings: bundle.agreed.map((finding, index) => ({
@@ -1650,6 +1687,7 @@ async function processClaimedRow(
       isEvidenceBundleEnabledForInstall: deps.isEvidenceBundleEnabledForInstall,
       isDisclosureGateEnabledForInstall: deps.isDisclosureGateEnabledForInstall,
       isDisclosureSideTableEnabled: deps.isDisclosureSideTableEnabled,
+      getRepoCyberTier: deps.getRepoCyberTier,
     },
   );
   if (kernelOutcome.kind === "skipped") return;

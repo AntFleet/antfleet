@@ -64,6 +64,15 @@ export function isCodeScanningPushEnabled(): boolean {
   return readBoolEnv("ANTFLEET_CODESCANNING_PUSH");
 }
 
+// Cyber tier (Daybreak follow-up). When OFF the repo_tier table can hold
+// any value but every visibility / disclosure / prompt-routing check
+// collapses to 'default' — behavior is byte-identical to pre-cyber-tier.
+// When ON the helpers in lib/cyber-tier.ts read the side table and route
+// accordingly. Default OFF in prod, ON in bench.
+export function isCyberTierEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_CYBER_TIER");
+}
+
 // Forward-compatible per-install resolvers. Until installations gains the
 // nullable boolean columns (planned in a follow-up to 0041) these just
 // return the env value. Once the columns exist, the inner lookup can

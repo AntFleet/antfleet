@@ -205,6 +205,27 @@ export function loadAgentSubmissionStats(agentTokenAddress: string): AgentSubmis
   return summarizeAgentSubmissions(loadAgentSubmissions(agentTokenAddress));
 }
 
+// Cyber-tier-aware variant for v1 agent list/detail endpoints. Excludes
+// any submission whose `repoFullName` is a cyber-classified repo so the
+// public findings count / latestFindingAt does not surface hidden cyber
+// activity. (Code audit pass-6, severity medium.) Static side-table
+// only — when ANTFLEET_CYBER_TIER is off this is byte-identical to the
+// sync variant.
+//
+// Uses the batched `loadCyberTierFullNameSet` to do ONE repo_tier query
+// per agent (not one per submission), addressing the architect pass-7
+// N+1 concern. When the flag is off the batched helper returns an
+// empty Set without hitting the DB.
+export async function loadAgentSubmissionStatsExcludingCyber(
+  agentTokenAddress: string,
+): Promise<AgentSubmissionStats> {
+  const { loadCyberTierFullNameSet } = await import("./cyber-tier");
+  const all = loadAgentSubmissions(agentTokenAddress);
+  const cyberSet = await loadCyberTierFullNameSet(all.map((s) => s.repoFullName));
+  const visible = all.filter((s) => !cyberSet.has(s.repoFullName.toLowerCase()));
+  return summarizeAgentSubmissions(visible);
+}
+
 export function loadRepoSubmissionStats(repoFullName: string): AgentSubmissionStats {
   const normalized = repoFullName.toLowerCase();
   return summarizeAgentSubmissions(

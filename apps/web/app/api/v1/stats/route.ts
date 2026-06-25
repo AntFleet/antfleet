@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { AUTONOMOPOLY_AGENT } from "@/lib/agent-registry";
 import { jsonError, jsonStats, optionsResponse } from "@/lib/api-v1/responses";
 import { iso } from "@/lib/api-v1/serialize";
+import { rawCyberTierExclusionForFullName } from "@/lib/cyber-tier";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,16 +37,26 @@ export type StatsDeps = {
 
 const DEFAULT_DEPS: StatsDeps = {
   async loadStats(generatedAt) {
+    // Cyber-tier exclusion threaded into BOTH the directory CTE (so
+    // cyber-only agents are not counted in total_agents) and the
+    // public_findings CTE (so cyber findings do not appear in
+    // total_findings / severity buckets / agents_with_findings /
+    // latest_finding_at). Existence-hiding at the aggregate level
+    // requires both CTEs to filter consistently — counts that include
+    // cyber rows but rows that don't reveal a sudden delta when a
+    // cyber finding lands. (Code audit pass-2, severity medium.)
+    const cyberExclude = rawCyberTierExclusionForFullName(sql`repo_full_name`);
     const result = await db.execute(sql`
       WITH directory AS (
         SELECT ${AUTONOMOPOLY_AGENT.address}::text AS address
+        WHERE true ${rawCyberTierExclusionForFullName(sql`${AUTONOMOPOLY_AGENT.repo}::text`)}
         UNION
-        SELECT token_address FROM factory_launches WHERE prelaunch_status = 'published'
+        SELECT token_address FROM factory_launches WHERE prelaunch_status = 'published' ${cyberExclude}
         UNION
-        SELECT agent_token_address FROM agent_findings WHERE agent_token_address NOT LIKE 'roast:%'
+        SELECT agent_token_address FROM agent_findings WHERE agent_token_address NOT LIKE 'roast:%' ${cyberExclude}
       ),
       public_findings AS (
-        SELECT * FROM agent_findings WHERE agent_token_address NOT LIKE 'roast:%'
+        SELECT * FROM agent_findings WHERE agent_token_address NOT LIKE 'roast:%' ${cyberExclude}
       )
       SELECT
         (SELECT count(*)::int FROM public_findings) AS total_findings,

@@ -52,3 +52,52 @@ describe("buildSpikePrompt — smart-contract supplement", () => {
     expect(prompt).not.toContain("Smart contract supplement");
   });
 });
+
+describe("buildSpikePrompt — cyber-tier preamble", () => {
+  it("omits the cyber preamble when tier is unset (default-tier behavior unchanged)", () => {
+    const prompt = buildSpikePrompt({
+      ...baseArgs,
+      files: [{ path: "src/a.ts", contents: "export const a = 1;" }],
+    });
+    expect(prompt).not.toContain("AntFleet Cyber tier");
+    expect(prompt).not.toContain("proof-of-concept");
+    expect(prompt.startsWith("You are reviewing one semantic feature for fleet.")).toBe(true);
+  });
+
+  it("omits the cyber preamble when tier is explicitly 'default'", () => {
+    const prompt = buildSpikePrompt({
+      ...baseArgs,
+      files: [{ path: "src/a.ts", contents: "export const a = 1;" }],
+      tier: "default",
+    });
+    expect(prompt).not.toContain("AntFleet Cyber tier");
+    expect(prompt.startsWith("You are reviewing one semantic feature for fleet.")).toBe(true);
+  });
+
+  it("prepends the cyber preamble when tier is 'cyber'", () => {
+    const prompt = buildSpikePrompt({
+      ...baseArgs,
+      files: [{ path: "src/a.ts", contents: "export const a = 1;" }],
+      tier: "cyber",
+    });
+    expect(prompt).toContain("AntFleet Cyber tier");
+    expect(prompt).toContain("proof-of-concept");
+    expect(prompt).toContain("coordinated-disclosure private channels");
+    expect(prompt).toContain("findings must be evidence-driven");
+    // The base review prompt still follows the preamble.
+    expect(prompt).toContain("You are reviewing one semantic feature for fleet.");
+  });
+
+  it("default-tier prompt is byte-identical with and without explicit tier", () => {
+    const withoutTier = buildSpikePrompt({
+      ...baseArgs,
+      files: [{ path: "src/a.ts", contents: "export const a = 1;" }],
+    });
+    const withDefault = buildSpikePrompt({
+      ...baseArgs,
+      files: [{ path: "src/a.ts", contents: "export const a = 1;" }],
+      tier: "default",
+    });
+    expect(withoutTier).toBe(withDefault);
+  });
+});

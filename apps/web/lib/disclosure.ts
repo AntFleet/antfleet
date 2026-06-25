@@ -57,6 +57,11 @@ export type InitializeDisclosureArgs = {
   findings: InitializeDisclosureFinding[];
   liveProtocolReviewRequired?: boolean;
   routeLiveProtocolEmbargo?: boolean;
+  // Cyber tier override (Daybreak follow-up). When 'cyber', EVERY finding
+  // auto-embargoes regardless of severity or live-protocol status — the
+  // tier itself is the gate. Defaults to 'default' so existing call sites
+  // (which don't pass this field) keep byte-identical behavior.
+  cyberTier?: "default" | "cyber";
   now?: Date;
   ghsa?: GhsaClient;
 };
@@ -81,9 +86,12 @@ export async function initializeDisclosureForFindings(
         owner: args.owner,
         repo: args.repo,
       })));
+  const isCyberTier = args.cyberTier === "cyber";
 
   for (const finding of args.findings) {
-    const embargo = isLiveProtocol && isHighOrCritical(finding.severity);
+    // Cyber-tier repos embargo every finding regardless of severity. The
+    // existing live-protocol path stays unchanged for non-cyber repos.
+    const embargo = isCyberTier || (isLiveProtocol && isHighOrCritical(finding.severity));
     const state: DisclosureState = embargo ? "embargoed" : "none";
     if (embargo) {
       embargoedFindingIds.push(finding.findingId);
@@ -129,7 +137,9 @@ export async function initializeDisclosureForFindings(
       advisoryDraft,
       atSha: args.commitSha,
       reason: embargo
-        ? "auto-embargoed high-severity live-protocol finding"
+        ? isCyberTier
+          ? "auto-embargoed cyber-tier finding"
+          : "auto-embargoed high-severity live-protocol finding"
         : "initialized non-disclosure finding",
     });
     if (!embargo || !created.created) continue;
