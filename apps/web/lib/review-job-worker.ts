@@ -372,7 +372,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
   // surface. Default tier keeps the historic x402 behavior of
   // publicReceipt=true. (Audit pass-1, materialization.)
   const cyberTierEffective = await getRepoCyberTier(owner, repo);
-  const publicReceiptForRow = cyberTierEffective === "cyber" ? false : true;
+  const publicReceiptForRow = cyberTierEffective !== "cyber";
   const enqueued = await enqueueReview({
     repoHash,
     prNumber,
@@ -484,7 +484,7 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
   // Cyber tier materializes publicReceipt=false at enqueue time. Mirrors
   // the x402 path. (Audit pass-1, materialization.)
   const cyberTierEffective = await getRepoCyberTier(owner, repo);
-  const publicReceiptForRow = cyberTierEffective === "cyber" ? false : true;
+  const publicReceiptForRow = cyberTierEffective !== "cyber";
   const enqueued = await enqueueReview({
     repoHash,
     prNumber: target.prNumber,
