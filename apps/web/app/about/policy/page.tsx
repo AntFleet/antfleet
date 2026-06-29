@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 // §10 (owner/repo is per-customer data; only repo_hash is public) is the
 // load-bearing fact on this page.
 
-const LAST_UPDATED = "2026-05-30";
+const LAST_UPDATED = "2026-06-29";
 
 export const metadata: Metadata = {
   title: "AntFleet · Data policy",
@@ -55,10 +55,12 @@ export default function PolicyPage() {
             .
           </Definition>
           <Definition term="Our database">
-            Postgres at Vercel Marketplace (Neon), in the EU region. Three tables:{" "}
+            Postgres at Vercel Marketplace (Neon), in the EU region. Core tables include{" "}
             <code className="font-mono text-xs">reviews</code>,{" "}
             <code className="font-mono text-xs">finding_status</code>,{" "}
-            <code className="font-mono text-xs">maintainer_reactions</code>. Schema is documented in{" "}
+            <code className="font-mono text-xs">maintainer_reactions</code>,{" "}
+            <code className="font-mono text-xs">agent_findings</code>, and the operational tables
+            backing payments, disclosure state, threat models, and SARIF runs. Full schema in{" "}
             <PolicyLink href="https://github.com/AntFleet/antfleet-core/blob/main/apps/web/db/schema.ts">
               <code className="font-mono text-xs">apps/web/db/schema.ts</code>
             </PolicyLink>
@@ -114,6 +116,25 @@ export default function PolicyPage() {
             the new default. If a flip happened and you want the old rows reconsidered, email the
             address above.
           </Definition>
+          <Definition term="Disclosure embargo before publication">
+            HIGH and CRITICAL findings on live-protocol code do not appear on{" "}
+            <code className="font-mono text-xs">/receipts</code> at the moment the sweeper closes
+            them. Every finding moves through a{" "}
+            <code className="font-mono text-xs">none → embargoed → published</code> state machine.
+            Embargoed findings render a coordination notice on the public anatomy page until the
+            embargo lifts, giving maintainers and bug-bounty programs a chance to coordinate
+            disclosure. Non-protocol findings on public repos skip the embargo and publish
+            immediately on closure.
+          </Definition>
+          <Definition term="Cyber-tier repos">
+            A small number of repos are classified cyber-sensitive and route through an
+            operator-controlled embargo path. Reviews still run and findings still post privately to
+            the PR, but no public surface (<code className="font-mono text-xs">/receipts</code>,{" "}
+            <code className="font-mono text-xs">/digest</code>,{" "}
+            <code className="font-mono text-xs">/scorecard</code>, RSS, sitemap, OG metadata)
+            renders the finding until the embargo is manually lifted via a signed admin route. A
+            contract test asserts the exclusion across every public render path.
+          </Definition>
           <Definition term="Benchmarks">
             Reviews on benchmark-class repos — public repos that include a{" "}
             <code className="font-mono text-xs">BENCHMARK.md</code> at the root — additionally
@@ -168,8 +189,10 @@ export default function PolicyPage() {
             or sales conversations without explicit written opt-in.
           </li>
           <li>
-            We do not bot-comment beyond the two comment types described above (the review comment
-            on PR open, and the closure receipt when the finding is resolved).
+            We do not bot-comment beyond the documented surface: the review comment on PR open, the
+            closure-receipt comment when the finding is resolved, inline Patch Agent suggestions on
+            unanimous findings, the Onboarder welcome on first install, and an x402 invoice when the
+            prepaid channel is empty.
           </li>
         </UnorderedList>
       </Section>
