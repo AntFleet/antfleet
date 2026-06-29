@@ -9,6 +9,122 @@ The format borrows from Keep a Changelog but lists agent attribution
 explicitly — since AntFleet is operated by agents, the changelog is also
 the agent log.
 
+## 2026-06-25 — Cyber tier (repo-scoped Daybreak embargo path)
+
+- **`ANTFLEET_CYBER_TIER` flag** — repos classified as cyber-sensitive route through
+  an operator-controlled embargo path: public receipts are suppressed, the anatomy
+  page returns a holding notice, and disclosure timers are gated by an
+  HMAC-signed admin route at `/admin/repo/[slug]`. `DISCLOSURE_HMAC_SECRET` +
+  `OPERATOR_SECRET` required in prod. A contract test
+  (`cyber-tier-visibility.contract.test.ts`) asserts no cyber finding leaks via
+  `/digest`, `/scorecard`, RSS, sitemap, or OG metadata; the test caught a real
+  leak surface in the weekly-digest path during pass-3.
+  - Final Daybreak engineering item.
+  - Commit: `2f1bd92` (#106).
+
+## 2026-06-24 — SARIF ingest/export + Code Scanning push
+
+- **SARIF 2.1.0 ingest** — `POST /api/v1/sarif/ingest` accepts SARIF runs from
+  external scanners under an HMAC-signed mint flow, normalizes them into the
+  same `agent_findings` shape the two-model gate produces, and bills via the
+  prepaid channel. The mint CLI generates per-tool ingest tokens, GC'd hourly
+  by the `sarif-token-use-gc` cron.
+- **SARIF export + GitHub Code Scanning push** — every finding now has a SARIF
+  surface (`GET /api/v1/findings/[id]/sarif`) and live-protocol findings push
+  to the upstream repo's Security tab via the Code Scanning API. Verified live
+  on `aeon-bench` analysis_id 1399922392 (26 results). Non-live-protocol
+  findings export with `state='none'` so they're consumable without leaking
+  disclosure timing.
+  - Requires a **Classic PAT** with `security_events` scope (fine-grained PATs
+    are blocked at the AntFleet org level).
+  - Migrations: `0045` (sarif tokens), `0046` (sarif runs), `0047` (export
+    state). All applied to prod `ep-crimson-hall-aq6bfx9d`.
+  - Commits: `e31ec4c` (#103) → `84c9c94` (#104) → `79e8651` (#105).
+
+## 2026-06-23 — Daybreak (reachability + patch verify + threat model + evidence bundle + disclosure machine)
+
+- **Reachability + patch-verify gates** behind `ANTFLEET_REACHABILITY_GATE` and
+  `ANTFLEET_PATCH_VERIFY`. The reachability gate prunes findings whose
+  unsafe value isn't reachable through traced call sites before they hit the
+  unanimous-agreement bar (closes the [[two-model-consensus-semantic-gap]]).
+  The patch-verify gate refuses to publish a proposed patch unless a
+  deterministic replay confirms the diff actually neutralizes the finding.
+  - Commit: `88d01e7` (#98).
+- **Evidence bundle on public receipts** — the anatomy page now surfaces a
+  three-slot bundle (PoC, repro instructions, reachability trace) alongside
+  every published finding. Empty slots render as "not provided" rather than
+  hiding the affordance, so missing evidence is visible.
+  - Commit: `9ccb6b1` (#99).
+- **Persisted per-repo threat models** — the reachability gate no longer
+  re-derives the threat model on every review; it reads from a persisted
+  `repo_threat_models` row, regenerating only when the codebase fingerprint
+  drifts. Cuts gate latency and stabilizes verdicts across re-runs of the
+  same PR.
+  - Commits: `b54dbae` + `d821b59` (#100).
+- **Disclosure state machine** — `ANTFLEET_DISCLOSURE_GATE` puts every finding
+  through `none → embargoed → published` transitions; the public receipt
+  short-circuits to a coordination notice while embargoed. Migration `0044`
+  adds disclosure columns; the backfill closed 115 legacy rows to `state='none'`
+  in a single batch on prod (`ANTFLEET_DISCLOSURE_BACKFILL_COMPLETE=true`).
+  - Commit: `6b0a714` (#101); deploy: `843b53c`.
+
+## 2026-06-14 — Provider hardening (GPT-5 budget, neon-serverless transactions)
+
+- **GPT-5 reasoning budget fix** — GPT-5 was returning empty content under
+  reasoning-token starvation on ~9.7k-token prompts. Switched the OpenAI
+  client to `max_completion_tokens` and raised the budget; consensus matcher
+  now falls back to path-only matching when GPT-5 reports null line numbers
+  (Opus + GPT-5 disagreed on line:column even when they agreed on the
+  finding).
+  - Commits: `a14aace` (#90), `fdd7677` (#91).
+- **`@neondatabase/serverless` driver for transactions** — the webhook
+  pipeline needs Postgres transactions; the previous `neon-http` driver
+  couldn't open them, which the audit M-series caught. Drop-in swap.
+  - Commit: `c307d00` (#92).
+
+## 2026-06-13 — SPEC-001 audit closeout (M0 → M3)
+
+- **M0 safety net** — paywall money-movement suite hits real Postgres
+  (no mocks, per [[feedback_two_model_consensus_semantic_gap]]); webhook
+  route-level tests cover signature, parsers, and billing invariant;
+  dev-DB split runbook + `.env.example` clarified.
+  - Merge: `378f81c` (#85).
+- **M1 critical fixes** — per-authorization x402 replay guard on the review
+  rail (T1.6); drizzle-kit retired in favor of the hand-applier path (T1.4,
+  see [[neon-serverless-1x-sql-query]]).
+  - Merge: `2e821ec` (#86).
+- **M2 high-leverage** — bounded public queries (no more unbounded scans on
+  the homepage), rate limiter, alert sink, x402 convergence, sting decision
+  recorded.
+  - Commit: `34d835f` (#87).
+- **M3 quality & polish** — the sweeper now closes findings only when the
+  evidence line range was actually touched by the upstream diff (Option B,
+  T3.3); migration `0040` reconciles `0008`; CLI robustness pass; 62/64
+  `_*.ts` one-shot scripts deleted.
+  - Commits: `ad3dcfe` (#88), `b597a8b` (#89).
+
+## 2026-06-03 → 2026-06-12 — ACP receipt-backed reviews, label axis, retros, KPI strip
+
+- **ACP receipt-backed review intake** (#81) — accept Virtuals ACP review work
+  through the AntFleet worker via the receipt-backed provider flow; gates ACP
+  intake abuse before any budget is debited; listing made compatible with
+  the Virtuals dashboard.
+- **Label axis on findings** (#75 → #78) — every finding now carries a
+  `blocking | nit | optional | fyi` label; label rules tightened to hard
+  MUST constraints after soft-preference language caused models to drift
+  (see [[antfleet-label-rules-soft-vs-hard-constraint]]).
+- **Patch Agent diagnostics** (#77) — per-side patch skip reasons persist for
+  provider diagnostics; `PatchDecision.skipReason` renamed to `gateOutcome`
+  to clarify gate-output verdict vs. failure reason.
+- **Retro case studies** — Zcash Orchard counterfeiting (#74; reframed as
+  class hit, not direct hit); n8n-workflows CVE-2025-55526 (#79).
+- **Cross-page KPI strip** — `/impact`, `/scorecard`, `/activity` now lead
+  with patches-landed and median time-to-fix as the public KPIs.
+  - Commits: `4118de8`, `602b136`.
+- **x402 pay-per-scan** — `POST /api/v1/scan/x402` opened to any buyer;
+  aeon-only gate removed.
+  - Commit: `ffea2df` (#73); docs: `9ff811b`.
+
 ## 2026-05-30 — Regression-fixture cron, retraction surface, Patch Agent cost, Onboarder examples
 
 - **Weekly regression-fixture cron** — six curated, known-safe code patterns
