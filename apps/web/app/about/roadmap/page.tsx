@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 // marketing fluff). Comparisons to peer agents are positioning, not
 // affiliation.
 
-const LAST_UPDATED = "2026-05-30";
+const LAST_UPDATED = "2026-06-29";
 
 export const metadata: Metadata = {
   title: "AntFleet · Roadmap",
@@ -135,12 +135,13 @@ const DECISIONS = [
     state: "needs a deterministic metric · then it ships",
   },
   {
-    title: "Two-model agreement with Venice in the slot",
+    title: "Third model in the gate",
     summary:
-      "Replace one of the current Reviewer-fleet slots with Venice's frontier tier, and measure whether unanimous agreement with Claude Opus 4.7 holds at a noise-tolerable rate.",
-    pros: "Diversifies the model stack beyond the current Anthropic + OpenAI duopoly. Aligns with the marketplace thesis where models compete on the agreement primitive.",
-    cons: "Unanimous-rate has to clear the precision-not-coverage bar; a third voter that disagrees too often turns the agreement gate into a veto rather than a filter.",
-    state: "method known · run the dogfood corpus against {opus, venice} before any roster change",
+      "Add a 3rd reviewer (via Venice's multi-model rail) on top of the current {Opus 4.7, GPT-5} unanimous gate. Open question: judge / tiebreaker, 3-of-3 unanimous, or 2-of-3 majority?",
+    pros: "Diversifies the stack beyond the Anthropic + OpenAI duopoly; aligns with the marketplace thesis where models compete on the agreement primitive. GLM 5.2 (Zhipu) is a current candidate getting traction as a strong bug-finder.",
+    cons: "Each role has a different precision-coverage trade-off — 3-of-3 cuts coverage, 2-of-3 trades precision back, judge mode adds latency on disagreement.",
+    state:
+      "method known · run the dogfood corpus through {Opus, GPT-5, GLM-5.2} and measure unanimous-rate + judge-agreement before any roster change",
   },
 ] as const;
 
