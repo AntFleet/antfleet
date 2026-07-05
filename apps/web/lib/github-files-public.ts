@@ -38,7 +38,7 @@ export async function getPublicChangedFiles(args: {
   }
 }
 
-type TreeNode = { path?: string; type?: string; size?: number; sha?: string };
+type TreeNode = { path?: string; type?: string; size?: number; sha?: string; mode?: string };
 
 export async function getPublicCommitSnapshotFiles(args: {
   owner: string;
@@ -60,16 +60,15 @@ export async function getPublicCommitSnapshotFiles(args: {
       tree_sha: headSha,
       recursive: "true",
     });
-    const candidates = (tree.data.tree ?? [])
-      .filter(
-        (node): node is TreeNode & { path: string; sha: string } =>
-          node.type === "blob" &&
-          typeof node.path === "string" &&
-          isReviewablePath(node.path) &&
-          (node.size ?? 0) <= MAX_FILE_BYTES &&
-          typeof node.sha === "string",
-      )
-      .slice(0, MAX_FILES);
+    const candidates: Array<{ path: string; sha: string; size?: number }> = [];
+    for (const node of tree.data.tree ?? []) {
+      if (node.type !== "blob") continue;
+      if (typeof node.path !== "string" || typeof node.sha !== "string") continue;
+      if (!isReviewablePath(node.path)) continue;
+      if ((node.size ?? 0) > MAX_FILE_BYTES) continue;
+      candidates.push({ path: node.path, sha: node.sha, size: node.size });
+      if (candidates.length >= MAX_FILES) break;
+    }
 
     const out: ChangedFile[] = [];
     let totalBytes = 0;
