@@ -628,6 +628,12 @@ function routeDeps(config: X402Config, verify: X402RouteDeps["verifyPayment"]): 
         },
         repos: {
           listPullRequestsAssociatedWithCommit: async () => ({ data: [] }),
+          getCommit: async () => ({
+            data: { sha: "abcdef1234567890abcdef1234567890abcdef12" },
+          }),
+        },
+        git: {
+          getTree: async () => ({ data: { tree: [] } }),
         },
       },
     }),

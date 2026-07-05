@@ -38,8 +38,6 @@ export async function getPublicChangedFiles(args: {
   }
 }
 
-type TreeNode = { path?: string; type?: string; size?: number; sha?: string; mode?: string };
-
 export async function getPublicCommitSnapshotFiles(args: {
   owner: string;
   repo: string;
