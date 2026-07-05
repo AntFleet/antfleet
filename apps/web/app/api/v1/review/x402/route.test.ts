@@ -51,11 +51,11 @@ function deps(overrides: Partial<X402RouteDeps> = {}): X402RouteDeps {
   };
 }
 
-function request(headers: HeadersInit = {}) {
+function request(body: Record<string, unknown> = { target: { pr: 1, repo: "antfleet/x402-fixture" } }, headers: HeadersInit = {}) {
   return new NextRequest("https://www.antfleet.dev/api/v1/review/x402", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify({ target: { pr: 1, repo: "antfleet/x402-fixture" } }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -102,6 +102,10 @@ function octokit() {
       },
       repos: {
         listPullRequestsAssociatedWithCommit: vi.fn(),
+        getCommit: vi.fn(async () => ({ data: { sha: "abc1234567890abcdef1234567890abcdef12345678" } })),
+      },
+      git: {
+        getTree: vi.fn(),
       },
     },
   };
@@ -170,7 +174,7 @@ describe("POST /api/v1/review/x402", () => {
   it("returns x402 v2 payment requirements when gate passes and payment is missing", async () => {
     await withGate(async () => {
       const res = await handleX402ReviewRequest(
-        request(aeonHeader()),
+        request(undefined, aeonHeader()),
         deps({ loadConfig: () => paidConfig }),
       );
 
@@ -193,7 +197,7 @@ describe("POST /api/v1/review/x402", () => {
       const createJob = vi.fn(async () => job());
       const scheduleWorker = vi.fn();
       const res = await handleX402ReviewRequest(
-        request(aeonHeader()),
+        request(undefined, aeonHeader()),
         happyDeps({ createJob, scheduleWorker, loadConfig: () => config }),
       );
 
@@ -208,6 +212,57 @@ describe("POST /api/v1/review/x402", () => {
         }),
       );
       expect(scheduleWorker).toHaveBeenCalledWith("job-1");
+    });
+  });
+
+  it("enqueues a fleet commit snapshot when aeon requests fleet_commit_review on sha", async () => {
+    await withGate(async () => {
+      const createJob = vi.fn(async () => job({ prNumber: 0, sha: "abc1234567890abcdef1234567890abcdef12345678" }));
+      const scheduleWorker = vi.fn();
+      const res = await handleX402ReviewRequest(
+        request(
+          {
+            target: { repo: "antfleet/x402-fixture", sha: "abc1234" },
+            sting: { fleet_commit_review: true, correlation_id: "corr-1" },
+          },
+          aeonHeader(),
+        ),
+        happyDeps({ createJob, scheduleWorker, loadConfig: () => config }),
+      );
+
+      expect(res.status).toBe(202);
+      expect(createJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoOwner: "antfleet",
+          repoName: "x402-fixture",
+          prNumber: 0,
+          sha: "abc1234567890abcdef1234567890abcdef12345678",
+        }),
+      );
+    });
+  });
+
+  it("still requires an open PR head for sha-only requests without fleet_commit_review", async () => {
+    await withGate(async () => {
+      const makeOctokit = vi.fn(() => ({
+        rest: {
+          pulls: { get: vi.fn() },
+          repos: {
+            listPullRequestsAssociatedWithCommit: vi.fn(async () => ({ data: [] })),
+            getCommit: vi.fn(),
+          },
+          git: { getTree: vi.fn() },
+        },
+      }));
+      const res = await handleX402ReviewRequest(
+        request({ target: { repo: "antfleet/x402-fixture", sha: "abc1234" } }, aeonHeader()),
+        deps({ loadConfig: () => config, makeOctokit }),
+      );
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { code: "sha_not_in_open_pr" },
+      });
     });
   });
 
@@ -227,7 +282,7 @@ describe("POST /api/v1/review/x402", () => {
         job({ callerWallet: WALLET_ONE, status: "complete" }),
       );
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature(WALLET_TWO) }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature(WALLET_TWO) }),
         happyDeps({ verifyPayment, createJob, findRecentRepoShaJob }),
       );
 
@@ -263,7 +318,7 @@ describe("POST /api/v1/review/x402", () => {
         limit: 10,
       }));
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature() }),
         happyDeps({ verifyPayment, checkWalletRateLimit }),
       );
 
@@ -297,7 +352,7 @@ describe("POST /api/v1/review/x402", () => {
       const scheduleWorker = vi.fn();
       const findJobByIdempotencyKey = vi.fn(async () => job({ status: "complete" }));
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature() }),
         happyDeps({ verifyPayment, createJob, scheduleWorker, findJobByIdempotencyKey }),
       );
 
@@ -319,7 +374,7 @@ describe("POST /api/v1/review/x402", () => {
       const checkWalletRateLimit = vi.fn(async () => ({ ok: true as const }));
       const findJobByIdempotencyKey = vi.fn(async () => null);
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature(WALLET_TWO) }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature(WALLET_TWO) }),
         happyDeps({
           verifyPayment,
           makeOctokit,
@@ -344,7 +399,7 @@ describe("POST /api/v1/review/x402", () => {
   it("does not consume rate-limit budget for invalid aeon context", async () => {
     const checkWalletRateLimit = vi.fn(async () => ({ ok: true as const }));
     const res = await handleX402ReviewRequest(
-      request({ "x-aeon-context": "invalid", "payment-signature": paymentSignature() }),
+      request(undefined, { "x-aeon-context": "invalid", "payment-signature": paymentSignature() }),
       happyDeps({ checkWalletRateLimit }),
     );
 
@@ -356,7 +411,7 @@ describe("POST /api/v1/review/x402", () => {
     await withGate(async () => {
       const checkWalletRateLimit = vi.fn(async () => ({ ok: true as const }));
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature() }),
         happyDeps({ checkWalletRateLimit }),
       );
 
@@ -375,7 +430,7 @@ describe("POST /api/v1/review/x402", () => {
       const scheduleWorker = vi.fn();
       const checkWalletRateLimit = vi.fn(async () => ({ ok: true as const }));
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature() }),
         happyDeps({ claimReviewAuthorization, createJob, scheduleWorker, checkWalletRateLimit }),
       );
 
@@ -417,7 +472,7 @@ describe("POST /api/v1/review/x402", () => {
 
       const sig = paymentSignature();
       const first = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": sig }),
+        request(undefined, { ...aeonHeader(), "payment-signature": sig }),
         happyDeps({
           claimReviewAuthorization,
           createJob,
@@ -431,7 +486,7 @@ describe("POST /api/v1/review/x402", () => {
       expect(first.status).toBe(202);
 
       const second = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": sig }),
+        request(undefined, { ...aeonHeader(), "payment-signature": sig }),
         happyDeps({
           claimReviewAuthorization,
           createJob,
@@ -463,7 +518,7 @@ describe("POST /api/v1/review/x402", () => {
         limit: 10,
       }));
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature() }),
         happyDeps({ claimReviewAuthorization, markReviewClaimStatus, checkWalletRateLimit }),
       );
 
@@ -485,7 +540,7 @@ describe("POST /api/v1/review/x402", () => {
         throw new Error("db down");
       });
       const res = await handleX402ReviewRequest(
-        request({ ...aeonHeader(), "payment-signature": paymentSignature() }),
+        request(undefined, { ...aeonHeader(), "payment-signature": paymentSignature() }),
         happyDeps({ claimReviewAuthorization, markReviewClaimStatus, createJob }),
       );
 

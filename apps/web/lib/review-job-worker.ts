@@ -52,7 +52,7 @@ import {
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { runReviewKernel, runReviewWorker } from "@/lib/review-worker";
-import { getPublicChangedFiles, makePublicOctokit } from "@/lib/github-files-public";
+import { getPublicChangedFiles, getPublicCommitSnapshotFiles, makePublicOctokit } from "@/lib/github-files-public";
 import { reviewPR } from "@/lib/review-pipeline";
 import { getAcpReviewPriceUsdc, getReviewPriceUsdc } from "@/lib/paywall/env";
 import {
@@ -361,7 +361,7 @@ async function runJobPipeline(job: ReviewJobRow): Promise<unknown> {
 }
 
 async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
-  if (job.prNumber === null || job.sha === null) {
+  if (job.sha === null || job.prNumber === null) {
     throw Object.assign(new Error("x402 jobs require resolved pr_number and sha"), {
       failureModeTag: "user_input",
     });
@@ -371,6 +371,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
   const repo = job.repoName;
   const prNumber = job.prNumber;
   const sha = job.sha;
+  const fleetCommitReview = prNumber === 0;
 
   const repoHash = hashRepo(owner, repo);
   // Cyber tier materializes publicReceipt=false at enqueue time so paid
@@ -410,11 +411,14 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
     return reviewResultPayload(await redactReviewPayloadForPublicDisclosure(cached), true);
   }
 
-  const files = await getPublicChangedFiles({ owner, repo, prNumber, headSha: sha });
+  const files = fleetCommitReview
+    ? await getPublicCommitSnapshotFiles({ owner, repo, sha })
+    : await getPublicChangedFiles({ owner, repo, prNumber, headSha: sha });
   logInfo("review.files_fetched", {
     jobId: job.jobId,
     reviewId: enqueued.reviewId,
     rail: "x402",
+    fleetCommitReview,
     fileCount: files.length,
     filenames: files.map((f) => f.filename),
   });

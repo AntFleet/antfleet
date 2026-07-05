@@ -67,6 +67,7 @@ const bodySchema = z
         correlation_id: z.string().optional(),
         idempotency_key: z.string().optional(),
         expected_review_price_usdc: z.number().optional(),
+        fleet_commit_review: z.boolean().optional(),
       })
       .optional(),
   })
@@ -87,6 +88,19 @@ type X402Octokit = {
         repo: string;
         commit_sha: string;
       }) => Promise<{ data: Array<{ number: number; state: string; head: { sha: string } }> }>;
+      getCommit: (params: {
+        owner: string;
+        repo: string;
+        ref: string;
+      }) => Promise<{ data: { sha: string } }>;
+    };
+    git: {
+      getTree: (params: {
+        owner: string;
+        repo: string;
+        tree_sha: string;
+        recursive: string;
+      }) => Promise<{ data: { tree: Array<{ path?: string; type?: string; size?: number; sha?: string }> } }>;
     };
   };
 };
@@ -230,7 +244,9 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
       throw err;
     }
 
-    const target = await resolveTarget(parsed.data, deps.makeOctokit());
+    const target = await resolveTarget(parsed.data, deps.makeOctokit(), {
+      allowFleetCommitReview: gate.required,
+    });
     if (target.kind === "error") return jsonError(target.status, target.code, target.message);
 
     const cooldownHit = await deps.findRecentRepoShaJob({
@@ -352,7 +368,9 @@ async function enqueueFreeX402Review(
     return jsonError(400, "invalid_input", parsed.error.issues[0]?.message ?? "bad request");
   }
 
-  const target = await resolveTarget(parsed.data, deps.makeOctokit());
+  const target = await resolveTarget(parsed.data, deps.makeOctokit(), {
+    allowFleetCommitReview: args.gate.required,
+  });
   if (target.kind === "error") return jsonError(target.status, target.code, target.message);
 
   const callerWallet = freeReviewCallerWallet({
@@ -424,7 +442,11 @@ type ResolvedTarget =
   | { kind: "ok"; owner: string; repo: string; prNumber: number; sha: string }
   | { kind: "error"; status: number; code: string; message: string };
 
-async function resolveTarget(body: ParsedBody, octokit: X402Octokit): Promise<ResolvedTarget> {
+async function resolveTarget(
+  body: ParsedBody,
+  octokit: X402Octokit,
+  options: { allowFleetCommitReview?: boolean } = {},
+): Promise<ResolvedTarget> {
   const [owner, repo] = body.target.repo.split("/");
   if (owner === undefined || repo === undefined) {
     return { kind: "error", status: 400, code: "invalid_repo", message: "repo must be owner/name" };
@@ -448,6 +470,10 @@ async function resolveTarget(body: ParsedBody, octokit: X402Octokit): Promise<Re
   }
 
   const sha = body.target.sha!;
+  if (options.allowFleetCommitReview && body.sting?.fleet_commit_review === true) {
+    return resolveFleetCommitTarget(owner, repo, sha, octokit);
+  }
+
   try {
     const prs = await octokit.rest.repos.listPullRequestsAssociatedWithCommit({
       owner,
@@ -476,6 +502,20 @@ async function resolveTarget(body: ParsedBody, octokit: X402Octokit): Promise<Re
     return { kind: "ok", owner, repo, prNumber: matches[0]!.number, sha: matches[0]!.head.sha };
   } catch (err) {
     return githubTargetError(err, "sha_not_in_open_pr", "sha not found or repo is not accessible");
+  }
+}
+
+async function resolveFleetCommitTarget(
+  owner: string,
+  repo: string,
+  sha: string,
+  octokit: X402Octokit,
+): Promise<ResolvedTarget> {
+  try {
+    const commit = await octokit.rest.repos.getCommit({ owner, repo, ref: sha });
+    return { kind: "ok", owner, repo, prNumber: 0, sha: commit.data.sha.toLowerCase() };
+  } catch (err) {
+    return githubTargetError(err, "commit_not_found", "commit not found or repo is not accessible");
   }
 }
 
