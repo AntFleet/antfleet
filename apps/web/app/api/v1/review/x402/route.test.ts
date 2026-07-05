@@ -20,12 +20,18 @@ const config: X402Config = {
   usdcAsset: X402_SEPOLIA_USDC,
   facilitator: X402_SEPOLIA_FACILITATOR,
   treasury: "0x000000000000000000000000000000000000dEaD",
-  priceUsdc: "0.5",
-  priceBaseUnits: "500000",
+  priceUsdc: "0",
+  priceBaseUnits: "0",
   repoScanPriceUsdc: "2.00",
   repoScanPriceBaseUnits: "2000000",
   cdpApiKeyId: null,
   cdpApiKeySecret: null,
+};
+
+const paidConfig: X402Config = {
+  ...config,
+  priceUsdc: "0.5",
+  priceBaseUnits: "500000",
 };
 
 function deps(overrides: Partial<X402RouteDeps> = {}): X402RouteDeps {
@@ -130,6 +136,7 @@ function job(overrides: Partial<ReviewJobRow> = {}): ReviewJobRow {
 
 function happyDeps(overrides: Partial<X402RouteDeps> = {}): X402RouteDeps {
   return deps({
+    loadConfig: () => paidConfig,
     verifyPayment: vi.fn(async () => ({
       callerWallet: WALLET_ONE,
       payload: {},
@@ -162,7 +169,10 @@ describe("POST /api/v1/review/x402", () => {
 
   it("returns x402 v2 payment requirements when gate passes and payment is missing", async () => {
     await withGate(async () => {
-      const res = await handleX402ReviewRequest(request(aeonHeader()), deps());
+      const res = await handleX402ReviewRequest(
+        request(aeonHeader()),
+        deps({ loadConfig: () => paidConfig }),
+      );
 
       expect(res.status).toBe(402);
       expect(res.headers.get("PAYMENT-REQUIRED")).toBeTruthy();
@@ -175,6 +185,29 @@ describe("POST /api/v1/review/x402", () => {
         accepts: [{ scheme: "exact", network: "eip155:84532", amount: "500000" }],
         error: "PAYMENT-REQUIRED",
       });
+    });
+  });
+
+  it("enqueues a free review without payment when x402 price is zero", async () => {
+    await withGate(async () => {
+      const createJob = vi.fn(async () => job());
+      const scheduleWorker = vi.fn();
+      const res = await handleX402ReviewRequest(
+        request(aeonHeader()),
+        happyDeps({ createJob, scheduleWorker, loadConfig: () => config }),
+      );
+
+      expect(res.status).toBe(202);
+      await expect(res.json()).resolves.toMatchObject({ jobId: "job-1", status: "queued" });
+      expect(createJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoOwner: "antfleet",
+          repoName: "x402-fixture",
+          prNumber: 1,
+          settlementStatus: "not_settled",
+        }),
+      );
+      expect(scheduleWorker).toHaveBeenCalledWith("job-1");
     });
   });
 

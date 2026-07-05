@@ -54,7 +54,7 @@ export function loadX402Config(env: EnvMap = process.env): X402Config {
     requireEnv(env, "ANTFLEET_X402_TREASURY"),
     "ANTFLEET_X402_TREASURY",
   );
-  const priceUsdc = env["X402_REVIEW_PRICE_USDC"] ?? "0.5";
+  const priceUsdc = env["X402_REVIEW_PRICE_USDC"] ?? "0";
   if (!/^\d+(\.\d{1,6})?$/.test(priceUsdc)) {
     throw new X402ConfigError(
       "x402_price_invalid",
@@ -114,6 +114,10 @@ export function loadX402Config(env: EnvMap = process.env): X402Config {
 
 export function isX402ConfigError(err: unknown): err is X402ConfigError {
   return err instanceof X402ConfigError;
+}
+
+export function isFreeX402ReviewPrice(config: Pick<X402Config, "priceBaseUnits">): boolean {
+  return config.priceBaseUnits === "0";
 }
 
 function requireEnv(env: EnvMap, name: string): string {

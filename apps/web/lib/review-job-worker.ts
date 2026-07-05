@@ -62,7 +62,7 @@ import {
   type X402AuthorizationState,
   type SettlementResult,
 } from "@/lib/x402/facilitator";
-import { loadX402Config } from "@/lib/x402/env";
+import { isFreeX402ReviewPrice, loadX402Config } from "@/lib/x402/env";
 import { X402_MAX_TIMEOUT_SECONDS } from "@/lib/x402/env";
 import {
   X402_SETTLED_FAILURE_MODES,
@@ -131,10 +131,16 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
         });
       }
     } else if (job.paymentRail === "x402") {
-      const settlement = await settleX402Job(job, readRequiredAuthorization(job));
-      capturedX402Settlement = settlement;
-      await markX402SettlementSettled(db, jobId, settlement.response);
-      await markX402JobCompleteSettled(db, jobId, result, settlement.response, new Date());
+      const config = loadX402Config();
+      if (isFreeX402ReviewPrice(config)) {
+        await markX402SettlementNotSettled(db, jobId);
+        await markJobComplete(db, jobId, result, new Date());
+      } else {
+        const settlement = await settleX402Job(job, readRequiredAuthorization(job));
+        capturedX402Settlement = settlement;
+        await markX402SettlementSettled(db, jobId, settlement.response);
+        await markX402JobCompleteSettled(db, jobId, result, settlement.response, new Date());
+      }
     } else {
       await markJobComplete(db, jobId, result, new Date());
     }
@@ -1185,7 +1191,7 @@ async function handleX402JobFailure(args: {
       message: messageOf(args.err),
     };
     await markX402SettlementFailed(db, args.jobId, settlementResponse);
-  } else if (shouldSettleX402Failure(failureMode)) {
+  } else if (shouldSettleX402Failure(failureMode) && !isFreeX402ReviewPrice(loadX402Config())) {
     try {
       const settlement = await settleX402Job(latestJob, readRequiredAuthorization(latestJob));
       settlementStatus = "settled";

@@ -18,7 +18,7 @@ describe("loadX402Config", () => {
     const config = loadX402Config(baseEnv);
 
     expect(config.network).toBe("eip155:84532");
-    expect(config.priceBaseUnits).toBe("500000");
+    expect(config.priceBaseUnits).toBe("0");
     expect(config.treasury).toBe("0x000000000000000000000000000000000000dEaD");
   });
 

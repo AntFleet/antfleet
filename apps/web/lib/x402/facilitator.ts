@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ReviewJobRow } from "@/lib/review-job-queries";
 import {
   X402_AUTHORIZATION_MAX_SECONDS,
@@ -208,6 +209,27 @@ export function makeAuthorizationState(payment: VerifiedPayment): X402Authorizat
     validBefore: payment.validBefore.toISOString(),
     resource: payment.resource,
     verifyResponse: payment.facilitatorResponse,
+  };
+}
+
+export function freeReviewCallerWallet(args: {
+  sessionId: string | null;
+  correlationId?: string | null;
+}): string {
+  const seed = args.sessionId?.trim() || args.correlationId?.trim() || "anonymous";
+  return `0x${createHash("sha256").update(`antfleet:x402:free:${seed}`).digest("hex").slice(0, 40)}`;
+}
+
+export function makeFreeAuthorizationState(resource: string, now: Date): X402AuthorizationState {
+  const validBefore = new Date(now.getTime() + X402_MAX_TIMEOUT_SECONDS * 1000);
+  return {
+    kind: "x402_authorization",
+    paymentPayload: { kind: "free_trial", resource },
+    paymentPayloadBase64: "",
+    validAfter: now.toISOString(),
+    validBefore: validBefore.toISOString(),
+    resource,
+    verifyResponse: { free: true },
   };
 }
 

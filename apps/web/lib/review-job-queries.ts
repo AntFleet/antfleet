@@ -152,11 +152,13 @@ export async function createX402ReviewJob(
     idempotencyKey: string;
     x402PayTo: string;
     authorizationState: unknown;
+    settlementStatus?: X402SettlementStatus;
   },
 ): Promise<ReviewJobRow> {
   const jobId = nanoid(21);
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const window = readAuthorizationDates(args.authorizationState);
+  const settlementStatus = args.settlementStatus ?? "pending";
   const result = await q.execute(sql`
     INSERT INTO review_jobs (
       job_id, installation_id, wallet_address, repo_owner, repo_name,
@@ -169,7 +171,7 @@ export async function createX402ReviewJob(
       ${args.idempotencyKey}, 'queued', ${expiresAt},
       ${args.callerWallet.toLowerCase()}, 'x402', ${args.x402PayTo},
       ${JSON.stringify(args.authorizationState)}::jsonb,
-      ${window.validAfter}, ${window.validBefore}, 'pending'
+      ${window.validAfter}, ${window.validBefore}, ${settlementStatus}
     )
     ON CONFLICT (payment_rail, installation_id, idempotency_key) DO NOTHING
     RETURNING ${JOB_SELECT}

@@ -17,13 +17,20 @@ import {
   buildPaymentRequired,
   PAYMENT_REQUIRED_HEADER,
   PAYMENT_RESPONSE_HEADER,
+  freeReviewCallerWallet,
   makeAuthorizationState,
+  makeFreeAuthorizationState,
   PAYMENT_SIGNATURE_HEADER,
   verifyPayment,
   X402PaymentError,
   type VerifiedPayment,
 } from "@/lib/x402/facilitator";
-import { isX402ConfigError, loadX402Config, type X402Config } from "@/lib/x402/env";
+import {
+  isFreeX402ReviewPrice,
+  isX402ConfigError,
+  loadX402Config,
+  type X402Config,
+} from "@/lib/x402/env";
 import {
   checkWalletRateLimit,
   claimX402ReviewAuthorization,
@@ -54,6 +61,14 @@ const bodySchema = z
         message: "target.pr or target.sha is required",
         path: ["pr"],
       }),
+    sting: z
+      .object({
+        run_id: z.string().optional(),
+        correlation_id: z.string().optional(),
+        idempotency_key: z.string().optional(),
+        expected_review_price_usdc: z.number().optional(),
+      })
+      .optional(),
   })
   .strict();
 
@@ -168,6 +183,17 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
 
     const resource = new URL("/api/v1/review/x402", req.url).toString();
     const paymentSignature = req.headers.get(PAYMENT_SIGNATURE_HEADER);
+    const freeReview = isFreeX402ReviewPrice(config);
+
+    if (freeReview) {
+      return enqueueFreeX402Review(req, deps, {
+        config,
+        resource,
+        now,
+        gate,
+      });
+    }
+
     if (paymentSignature === null || paymentSignature.trim() === "") {
       const paymentRequired = buildPaymentRequired(config, resource);
       return NextResponse.json(paymentRequired, {
@@ -307,6 +333,96 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
     });
     return jsonError(500, "internal", "internal error");
   }
+}
+
+type AeonGateOk = Extract<Awaited<ReturnType<typeof requireAeonContext>>, { ok: true }>;
+
+async function enqueueFreeX402Review(
+  req: NextRequest,
+  deps: X402RouteDeps,
+  args: {
+    config: X402Config;
+    resource: string;
+    now: Date;
+    gate: AeonGateOk;
+  },
+): Promise<NextResponse> {
+  const parsed = bodySchema.safeParse(await readJson(req));
+  if (!parsed.success) {
+    return jsonError(400, "invalid_input", parsed.error.issues[0]?.message ?? "bad request");
+  }
+
+  const target = await resolveTarget(parsed.data, deps.makeOctokit());
+  if (target.kind === "error") return jsonError(target.status, target.code, target.message);
+
+  const callerWallet = freeReviewCallerWallet({
+    sessionId: args.gate.required ? args.gate.sessionId : null,
+    correlationId: parsed.data.sting?.correlation_id ?? null,
+  });
+
+  const cooldownHit = await deps.findRecentRepoShaJob({
+    owner: target.owner,
+    repo: target.repo,
+    sha: target.sha,
+    callerWallet,
+    now: args.now,
+  });
+  if (cooldownHit !== null) return jobResponse(cooldownHit, statusForExisting(cooldownHit));
+
+  const idempotencyKey = buildX402IdempotencyKey({
+    callerWallet,
+    owner: target.owner,
+    repo: target.repo,
+    prNumber: target.prNumber,
+    sha: target.sha,
+  });
+  const existing = await deps.findJobByIdempotencyKey(idempotencyKey);
+  if (existing !== null) return jobResponse(existing, statusForExisting(existing));
+
+  const rate = await deps.checkWalletRateLimit({
+    callerWallet,
+    now: args.now,
+  });
+  if (!rate.ok) {
+    const res = jsonError(
+      429,
+      "rate_limited_wallet",
+      `Rate limit exceeded: ${rate.limit} reviews per wallet per hour`,
+      { retry_after_seconds: rate.retryAfterSeconds },
+    );
+    res.headers.set("Retry-After", String(rate.retryAfterSeconds));
+    return res;
+  }
+
+  let job: ReviewJobRow;
+  try {
+    job = await deps.createJob({
+      callerWallet,
+      repoOwner: target.owner,
+      repoName: target.repo,
+      prNumber: target.prNumber,
+      sha: target.sha,
+      idempotencyKey,
+      x402PayTo: args.config.treasury,
+      authorizationState: makeFreeAuthorizationState(args.resource, args.now),
+      settlementStatus: "not_settled",
+    });
+  } catch (err) {
+    throw err;
+  }
+
+  logInfo("x402_review_job", {
+    jobId: job.jobId,
+    event: "enqueued",
+    repo: `${target.owner}/${target.repo}`,
+    prNumber: target.prNumber,
+    sha: target.sha,
+    aeonSessionId: args.gate.required ? args.gate.sessionId : null,
+    freeReview: true,
+  });
+
+  deps.scheduleWorker(job.jobId);
+  return jobResponse(job, 202);
 }
 
 type ResolvedTarget =
