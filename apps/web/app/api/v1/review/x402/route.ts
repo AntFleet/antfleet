@@ -394,22 +394,17 @@ async function enqueueFreeX402Review(
     return res;
   }
 
-  let job: ReviewJobRow;
-  try {
-    job = await deps.createJob({
-      callerWallet,
-      repoOwner: target.owner,
-      repoName: target.repo,
-      prNumber: target.prNumber,
-      sha: target.sha,
-      idempotencyKey,
-      x402PayTo: args.config.treasury,
-      authorizationState: makeFreeAuthorizationState(args.resource, args.now),
-      settlementStatus: "not_settled",
-    });
-  } catch (err) {
-    throw err;
-  }
+  const job = await deps.createJob({
+    callerWallet,
+    repoOwner: target.owner,
+    repoName: target.repo,
+    prNumber: target.prNumber,
+    sha: target.sha,
+    idempotencyKey,
+    x402PayTo: args.config.treasury,
+    authorizationState: makeFreeAuthorizationState(args.resource, args.now),
+    settlementStatus: "not_settled",
+  });
 
   logInfo("x402_review_job", {
     jobId: job.jobId,
