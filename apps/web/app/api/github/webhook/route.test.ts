@@ -80,10 +80,17 @@ vi.mock("@/lib/review-worker", () => reviewWorkerMocks);
 const dbQueriesMocks = vi.hoisted(() => ({
   enqueueReview: vi.fn(),
   hashRepo: vi.fn(),
+  lookupFindingForInstall: vi.fn(),
   markReviewTerminallyFailed: vi.fn(),
+  recordMaintainerReactions: vi.fn(),
   upsertInstallEntry: vi.fn(),
 }));
 vi.mock("@/db/queries", () => dbQueriesMocks);
+
+const precisionFeedbackMocks = vi.hoisted(() => ({
+  isPrecisionFeedbackEnabledForInstall: vi.fn(),
+}));
+vi.mock("@/lib/precision-feedback-env", () => precisionFeedbackMocks);
 
 // db itself is only passed as arg to debitForReview — mock the module so
 // import succeeds and the value is a stable object reference.
@@ -126,7 +133,7 @@ vi.mock("@octokit/rest", () => ({
 // ---------------------------------------------------------------------------
 // Import route AFTER mocks are registered.
 // ---------------------------------------------------------------------------
-import { POST } from "./route";
+import { POST, parseDismissCommand } from "./route";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -254,6 +261,11 @@ beforeEach(() => {
   dbQueriesMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: true });
   dbQueriesMocks.markReviewTerminallyFailed.mockResolvedValue(undefined);
   dbQueriesMocks.upsertInstallEntry.mockResolvedValue("approved");
+  // Step 0.5 — dismiss ingestion defaults: flag OFF so all pre-existing
+  // issue_comment tests are unaffected.
+  precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(false);
+  dbQueriesMocks.lookupFindingForInstall.mockResolvedValue(null);
+  dbQueriesMocks.recordMaintainerReactions.mockResolvedValue(1);
 
   gateMocks.decideGate.mockResolvedValue(BYPASS_GATE);
   gateMocks.debitForReview.mockResolvedValue({
@@ -754,5 +766,239 @@ describe("issue_comment.created", () => {
 
     await nextServerMocks.flushAfter();
     expect(onboarderMocks.recordPartnerReply).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// (d) parseDismissCommand — unit tests for the dismiss parser
+// ===========================================================================
+
+describe("parseDismissCommand", () => {
+  const VALID_UUID = "550e8400-e29b-41d4-a716-446655440000";
+  const VALID_ID = `${VALID_UUID}-0`;
+
+  it("returns null on empty body", () => {
+    expect(parseDismissCommand("")).toBeNull();
+  });
+
+  it("returns null for unrelated comment", () => {
+    expect(parseDismissCommand("Looks good to me!")).toBeNull();
+  });
+
+  it("returns null for other bot mentions", () => {
+    expect(parseDismissCommand("@coderabbit dismiss something")).toBeNull();
+  });
+
+  it("returns null when findingId is not UUID-prefixed", () => {
+    expect(parseDismissCommand("@antfleet dismiss abc-123")).toBeNull();
+    expect(parseDismissCommand("@antfleet dismiss shortid-0")).toBeNull();
+  });
+
+  it("parses a bare dismiss with no reason", () => {
+    const result = parseDismissCommand(`@antfleet dismiss ${VALID_ID}`);
+    expect(result).not.toBeNull();
+    expect(result?.findingId).toBe(VALID_ID);
+    expect(result?.reason).toBeNull();
+  });
+
+  it("parses a dismiss with a reason", () => {
+    const result = parseDismissCommand(`@antfleet dismiss ${VALID_ID} not a real issue`);
+    expect(result).not.toBeNull();
+    expect(result?.findingId).toBe(VALID_ID);
+    expect(result?.reason).toBe("not a real issue");
+  });
+
+  it("is case-insensitive on the 'dismiss' keyword", () => {
+    const result = parseDismissCommand(`@antfleet Dismiss ${VALID_ID}`);
+    expect(result).not.toBeNull();
+    expect(result?.findingId).toBe(VALID_ID);
+  });
+
+  it("tolerates leading/trailing whitespace on the line", () => {
+    const result = parseDismissCommand(`  @antfleet dismiss ${VALID_ID}  `);
+    expect(result).not.toBeNull();
+    expect(result?.findingId).toBe(VALID_ID);
+  });
+
+  it("matches when the dismiss command appears on a non-first line", () => {
+    const body = `Thanks for the review.\n@antfleet dismiss ${VALID_ID} false positive`;
+    const result = parseDismissCommand(body);
+    expect(result).not.toBeNull();
+    expect(result?.findingId).toBe(VALID_ID);
+    expect(result?.reason).toBe("false positive");
+  });
+
+  it("supports finding index > 0", () => {
+    const id = `${VALID_UUID}-12`;
+    const result = parseDismissCommand(`@antfleet dismiss ${id}`);
+    expect(result?.findingId).toBe(id);
+  });
+});
+
+// ===========================================================================
+// (e) Dismiss ingestion — issue_comment.created with dismiss command
+// ===========================================================================
+
+// A shared UUID + finding-id for the dismiss tests.
+const DISMISS_REVIEW_ID = "550e8400-e29b-41d4-a716-446655440001";
+const DISMISS_FINDING_ID = `${DISMISS_REVIEW_ID}-0`;
+
+function makeDismissCommentPayload(
+  opts: {
+    senderLogin?: string;
+    senderType?: string;
+    authorAssociation?: string;
+    body?: string;
+    createdAt?: string;
+  } = {},
+): string {
+  return JSON.stringify({
+    action: "created",
+    installation: { id: 4001 },
+    repository: { name: "repo4", owner: { login: "acme" } },
+    issue: { number: 10 },
+    comment: {
+      id: 9002,
+      html_url: "https://github.com/acme/repo4/issues/10#comment-9002",
+      body: opts.body ?? `@antfleet dismiss ${DISMISS_FINDING_ID} not a real issue`,
+      user: {
+        login: opts.senderLogin ?? "maintainer-alice",
+        type: opts.senderType ?? "User",
+      },
+      author_association: opts.authorAssociation ?? "MEMBER",
+      created_at: opts.createdAt ?? "2026-07-07T10:00:00Z",
+    },
+  });
+}
+
+describe("dismiss ingestion — issue_comment.created", () => {
+  it("records a maintainer_reactions row when flag ON and MEMBER association", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload();
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.recordMaintainerReactions).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reviewId: DISMISS_REVIEW_ID,
+          findingId: DISMISS_FINDING_ID,
+          actionTaken: "dismiss:reply",
+          reactorLogin: "maintainer-alice",
+          authorAssociation: "MEMBER",
+          maintainerComment: "not a real issue",
+        }),
+      ]),
+    );
+  });
+
+  it("records with OWNER association", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload({ authorAssociation: "OWNER" });
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.recordMaintainerReactions).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ authorAssociation: "OWNER" })]),
+    );
+  });
+
+  it("does NOT record when flag is OFF (default)", async () => {
+    // precisionFeedbackMocks returns false by default from beforeEach.
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload();
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
+  });
+
+  it("does NOT record when author_association is NONE (not a maintainer)", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload({ authorAssociation: "NONE" });
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
+  });
+
+  it("does NOT record when author_association is CONTRIBUTOR", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload({ authorAssociation: "CONTRIBUTOR" });
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
+  });
+
+  it("does NOT record when findingId not found in this install", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    // lookupFindingForInstall returns null — id belongs to a different install or doesn't exist.
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue(null);
+
+    const body = makeDismissCommentPayload();
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
+  });
+
+  it("does NOT process dismiss when sender is antfleet[bot]", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload({ senderLogin: "antfleet[bot]", senderType: "Bot" });
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    // The route filters sender != antfleet[bot] before spawning after(),
+    // so the dismiss path is never reached.
+    expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
+    expect(precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call recordMaintainerReactions when comment body has no dismiss command", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload({ body: "LGTM, merging." });
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    // No dismiss command → lookupFindingForInstall never called, no reaction recorded.
+    expect(dbQueriesMocks.lookupFindingForInstall).not.toHaveBeenCalled();
+    expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
+  });
+
+  it("partner-reply still fires alongside dismiss when isWelcomeIssue is true", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    onboarderMocks.isWelcomeIssue.mockResolvedValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+
+    const body = makeDismissCommentPayload();
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    // Both paths should fire independently.
+    expect(onboarderMocks.recordPartnerReply).toHaveBeenCalledTimes(1);
+    expect(dbQueriesMocks.recordMaintainerReactions).toHaveBeenCalledTimes(1);
   });
 });

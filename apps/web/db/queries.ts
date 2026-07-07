@@ -2512,6 +2512,33 @@ export async function recordMaintainerReactions(rows: NewMaintainerReaction[]): 
   return inserted.length;
 }
 
+// ─── Step 0.5 — precision feedback ─────────────────────────────────────────
+//
+// Verifies that a findingId belongs to a review in the given installation and
+// repo before trusting a maintainer dismiss command. Guards against forged ids
+// in the @antfleet dismiss webhook path (route.ts). Returns null when the
+// findingId is unknown or belongs to a different install — the caller discards
+// silently in both cases.
+export async function lookupFindingForInstall(
+  findingId: string,
+  installationId: number,
+  repo: string,
+): Promise<{ reviewId: string } | null> {
+  const rows = await db
+    .select({ reviewId: findingStatus.reviewId })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(
+      and(
+        eq(findingStatus.findingId, findingId),
+        eq(reviews.installationId, installationId),
+        eq(reviews.repo, repo),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 // ─── Mission 6 — /benchmarks public view ───────────────────────────────────
 //
 // Benchmark reviews are reviews on benchmark-class repos (BENCHMARK.md at
