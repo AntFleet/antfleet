@@ -15,10 +15,7 @@ const selfDir = dirname(selfPath);
 
 dotenv.config({ path: join(selfDir, "../../.env.local") });
 
-const sqlFile = readFileSync(
-  join(selfDir, "0049_maintainer_reactions_attribution.sql"),
-  "utf-8",
-);
+const sqlFile = readFileSync(join(selfDir, "0049_maintainer_reactions_attribution.sql"), "utf-8");
 
 type SqlRow = Record<string, unknown>;
 type MigrationSql = {
