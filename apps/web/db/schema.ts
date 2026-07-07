@@ -240,6 +240,13 @@ export const maintainerReactions = pgTable(
     reactionAt: timestamp("reaction_at", { withTimezone: true }).notNull(),
     maintainerComment: text("maintainer_comment"),
     polledAt: timestamp("polled_at", { withTimezone: true }).notNull().defaultNow(),
+    // Step 0.5 migration 0049 — attribution (both nullable, dark).
+    // reactor_login: populated by the reaction poll mapper (reactions.ts).
+    // author_association: NOT available from the reaction poll API; reserved
+    // for the dismiss-reply ingestion path (Step 0.5 item 4) which reads it
+    // from issue_comment.created webhook payload.
+    reactorLogin: text("reactor_login"),
+    authorAssociation: text("author_association"),
   },
   // GitHub returns the full reaction list on every poll, so re-polling at
   // 24h/7d/30d hits the same rows repeatedly. The unique key lets slice 3-4's
