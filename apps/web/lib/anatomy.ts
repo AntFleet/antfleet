@@ -53,6 +53,11 @@ export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundl
   const visibilityCondition = and(
     disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
     nonCyberTierRepoCondition(),
+    // Reader guard (Win 2): the /anatomy page resolves findingIndex against
+    // agreement_decision.agreed[]. A shadow finding_id (`-s` namespace) would
+    // resolve the WRONG agreed[] entry, so shadow rows are never renderable
+    // here — the lookup returns null (404) for a single_model finding_id.
+    eq(findingStatus.source, "consensus"),
   );
   const selectColumns = {
     findingId: findingStatus.findingId,

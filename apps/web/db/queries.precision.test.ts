@@ -280,10 +280,20 @@ describe("precisionWindow", () => {
     expect(pw.thumbsDownCount).toBe(0);
   });
 
-  it("returns all four tiers in the canonical order", async () => {
+  it("returns all four tiers per source (consensus first), 8 rows total", async () => {
     selectQueue = [[], [], []]; // 3 queries: posted, dismissed, thumbs
     const pw = await precisionWindow(null, null);
-    expect(pw.tiers.map((t) => t.tier)).toEqual(["low", "medium", "high", "critical"]);
+    // Win 2 — segmented by source. Consensus block first, then single_model.
+    expect(pw.tiers.map((t) => `${t.source}:${t.tier}`)).toEqual([
+      "consensus:low",
+      "consensus:medium",
+      "consensus:high",
+      "consensus:critical",
+      "single_model:low",
+      "single_model:medium",
+      "single_model:high",
+      "single_model:critical",
+    ]);
   });
 
   it("guards divide-by-zero: dismissRate=0 when postedCount=0", async () => {
@@ -433,6 +443,40 @@ describe("precisionWindow", () => {
     expect(high.dismissedCount).toBe(2);
     expect(high.dismissRate).toBe(1.0);
     expect(high.dismissRate).toBeLessThanOrEqual(1.0);
+  });
+
+  it("Win 2 — segments shadow dismisses into the single_model tier without moving consensus", async () => {
+    // Two HIGH findings posted: one consensus, one single_model. Each gets one
+    // authorised dismiss. The single_model dismiss must land in the
+    // single_model tier and NOT inflate the consensus dismiss-rate.
+    const postedMock = [
+      { source: "consensus", severity: "high", n: 2 },
+      { source: "single_model", severity: "high", n: 1 },
+    ];
+    const dismissedMock = [
+      { findingId: "c1", source: "consensus", severity: "high", authorAssociation: "OWNER" },
+      { findingId: "s1", source: "single_model", severity: "high", authorAssociation: "OWNER" },
+    ];
+    const thumbsMock: unknown[] = [];
+    selectQueue = [[], postedMock, dismissedMock, thumbsMock];
+
+    const pw = await precisionWindow(
+      new Date("2026-07-01T00:00:00Z"),
+      new Date("2026-07-05T00:00:00Z"),
+    );
+
+    const consensusHigh = pw.tiers.find((t) => t.source === "consensus" && t.tier === "high")!;
+    const shadowHigh = pw.tiers.find((t) => t.source === "single_model" && t.tier === "high")!;
+
+    // Consensus: 1 of 2 dismissed (unchanged by the shadow dismiss).
+    expect(consensusHigh.postedCount).toBe(2);
+    expect(consensusHigh.dismissedCount).toBe(1);
+    expect(consensusHigh.dismissRate).toBe(0.5);
+
+    // Single-model: its own dismiss lands in its own tier.
+    expect(shadowHigh.postedCount).toBe(1);
+    expect(shadowHigh.dismissedCount).toBe(1);
+    expect(shadowHigh.dismissRate).toBe(1.0);
   });
 
   it("shared DISMISS_AUTHORISED_ASSOCIATIONS matches the set used for association filtering", () => {
