@@ -19,6 +19,7 @@ import {
   upsertInstallEntry,
 } from "@/db/queries";
 import {
+  DISMISS_AUTHORISED_ASSOCIATIONS,
   isPrecisionAutoRetractEnabled,
   isPrecisionFeedbackEnabledForInstall,
 } from "@/lib/precision-feedback-env";
@@ -171,8 +172,6 @@ export function parseDismissCommand(
   const reason = m[2] !== undefined && m[2].length > 0 ? m[2] : null;
   return { findingId: candidateId, reason };
 }
-
-const DISMISS_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 // installation_repositories.added — fired when an existing install
 // broadens to include new repos. The `repositories_added` array
@@ -384,7 +383,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             const enabled = await isPrecisionFeedbackEnabledForInstall(ic.installationId, ic.repo);
             if (!enabled) return;
 
-            if (!DISMISS_ALLOWED_ASSOCIATIONS.has(ic.authorAssociation)) {
+            if (!DISMISS_AUTHORISED_ASSOCIATIONS.has(ic.authorAssociation)) {
               logInfo("webhook.dismiss_association_denied", {
                 delivery,
                 findingId: dismissCmd.findingId,
@@ -428,6 +427,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             // dismiss row was newly inserted (inserted > 0 means not a
             // duplicate — idempotency guard). Gates: parent precision-feedback
             // flag (already checked above) AND ANTFLEET_PRECISION_AUTORETRACT.
+            //
+            // Forward-only: a finding dismissed while AUTORETRACT was OFF won't
+            // be retracted by a later re-dismiss from the same maintainer once
+            // the flag flips ON — the dedup guard suppresses the second insert
+            // (inserted=0), so retraction never fires for that prior event.
             if (inserted > 0 && isPrecisionAutoRetractEnabled()) {
               try {
                 const retracted = await retractFindingByDismiss(

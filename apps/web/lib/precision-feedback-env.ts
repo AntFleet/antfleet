@@ -64,6 +64,14 @@ async function loadInstallOverride(installationId: number, repo: string): Promis
   return rows[0]?.precisionFeedbackEnabled ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// Shared authorised-association guard.
+//
+// Used both by the webhook ingest path (route.ts) and the precisionWindow
+// metric query (queries.ts). Single source of truth so they can't drift.
+// ---------------------------------------------------------------------------
+export const DISMISS_AUTHORISED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
 // Sub-flag for auto-retraction (Step 0.5, item 6).
 //
 // Layered UNDER isPrecisionFeedbackEnabledForInstall — callers must check

@@ -89,6 +89,7 @@ const dbQueriesMocks = vi.hoisted(() => ({
 vi.mock("@/db/queries", () => dbQueriesMocks);
 
 const precisionFeedbackMocks = vi.hoisted(() => ({
+  DISMISS_AUTHORISED_ASSOCIATIONS: new Set(["OWNER", "MEMBER", "COLLABORATOR"]),
   isPrecisionAutoRetractEnabled: vi.fn(),
   isPrecisionFeedbackEnabledForInstall: vi.fn(),
 }));

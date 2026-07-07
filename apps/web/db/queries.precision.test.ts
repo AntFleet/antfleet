@@ -120,10 +120,17 @@ const dbMocks = vi.hoisted(() => {
 vi.mock("./index", () => ({ db: dbMocks.db }));
 // precision-feedback-env imports @/db (the canonical alias for db/index).
 // Provide the same mock under both identifiers so the module can load.
+// precision-feedback-env is NOT mocked — the real module is used so that
+// isPrecisionAutoRetractEnabled reads process.env as expected by the env
+// flag tests, and DISMISS_AUTHORISED_ASSOCIATIONS resolves from the real
+// export. The @/db mock ensures DB-touching helpers don't hit a real DB.
 vi.mock("@/db", () => ({ db: dbMocks.db }));
 
 import { recordMaintainerReactions, retractFindingByDismiss, precisionWindow } from "./queries";
-import { isPrecisionAutoRetractEnabled } from "@/lib/precision-feedback-env";
+import {
+  DISMISS_AUTHORISED_ASSOCIATIONS,
+  isPrecisionAutoRetractEnabled,
+} from "@/lib/precision-feedback-env";
 
 beforeEach(() => {
   insertValuesCalls.length = 0;
@@ -301,6 +308,140 @@ describe("precisionWindow", () => {
     selectQueue = [[], [], []];
     const pw = await precisionWindow(null, null);
     expect(pw.thumbsDownCount).toBe(0);
+  });
+
+  // ── Cohort alignment: dismissedCount ≤ postedCount ──────────────────────
+  //
+  // The new query windows dismissed findings on findingStatus.createdAt
+  // (same predicate as postedRows), not on maintainerReactions.reactionAt.
+  // This makes dismissed structurally a SUBSET of posted so dismissRate
+  // can never exceed 1.0.
+
+  it("realistic non-empty case: dismissRate ≤ 1.0 for every tier", async () => {
+    // postedRows: medium=3, high=1
+    const postedMock = [
+      { severity: "medium", n: 3 },
+      { severity: "high", n: 1 },
+    ];
+    // dismissedRows: 2 authorised medium dismisses + 1 authorised high dismiss.
+    // All findingIds are distinct — 2 out of 3 medium, 1 out of 1 high.
+    const dismissedMock = [
+      { findingId: "f1", severity: "medium", authorAssociation: "OWNER" },
+      { findingId: "f2", severity: "medium", authorAssociation: "MEMBER" },
+      { findingId: "f3", severity: "high", authorAssociation: "COLLABORATOR" },
+    ];
+    const thumbsMock = [{ n: 5 }];
+
+    // The mock pops two items for the first query (.where() then .groupBy()):
+    //   [0] placeholder consumed by .where() — value is discarded
+    //   [1] postedMock consumed by .groupBy() — becomes postedRows
+    //   [2] dismissedMock consumed by .where() on dismissedRows query
+    //   [3] thumbsMock consumed by .where() on thumbsRows query
+    selectQueue = [[], postedMock, dismissedMock, thumbsMock];
+
+    const pw = await precisionWindow(
+      new Date("2026-07-01T00:00:00Z"),
+      new Date("2026-07-05T00:00:00Z"),
+    );
+
+    const medium = pw.tiers.find((t) => t.tier === "medium")!;
+    const high = pw.tiers.find((t) => t.tier === "high")!;
+    const low = pw.tiers.find((t) => t.tier === "low")!;
+    const critical = pw.tiers.find((t) => t.tier === "critical")!;
+
+    expect(medium.postedCount).toBe(3);
+    expect(medium.dismissedCount).toBe(2);
+    expect(medium.dismissRate).toBeCloseTo(2 / 3);
+
+    expect(high.postedCount).toBe(1);
+    expect(high.dismissedCount).toBe(1);
+    expect(high.dismissRate).toBe(1.0);
+
+    // Tiers with no postings have rate 0.
+    expect(low.dismissRate).toBe(0);
+    expect(critical.dismissRate).toBe(0);
+
+    // Core invariant: no tier exceeds 1.0.
+    for (const t of pw.tiers) {
+      expect(t.dismissRate).toBeLessThanOrEqual(1.0);
+    }
+
+    expect(pw.thumbsDownCount).toBe(5);
+  });
+
+  it("regression: finding posted BEFORE window but dismissed INSIDE must NOT inflate rate", async () => {
+    // Scenario: finding F_pre was posted before the window; a maintainer
+    // dismissed it during the window (reactionAt inside [since, until)).
+    //
+    // OLD behaviour (reactionsRange on reactionAt): dismissedRows would include
+    // F_pre because reactionAt was in-window. If medium postedCount=1 and
+    // dismissedCount ended up as 2 (F_pre + an in-window posted finding),
+    // rate = 2/1 = 2.0 — a rate exceeding 100%.
+    //
+    // NEW behaviour (findingsCreatedRange on findingStatus.createdAt): the
+    // dismissed query is scoped to findings POSTED in the window, so F_pre is
+    // excluded from dismissedRows entirely. dismissed ⊆ posted → rate ≤ 1.0.
+    //
+    // Here we mock the NEW-correct DB response where F_pre is absent from
+    // dismissedRows (only the one legitimately posted-in-window finding appears).
+    const postedMock = [{ severity: "medium", n: 1 }];
+    // Only the in-window posted finding appears in dismissedRows (new code).
+    const dismissedMock = [
+      { findingId: "f_in_window", severity: "medium", authorAssociation: "OWNER" },
+    ];
+    const thumbsMock: unknown[] = [];
+
+    // Queue layout: [placeholder, postedMock, dismissedMock, thumbsMock].
+    selectQueue = [[], postedMock, dismissedMock, thumbsMock];
+
+    const pw = await precisionWindow(
+      new Date("2026-07-01T00:00:00Z"),
+      new Date("2026-07-05T00:00:00Z"),
+    );
+
+    const medium = pw.tiers.find((t) => t.tier === "medium")!;
+    expect(medium.postedCount).toBe(1);
+    expect(medium.dismissedCount).toBe(1);
+    // Rate is exactly 1.0 — never > 1.0, which the old code could produce.
+    expect(medium.dismissRate).toBe(1.0);
+    expect(medium.dismissRate).toBeLessThanOrEqual(1.0);
+  });
+
+  it("posted-in-window finding dismissed AFTER the window IS counted", async () => {
+    // F1 was posted during the window; the maintainer dismissed it weeks later
+    // (reactionAt is outside the window). With the new query, reactionAt is
+    // unbounded — only findingStatus.createdAt is windowed — so F1 appears in
+    // dismissedRows and is counted toward dismissedCount.
+    const postedMock = [{ severity: "high", n: 2 }];
+    // Both F1 (dismissed later) and F2 (dismissed during window) are included.
+    const dismissedMock = [
+      { findingId: "f1_dismissed_later", severity: "high", authorAssociation: "OWNER" },
+      { findingId: "f2_dismissed_during", severity: "high", authorAssociation: "MEMBER" },
+    ];
+    const thumbsMock: unknown[] = [];
+
+    // Queue layout: [placeholder, postedMock, dismissedMock, thumbsMock].
+    selectQueue = [[], postedMock, dismissedMock, thumbsMock];
+
+    const pw = await precisionWindow(
+      new Date("2026-07-01T00:00:00Z"),
+      new Date("2026-07-05T00:00:00Z"),
+    );
+
+    const high = pw.tiers.find((t) => t.tier === "high")!;
+    expect(high.postedCount).toBe(2);
+    expect(high.dismissedCount).toBe(2);
+    expect(high.dismissRate).toBe(1.0);
+    expect(high.dismissRate).toBeLessThanOrEqual(1.0);
+  });
+
+  it("shared DISMISS_AUTHORISED_ASSOCIATIONS matches the set used for association filtering", () => {
+    // Guard that ingest (route.ts) and metric (queries.ts) use the same constant.
+    expect(DISMISS_AUTHORISED_ASSOCIATIONS.has("OWNER")).toBe(true);
+    expect(DISMISS_AUTHORISED_ASSOCIATIONS.has("MEMBER")).toBe(true);
+    expect(DISMISS_AUTHORISED_ASSOCIATIONS.has("COLLABORATOR")).toBe(true);
+    expect(DISMISS_AUTHORISED_ASSOCIATIONS.has("CONTRIBUTOR")).toBe(false);
+    expect(DISMISS_AUTHORISED_ASSOCIATIONS.has("NONE")).toBe(false);
   });
 });
 

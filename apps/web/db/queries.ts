@@ -71,6 +71,7 @@ import {
 import { LIFECYCLE_PRESERVE_COLUMNS, reconcilableTrailingRows } from "./finding-lifecycle";
 import type { DisclosureActorType, DisclosureState } from "@/lib/disclosure-types";
 import { SARIF_TOKEN_USE_GC_BATCH_SIZE } from "@/lib/sarif-token-use-gc";
+import { DISMISS_AUTHORISED_ASSOCIATIONS } from "@/lib/precision-feedback-env";
 
 // Hash <owner>/<repo> so the primary index doesn't expose customer identities
 // when we publish aggregate metrics. The raw owner/repo can still live inside
@@ -2605,15 +2606,16 @@ export async function retractFindingByDismiss(
 // existing activity counters. Tiers: low | medium | high | critical.
 //
 // postedCount: finding_status rows created in window (joined to public reviews).
-// dismissedCount: DISTINCT finding_ids with a maintainer-authorised dismiss:reply
-//   in window (authorAssociation ∈ OWNER/MEMBER/COLLABORATOR).
+// dismissedCount: DISTINCT finding_ids from THOSE SAME posted-in-window findings
+//   that have ≥1 dismiss:reply by an authorised maintainer at any time (reactionAt
+//   unbounded). Dismissed is structurally a SUBSET of posted so dismissRate ≤ 1.0.
+//   DISMISS_AUTHORISED_ASSOCIATIONS is imported from precision-feedback-env.ts to
+//   share the definition with the webhook ingest path.
 // dismissRate: dismissedCount / postedCount, 0.0 when postedCount is 0.
 //
 // The secondary thumbsDownCount is from channel C (reaction:thumbs_down, low-
 // trust, un-attributable) and is reported as a single aggregate — never merged
 // into the primary rate. Internal-only; never rendered on public surfaces.
-
-const DISMISS_AUTHORISED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const PRECISION_TIERS = ["low", "medium", "high", "critical"] as const;
 type PrecisionTier = (typeof PRECISION_TIERS)[number];
 
@@ -2667,9 +2669,12 @@ export async function precisionWindow(
     .where(and(publicGate, findingsCreatedRange))
     .groupBy(findingStatus.severity);
 
-  // Per-tier dismissed count — DISTINCT findings with maintainer-authorised
-  // dismiss:reply in the window. We pull raw rows and count in JS so we can
-  // filter authorAssociation without a dynamic inArray literal in the WHERE.
+  // Per-tier dismissed count — DISTINCT findings from the POSTED-IN-WINDOW cohort
+  // that have ≥1 authorised dismiss:reply at any time (reactionAt unbounded).
+  // We window on findingStatus.createdAt (same predicate as postedRows) so
+  // dismissedCount ≤ postedCount structurally, making dismissRate ≤ 1.0
+  // impossible to exceed. We pull raw rows and count in JS to filter
+  // authorAssociation without a dynamic inArray literal in the WHERE.
   const dismissedRows = await db
     .select({
       findingId: maintainerReactions.findingId,
@@ -2679,7 +2684,9 @@ export async function precisionWindow(
     .from(maintainerReactions)
     .innerJoin(findingStatus, eq(maintainerReactions.findingId, findingStatus.findingId))
     .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-    .where(and(publicGate, eq(maintainerReactions.actionTaken, "dismiss:reply"), reactionsRange));
+    .where(
+      and(publicGate, eq(maintainerReactions.actionTaken, "dismiss:reply"), findingsCreatedRange),
+    );
 
   // Channel C — thumbs_down reactions in window.
   const thumbsRows = await db
