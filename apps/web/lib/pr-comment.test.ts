@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatClosureReceipt, formatPRComment, type ReviewMeta } from "./pr-comment";
+import {
+  formatClosureReceipt,
+  formatPRComment,
+  formatSingleModelSection,
+  type ReviewMeta,
+} from "./pr-comment";
 import type { Finding } from "./review-types";
 
 const META: ReviewMeta = {
@@ -440,5 +445,47 @@ describe("formatPRComment — Step 0.5 precision feedback", () => {
     expect(settledPos).toBeGreaterThan(-1);
     expect(dismissPos).toBeGreaterThan(-1);
     expect(settledPos).toBeLessThan(dismissPos);
+  });
+});
+
+describe("formatSingleModelSection (Win 2)", () => {
+  it("returns null for an empty list (nothing to append)", () => {
+    expect(formatSingleModelSection([])).toBeNull();
+  });
+
+  it("renders the experimental header, category/severity/title and dismiss id", () => {
+    const out = formatSingleModelSection([
+      { finding: mkFinding({ severity: "high", title: "Only Anthropic" }), findingId: "rev-1-s0" },
+    ]);
+    expect(out).not.toBeNull();
+    expect(out).toContain("## AntFleet · single-model · experimental");
+    expect(out).toContain("**Bug · High** — Only Anthropic");
+    // Reuses the consensus finding's `id:` format so the dismiss footer works.
+    expect(out).toContain("<sub>id: `rev-1-s0`</sub>");
+    expect(out).toContain("`src/foo.ts:10-20`");
+  });
+
+  it("orders findings critical → high and joins with the divider", () => {
+    const out = formatSingleModelSection([
+      { finding: mkFinding({ severity: "high", title: "HI" }), findingId: "r-s0" },
+      { finding: mkFinding({ severity: "critical", title: "CR" }), findingId: "r-s1" },
+    ]);
+    const hiPos = out!.indexOf("HI");
+    const crPos = out!.indexOf("CR");
+    expect(crPos).toBeGreaterThan(-1);
+    expect(crPos).toBeLessThan(hiPos);
+    expect(out).toContain("\n\n---\n\n");
+  });
+
+  it("is a SEPARATE renderer — formatPRComment output never contains the section", () => {
+    // The public comment is byte-identical whether or not a shadow tier exists,
+    // because the section is only ever appended by the install lane, never
+    // produced inside formatPRComment.
+    const publicComment = formatPRComment([mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      findingIds: ["rev-1-0"],
+    });
+    expect(publicComment).not.toContain("single-model · experimental");
   });
 });

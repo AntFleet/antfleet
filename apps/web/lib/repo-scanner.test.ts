@@ -33,6 +33,7 @@ function bundle(over: { agreed?: Finding[]; degraded?: boolean } = {}): ReviewBu
     modelIds: {},
     agreed: degraded ? [] : (over.agreed ?? []),
     disagreements: [],
+    singleModelTier: [],
     totalMs: 1,
     estimatedCostUsd: 0,
     agreementMode: "unanimous",

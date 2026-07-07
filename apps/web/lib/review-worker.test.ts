@@ -53,6 +53,7 @@ function mkBundle(overrides: Record<string, unknown> = {}): {
   modelIds: Record<string, string>;
   agreed: ReturnType<typeof mkFinding>[];
   disagreements: unknown[];
+  singleModelTier: Array<{ finding: ReturnType<typeof mkFinding>; provider: string }>;
   totalMs: number;
   estimatedCostUsd: number;
   agreementMode: "unanimous";
@@ -73,6 +74,7 @@ function mkBundle(overrides: Record<string, unknown> = {}): {
     modelIds: { anthropic: "m1", openai: "m2" },
     agreed: [mkFinding()],
     disagreements: [],
+    singleModelTier: [],
     totalMs: 2100,
     estimatedCostUsd: 0.05,
     agreementMode: "unanimous",
@@ -120,6 +122,9 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     updateReview: vi.fn().mockResolvedValue(undefined),
     setReviewComment: vi.fn().mockResolvedValue(undefined),
     recordFindingStatuses: vi.fn().mockResolvedValue(["rev-1-0"]),
+    recordSingleModelFindingStatuses: vi.fn().mockResolvedValue([]),
+    isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(false),
+    isSingleModelTierRenderEnabled: vi.fn().mockReturnValue(false),
     recordPatchDecisions: vi.fn().mockResolvedValue(undefined),
     setReviewPatchCost: vi.fn().mockResolvedValue(undefined),
     markReviewSucceeded: vi.fn().mockResolvedValue(undefined),
@@ -1270,5 +1275,115 @@ describe("isTransientError", () => {
     expect(isTransientError(new Error("ETIMEDOUT"))).toBe(true);
     expect(isTransientError(new Error("ECONNRESET"))).toBe(true);
     expect(isTransientError(new Error("fetch failed"))).toBe(true);
+  });
+});
+
+describe("single-model shadow tier (Win 2) — install lane", () => {
+  const shadowBundle = () =>
+    mkBundle({
+      singleModelTier: [
+        {
+          finding: mkFinding({ severity: "high", title: "Only one model flagged this" }),
+          provider: "anthropic",
+        },
+      ],
+    });
+
+  // Capture the posted comment body without fighting the mock's return type.
+  function depsCapturingBody(bodies: string[], overrides: Partial<WorkerDeps> = {}): WorkerDeps {
+    return mkDeps({
+      reviewPR: vi.fn().mockResolvedValue(shadowBundle()),
+      postPRComment: vi.fn().mockImplementation(async (a: { body: string }) => {
+        bodies.push(a.body);
+        return { id: 9001, htmlUrl: "https://gh/c/9001" };
+      }),
+      ...overrides,
+    });
+  }
+
+  it("persists shadow rows + renders the canary section when all three flags are ON", async () => {
+    const bodies: string[] = [];
+    const deps = depsCapturingBody(bodies, {
+      isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isSingleModelTierRenderEnabled: vi.fn().mockReturnValue(true),
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(true),
+      recordSingleModelFindingStatuses: vi.fn().mockResolvedValue(["rev-1-s0"]),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    expect(deps.recordSingleModelFindingStatuses).toHaveBeenCalledTimes(1);
+    expect(bodies[0]).toContain("## AntFleet · single-model · experimental");
+    expect(bodies[0]).toContain("Only one model flagged this");
+    expect(bodies[0]).toContain("<sub>id: `rev-1-s0`</sub>");
+  });
+
+  it("byte-identical public comment when the render sub-flag is OFF (persist only)", async () => {
+    const renderOffBodies: string[] = [];
+    const renderOff = depsCapturingBody(renderOffBodies, {
+      isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isSingleModelTierRenderEnabled: vi.fn().mockReturnValue(false),
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(true),
+      recordSingleModelFindingStatuses: vi.fn().mockResolvedValue(["rev-1-s0"]),
+    });
+    await runReviewWorker("rev-1", "webhook", renderOff);
+
+    const allOffBodies: string[] = [];
+    const allOff = depsCapturingBody(allOffBodies, {
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(true),
+    });
+    await runReviewWorker("rev-1", "webhook", allOff);
+
+    // The public comment is byte-identical whether the tier persists shadow
+    // rows or is fully off — the section only appears with the render flag.
+    expect(renderOffBodies[0]).toBe(allOffBodies[0]);
+    expect(renderOffBodies[0]).not.toContain("single-model · experimental");
+    // Render OFF still persists (measurement runs on the canary install).
+    expect(renderOff.recordSingleModelFindingStatuses).toHaveBeenCalledTimes(1);
+  });
+
+  it("all flags OFF → no shadow rows persisted, no section (zero delta)", async () => {
+    const bodies: string[] = [];
+    const deps = depsCapturingBody(bodies);
+    await runReviewWorker("rev-1", "webhook", deps);
+    expect(deps.recordSingleModelFindingStatuses).not.toHaveBeenCalled();
+    expect(bodies[0]).not.toContain("single-model");
+  });
+
+  it("does not render when precision feedback is OFF (no dismiss ids)", async () => {
+    const bodies: string[] = [];
+    const deps = depsCapturingBody(bodies, {
+      isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isSingleModelTierRenderEnabled: vi.fn().mockReturnValue(true),
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(false),
+      recordSingleModelFindingStatuses: vi.fn().mockResolvedValue(["rev-1-s0"]),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    // Persisted (measurement), but not rendered without the dismiss affordance.
+    expect(deps.recordSingleModelFindingStatuses).toHaveBeenCalledTimes(1);
+    expect(bodies[0]).not.toContain("single-model · experimental");
+  });
+
+  it("suppresses the section when the shadow finding is embargoed (disclosure)", async () => {
+    const bodies: string[] = [];
+    const deps = depsCapturingBody(bodies, {
+      isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isSingleModelTierRenderEnabled: vi.fn().mockReturnValue(true),
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(true),
+      recordSingleModelFindingStatuses: vi.fn().mockResolvedValue(["rev-1-s0"]),
+      isDisclosureGateEnabledForInstall: vi.fn().mockResolvedValue(true),
+      // Consensus disclosure returns none; the shadow disclosure (its findings
+      // carry `-s` ids) embargoes index 0.
+      initializeDisclosureForFindings: vi
+        .fn()
+        .mockImplementation(async (a: { findings: Array<{ findingId: string }> }) => {
+          const isShadow = a.findings.some((f) => f.findingId.includes("-s"));
+          return isShadow
+            ? { embargoedFindingIds: ["rev-1-s0"], embargoedFindingIndexes: [0] }
+            : { embargoedFindingIds: [], embargoedFindingIndexes: [] };
+        }),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    // Persisted for measurement, but embargoed → suppressed from the section.
+    expect(deps.recordSingleModelFindingStatuses).toHaveBeenCalledTimes(1);
+    expect(bodies[0]).not.toContain("single-model · experimental");
   });
 });

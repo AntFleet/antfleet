@@ -250,6 +250,42 @@ export function renderDiffArtifactBlock(patch: PatchForRender): string[] | null 
   return ["```diff", patch.patch.trimEnd(), "```"];
 }
 
+// Single-model shadow tier canary section (Win 2). Rendered ONLY by the
+// install lane, appended AFTER the public formatPRComment body — never inside
+// it, so the public comment stays byte-identical when the render flag is off.
+// The section is clearly labeled experimental and lists the HIGH/CRITICAL
+// findings only one of the two reviewers flagged. Each finding carries its
+// shadow finding_id in the same `id:` format the consensus findings use, so
+// the existing `@antfleet dismiss <finding-id>` footer affordance resolves
+// them. Returns null when there is nothing to show (caller appends nothing).
+export function formatSingleModelSection(
+  items: ReadonlyArray<{ finding: Finding; findingId: string | null }>,
+): string | null {
+  if (items.length === 0) return null;
+  const sorted = items.toSorted((a, b) => severityRank(a.finding) - severityRank(b.finding));
+  const intro =
+    "## AntFleet · single-model · experimental\n\n" +
+    "Flagged by only one of the two reviewers (below the consensus bar). " +
+    "Experimental signal, shown for feedback only.";
+  const body = sorted
+    .map(({ finding, findingId }) => formatSingleModelFinding(finding, findingId))
+    .join("\n\n---\n\n");
+  return `${intro}\n\n---\n\n${body}`;
+}
+
+function formatSingleModelFinding(f: Finding, findingId: string | null): string {
+  const ev = f.evidence[0];
+  const lines: string[] = [];
+  lines.push(`**${titleCase(f.category)} · ${titleCase(f.severity)}** — ${f.title}`);
+  if (findingId !== null) {
+    lines.push(`<sub>id: \`${findingId}\`</sub>`);
+  }
+  if (ev !== undefined) {
+    lines.push(`\`${formatEvidencePath(ev)}\``);
+  }
+  return lines.join("\n");
+}
+
 function formatEvidencePath(ev: Finding["evidence"][number]): string {
   if (ev.startLine === null) return ev.path;
   if (ev.endLine === null || ev.endLine === ev.startLine) {
