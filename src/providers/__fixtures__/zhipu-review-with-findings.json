@@ -1,0 +1,49 @@
+{
+  "id": "msg_glm_synthetic_001",
+  "type": "message",
+  "role": "assistant",
+  "model": "glm-5.2",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_glm_synthetic_001",
+      "name": "submit_review",
+      "input": {
+        "findings": [
+          {
+            "title": "Unchecked array index in parser",
+            "category": "bug",
+            "severity": "high",
+            "confidence": "high",
+            "evidence": [
+              {
+                "path": "src/parser.ts",
+                "startLine": 88,
+                "endLine": 90,
+                "symbol": "parseTokens",
+                "quote": "tokens[i + 1].value"
+              }
+            ],
+            "reasoning": "tokens[i + 1] may be undefined at the final index; accessing .value will throw.",
+            "reproduction": "Feed a token stream that ends on an operator token.",
+            "recommendation": "Bounds-check i + 1 before dereferencing tokens[i + 1].",
+            "whyTestsDoNotAlreadyCoverThis": "Fixtures never terminate on a trailing operator.",
+            "suggestedRegressionTest": "Test parseTokens with input ending in '+'.",
+            "minimumFixScope": "Add a length guard around line 88 in src/parser.ts."
+          }
+        ],
+        "inspected": {
+          "files": ["src/parser.ts"],
+          "symbols": ["parseTokens"],
+          "notes": ["reviewed the token loop and its terminal case"]
+        }
+      }
+    }
+  ],
+  "usage": {
+    "input_tokens": 1420,
+    "output_tokens": 205
+  }
+}

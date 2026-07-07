@@ -45,6 +45,10 @@
       "types": "./dist/providers/openai.d.ts",
       "default": "./dist/providers/openai.js"
     },
+    "./providers/zhipu": {
+      "types": "./dist/providers/zhipu.d.ts",
+      "default": "./dist/providers/zhipu.js"
+    },
     "./spike/build-prompt": {
       "types": "./dist/spike/build-prompt.d.ts",
       "default": "./dist/spike/build-prompt.js"

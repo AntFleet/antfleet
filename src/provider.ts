@@ -15,6 +15,7 @@ import {
 import { AgreementMode } from "./providers/agreement.js";
 import { anthropicProvider } from "./providers/anthropic.js";
 import { openaiProvider } from "./providers/openai.js";
+import { zhipuProvider } from "./providers/zhipu.js";
 import { stackedProvider } from "./providers/stacked.js";
 // openrouter and codex providers live in the tree but are intentionally not
 // registered in providerByName below: they cannot be selected from config or
@@ -63,6 +64,9 @@ export function providerByName(name: string): Provider {
   }
   if (name === "openai") {
     return openaiProvider;
+  }
+  if (name === "zhipu") {
+    return zhipuProvider;
   }
   if (name === "stacked") {
     return buildStackedFromEnv();

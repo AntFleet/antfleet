@@ -1,0 +1,19 @@
+{
+  "id": "msg_glm_synthetic_002",
+  "type": "message",
+  "role": "assistant",
+  "model": "glm-5.2",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"verdict\":\"confirm\",\"reasoning\":\"The null dereference is reachable from the public handler.\"}",
+      "citations": null
+    }
+  ],
+  "usage": {
+    "input_tokens": 640,
+    "output_tokens": 42
+  }
+}
