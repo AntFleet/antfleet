@@ -19,11 +19,15 @@ import { shortenRepoHash } from "@/lib/short-id";
 
 type RelatedFinding = { findingId: string; title: string; severity: string; category: string };
 
-async function loadRelatedFindings(reviewId: string): Promise<RelatedFinding[]> {
+export async function loadRelatedFindings(reviewId: string): Promise<RelatedFinding[]> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const visibilityCondition = and(
     disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
     nonCyberTierRepoCondition(),
+    // Reader guard (Win2): "these findings passed the unanimous gate" is consensus
+    // only. Single-model shadow rows share the reviewId and would otherwise render
+    // here mislabeled as unanimous — leaking the private tier on a public surface.
+    eq(findingStatus.source, "consensus"),
   );
   const selectColumns = {
     findingId: findingStatus.findingId,
