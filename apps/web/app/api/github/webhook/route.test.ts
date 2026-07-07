@@ -992,6 +992,25 @@ describe("dismiss ingestion — issue_comment.created", () => {
     expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
   });
 
+  // Step 0.5 item 8 — malformed finding-id negative case.
+  // parseDismissCommand validates that the finding-id is UUID-prefixed; a
+  // short/non-UUID id makes it return null, which must prevent any DB touch
+  // even when the precision flag is ON. Guards the injection boundary.
+  it("does NOT touch DB when dismiss command has a non-UUID-prefixed finding-id (item 8)", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+
+    // Malformed: "shortid-0" is not UUID-prefixed so parseDismissCommand returns null.
+    const body = makeDismissCommentPayload({ body: "@antfleet dismiss shortid-0 false positive" });
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    // parseDismissCommand returns null → no lookupFindingForInstall, no insert.
+    expect(dbQueriesMocks.lookupFindingForInstall).not.toHaveBeenCalled();
+    expect(dbQueriesMocks.recordMaintainerReactions).not.toHaveBeenCalled();
+    expect(dbQueriesMocks.retractFindingByDismiss).not.toHaveBeenCalled();
+  });
+
   it("partner-reply still fires alongside dismiss when isWelcomeIssue is true", async () => {
     precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
     onboarderMocks.isWelcomeIssue.mockResolvedValue(true);

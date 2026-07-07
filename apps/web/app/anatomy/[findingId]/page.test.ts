@@ -1,4 +1,6 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ReactElement } from "react";
 import type { AnatomyBundle } from "@/lib/anatomy";
 
 // Mock the loader so we can drive generateMetadata off a synthetic bundle
@@ -81,5 +83,26 @@ describe("anatomy page body — JSON-LD suppression", () => {
     mockLoad.mockResolvedValue(baseBundle({ retractedAt: new Date("2026-05-30") }));
     const tree = await AnatomyPage({ params });
     expect(hasJsonLd(tree)).toBe(false);
+  });
+
+  // Step 0.5 item 8 — retraction notice render seam (e2e dismiss→retraction).
+  // Verifies that a retracted finding_status row surfaces as user-visible
+  // "This finding has been retracted" text in the anatomy page HTML output,
+  // completing the seam: (a) webhook → retractFinding called (covered in
+  // route.test.ts) → (b) retractedAt set in DB → (c) anatomy page renders
+  // retraction notice and suppresses the original claim text.
+  it("renders retraction notice text for a retracted finding (Step 0.5 e2e seam)", async () => {
+    mockLoad.mockResolvedValue(
+      baseBundle({
+        retractedAt: new Date("2026-05-30"),
+        retractionReason: "Both models misread a hardened pattern as unsafe.",
+      }),
+    );
+    const tree = await AnatomyPage({ params });
+    const html = renderToStaticMarkup(tree as ReactElement);
+    expect(html).toContain("This finding has been retracted");
+    expect(html).toContain("Both models misread a hardened pattern as unsafe.");
+    // Original claim text must be suppressed in the retraction notice.
+    expect(html).not.toContain("Example finding");
   });
 });
