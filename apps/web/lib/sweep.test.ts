@@ -326,7 +326,7 @@ describe("runSweep", () => {
       const rows = (recordMaintainerReactions as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0] as Array<{ actionTaken: string }>;
       expect(rows).toHaveLength(3);
-      const actions = rows.map((r) => r.actionTaken).sort();
+      const actions = rows.map((r) => r.actionTaken).toSorted();
       expect(actions).toEqual(["reaction:heart", "reaction:rocket", "reaction:thumbs_down"]);
     });
 
