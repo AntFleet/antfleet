@@ -2497,9 +2497,52 @@ export async function flipPublicReceiptForRepo(args: {
 
 export async function recordMaintainerReactions(rows: NewMaintainerReaction[]): Promise<number> {
   if (rows.length === 0) return 0;
+
+  // Dedup: dismiss:reply rows are idempotent per (reviewId, findingId,
+  // reactorLogin) — a maintainer's second dismiss comment on the same finding
+  // (with a different created_at timestamp) would bypass the UNIQUE constraint
+  // on (reviewId, findingId, reactionAt, actionTaken). Filter out any
+  // dismiss:reply row whose (reviewId, findingId, reactorLogin) triple already
+  // has a recorded dismiss, so the first dismiss is the durable signal.
+  const dismissRows = rows.filter(
+    (r) => r.actionTaken === "dismiss:reply" && r.reactorLogin != null,
+  );
+  let dedupedRows = rows;
+  if (dismissRows.length > 0) {
+    const existing = await db
+      .select({
+        reviewId: maintainerReactions.reviewId,
+        findingId: maintainerReactions.findingId,
+        reactorLogin: maintainerReactions.reactorLogin,
+      })
+      .from(maintainerReactions)
+      .where(
+        and(
+          eq(maintainerReactions.actionTaken, "dismiss:reply"),
+          or(
+            ...dismissRows.map((r) =>
+              and(
+                eq(maintainerReactions.reviewId, r.reviewId),
+                eq(maintainerReactions.findingId, r.findingId),
+                eq(maintainerReactions.reactorLogin, r.reactorLogin!),
+              ),
+            ),
+          ),
+        ),
+      );
+    const alreadyDismissed = new Set(
+      existing.map((e) => `${e.reviewId}:${e.findingId}:${e.reactorLogin}`),
+    );
+    dedupedRows = rows.filter((r) => {
+      if (r.actionTaken !== "dismiss:reply" || r.reactorLogin == null) return true;
+      return !alreadyDismissed.has(`${r.reviewId}:${r.findingId}:${r.reactorLogin}`);
+    });
+  }
+
+  if (dedupedRows.length === 0) return 0;
   const inserted = await db
     .insert(maintainerReactions)
-    .values(rows)
+    .values(dedupedRows)
     .onConflictDoNothing({
       target: [
         maintainerReactions.reviewId,
@@ -2537,6 +2580,22 @@ export async function lookupFindingForInstall(
     )
     .limit(1);
   return rows[0] ?? null;
+}
+
+// Maintainer-dismiss auto-retraction (Step 0.5, item 6).
+//
+// Sets retractedAt + retractionReason on the finding when a verified
+// maintainer dismisses it via @antfleet dismiss. Idempotent — the underlying
+// WHERE retractedAt IS NULL means a second call is a safe no-op. Returns true
+// when the row was retracted, false when it was already retracted or the
+// findingId doesn't exist. retractionEmail is always null here: dismiss-by-
+// reply doesn't carry an email and the requestor is already stored as
+// reactorLogin in maintainer_reactions.
+export async function retractFindingByDismiss(
+  findingId: string,
+  reason: string | null,
+): Promise<boolean> {
+  return retractFinding(findingId, reason ?? "maintainer-dismissed via PR reply", null);
 }
 
 // ─── Mission 6 — /benchmarks public view ───────────────────────────────────

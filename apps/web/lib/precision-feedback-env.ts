@@ -8,7 +8,11 @@
 //      Anything else (including unset) → disabled (default OFF).
 //
 // Gates: footer affordance, dismiss-reply ingestion, auto-retraction.
-// Nothing is gated on this flag yet (items 4–6 in Step 0.5 build order).
+//
+// Auto-retraction (item 6) is gated ADDITIONALLY behind its own sub-flag
+// ANTFLEET_PRECISION_AUTORETRACT (env-only, default OFF). This lets capture
+// (items 4–5) run on a canary install without auto-retracting public receipts.
+// Only relevant when ANTFLEET_PRECISION_FEEDBACK is already ON for the install.
 //
 // The env-only check stays exported so future tests can mock the
 // install-aware path independently (same pattern as patch-agent-env.ts).
@@ -58,4 +62,23 @@ async function loadInstallOverride(installationId: number, repo: string): Promis
     .where(and(eq(installations.installationId, installationId), eq(installations.repo, repo)))
     .limit(1);
   return rows[0]?.precisionFeedbackEnabled ?? null;
+}
+
+// Sub-flag for auto-retraction (Step 0.5, item 6).
+//
+// Layered UNDER isPrecisionFeedbackEnabledForInstall — callers must check
+// the parent precision-feedback flag first, then this sub-flag. Env-only
+// (no per-install override needed at this stage; one canary pattern is
+// sufficient via the parent flag). Default OFF.
+//
+// Design note: keeping this env-only (rather than per-install) matches the
+// spec's intent that capture (items 4–5) can run on a single canary install
+// without auto-retracting public receipts site-wide. When the operator is
+// ready to activate retraction, they flip this env flag knowing the parent
+// flag has already been validated.
+export function isPrecisionAutoRetractEnabled(): boolean {
+  const raw = process.env["ANTFLEET_PRECISION_AUTORETRACT"];
+  if (raw === undefined) return false;
+  const normalized = raw.toLowerCase().trim();
+  return normalized === "true" || normalized === "1";
 }

@@ -15,9 +15,13 @@ import {
   lookupFindingForInstall,
   markReviewTerminallyFailed,
   recordMaintainerReactions,
+  retractFindingByDismiss,
   upsertInstallEntry,
 } from "@/db/queries";
-import { isPrecisionFeedbackEnabledForInstall } from "@/lib/precision-feedback-env";
+import {
+  isPrecisionAutoRetractEnabled,
+  isPrecisionFeedbackEnabledForInstall,
+} from "@/lib/precision-feedback-env";
 import { db } from "@/db";
 import { debitForReview, decideGate, type GateDecision } from "@/lib/paywall/gate";
 import { buildInvoice, renderInvoiceComment } from "@/lib/paywall/invoice";
@@ -402,7 +406,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               return;
             }
 
-            await recordMaintainerReactions([
+            const inserted = await recordMaintainerReactions([
               {
                 reviewId: found.reviewId,
                 findingId: dismissCmd.findingId,
@@ -417,7 +421,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               delivery,
               findingId: dismissCmd.findingId,
               reactorLogin: ic.sender.login,
+              inserted,
             });
+
+            // Auto-retraction (item 6): only when sub-flag is ON and the
+            // dismiss row was newly inserted (inserted > 0 means not a
+            // duplicate — idempotency guard). Gates: parent precision-feedback
+            // flag (already checked above) AND ANTFLEET_PRECISION_AUTORETRACT.
+            if (inserted > 0 && isPrecisionAutoRetractEnabled()) {
+              try {
+                const retracted = await retractFindingByDismiss(
+                  dismissCmd.findingId,
+                  dismissCmd.reason,
+                );
+                logInfo("webhook.dismiss_autoretracted", {
+                  delivery,
+                  findingId: dismissCmd.findingId,
+                  retracted,
+                });
+              } catch (retractErr) {
+                logError("webhook.dismiss_autoretract_failed", {
+                  delivery,
+                  findingId: dismissCmd.findingId,
+                  message: messageOf(retractErr),
+                });
+              }
+            }
           } catch (err) {
             logError("webhook.dismiss_command_failed", {
               delivery,

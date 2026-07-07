@@ -100,7 +100,9 @@ type X402Octokit = {
         repo: string;
         tree_sha: string;
         recursive: string;
-      }) => Promise<{ data: { tree: Array<{ path?: string; type?: string; size?: number; sha?: string }> } }>;
+      }) => Promise<{
+        data: { tree: Array<{ path?: string; type?: string; size?: number; sha?: string }> };
+      }>;
     };
   };
 };

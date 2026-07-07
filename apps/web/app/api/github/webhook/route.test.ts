@@ -83,11 +83,13 @@ const dbQueriesMocks = vi.hoisted(() => ({
   lookupFindingForInstall: vi.fn(),
   markReviewTerminallyFailed: vi.fn(),
   recordMaintainerReactions: vi.fn(),
+  retractFindingByDismiss: vi.fn(),
   upsertInstallEntry: vi.fn(),
 }));
 vi.mock("@/db/queries", () => dbQueriesMocks);
 
 const precisionFeedbackMocks = vi.hoisted(() => ({
+  isPrecisionAutoRetractEnabled: vi.fn(),
   isPrecisionFeedbackEnabledForInstall: vi.fn(),
 }));
 vi.mock("@/lib/precision-feedback-env", () => precisionFeedbackMocks);
@@ -261,11 +263,13 @@ beforeEach(() => {
   dbQueriesMocks.enqueueReview.mockResolvedValue({ reviewId: "review-1", isNew: true });
   dbQueriesMocks.markReviewTerminallyFailed.mockResolvedValue(undefined);
   dbQueriesMocks.upsertInstallEntry.mockResolvedValue("approved");
-  // Step 0.5 — dismiss ingestion defaults: flag OFF so all pre-existing
-  // issue_comment tests are unaffected.
+  // Step 0.5 — dismiss ingestion defaults: precision flag OFF, autoretract
+  // flag OFF so all pre-existing issue_comment tests are unaffected.
   precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(false);
+  precisionFeedbackMocks.isPrecisionAutoRetractEnabled.mockReturnValue(false);
   dbQueriesMocks.lookupFindingForInstall.mockResolvedValue(null);
   dbQueriesMocks.recordMaintainerReactions.mockResolvedValue(1);
+  dbQueriesMocks.retractFindingByDismiss.mockResolvedValue(true);
 
   gateMocks.decideGate.mockResolvedValue(BYPASS_GATE);
   gateMocks.debitForReview.mockResolvedValue({
@@ -1000,5 +1004,100 @@ describe("dismiss ingestion — issue_comment.created", () => {
     // Both paths should fire independently.
     expect(onboarderMocks.recordPartnerReply).toHaveBeenCalledTimes(1);
     expect(dbQueriesMocks.recordMaintainerReactions).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// (f) Auto-retraction — item 6
+// ===========================================================================
+
+describe("auto-retraction on dismiss (item 6)", () => {
+  it("does NOT retract when AUTORETRACT flag is OFF (default)", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    precisionFeedbackMocks.isPrecisionAutoRetractEnabled.mockReturnValue(false);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+    dbQueriesMocks.recordMaintainerReactions.mockResolvedValue(1);
+
+    const body = makeDismissCommentPayload();
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.recordMaintainerReactions).toHaveBeenCalledTimes(1);
+    // Auto-retraction must NOT fire when sub-flag is OFF.
+    expect(dbQueriesMocks.retractFindingByDismiss).not.toHaveBeenCalled();
+  });
+
+  it("retracts when AUTORETRACT flag is ON and dismiss is newly inserted", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    precisionFeedbackMocks.isPrecisionAutoRetractEnabled.mockReturnValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+    // inserted=1 → new dismiss row
+    dbQueriesMocks.recordMaintainerReactions.mockResolvedValue(1);
+    dbQueriesMocks.retractFindingByDismiss.mockResolvedValue(true);
+
+    const body = makeDismissCommentPayload();
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.retractFindingByDismiss).toHaveBeenCalledWith(
+      DISMISS_FINDING_ID,
+      "not a real issue",
+    );
+  });
+
+  it("does NOT retract when dismiss is a duplicate (inserted=0 from dedup)", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    precisionFeedbackMocks.isPrecisionAutoRetractEnabled.mockReturnValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+    // inserted=0 → duplicate, dedup suppressed it
+    dbQueriesMocks.recordMaintainerReactions.mockResolvedValue(0);
+
+    const body = makeDismissCommentPayload();
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    // Dedup means inserted=0 → auto-retraction is skipped (idempotency guard).
+    expect(dbQueriesMocks.retractFindingByDismiss).not.toHaveBeenCalled();
+  });
+
+  it("retractFindingByDismiss called with null reason when no reason given", async () => {
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    precisionFeedbackMocks.isPrecisionAutoRetractEnabled.mockReturnValue(true);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+    dbQueriesMocks.recordMaintainerReactions.mockResolvedValue(1);
+
+    // bare dismiss with no reason
+    const body = makeDismissCommentPayload({
+      body: `@antfleet dismiss ${DISMISS_FINDING_ID}`,
+    });
+    const res = await POST(makeRequest(body, { event: "issue_comment" }));
+    expect(res.status).toBe(200);
+
+    await nextServerMocks.flushAfter();
+    expect(dbQueriesMocks.retractFindingByDismiss).toHaveBeenCalledWith(
+      DISMISS_FINDING_ID,
+      null, // no reason in command
+    );
+  });
+
+  it("capture still works with precision flag ON but AUTORETRACT OFF", async () => {
+    // This verifies the canary pattern: precision flag ON (capture enabled)
+    // but autoretract OFF (no public receipt mutation).
+    precisionFeedbackMocks.isPrecisionFeedbackEnabledForInstall.mockResolvedValue(true);
+    precisionFeedbackMocks.isPrecisionAutoRetractEnabled.mockReturnValue(false);
+    dbQueriesMocks.lookupFindingForInstall.mockResolvedValue({ reviewId: DISMISS_REVIEW_ID });
+    dbQueriesMocks.recordMaintainerReactions.mockResolvedValue(1);
+
+    const body = makeDismissCommentPayload();
+    await POST(makeRequest(body, { event: "issue_comment" }));
+    await nextServerMocks.flushAfter();
+
+    // Signal captured...
+    expect(dbQueriesMocks.recordMaintainerReactions).toHaveBeenCalledTimes(1);
+    // ...but no retraction.
+    expect(dbQueriesMocks.retractFindingByDismiss).not.toHaveBeenCalled();
   });
 });

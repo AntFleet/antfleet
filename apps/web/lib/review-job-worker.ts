@@ -52,7 +52,11 @@ import {
 import { isPublicRepo } from "@/lib/repo-visibility";
 import { isBenchmarkRepo } from "@/lib/repo-benchmark";
 import { runReviewKernel, runReviewWorker } from "@/lib/review-worker";
-import { getPublicChangedFiles, getPublicCommitSnapshotFiles, makePublicOctokit } from "@/lib/github-files-public";
+import {
+  getPublicChangedFiles,
+  getPublicCommitSnapshotFiles,
+  makePublicOctokit,
+} from "@/lib/github-files-public";
 import { reviewPR } from "@/lib/review-pipeline";
 import { getAcpReviewPriceUsdc, getReviewPriceUsdc } from "@/lib/paywall/env";
 import {

@@ -51,7 +51,10 @@ function deps(overrides: Partial<X402RouteDeps> = {}): X402RouteDeps {
   };
 }
 
-function request(body: Record<string, unknown> = { target: { pr: 1, repo: "antfleet/x402-fixture" } }, headers: HeadersInit = {}) {
+function request(
+  body: Record<string, unknown> = { target: { pr: 1, repo: "antfleet/x402-fixture" } },
+  headers: HeadersInit = {},
+) {
   return new NextRequest("https://www.antfleet.dev/api/v1/review/x402", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
@@ -102,7 +105,9 @@ function octokit() {
       },
       repos: {
         listPullRequestsAssociatedWithCommit: vi.fn(),
-        getCommit: vi.fn(async () => ({ data: { sha: "abc1234567890abcdef1234567890abcdef12345678" } })),
+        getCommit: vi.fn(async () => ({
+          data: { sha: "abc1234567890abcdef1234567890abcdef12345678" },
+        })),
       },
       git: {
         getTree: vi.fn(),
@@ -217,7 +222,9 @@ describe("POST /api/v1/review/x402", () => {
 
   it("enqueues a fleet commit snapshot when aeon requests fleet_commit_review on sha", async () => {
     await withGate(async () => {
-      const createJob = vi.fn(async () => job({ prNumber: 0, sha: "abc1234567890abcdef1234567890abcdef12345678" }));
+      const createJob = vi.fn(async () =>
+        job({ prNumber: 0, sha: "abc1234567890abcdef1234567890abcdef12345678" }),
+      );
       const scheduleWorker = vi.fn();
       const res = await handleX402ReviewRequest(
         request(
