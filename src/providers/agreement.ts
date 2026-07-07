@@ -16,6 +16,10 @@ export type Disagreement = {
   reason: string;
 };
 
+// Safe because findingsAgree gates category exact + severity ±1 BEFORE evidence
+// overlap, so slack only merges already-agreeing findings on the same file.
+const LINE_OVERLAP_SLACK = 5;
+
 const severityRank: Record<Finding["severity"], number> = {
   critical: 0,
   high: 1,
@@ -182,7 +186,7 @@ function lineRangesOverlap(
   const aE = aEnd ?? aStart ?? 0;
   const bS = bStart ?? bEnd ?? 0;
   const bE = bEnd ?? bStart ?? 0;
-  return aS <= bE && bS <= aE;
+  return aS <= bE + LINE_OVERLAP_SLACK && bS <= aE + LINE_OVERLAP_SLACK;
 }
 
 function evidenceEntriesOverlap(

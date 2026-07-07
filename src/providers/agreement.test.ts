@@ -239,6 +239,150 @@ describe("findingsAgree", () => {
     const b = makeFinding({ evidence: [] });
     expect(findingsAgree(a, b)).toBe(false);
   });
+
+  // LINE_OVERLAP_SLACK tests — widened line-overlap window (±5)
+  it("agrees when line ranges have a gap of exactly 5 (boundary)", () => {
+    // a: 10–20, b: 26–30  → gap = 26 − 20 = 6... wait, need gap ≤ 5
+    // a: 10–20, b: 25–30  → gap = 25 − 20 − 1 = 4 (adjacent gap = bS − aE − 1 = 4)
+    // Strict gap = bS − aE = 5, meaning bS = aE + 5. Should merge.
+    const a = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 25, endLine: 30, symbol: null, quote: null }],
+    });
+    // gap = bS − aE = 25 − 20 = 5; should merge with slack=5
+    expect(findingsAgree(a, b)).toBe(true);
+  });
+
+  it("disagrees when line ranges have a gap greater than 5", () => {
+    const a = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 27, endLine: 35, symbol: null, quote: null }],
+    });
+    // gap = bS − aE = 27 − 20 = 7; exceeds slack=5, should not merge
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("existing disjoint-range test (gap=10) still disagrees after slack change", () => {
+    // Mirrors the original "disagrees on disjoint line ranges" test at line ~110
+    const a = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 30, endLine: 40, symbol: null, quote: null }],
+    });
+    // gap = bS − aE = 30 − 20 = 10; exceeds slack=5
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("slack requires same category — different categories do not agree even with close lines", () => {
+    const a = makeFinding({
+      category: "bug",
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      category: "security",
+      evidence: [{ path: "src/handler.ts", startLine: 22, endLine: 30, symbol: null, quote: null }],
+    });
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("slack requires severity within 1 bucket — gap≤5 does not override severity gate", () => {
+    const a = makeFinding({
+      severity: "critical",
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      severity: "low",
+      evidence: [{ path: "src/handler.ts", startLine: 22, endLine: 30, symbol: null, quote: null }],
+    });
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("slack requires same path — near-adjacent lines on different files do not agree", () => {
+    const a = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      evidence: [{ path: "src/other.ts", startLine: 22, endLine: 30, symbol: null, quote: null }],
+    });
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("null-line path unchanged: both-null falls through to symbol/path-only branch (not spurious line match)", () => {
+    // Two findings with both sides null — lineRangesOverlap short-circuits false;
+    // they can still agree via symbol match
+    const a = makeFinding({
+      evidence: [
+        { path: "src/handler.ts", startLine: null, endLine: null, symbol: "doThing", quote: null },
+      ],
+    });
+    const b = makeFinding({
+      evidence: [
+        { path: "src/handler.ts", startLine: null, endLine: null, symbol: "doThing", quote: null },
+      ],
+    });
+    expect(findingsAgree(a, b)).toBe(true);
+  });
+
+  it("null-line path unchanged: disjoint-localized pair does not spuriously match via null short-circuit", () => {
+    // One side is fully null, other side is far-away line range; should still agree
+    // via path-only fallback (isPathOnly), not produce a spurious line match
+    const sparse = makeFinding({
+      evidence: [
+        { path: "src/handler.ts", startLine: null, endLine: null, symbol: null, quote: null },
+      ],
+    });
+    const localized = makeFinding({
+      evidence: [
+        { path: "src/handler.ts", startLine: 300, endLine: 400, symbol: null, quote: null },
+      ],
+    });
+    // path-only fallback still applies — this should agree
+    expect(findingsAgree(sparse, localized)).toBe(true);
+  });
+
+  it("half-null point range is widened by slack (only startLine present)", () => {
+    // a has only startLine; b is 5 lines away — should merge with slack
+    const a = makeFinding({
+      evidence: [
+        { path: "src/handler.ts", startLine: 20, endLine: null, symbol: null, quote: null },
+      ],
+    });
+    const b = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 25, endLine: 30, symbol: null, quote: null }],
+    });
+    // aS=20 aE=20 (null→aStart), bS=25 bE=30: bS − aE = 5 ≤ slack → merge
+    expect(findingsAgree(a, b)).toBe(true);
+  });
+
+  it("half-null point range beyond slack does not merge", () => {
+    const a = makeFinding({
+      evidence: [
+        { path: "src/handler.ts", startLine: 20, endLine: null, symbol: null, quote: null },
+      ],
+    });
+    const b = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 27, endLine: 35, symbol: null, quote: null }],
+    });
+    // gap = 27 − 20 = 7 > 5
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("degenerate reversed range is handled without throwing", () => {
+    // aStart > aEnd is ill-formed but should not throw
+    const a = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 20, endLine: 10, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      evidence: [{ path: "src/handler.ts", startLine: 15, endLine: 25, symbol: null, quote: null }],
+    });
+    // No assertion on true/false — just must not throw
+    expect(() => findingsAgree(a, b)).not.toThrow();
+  });
 });
 
 describe("mergeFindings", () => {
@@ -451,6 +595,61 @@ describe("mergeFindings", () => {
     const { agreedCount, disagreementCount } = run("unanimous", [
       review("a", [f1]),
       review("b", [f2]),
+    ]);
+    expect(agreedCount).toBe(0);
+    expect(disagreementCount).toBe(2);
+  });
+
+  // LINE_OVERLAP_SLACK end-to-end: near-adjacent same-bug merges in mergeFindings
+  it("near-adjacent same-bug findings (gap=3) collapse to one agreed entry, zero disagreements", () => {
+    const a = makeFinding({
+      title: "Null dereference in handler",
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      title: "NPE in handler",
+      evidence: [{ path: "src/handler.ts", startLine: 23, endLine: 30, symbol: null, quote: null }],
+    });
+    // gap = bS − aE = 23 − 20 = 3 ≤ slack=5 → should merge
+    const { agreedCount, disagreementCount } = run("unanimous", [
+      review("anthropic", [a]),
+      review("openai", [b]),
+    ]);
+    expect(agreedCount).toBe(1);
+    expect(disagreementCount).toBe(0);
+  });
+
+  it("near-adjacent same-bug at boundary gap=5 collapses to one agreed entry", () => {
+    const a = makeFinding({
+      title: "Unsafe cast",
+      evidence: [{ path: "src/cast.ts", startLine: 5, endLine: 10, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      title: "Type assertion hazard",
+      evidence: [{ path: "src/cast.ts", startLine: 15, endLine: 20, symbol: null, quote: null }],
+    });
+    // gap = 15 − 10 = 5 = slack → should merge
+    const { agreedCount, disagreementCount } = run("unanimous", [
+      review("anthropic", [a]),
+      review("openai", [b]),
+    ]);
+    expect(agreedCount).toBe(1);
+    expect(disagreementCount).toBe(0);
+  });
+
+  it("gap=6 stays disjoint even in mergeFindings end-to-end", () => {
+    const a = makeFinding({
+      title: "Bug alpha",
+      evidence: [{ path: "src/cast.ts", startLine: 5, endLine: 10, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      title: "Bug beta",
+      evidence: [{ path: "src/cast.ts", startLine: 16, endLine: 20, symbol: null, quote: null }],
+    });
+    // gap = 16 − 10 = 6 > 5 → should not merge
+    const { agreedCount, disagreementCount } = run("unanimous", [
+      review("anthropic", [a]),
+      review("openai", [b]),
     ]);
     expect(agreedCount).toBe(0);
     expect(disagreementCount).toBe(2);
