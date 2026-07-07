@@ -147,6 +147,15 @@ export const findingStatus = pgTable(
     //                  that resolves finding_index against agreed[] filters on
     //                  source='consensus'; the precision metric segments by it.
     source: text("source").notNull().default("consensus"),
+    // Build B (migration 0052) — two_of_three graduation marker. A single
+    // independent 3rd-model (GLM 5.2) confirm/reject call adjudicates each
+    // source='single_model' shadow finding; corroborated=true = graduated to
+    // the two_of_three sub-tier. Stays INSIDE the source='single_model' tier
+    // (never flips source to 'consensus'), so every public reader-guard that
+    // already excludes source='single_model' also excludes corroborated rows —
+    // no new public exposure. NOT NULL DEFAULT false so pre-0052 rows backfill
+    // to uncorroborated. The precision metric segments dismiss-rate by it.
+    corroborated: boolean("corroborated").notNull().default(false),
     closureSha: text("closure_sha"),
     closureCommentId: bigint("closure_comment_id", { mode: "number" }),
     closureCommentUrl: text("closure_comment_url"),
@@ -569,6 +578,12 @@ export const installations = pgTable(
     // Non-null = force-on/off for this install, regardless of env. Used to
     // canary one install (e.g. aeon-bench) before flipping env-wide.
     singleModelTierEnabled: boolean("single_model_tier_enabled"),
+    // Build B migration 0052 — per-install 3rd-model adjudication override.
+    // NULL = inherit ANTFLEET_THIRD_MODEL_ADJUDICATION env default (OFF).
+    // Non-null = force-on/off for this install, regardless of env. Layers
+    // UNDER single_model_tier_enabled: adjudication only runs on a shadow tier
+    // that was itself enabled for the install.
+    thirdModelAdjudicationEnabled: boolean("third_model_adjudication_enabled"),
   },
   (t) => [
     unique("installations_install_repo_uniq").on(t.installationId, t.repo),

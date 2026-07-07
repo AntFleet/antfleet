@@ -488,4 +488,31 @@ describe("formatSingleModelSection (Win 2)", () => {
     });
     expect(publicComment).not.toContain("single-model · experimental");
   });
+
+  // Build B — corroborated (two_of_three) label.
+  it("tags a corroborated finding with the 3rd-model label", () => {
+    const out = formatSingleModelSection([
+      {
+        finding: mkFinding({ severity: "high", title: "Confirmed by GLM" }),
+        findingId: "rev-1-s0",
+        corroborated: true,
+      },
+    ]);
+    expect(out).toContain("**Bug · High · corroborated (3rd-model)** — Confirmed by GLM");
+  });
+
+  it("renders byte-identically to Win2 when corroborated is false/absent", () => {
+    const base = formatSingleModelSection([
+      { finding: mkFinding({ severity: "high", title: "Only Anthropic" }), findingId: "rev-1-s0" },
+    ]);
+    const explicitFalse = formatSingleModelSection([
+      {
+        finding: mkFinding({ severity: "high", title: "Only Anthropic" }),
+        findingId: "rev-1-s0",
+        corroborated: false,
+      },
+    ]);
+    expect(explicitFalse).toBe(base);
+    expect(base).not.toContain("corroborated (3rd-model)");
+  });
 });

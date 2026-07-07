@@ -639,6 +639,11 @@ export function makeShadowFindingId(reviewId: string, index: number): string {
 export async function recordSingleModelFindingStatuses(
   reviewId: string,
   shadow: FindingLifecycleInput[],
+  // Build B — parallel per-finding two_of_three graduation flags. Index-aligned
+  // with `shadow`; a missing/false entry means the finding was not corroborated
+  // by the 3rd-model adjudicator (the default, flag-off state). Stays inside the
+  // source='single_model' tier, so it adds no new public exposure.
+  corroborated?: readonly boolean[],
 ): Promise<string[]> {
   const rows = shadow.map((f, index) => ({
     reviewId,
@@ -649,6 +654,7 @@ export async function recordSingleModelFindingStatuses(
     label: f.label ?? "blocking",
     category: f.category,
     source: "single_model",
+    corroborated: corroborated?.[index] ?? false,
   }));
   return await db.transaction(async (tx) => {
     const existing = await tx
@@ -675,6 +681,11 @@ export async function recordSingleModelFindingStatuses(
             severity: sql`excluded.severity`,
             label: sql`excluded.label`,
             category: sql`excluded.category`,
+            // Build B — a re-run may graduate a previously-uncorroborated
+            // shadow finding (or un-graduate one). Refresh it alongside the
+            // other content columns, guarded by the same open+untouched
+            // predicate so it never overwrites a lifecycle-mutated row.
+            corroborated: sql`excluded.corroborated`,
           },
           where: and(
             eq(findingStatus.status, "open"),
@@ -2799,11 +2810,21 @@ export async function retractFindingByDismiss(
 const PRECISION_TIERS = ["low", "medium", "high", "critical"] as const;
 type PrecisionTier = (typeof PRECISION_TIERS)[number];
 
-// Win 2 — precision is segmented by finding source so the shadow tier's
-// dismiss-rate reads side-by-side with the consensus baseline instead of
-// contaminating it. 'consensus' first so existing consumers (weekly-digest)
-// still see the consensus tiers in the same relative order.
-const PRECISION_SOURCES = ["consensus", "single_model"] as const;
+// Win 2 / Build B — precision is segmented into three cohorts so each tier's
+// dismiss-rate reads side-by-side without contaminating the others. 'consensus'
+// first so existing consumers (weekly-digest) still see the consensus tiers in
+// the same relative order.
+//   consensus     — the unanimous-gate baseline (finding_status.source='consensus').
+//   single_model  — the RAW shadow tier (source='single_model', ALL rows,
+//                   corroborated or not) — Win2's measurement cohort, unchanged.
+//   two_of_three  — Build B's corroborated SUBSET (source='single_model' AND
+//                   corroborated=true) — the graduated findings the 3rd-model
+//                   adjudicator confirmed. A corroborated row is counted in BOTH
+//                   single_model (raw) and two_of_three (subset), by design: the
+//                   success predicate is dismissRate(two_of_three) <
+//                   dismissRate(single_model), so both must span the same base
+//                   population minus the corroboration filter.
+const PRECISION_SOURCES = ["consensus", "single_model", "two_of_three"] as const;
 type PrecisionSource = (typeof PRECISION_SOURCES)[number];
 
 export type PrecisionTierStats = {
@@ -2825,8 +2846,14 @@ function precisionKey(source: string, tier: string): string {
   return `${source}|${tier}`;
 }
 
-function normalizePrecisionSource(raw: string): PrecisionSource {
-  return raw === "single_model" ? "single_model" : "consensus";
+// Build B — map a persisted (source, corroborated) row to the cohort(s) it
+// contributes to. A consensus row → ['consensus']. A shadow row → always
+// ['single_model'] (the raw cohort) PLUS ['two_of_three'] when corroborated,
+// so the corroborated subset is measured against the same base population as
+// the raw shadow tier (the success predicate compares the two).
+function precisionCohortsFor(source: string, corroborated: boolean): PrecisionSource[] {
+  if (source !== "single_model") return ["consensus"];
+  return corroborated ? ["single_model", "two_of_three"] : ["single_model"];
 }
 
 export async function precisionWindow(
@@ -2858,18 +2885,21 @@ export async function precisionWindow(
   );
   const publicGate = eq(reviews.publicReceipt, true);
 
-  // Per-(source, tier) posted count. Win 2: source in the select + groupBy so
-  // the shadow tier is measured separately from the consensus baseline.
+  // Per-(source, corroborated, tier) posted count. Win 2 put source in the
+  // select + groupBy so the shadow tier is measured separately from consensus;
+  // Build B adds corroborated so the two_of_three subset is derivable in JS
+  // (one shadow row fans out into single_model + two_of_three when corroborated).
   const postedRows = await db
     .select({
       source: findingStatus.source,
+      corroborated: findingStatus.corroborated,
       severity: findingStatus.severity,
       n: count(findingStatus.id),
     })
     .from(findingStatus)
     .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
     .where(and(publicGate, findingsCreatedRange))
-    .groupBy(findingStatus.source, findingStatus.severity);
+    .groupBy(findingStatus.source, findingStatus.corroborated, findingStatus.severity);
 
   // Per-tier dismissed count — DISTINCT findings from the POSTED-IN-WINDOW cohort
   // that have ≥1 authorised dismiss:reply at any time (reactionAt unbounded).
@@ -2881,6 +2911,7 @@ export async function precisionWindow(
     .select({
       findingId: maintainerReactions.findingId,
       source: findingStatus.source,
+      corroborated: findingStatus.corroborated,
       severity: findingStatus.severity,
       authorAssociation: maintainerReactions.authorAssociation,
     })
@@ -2909,16 +2940,23 @@ export async function precisionWindow(
     if (!DISMISS_AUTHORISED_ASSOCIATIONS.has(row.authorAssociation ?? "")) continue;
     const tier = row.severity as PrecisionTier;
     if (!PRECISION_TIERS.includes(tier)) continue;
-    const source = normalizePrecisionSource(row.source);
-    dismissedPerTier.get(precisionKey(source, tier))!.add(row.findingId);
+    // A corroborated shadow dismiss counts against BOTH single_model and
+    // two_of_three — the finding_id set dedups within each cohort.
+    for (const source of precisionCohortsFor(row.source, row.corroborated)) {
+      dismissedPerTier.get(precisionKey(source, tier))!.add(row.findingId);
+    }
   }
 
   const postedPerTier = new Map<string, number>();
   for (const row of postedRows) {
     const tier = row.severity as PrecisionTier;
     if (!PRECISION_TIERS.includes(tier)) continue;
-    const source = normalizePrecisionSource(row.source);
-    postedPerTier.set(precisionKey(source, tier), row.n);
+    // Accumulate (+=) rather than set: a shadow tier splits into two groupBy
+    // rows (corroborated true/false) that both land in the single_model cohort.
+    for (const source of precisionCohortsFor(row.source, row.corroborated)) {
+      const key = precisionKey(source, tier);
+      postedPerTier.set(key, (postedPerTier.get(key) ?? 0) + row.n);
+    }
   }
 
   const tiers: PrecisionTierStats[] = PRECISION_SOURCES.flatMap((source) =>

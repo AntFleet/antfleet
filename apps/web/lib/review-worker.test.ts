@@ -125,6 +125,10 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     recordSingleModelFindingStatuses: vi.fn().mockResolvedValue([]),
     isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(false),
     isSingleModelTierRenderEnabled: vi.fn().mockReturnValue(false),
+    // Build B — 3rd-model adjudication: default OFF so existing tests never
+    // trigger a GLM call and byte-identical to pre-Build-B behavior.
+    isThirdModelAdjudicationEnabledForInstall: vi.fn().mockResolvedValue(false),
+    applyThirdModelAdjudication: vi.fn().mockResolvedValue({ rows: [], corroboratedCount: 0 }),
     recordPatchDecisions: vi.fn().mockResolvedValue(undefined),
     setReviewPatchCost: vi.fn().mockResolvedValue(undefined),
     markReviewSucceeded: vi.fn().mockResolvedValue(undefined),
@@ -1385,5 +1389,90 @@ describe("single-model shadow tier (Win 2) — install lane", () => {
     // Persisted for measurement, but embargoed → suppressed from the section.
     expect(deps.recordSingleModelFindingStatuses).toHaveBeenCalledTimes(1);
     expect(bodies[0]).not.toContain("single-model · experimental");
+  });
+});
+
+describe("3rd-model adjudication (Build B) — kernel gating", () => {
+  const shadowBundle = () =>
+    mkBundle({
+      singleModelTier: [
+        {
+          finding: mkFinding({ severity: "high", title: "Only Anthropic flagged this" }),
+          provider: "anthropic",
+        },
+      ],
+    });
+
+  function bodiesCapturing(bodies: string[], overrides: Partial<WorkerDeps> = {}): WorkerDeps {
+    return mkDeps({
+      reviewPR: vi.fn().mockResolvedValue(shadowBundle()),
+      postPRComment: vi.fn().mockImplementation(async (a: { body: string }) => {
+        bodies.push(a.body);
+        return { id: 9001, htmlUrl: "https://gh/c/9001" };
+      }),
+      ...overrides,
+    });
+  }
+
+  it("adjudication flag OFF → no GLM call, no corroborated flags written", async () => {
+    const bodies: string[] = [];
+    const deps = bodiesCapturing(bodies, {
+      isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(true),
+      recordSingleModelFindingStatuses: vi.fn().mockResolvedValue(["rev-1-s0"]),
+      // Adjudication flag OFF (the mkDeps default), applier must NOT run.
+      isThirdModelAdjudicationEnabledForInstall: vi.fn().mockResolvedValue(false),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    expect(deps.isThirdModelAdjudicationEnabledForInstall).toHaveBeenCalled();
+    expect(deps.applyThirdModelAdjudication).not.toHaveBeenCalled();
+    // The shadow write still happens (Win2), with all-false corroboration.
+    expect(deps.recordSingleModelFindingStatuses).toHaveBeenCalledTimes(1);
+    const call = (deps.recordSingleModelFindingStatuses as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(call[2]).toEqual([false]);
+  });
+
+  it("adjudication ON + confirm → corroborated=true threaded into persistence", async () => {
+    const bodies: string[] = [];
+    const deps = bodiesCapturing(bodies, {
+      isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(true),
+      recordSingleModelFindingStatuses: vi.fn().mockResolvedValue(["rev-1-s0"]),
+      isThirdModelAdjudicationEnabledForInstall: vi.fn().mockResolvedValue(true),
+      applyThirdModelAdjudication: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            index: 0,
+            corroborated: true,
+            verdict: "confirm",
+            reason: "glm confirmed",
+            thirdModel: "glm-5.2",
+          },
+        ],
+        corroboratedCount: 1,
+      }),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    expect(deps.applyThirdModelAdjudication).toHaveBeenCalledTimes(1);
+    const call = (deps.recordSingleModelFindingStatuses as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(call[2]).toEqual([true]);
+  });
+
+  it("adjudication throws → fail-open, corroborated stays false, review proceeds", async () => {
+    const bodies: string[] = [];
+    const deps = bodiesCapturing(bodies, {
+      isSingleModelTierEnabledForInstall: vi.fn().mockResolvedValue(true),
+      isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(true),
+      recordSingleModelFindingStatuses: vi.fn().mockResolvedValue(["rev-1-s0"]),
+      isThirdModelAdjudicationEnabledForInstall: vi.fn().mockResolvedValue(true),
+      applyThirdModelAdjudication: vi.fn().mockRejectedValue(new Error("z.ai down")),
+    });
+    await runReviewWorker("rev-1", "webhook", deps);
+    // Fail-open: shadow write still happens with all-false corroboration.
+    expect(deps.recordSingleModelFindingStatuses).toHaveBeenCalledTimes(1);
+    const call = (deps.recordSingleModelFindingStatuses as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(call[2]).toEqual([false]);
+    // Review still completes and posts a comment.
+    expect(deps.postPRComment).toHaveBeenCalled();
   });
 });

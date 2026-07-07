@@ -21,6 +21,12 @@ import {
   isSingleModelTierEnabledForInstall as realIsSingleModelTierEnabledForInstall,
   isSingleModelTierRenderEnabled as realIsSingleModelTierRenderEnabled,
 } from "./single-model-tier-env";
+import { isThirdModelAdjudicationEnabledForInstall as realIsThirdModelAdjudicationEnabledForInstall } from "./third-model-adjudication-env";
+import {
+  applyThirdModelAdjudication as realApplyThirdModelAdjudication,
+  ADJUDICATION_COST_USD,
+  type AdjudicationResultRow,
+} from "./third-model-adjudication";
 import {
   recordPatchProposedEvent as realRecordPatchProposedEvent,
   runFirstReviewSummary as realRunFirstReviewSummary,
@@ -131,6 +137,9 @@ export type WorkerDeps = {
   recordSingleModelFindingStatuses: typeof realRecordSingleModelFindingStatuses;
   isSingleModelTierEnabledForInstall: typeof realIsSingleModelTierEnabledForInstall;
   isSingleModelTierRenderEnabled: typeof realIsSingleModelTierRenderEnabled;
+  // Build B — 3rd-model adjudication of the shadow tier into two_of_three.
+  isThirdModelAdjudicationEnabledForInstall: typeof realIsThirdModelAdjudicationEnabledForInstall;
+  applyThirdModelAdjudication: typeof realApplyThirdModelAdjudication;
   recordPatchDecisions: typeof realRecordPatchDecisions;
   setReviewPatchCost: typeof realSetReviewPatchCost;
   markReviewSucceeded: typeof realMarkReviewSucceeded;
@@ -181,6 +190,8 @@ export function realWorkerDeps(): WorkerDeps {
     recordSingleModelFindingStatuses: realRecordSingleModelFindingStatuses,
     isSingleModelTierEnabledForInstall: realIsSingleModelTierEnabledForInstall,
     isSingleModelTierRenderEnabled: realIsSingleModelTierRenderEnabled,
+    isThirdModelAdjudicationEnabledForInstall: realIsThirdModelAdjudicationEnabledForInstall,
+    applyThirdModelAdjudication: realApplyThirdModelAdjudication,
     recordPatchDecisions: realRecordPatchDecisions,
     setReviewPatchCost: realSetReviewPatchCost,
     markReviewSucceeded: realMarkReviewSucceeded,
@@ -441,6 +452,11 @@ export type ReviewKernelDeps = {
   // inert until a canary override (or the env flag) flips it on.
   recordSingleModelFindingStatuses: typeof realRecordSingleModelFindingStatuses;
   isSingleModelTierEnabledForInstall: typeof realIsSingleModelTierEnabledForInstall;
+  // Build B — 3rd-model adjudication of the shadow tier into two_of_three.
+  // Kernel-side (rail-agnostic measurement); gated per-install so it stays
+  // inert until a canary override / the env flag flips it on.
+  isThirdModelAdjudicationEnabledForInstall: typeof realIsThirdModelAdjudicationEnabledForInstall;
+  applyThirdModelAdjudication: typeof realApplyThirdModelAdjudication;
   loadRepoThreatModel: typeof realLoadRepoThreatModel;
   upsertRepoThreatModel: typeof realUpsertRepoThreatModel;
   // Daybreak — reachability gate plumbing. The kernel-side hook runs on
@@ -966,6 +982,58 @@ export async function runReviewKernel(
     }
   }
 
+  // Build B — 3rd-model adjudication of the single-model shadow tier into the
+  // two_of_three corroborated sub-tier. Runs AFTER the shadow tier is derived
+  // (bundle.singleModelTier) and BEFORE recordSingleModelFindingStatuses
+  // persists (below), so the per-finding `corroborated` flags flow into both
+  // the persistence write and the agreementDecision JSONB audit trail.
+  //
+  // Gate: shadow tier non-empty, not degraded, per-install adjudication flag
+  // on. installationId is null on paid rails (no install to canary) → skipped.
+  // Fail-open: any error → all corroborated stay false, the review proceeds.
+  // The applier owns its own 60s wall-clock cap + AbortController.
+  let adjudicationRows: AdjudicationResultRow[] = [];
+  // The real ReviewBundle always supplies a singleModelTier array ([] default);
+  // normalize defensively so an over-early/partial bundle shape (e.g. a
+  // cost-cap bail before the tier is populated) can never throw here — this
+  // block runs BEFORE the cost-cap early return.
+  const shadowTier = Array.isArray(bundle.singleModelTier) ? bundle.singleModelTier : [];
+  if (installationId !== null && !bundle.degraded && shadowTier.length > 0) {
+    try {
+      // Fail-closed layering (spec §6): adjudication runs only when the
+      // single-model tier is ALSO enabled for the install. The corroborated
+      // results are persisted/rendered under the tier gate downstream, so
+      // running GLM without the tier on would be discarded — wasted spend.
+      const [adjudicationEnabled, tierEnabled] = await Promise.all([
+        deps.isThirdModelAdjudicationEnabledForInstall(installationId, repo),
+        deps.isSingleModelTierEnabledForInstall(installationId, repo),
+      ]);
+      if (adjudicationEnabled && tierEnabled) {
+        const applied = await deps.applyThirdModelAdjudication({
+          singleModelTier: shadowTier,
+          ...(signal !== undefined ? { signal } : {}),
+        });
+        adjudicationRows = applied.rows;
+        logInfo("third_model_adjudication.completed", {
+          reviewId,
+          adjudicated: applied.rows.length,
+          corroborated: applied.corroboratedCount,
+          costUsd: applied.rows.length * ADJUDICATION_COST_USD,
+        });
+      }
+    } catch (adjErr) {
+      // Fail-open — never fail the review on the adjudication side-channel.
+      logError("third_model_adjudication.threw", {
+        reviewId,
+        message: messageOf(adjErr),
+      });
+    }
+  }
+  // Index-aligned corroboration flags for the shadow persistence write below.
+  const shadowCorroborated: boolean[] = shadowTier.map(
+    (_, i) => adjudicationRows[i]?.corroborated ?? false,
+  );
+
   // Full agreement-decision shape, shared across cost-cap + success
   // branches. Triage is included unconditionally — see the kernel
   // contract above. `agreed` here reflects the post-reachability-gate
@@ -976,10 +1044,24 @@ export async function runReviewKernel(
     agreed: bundle.agreed,
     disagreements: bundle.disagreements,
     // Win 2 — persist the single-model shadow tier alongside the consensus
-    // findings. Each entry carries the flagging provider (forward-compat for
-    // the 3rd-model adjudication build). Empty [] unless the tier env flag is
-    // on, so this key is inert/absent-in-effect by default.
-    singleModelTier: bundle.singleModelTier,
+    // findings. Each entry carries the flagging provider. Build B annotates
+    // each with its 3rd-model adjudication verdict (parallel to the
+    // reachabilityGate audit trail) so the two_of_three graduation is auditable
+    // from the JSONB alone. `adjudication` is absent when no adjudication ran
+    // (flag off / paid rail), keeping the shape byte-identical to Win2.
+    singleModelTier: shadowTier.map((s, i) => {
+      const adj = adjudicationRows[i];
+      if (adj === undefined) return s;
+      return {
+        ...s,
+        adjudication: {
+          verdict: adj.verdict,
+          corroborated: adj.corroborated,
+          thirdModel: adj.thirdModel,
+          reason: adj.reason,
+        },
+      };
+    }),
     degraded: bundle.degraded,
     degradedReason: bundle.degradedReason,
     triage: bundle.triage,
@@ -1138,6 +1220,9 @@ export async function runReviewKernel(
             severity: s.finding.severity,
             category: s.finding.category,
           })),
+          // Build B — index-aligned two_of_three graduation flags. All false
+          // unless the adjudication flag ran and GLM confirmed the finding.
+          shadowCorroborated,
         );
         // Route shadow HIGH/CRITICAL through the SAME disclosure embargo as
         // consensus so a live-protocol / cyber-tier repo never surfaces them
@@ -1217,6 +1302,7 @@ export async function runReviewKernel(
       embargoedDisclosureIndexes,
       shadowFindingIds,
       shadowEmbargoedIndexes,
+      shadowCorroborated,
       effectivePublicReceipt,
       cyberTier: cyberTierForReview,
       lane: args.installLane,
@@ -1268,6 +1354,7 @@ async function maybeFormatSingleModelSection(args: {
   singleModelTier: Awaited<ReturnType<typeof realReviewPR>>["singleModelTier"];
   shadowFindingIds: string[];
   shadowEmbargoedIndexes: ReadonlySet<number>;
+  shadowCorroborated: readonly boolean[];
   precisionFeedbackEnabled: boolean;
   effectivePublicReceipt: boolean;
   cyberTier: "default" | "cyber";
@@ -1279,6 +1366,7 @@ async function maybeFormatSingleModelSection(args: {
     singleModelTier,
     shadowFindingIds,
     shadowEmbargoedIndexes,
+    shadowCorroborated,
     precisionFeedbackEnabled,
     effectivePublicReceipt,
     cyberTier,
@@ -1307,12 +1395,19 @@ async function maybeFormatSingleModelSection(args: {
     .map((s, index) => ({
       finding: s.finding,
       findingId: shadowFindingIds[index] ?? null,
+      // Build B — carry the two_of_three graduation flag into the render so
+      // corroborated findings get a `· corroborated (3rd-model)` label.
+      corroborated: shadowCorroborated[index] ?? false,
       index,
     }))
     .filter((x) => !shadowEmbargoedIndexes.has(x.index));
   if (visible.length === 0) return null;
   return formatSingleModelSection(
-    visible.map((x) => ({ finding: x.finding, findingId: x.findingId })),
+    visible.map((x) => ({
+      finding: x.finding,
+      findingId: x.findingId,
+      corroborated: x.corroborated,
+    })),
   );
 }
 
@@ -1336,6 +1431,10 @@ async function runInstallLane(args: {
   // disclosure layer embargoed (suppressed from the canary section).
   shadowFindingIds: string[];
   shadowEmbargoedIndexes: ReadonlySet<number>;
+  // Build B — index-aligned two_of_three graduation flags for the canary
+  // render. All-false unless the adjudication flag ran; corroborated findings
+  // get a `· corroborated (3rd-model)` label in the shadow section.
+  shadowCorroborated: readonly boolean[];
   effectivePublicReceipt: boolean;
   cyberTier: "default" | "cyber";
   lane: ReviewKernelInstallLane;
@@ -1353,6 +1452,7 @@ async function runInstallLane(args: {
     embargoedDisclosureIndexes,
     shadowFindingIds,
     shadowEmbargoedIndexes,
+    shadowCorroborated,
     effectivePublicReceipt,
     cyberTier,
     lane,
@@ -1621,6 +1721,7 @@ async function runInstallLane(args: {
     singleModelTier: bundle.singleModelTier,
     shadowFindingIds,
     shadowEmbargoedIndexes,
+    shadowCorroborated,
     precisionFeedbackEnabled,
     effectivePublicReceipt,
     cyberTier,
@@ -1907,6 +2008,8 @@ async function processClaimedRow(
       recordFindingStatuses: deps.recordFindingStatuses,
       recordSingleModelFindingStatuses: deps.recordSingleModelFindingStatuses,
       isSingleModelTierEnabledForInstall: deps.isSingleModelTierEnabledForInstall,
+      isThirdModelAdjudicationEnabledForInstall: deps.isThirdModelAdjudicationEnabledForInstall,
+      applyThirdModelAdjudication: deps.applyThirdModelAdjudication,
       loadRepoThreatModel: deps.loadRepoThreatModel,
       upsertRepoThreatModel: deps.upsertRepoThreatModel,
       applyReachabilityGate: deps.applyReachabilityGate,
