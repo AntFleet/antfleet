@@ -152,7 +152,9 @@ export async function computeScorecardForWeek(weekEndingDate: Date): Promise<Sco
             suggestedPatchGpt5: findingStatus.suggestedPatchGpt5,
           })
           .from(findingStatus)
-          .where(inArray(findingStatus.reviewId, reviewIds))
+          .where(
+            and(inArray(findingStatus.reviewId, reviewIds), eq(findingStatus.source, "consensus")),
+          )
       : [];
 
   const payload = aggregatePayload(reviewRows, findingRows, weekStart, weekEndingDate);
@@ -329,7 +331,9 @@ async function computeRolling4Week(
       suggestedPatchGpt5: findingStatus.suggestedPatchGpt5,
     })
     .from(findingStatus)
-    .where(inArray(findingStatus.reviewId, rollingReviewIds));
+    .where(
+      and(inArray(findingStatus.reviewId, rollingReviewIds), eq(findingStatus.source, "consensus")),
+    );
 
   const anthropicTimes: number[] = [];
   const openaiTimes: number[] = [];
@@ -397,7 +401,7 @@ export const loadAllTimeAgreementRate = cache(async (): Promise<AllTimeAgreement
   const findingRows = await db
     .select({ reviewId: findingStatus.reviewId })
     .from(findingStatus)
-    .where(inArray(findingStatus.reviewId, reviewIds));
+    .where(and(inArray(findingStatus.reviewId, reviewIds), eq(findingStatus.source, "consensus")));
 
   let denominator = 0;
   for (const row of reviewRows) {

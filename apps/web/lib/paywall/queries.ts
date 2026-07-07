@@ -438,6 +438,7 @@ export async function loadWalletReputation(
       FROM finding_status fs
       JOIN reviews r ON r.review_id = fs.review_id
       WHERE r.installation_id = ANY (${ghIds}::bigint[])
+        AND fs.source = 'consensus'
     `);
     const f = firstRow<{
       total: number | string;
@@ -533,6 +534,7 @@ export async function loadReviewForResponse(
           SELECT finding_id
           FROM finding_status
           WHERE review_id = r.review_id
+            AND source = 'consensus'
           ORDER BY finding_index
         ),
         ARRAY[]::text[]

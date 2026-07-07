@@ -53,6 +53,10 @@ export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
             findingVisibilityGate,
             sql`${findingStatus.retractedAt} IS NULL`,
             isNotNull(findingStatus.patchAcceptedAt),
+            // Reader guard (Win 2): the patches-landed headline counts
+            // consensus findings only; shadow single_model rows never land
+            // patches, but scope explicitly so they can't inflate the KPI.
+            eq(findingStatus.source, "consensus"),
           ),
         )
     : db
@@ -69,6 +73,10 @@ export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
             findingVisibilityGate,
             sql`${findingStatus.retractedAt} IS NULL`,
             isNotNull(findingStatus.patchAcceptedAt),
+            // Reader guard (Win 2): the patches-landed headline counts
+            // consensus findings only; shadow single_model rows never land
+            // patches, but scope explicitly so they can't inflate the KPI.
+            eq(findingStatus.source, "consensus"),
           ),
         ));
 

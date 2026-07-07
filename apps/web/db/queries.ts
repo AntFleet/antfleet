@@ -1377,6 +1377,9 @@ export async function loadPublicReceiptsPage(args: {
   // the count must match the rows behind it, and a retracted finding's title
   // must not keep appearing in the list (it stays live only as a notice on its
   // own /anatomy + /receipts/{id} page).
+  // Reader guard (Win 2): the public /receipts feed lists consensus findings
+  // only; shadow single_model rows are never surfaced as receipt cards.
+  const consensusOnly = eq(findingStatus.source, "consensus");
   const recentConditions =
     args.before === undefined
       ? and(
@@ -1384,6 +1387,7 @@ export async function loadPublicReceiptsPage(args: {
           disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
           nonCyberTierRepoCondition(),
           isNull(findingStatus.retractedAt),
+          consensusOnly,
         )
       : and(
           eq(findingStatus.status, "closed"),
@@ -1391,6 +1395,7 @@ export async function loadPublicReceiptsPage(args: {
           nonCyberTierRepoCondition(),
           isNull(findingStatus.retractedAt),
           lt(findingStatus.closureDetectedAt, args.before),
+          consensusOnly,
         );
 
   const totalConditions = and(
@@ -1398,6 +1403,7 @@ export async function loadPublicReceiptsPage(args: {
     disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
     nonCyberTierRepoCondition(),
     isNull(findingStatus.retractedAt),
+    consensusOnly,
   );
 
   const [countRows, fetchedRows, lastUpdatedRows] = await Promise.all([
@@ -1506,6 +1512,8 @@ export async function loadTopClosuresBetween(
     nonCyberTierRepoCondition(),
     gte(findingStatus.closureDetectedAt, since),
     lt(findingStatus.closureDetectedAt, until),
+    // Reader guard (Win 2): digest top-closures are consensus findings only.
+    eq(findingStatus.source, "consensus"),
   );
   const rows = await (disclosureGateEnabled
     ? db
@@ -1598,6 +1606,10 @@ export const loadPublicReceiptDetail = cache(
     const visibilityCondition = and(
       disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
       nonCyberTierRepoCondition(),
+      // Reader guard (Win 2): the /receipts/{id} detail page resolves
+      // findingIndex against agreement_decision.agreed[]. A shadow finding_id
+      // would resolve the WRONG agreed[] entry, so shadow rows 404 here.
+      eq(findingStatus.source, "consensus"),
     );
     const baseSelectColumns = {
       findingId: findingStatus.findingId,
@@ -1726,6 +1738,7 @@ export async function loadPublicReviewReceipt(
                 ORDER BY fs.finding_index
               ) FILTER (
                 WHERE fs.finding_id IS NOT NULL
+                  AND fs.source = 'consensus'
                   AND (
                     (
 	                      fd.state = 'published'
@@ -1767,6 +1780,7 @@ export async function loadPublicReviewReceipt(
               FROM finding_status review_fs
               LEFT JOIN finding_disclosure review_fd ON review_fd.finding_id = review_fs.finding_id
               WHERE review_fs.review_id = r.review_id
+                AND review_fs.source = 'consensus'
                 AND (
                   review_fd.finding_id IS NULL
                   OR NOT (
@@ -1824,7 +1838,7 @@ export async function loadPublicReviewReceipt(
                   'title', fs.title
                 )
                 ORDER BY fs.finding_index
-              ) FILTER (WHERE fs.finding_id IS NOT NULL),
+              ) FILTER (WHERE fs.finding_id IS NOT NULL AND fs.source = 'consensus'),
               '[]'::jsonb
             ) AS "findings"
           FROM reviews r
@@ -1997,12 +2011,24 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
           .from(findingStatus)
           .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
           .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
-          .where(and(eq(findingStatus.status, "closed"), findingPublicGate))
+          .where(
+            and(
+              eq(findingStatus.status, "closed"),
+              findingPublicGate,
+              eq(findingStatus.source, "consensus"),
+            ),
+          )
       : db
           .select({ value: max(findingStatus.closureDetectedAt) })
           .from(findingStatus)
           .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-          .where(and(eq(findingStatus.status, "closed"), findingPublicGate)),
+          .where(
+            and(
+              eq(findingStatus.status, "closed"),
+              findingPublicGate,
+              eq(findingStatus.source, "consensus"),
+            ),
+          ),
     db
       .select({ value: max(onboardingEvents.createdAt) })
       .from(onboardingEvents)
@@ -2084,7 +2110,13 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
           .from(findingStatus)
           .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
           .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
-          .where(and(eq(findingStatus.status, "closed"), findingPublicGate))
+          .where(
+            and(
+              eq(findingStatus.status, "closed"),
+              findingPublicGate,
+              eq(findingStatus.source, "consensus"),
+            ),
+          )
           .orderBy(desc(findingStatus.closureDetectedAt))
           .limit(EVENT_STREAM_LIMIT)
       : db
@@ -2101,7 +2133,13 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
           })
           .from(findingStatus)
           .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-          .where(and(eq(findingStatus.status, "closed"), findingPublicGate))
+          .where(
+            and(
+              eq(findingStatus.status, "closed"),
+              findingPublicGate,
+              eq(findingStatus.source, "consensus"),
+            ),
+          )
           .orderBy(desc(findingStatus.closureDetectedAt))
           .limit(EVENT_STREAM_LIMIT),
     db
@@ -2420,7 +2458,19 @@ export async function snapshotInstallActivity(
       .select({ value: count(maintainerReactions.reactionId) })
       .from(maintainerReactions)
       .innerJoin(reviews, eq(maintainerReactions.reviewId, reviews.reviewId))
-      .where(eq(reviews.installationId, installationId)),
+      // Reader guard (Win 2): count only reactions on consensus findings.
+      // Shadow rows (source='single_model') carry '-s{index}' finding ids;
+      // reactions on them must not inflate the consensus snapshot.
+      .where(
+        and(
+          eq(reviews.installationId, installationId),
+          sql`EXISTS (
+            SELECT 1 FROM finding_status fs
+            WHERE fs.finding_id = ${maintainerReactions.findingId}
+              AND fs.source = 'consensus'
+          )`,
+        ),
+      ),
   ]);
   return {
     reviewCount: revCount[0]?.value ?? 0,
@@ -2533,18 +2583,25 @@ export async function activityWindow(
         .from(findingStatus)
         .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
         .leftJoin(findingDisclosure, eq(findingDisclosure.findingId, findingStatus.findingId))
-        .where(and(findingPublicGate, findingsClosedRange))
+        .where(and(findingPublicGate, findingsClosedRange, consensusOnly))
     : db
         .select({ value: count() })
         .from(findingStatus)
         .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
-        .where(and(findingPublicGate, findingsClosedRange));
+        .where(and(findingPublicGate, findingsClosedRange, consensusOnly));
 
+  // Reader guard (Win 2): count only reactions on consensus findings; shadow
+  // rows carry '-s{index}' finding ids and must not inflate the public count.
+  const reactionsConsensusOnly = sql`EXISTS (
+    SELECT 1 FROM finding_status fs
+    WHERE fs.finding_id = ${maintainerReactions.findingId}
+      AND fs.source = 'consensus'
+  )`;
   const reactionsCountQuery = db
     .select({ value: count() })
     .from(maintainerReactions)
     .innerJoin(reviews, eq(maintainerReactions.reviewId, reviews.reviewId))
-    .where(and(publicGate, reactionsRange));
+    .where(and(publicGate, reactionsRange, reactionsConsensusOnly));
 
   const [r, a, c, x] = await Promise.all([
     reviewsCountQuery,
@@ -4525,6 +4582,7 @@ export async function loadPrivateDisclosureFindingIndexes(reviewId: string): Pro
     .where(
       and(
         eq(findingStatus.reviewId, reviewId),
+        eq(findingStatus.source, "consensus"),
         or(
           isNull(findingDisclosure.findingId),
           sql`NOT (
@@ -4737,7 +4795,11 @@ export async function loadDisclosureFindingDetail(
       ),
     )
     .leftJoin(repoThreatModel, eq(repoThreatModel.repoHash, reviews.repoHash))
-    .where(eq(findingStatus.findingId, findingId))
+    // Reader guard (Win 2): disclosure detail resolves agreementDecision.agreed[
+    // findingIndex] to drive GHSA/advisory evidence. A shadow single_model
+    // finding would resolve the WRONG agreed[] entry, so it can never surface
+    // through the disclosure pipeline.
+    .where(and(eq(findingStatus.findingId, findingId), eq(findingStatus.source, "consensus")))
     .orderBy(desc(findingValidationEvidenceBundles.reviewAttempt))
     .limit(1);
   const row = rows[0];
@@ -4835,6 +4897,7 @@ export async function loadDisclosureTimerCandidates(now: Date): Promise<Disclosu
     .innerJoin(findingStatus, eq(findingStatus.findingId, findingDisclosure.findingId))
     .where(
       and(
+        eq(findingStatus.source, "consensus"),
         inArray(findingDisclosure.state, ["embargoed", "maintainer-acknowledged", "patch-merged"]),
         or(
           lte(findingDisclosure.embargoExpiresAt, now),
@@ -4858,12 +4921,21 @@ export async function loadDisclosurePublishCandidates(): Promise<DisclosureFindi
     .select({ findingId: findingDisclosure.findingId })
     .from(findingDisclosure)
     .where(
-      or(
-        eq(findingDisclosure.state, "embargo-expired"),
-        and(
-          eq(findingDisclosure.state, "published"),
-          isNotNull(findingDisclosure.ghsaId),
-          isNull(findingDisclosure.ghsaPublishedAt),
+      and(
+        // Shadow single-model findings must never drive a GHSA/advisory
+        // publish — they resolve the wrong agreement_decision.agreed[] index.
+        sql`EXISTS (
+          SELECT 1 FROM finding_status fs
+          WHERE fs.finding_id = ${findingDisclosure.findingId}
+            AND fs.source = 'consensus'
+        )`,
+        or(
+          eq(findingDisclosure.state, "embargo-expired"),
+          and(
+            eq(findingDisclosure.state, "published"),
+            isNotNull(findingDisclosure.ghsaId),
+            isNull(findingDisclosure.ghsaPublishedAt),
+          ),
         ),
       ),
     )
@@ -5139,6 +5211,9 @@ export async function loadPublicSarifFindingsForRepo(args: {
     isNotNull(findingStatus.closureDetectedAt),
     isNull(findingStatus.retractedAt),
     or(disclosureTerminalCondition, nonLiveProtocolPreDisclosureCondition),
+    // Reader guard (Win 2): SARIF/Code-Scanning export is consensus findings
+    // only; a shadow single_model row must never leak into an external export.
+    eq(findingStatus.source, "consensus"),
   );
   const selectColumns = {
     findingId: findingStatus.findingId,

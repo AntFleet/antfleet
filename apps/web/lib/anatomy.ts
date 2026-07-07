@@ -86,6 +86,7 @@ export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundl
       LEFT JOIN ${findingDisclosure} review_fd
         ON review_fd.finding_id = review_fs.finding_id
       WHERE review_fs.review_id = ${reviews.reviewId}
+        AND review_fs.source = 'consensus'
         AND (
           review_fd.finding_id IS NULL
           OR NOT (
