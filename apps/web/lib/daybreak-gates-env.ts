@@ -73,6 +73,15 @@ export function isCyberTierEnabled(): boolean {
   return readBoolEnv("ANTFLEET_CYBER_TIER");
 }
 
+// Third-model provider (GLM 5.2 / Zhipu). Default OFF. Adds capability only —
+// GLM is NOT wired into the default 2-model STACK. When ON, Build B invokes GLM
+// as a standalone adjudicator (confirm/reject post-pass) after mergeFindings,
+// never as a silent 3rd stack voter (adding a 3rd voter would raise a unanimous
+// bar to 3/3). Exported for that later gated use.
+export function isThirdModelEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_THIRD_MODEL");
+}
+
 // Forward-compatible per-install resolvers. Until installations gains the
 // nullable boolean columns (planned in a follow-up to 0041) these just
 // return the env value. Once the columns exist, the inner lookup can

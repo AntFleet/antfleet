@@ -18,6 +18,8 @@ export const COST_PER_CALL_USD_ESTIMATES: Readonly<Record<string, number>> = {
   openai: 0.15,
   // deepseek/deepseek-chat via OpenRouter ~ $0.27/MTok in, $1.10/MTok out -> tiny.
   openrouter: 0.01,
+  // glm-5.2 (Zhipu/z.ai) on the Coding-Plan Anthropic-compat endpoint -> cheap.
+  zhipu: 0.02,
   // codex CLI is billed via the operator's subscription, not pay-per-call.
   codex: 0,
 };
