@@ -12,7 +12,15 @@ import type {
 } from "./review-types";
 import type { ChangedFile } from "./github-files";
 import { triagePR, TRIAGE_COST_USD, type TriageResult } from "./triage-provider";
+import { isSingleModelTierEnabled } from "./single-model-tier-env";
 import { messageOf } from "./log";
+
+// A single-model shadow-tier entry (Win 2). Carries the flagging provider
+// alongside the finding — a bare Finding[] would lose the attribution the
+// next build (3rd-model adjudication) needs to route the independent judge
+// (`providers[0]`). Derived from `disagreements` where exactly one provider
+// flagged a HIGH/CRITICAL finding.
+export type SingleModelFinding = { finding: Finding; provider: string };
 
 // Per-provider outcome of one review. `error` is non-null when the API call
 // failed; `output` is non-null when it returned a parseable response. Both
@@ -30,6 +38,13 @@ export type ReviewBundle = {
   modelIds: Record<string, string>;
   agreed: Finding[];
   disagreements: Disagreement[];
+  // Single-model shadow tier (Win 2). The HIGH/CRITICAL findings only one
+  // provider flagged — the unanimous gate drops these into `disagreements`,
+  // and this is a filtered projection of that same array (no new clustering).
+  // Each entry carries the flagging provider (forward-compat for the
+  // 3rd-model adjudication build). Empty unless ANTFLEET_SINGLE_MODEL_TIER is
+  // on, and always empty when the review degraded (no real agreement basis).
+  singleModelTier: SingleModelFinding[];
   totalMs: number;
   estimatedCostUsd: number;
   agreementMode: AgreementMode;
@@ -105,6 +120,7 @@ export async function reviewPR(args: {
         modelIds: {},
         agreed: [],
         disagreements: [],
+        singleModelTier: [],
         totalMs: Date.now() - t0,
         estimatedCostUsd: 0,
         agreementMode: mode,
@@ -156,11 +172,18 @@ export async function reviewPR(args: {
   // In any/majority modes triage is null and no Haiku call was made.
   const triageCost = triage !== null ? TRIAGE_COST_USD : 0;
 
+  // Single-model shadow tier — gated behind the env flag so the whole
+  // computation is inert by default. Degraded reviews yield [] (agreement
+  // wasn't real, so "one provider flagged this" carries no signal).
+  const singleModelTier =
+    isSingleModelTierEnabled() && !degraded ? selectSingleModelTier(merged.disagreements) : [];
+
   return {
     perProvider,
     modelIds,
     agreed: merged.agreed,
     disagreements: merged.disagreements,
+    singleModelTier,
     totalMs,
     estimatedCostUsd: estimateRunCost(STACK.map((p) => p.name)) + triageCost,
     agreementMode: mode,
@@ -168,6 +191,25 @@ export async function reviewPR(args: {
     degradedReason,
     triage,
   };
+}
+
+// Single-model shadow tier projection (Win 2). A disagreement with exactly
+// one flagging provider is a "single-model finding"; we keep only HIGH /
+// CRITICAL severities (the recoverable-value band). Carries the flagging
+// provider (disagreement.providers[0]) so the downstream 3rd-model judge can
+// route to an independent model. Order follows the disagreements array so the
+// shadow finding_index space is deterministic across retries.
+export function selectSingleModelTier(disagreements: Disagreement[]): SingleModelFinding[] {
+  const out: SingleModelFinding[] = [];
+  for (const d of disagreements) {
+    if (d.providers.length !== 1) continue;
+    const severity = d.finding.severity;
+    if (severity !== "high" && severity !== "critical") continue;
+    const provider = d.providers[0];
+    if (provider === undefined) continue;
+    out.push({ finding: d.finding, provider });
+  }
+  return out;
 }
 
 // Voters required for a given agreement mode to be honest. mergeFindings'

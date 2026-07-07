@@ -22,6 +22,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // /anatomy and /receipts pages emit noindex, so keeping them in the
     // sitemap would send Google a contradictory "crawl me" signal.
     isNull(findingStatus.retractedAt),
+    // Reader guard (Win 2): shadow single_model findings 404 on /anatomy
+    // (they'd resolve the wrong agreed[] index), so never advertise them.
+    eq(findingStatus.source, "consensus"),
   );
   const anatomyRows = await (disclosureGateEnabled
     ? db

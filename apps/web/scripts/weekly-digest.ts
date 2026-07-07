@@ -232,7 +232,7 @@ async function main() {
   for (const t of pw.tiers) {
     const rateStr = t.postedCount > 0 ? `${(t.dismissRate * 100).toFixed(1)}%` : "—";
     console.log(
-      `  ${t.tier.padEnd(8)}: posted=${t.postedCount}  dismissed=${t.dismissedCount}  rate=${rateStr}`,
+      `  ${t.source.padEnd(12)} ${t.tier.padEnd(8)}: posted=${t.postedCount}  dismissed=${t.dismissedCount}  rate=${rateStr}`,
     );
   }
   console.log(`  thumbs_down (ch C, secondary): ${pw.thumbsDownCount}`);

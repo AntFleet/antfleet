@@ -137,6 +137,16 @@ export const findingStatus = pgTable(
     category: text("category").notNull(),
     // open | closed | superseded
     status: text("status").notNull().default("open"),
+    // Win 2 (migration 0051) — tier that produced this lifecycle row.
+    // 'consensus'    → unanimous-gate finding, finding_index into
+    //                  agreement_decision.agreed[] (the index-coupled space).
+    // 'single_model' → shadow-tier finding, finding_index into
+    //                  agreement_decision.singleModelTier[], finding_id in the
+    //                  distinct `-s` namespace. NOT NULL DEFAULT 'consensus'
+    //                  so every pre-0051 row is a consensus row. Every reader
+    //                  that resolves finding_index against agreed[] filters on
+    //                  source='consensus'; the precision metric segments by it.
+    source: text("source").notNull().default("consensus"),
     closureSha: text("closure_sha"),
     closureCommentId: bigint("closure_comment_id", { mode: "number" }),
     closureCommentUrl: text("closure_comment_url"),
@@ -223,8 +233,11 @@ export const findingStatus = pgTable(
     index("finding_status_status_closure_idx").on(t.status, t.closureDetectedAt),
     // Natural-key uniqueness (migration 0038, optional hardening — the
     // runtime path uses preselect-then-conflict-on-finding_id so it
-    // does NOT depend on this constraint being applied).
-    uniqueIndex("finding_status_review_index_uniq").on(t.reviewId, t.findingIndex),
+    // does NOT depend on this constraint being applied). Win 2 (migration
+    // 0051) widened the key to include `source` so a shadow row
+    // (source='single_model', finding_index=0) does not collide with a
+    // consensus row (source='consensus', finding_index=0) of the same review.
+    uniqueIndex("finding_status_review_index_uniq").on(t.reviewId, t.findingIndex, t.source),
   ],
 );
 
@@ -551,6 +564,11 @@ export const installations = pgTable(
     // Non-null = force-on/off for this install, regardless of env. Used to
     // canary one install (e.g. aeon-bench) before flipping env-wide.
     precisionFeedbackEnabled: boolean("precision_feedback_enabled"),
+    // Win 2 migration 0051 — per-install single-model shadow tier override.
+    // NULL = inherit ANTFLEET_SINGLE_MODEL_TIER env default (OFF).
+    // Non-null = force-on/off for this install, regardless of env. Used to
+    // canary one install (e.g. aeon-bench) before flipping env-wide.
+    singleModelTierEnabled: boolean("single_model_tier_enabled"),
   },
   (t) => [
     unique("installations_install_repo_uniq").on(t.installationId, t.repo),

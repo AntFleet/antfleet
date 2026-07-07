@@ -8,6 +8,7 @@ import {
   hashRepo,
   markReviewSucceeded,
   recordFindingStatuses,
+  recordSingleModelFindingStatuses,
   recordFindingEvidenceBundleSlot,
   recordGateOutcome,
   loadRepoThreatModel,
@@ -16,6 +17,7 @@ import {
   upsertRepoThreatModel,
 } from "@/db/queries";
 import { initializeDisclosureForFindings } from "@/lib/disclosure";
+import { isSingleModelTierEnabledForInstall } from "@/lib/single-model-tier-env";
 import { getRepoCyberTier } from "@/lib/cyber-tier";
 import { applyReachabilityGate } from "@/lib/reachability-gate";
 import { getRepoThreatModelFilesWith, type RepoThreatModelSnapshot } from "@/lib/repo-threat-model";
@@ -461,6 +463,8 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         reviewPR,
         updateReview,
         recordFindingStatuses,
+        recordSingleModelFindingStatuses,
+        isSingleModelTierEnabledForInstall,
         loadRepoThreatModel,
         upsertRepoThreatModel,
         applyReachabilityGate,
@@ -582,6 +586,8 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         reviewPR,
         updateReview,
         recordFindingStatuses,
+        recordSingleModelFindingStatuses,
+        isSingleModelTierEnabledForInstall,
         loadRepoThreatModel,
         upsertRepoThreatModel,
         applyReachabilityGate,

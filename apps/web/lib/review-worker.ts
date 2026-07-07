@@ -11,8 +11,16 @@
 import { Octokit } from "@octokit/rest";
 import { getInstallationToken as realGetInstallationToken } from "./github-app";
 import { getChangedFiles as realGetChangedFiles } from "./github-files";
-import { formatPRComment, postPRComment as realPostPRComment } from "./pr-comment";
+import {
+  formatPRComment,
+  formatSingleModelSection,
+  postPRComment as realPostPRComment,
+} from "./pr-comment";
 import { reviewPR as realReviewPR } from "./review-pipeline";
+import {
+  isSingleModelTierEnabledForInstall as realIsSingleModelTierEnabledForInstall,
+  isSingleModelTierRenderEnabled as realIsSingleModelTierRenderEnabled,
+} from "./single-model-tier-env";
 import {
   recordPatchProposedEvent as realRecordPatchProposedEvent,
   runFirstReviewSummary as realRunFirstReviewSummary,
@@ -56,7 +64,9 @@ import {
   markReviewFailedForRetry as realMarkReviewFailedForRetry,
   markReviewSucceeded as realMarkReviewSucceeded,
   markReviewTerminallyFailed as realMarkReviewTerminallyFailed,
+  makeShadowFindingId,
   recordFindingStatuses as realRecordFindingStatuses,
+  recordSingleModelFindingStatuses as realRecordSingleModelFindingStatuses,
   recordFindingEvidenceBundleSlot as realRecordFindingEvidenceBundleSlot,
   recordGateOutcome as realRecordGateOutcome,
   recordPatchDecisions as realRecordPatchDecisions,
@@ -118,6 +128,9 @@ export type WorkerDeps = {
   updateReview: typeof realUpdateReview;
   setReviewComment: typeof realSetReviewComment;
   recordFindingStatuses: typeof realRecordFindingStatuses;
+  recordSingleModelFindingStatuses: typeof realRecordSingleModelFindingStatuses;
+  isSingleModelTierEnabledForInstall: typeof realIsSingleModelTierEnabledForInstall;
+  isSingleModelTierRenderEnabled: typeof realIsSingleModelTierRenderEnabled;
   recordPatchDecisions: typeof realRecordPatchDecisions;
   setReviewPatchCost: typeof realSetReviewPatchCost;
   markReviewSucceeded: typeof realMarkReviewSucceeded;
@@ -165,6 +178,9 @@ export function realWorkerDeps(): WorkerDeps {
     updateReview: realUpdateReview,
     setReviewComment: realSetReviewComment,
     recordFindingStatuses: realRecordFindingStatuses,
+    recordSingleModelFindingStatuses: realRecordSingleModelFindingStatuses,
+    isSingleModelTierEnabledForInstall: realIsSingleModelTierEnabledForInstall,
+    isSingleModelTierRenderEnabled: realIsSingleModelTierRenderEnabled,
     recordPatchDecisions: realRecordPatchDecisions,
     setReviewPatchCost: realSetReviewPatchCost,
     markReviewSucceeded: realMarkReviewSucceeded,
@@ -420,6 +436,11 @@ export type ReviewKernelDeps = {
   reviewPR: typeof realReviewPR;
   updateReview: typeof realUpdateReview;
   recordFindingStatuses: typeof realRecordFindingStatuses;
+  // Win 2 — single-model shadow tier persistence + gate. Kernel-side because
+  // persistence/measurement is rail-agnostic; gated per-install so it stays
+  // inert until a canary override (or the env flag) flips it on.
+  recordSingleModelFindingStatuses: typeof realRecordSingleModelFindingStatuses;
+  isSingleModelTierEnabledForInstall: typeof realIsSingleModelTierEnabledForInstall;
   loadRepoThreatModel: typeof realLoadRepoThreatModel;
   upsertRepoThreatModel: typeof realUpsertRepoThreatModel;
   // Daybreak — reachability gate plumbing. The kernel-side hook runs on
@@ -451,6 +472,9 @@ export type ReviewKernelInstallLane = {
   runPatchAgent: typeof realRunPatchAgent;
   isPatchAgentClickApplyEnabledForInstall: typeof realIsPatchAgentClickApplyEnabledForInstall;
   isPrecisionFeedbackEnabledForInstall: typeof realIsPrecisionFeedbackEnabledForInstall;
+  // Win 2 — canary render gate for the single-model shadow section.
+  isSingleModelTierEnabledForInstall: typeof realIsSingleModelTierEnabledForInstall;
+  isSingleModelTierRenderEnabled: typeof realIsSingleModelTierRenderEnabled;
   postPatchReviewComment: typeof realPostPatchReviewComment;
   recordPatchReviewComment: typeof realRecordPatchReviewComment;
   loadReviewSettlement: (reviewId: string) => Promise<ReviewSettlement | null>;
@@ -951,6 +975,11 @@ export async function runReviewKernel(
     mode: bundle.agreementMode,
     agreed: bundle.agreed,
     disagreements: bundle.disagreements,
+    // Win 2 — persist the single-model shadow tier alongside the consensus
+    // findings. Each entry carries the flagging provider (forward-compat for
+    // the 3rd-model adjudication build). Empty [] unless the tier env flag is
+    // on, so this key is inert/absent-in-effect by default.
+    singleModelTier: bundle.singleModelTier,
     degraded: bundle.degraded,
     degradedReason: bundle.degradedReason,
     triage: bundle.triage,
@@ -1088,6 +1117,75 @@ export async function runReviewKernel(
     }
   }
 
+  // Win 2 — single-model shadow tier persistence + embargo routing.
+  //
+  // Persist-everywhere (measurement), render canary-only (install lane).
+  // Gated per-install: inert unless a canary override / the env flag is on.
+  // Never throws — the shadow tier is a side-channel and must not fail the
+  // review. Runs even when the consensus set is empty (findingIds may be [])
+  // because the shadow tier is an independent projection. installationId is
+  // null on paid rails, where there is no install to canary → skipped.
+  let shadowFindingIds: string[] = [];
+  let shadowEmbargoedIndexes = new Set<number>();
+  if (installationId !== null && !bundle.degraded && bundle.singleModelTier.length > 0) {
+    try {
+      const tierEnabled = await deps.isSingleModelTierEnabledForInstall(installationId, repo);
+      if (tierEnabled) {
+        shadowFindingIds = await deps.recordSingleModelFindingStatuses(
+          reviewId,
+          bundle.singleModelTier.map((s) => ({
+            title: s.finding.title,
+            severity: s.finding.severity,
+            category: s.finding.category,
+          })),
+        );
+        // Route shadow HIGH/CRITICAL through the SAME disclosure embargo as
+        // consensus so a live-protocol / cyber-tier repo never surfaces them
+        // publicly. Synthetic agreementDecision ({ agreed: <shadow findings> })
+        // so the embargoed advisory draft resolves the shadow finding's own
+        // evidence (generateGhsaMarkdown reads `agreed[findingIndex]`), not the
+        // unrelated consensus finding at that index.
+        const disclosureEnabled = await deps.isDisclosureGateEnabledForInstall(
+          installationId,
+          repo,
+        );
+        const cyberTierForDisclosure = cyberTierForReview === "cyber";
+        if (disclosureEnabled || deps.isDisclosureSideTableEnabled() || cyberTierForDisclosure) {
+          const shadowAgreementDecision = {
+            agreed: bundle.singleModelTier.map((s) => s.finding),
+          };
+          const shadowDisclosure = await deps.initializeDisclosureForFindings({
+            reviewId,
+            owner,
+            repo,
+            installationId,
+            commitSha,
+            prNumber,
+            publicReceipt: effectivePublicReceipt,
+            liveProtocolReviewRequired,
+            routeLiveProtocolEmbargo: disclosureEnabled,
+            cyberTier: cyberTierForReview,
+            agreementDecision: shadowAgreementDecision,
+            providerResponses,
+            findings: bundle.singleModelTier.map((s, index) => ({
+              findingId: shadowFindingIds[index] ?? makeShadowFindingId(reviewId, index),
+              findingIndex: index,
+              title: s.finding.title,
+              severity: s.finding.severity,
+              category: s.finding.category,
+            })),
+          });
+          shadowEmbargoedIndexes = new Set(shadowDisclosure.embargoedFindingIndexes);
+        }
+      }
+    } catch (shadowErr) {
+      logError("single_model_tier.persist_failed", {
+        reviewId,
+        message: messageOf(shadowErr),
+      });
+    }
+  }
+
   // Flush the deferred reachability gate persistence now that the
   // canonical finding_ids are allocated. Done after recordFindingStatuses
   // so the side-table's finding_id can be joined back to finding_status
@@ -1117,6 +1215,10 @@ export async function runReviewKernel(
       reviewAttempt: args.reviewAttempt ?? 1,
       evidenceBundleEnabled,
       embargoedDisclosureIndexes,
+      shadowFindingIds,
+      shadowEmbargoedIndexes,
+      effectivePublicReceipt,
+      cyberTier: cyberTierForReview,
       lane: args.installLane,
     });
   }
@@ -1157,6 +1259,63 @@ function redactFindingIdsForPublicDisclosure(
   return findingIds.filter((_findingId, index) => !embargoedIndexes.has(index));
 }
 
+// Win 2 — resolve the single-model canary section for the install lane.
+// Returns the rendered section string, or null when any render gate fails
+// (so the caller appends nothing and the public comment stays byte-identical).
+async function maybeFormatSingleModelSection(args: {
+  lane: ReviewKernelInstallLane;
+  repo: string;
+  singleModelTier: Awaited<ReturnType<typeof realReviewPR>>["singleModelTier"];
+  shadowFindingIds: string[];
+  shadowEmbargoedIndexes: ReadonlySet<number>;
+  precisionFeedbackEnabled: boolean;
+  effectivePublicReceipt: boolean;
+  cyberTier: "default" | "cyber";
+  reviewId: string;
+}): Promise<string | null> {
+  const {
+    lane,
+    repo,
+    singleModelTier,
+    shadowFindingIds,
+    shadowEmbargoedIndexes,
+    precisionFeedbackEnabled,
+    effectivePublicReceipt,
+    cyberTier,
+    reviewId,
+  } = args;
+  if (singleModelTier.length === 0) return null;
+  // Dismiss ids are only captured when precision feedback is on; without them
+  // the section's `id:` lines would be undismissable. Hard-suppress the whole
+  // section on non-public / cyber-tier reviews (defense in depth).
+  if (!precisionFeedbackEnabled) return null;
+  if (!effectivePublicReceipt || cyberTier === "cyber") return null;
+  if (!lane.isSingleModelTierRenderEnabled()) return null;
+  let tierEnabled = false;
+  try {
+    tierEnabled = await lane.isSingleModelTierEnabledForInstall(lane.installationId, repo);
+  } catch (err) {
+    logError("single_model_tier.render_gate_lookup_failed", {
+      reviewId,
+      message: messageOf(err),
+    });
+    return null;
+  }
+  if (!tierEnabled) return null;
+  // Suppress the shadow findings the disclosure layer embargoed.
+  const visible = singleModelTier
+    .map((s, index) => ({
+      finding: s.finding,
+      findingId: shadowFindingIds[index] ?? null,
+      index,
+    }))
+    .filter((x) => !shadowEmbargoedIndexes.has(x.index));
+  if (visible.length === 0) return null;
+  return formatSingleModelSection(
+    visible.map((x) => ({ finding: x.finding, findingId: x.findingId })),
+  );
+}
+
 // Install-only lane: onboarder summary, patch agent, PR comment, click-
 // apply review comments, patch decisions persistence. Lives inside the
 // kernel module (audit T2.3) so the install path stays a single kernel
@@ -1172,6 +1331,13 @@ async function runInstallLane(args: {
   reviewAttempt: number;
   evidenceBundleEnabled: boolean;
   embargoedDisclosureIndexes: ReadonlySet<number>;
+  // Win 2 — single-model shadow tier render inputs. shadowFindingIds indexes
+  // bundle.singleModelTier; shadowEmbargoedIndexes are the shadow findings the
+  // disclosure layer embargoed (suppressed from the canary section).
+  shadowFindingIds: string[];
+  shadowEmbargoedIndexes: ReadonlySet<number>;
+  effectivePublicReceipt: boolean;
+  cyberTier: "default" | "cyber";
   lane: ReviewKernelInstallLane;
 }): Promise<void> {
   const {
@@ -1185,6 +1351,10 @@ async function runInstallLane(args: {
     reviewAttempt,
     evidenceBundleEnabled,
     embargoedDisclosureIndexes,
+    shadowFindingIds,
+    shadowEmbargoedIndexes,
+    effectivePublicReceipt,
+    cyberTier,
     lane,
   } = args;
 
@@ -1436,6 +1606,28 @@ async function runInstallLane(args: {
     precisionFeedbackEnabled,
     ...(publicFindingIds !== undefined ? { findingIds: publicFindingIds } : {}),
   });
+  // Win 2 — single-model shadow canary section. Appended AFTER the public
+  // comment body (never inside formatPRComment), so `commentBody` is
+  // byte-identical whenever the render flag is off. Rendered ONLY when ALL of:
+  //   • the tier is enabled for this install,
+  //   • the render sub-flag is on,
+  //   • precision feedback is enabled (so `@antfleet dismiss <id>` resolves),
+  //   • the review is publicly receiptable and NOT cyber tier (defense in
+  //     depth — never surface shadow findings on an embargoed/cyber review),
+  // and after per-finding disclosure embargo suppression.
+  const shadowSection = await maybeFormatSingleModelSection({
+    lane,
+    repo,
+    singleModelTier: bundle.singleModelTier,
+    shadowFindingIds,
+    shadowEmbargoedIndexes,
+    precisionFeedbackEnabled,
+    effectivePublicReceipt,
+    cyberTier,
+    reviewId,
+  });
+  const finalCommentBody =
+    shadowSection === null ? commentBody : `${commentBody}\n\n${shadowSection}`;
   // findingIds were already written by the kernel above. The install
   // lane consumes the same array for canonical-id translation below.
   const posted = await lane.postPRComment({
@@ -1443,7 +1635,7 @@ async function runInstallLane(args: {
     owner,
     repo,
     prNumber,
-    body: commentBody,
+    body: finalCommentBody,
   });
   logInfo("comment.posted", {
     reviewId,
@@ -1692,6 +1884,8 @@ async function processClaimedRow(
         runPatchAgent: deps.runPatchAgent,
         isPatchAgentClickApplyEnabledForInstall: deps.isPatchAgentClickApplyEnabledForInstall,
         isPrecisionFeedbackEnabledForInstall: deps.isPrecisionFeedbackEnabledForInstall,
+        isSingleModelTierEnabledForInstall: deps.isSingleModelTierEnabledForInstall,
+        isSingleModelTierRenderEnabled: deps.isSingleModelTierRenderEnabled,
         postPatchReviewComment: deps.postPatchReviewComment,
         recordPatchReviewComment: deps.recordPatchReviewComment,
         loadReviewSettlement: deps.loadReviewSettlement,
@@ -1711,6 +1905,8 @@ async function processClaimedRow(
       reviewPR: deps.reviewPR,
       updateReview: deps.updateReview,
       recordFindingStatuses: deps.recordFindingStatuses,
+      recordSingleModelFindingStatuses: deps.recordSingleModelFindingStatuses,
+      isSingleModelTierEnabledForInstall: deps.isSingleModelTierEnabledForInstall,
       loadRepoThreatModel: deps.loadRepoThreatModel,
       upsertRepoThreatModel: deps.upsertRepoThreatModel,
       applyReachabilityGate: deps.applyReachabilityGate,

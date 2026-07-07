@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ChangedFile } from "./github-files";
 
 // Stub the triage pre-pass so each test controls its decision.
@@ -22,7 +22,8 @@ vi.mock("@antfleet/cli/providers/openai", () => ({
   OPENAI_DEFAULT_MODEL: "gpt-5.5",
 }));
 
-import { reviewPR } from "./review-pipeline";
+import { reviewPR, selectSingleModelTier } from "./review-pipeline";
+import type { Disagreement, Finding } from "./review-types";
 
 function mkFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
   return {
@@ -187,5 +188,152 @@ describe("reviewPR triage pre-pass", () => {
     expect(bundle.triage).toBeNull();
     expect(anthropicReview).toHaveBeenCalledTimes(1);
     expect(openaiReview).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Win 2 — single-model shadow tier selection ──────────────────────────────
+
+const mkFinding = (overrides: Partial<Finding> = {}): Finding => ({
+  title: "Title",
+  category: "security",
+  severity: "high",
+  label: "blocking",
+  confidence: "high",
+  evidence: [{ path: "src/foo.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+  reasoning: "Reasoning text",
+  reproduction: null,
+  recommendation: "Recommendation text",
+  whyTestsDoNotAlreadyCoverThis: "",
+  suggestedRegressionTest: null,
+  minimumFixScope: "",
+  requiresPolicyReview: false,
+  upstreamOrigin: null,
+  ...overrides,
+});
+
+const mkDisagreement = (providers: string[], finding: Finding): Disagreement => ({
+  providers,
+  finding,
+  reason: `only ${providers.length} flagged`,
+});
+
+describe("selectSingleModelTier (projection)", () => {
+  it("includes HIGH and CRITICAL single-provider disagreements", () => {
+    const high = mkDisagreement(["anthropic"], mkFinding({ severity: "high" }));
+    const crit = mkDisagreement(["openai"], mkFinding({ severity: "critical" }));
+    const out = selectSingleModelTier([high, crit]);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({ finding: high.finding, provider: "anthropic" });
+    expect(out[1]).toEqual({ finding: crit.finding, provider: "openai" });
+  });
+
+  it("carries the flagging provider (Build B forward-compat)", () => {
+    const out = selectSingleModelTier([
+      mkDisagreement(["openai"], mkFinding({ severity: "critical" })),
+    ]);
+    expect(out[0]?.provider).toBe("openai");
+  });
+
+  it("excludes MEDIUM and LOW single-provider disagreements", () => {
+    const out = selectSingleModelTier([
+      mkDisagreement(["anthropic"], mkFinding({ severity: "medium" })),
+      mkDisagreement(["openai"], mkFinding({ severity: "low" })),
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it("excludes disagreements flagged by more than one provider", () => {
+    // A 2-provider disagreement is not a single-model finding, even at HIGH.
+    const out = selectSingleModelTier([
+      mkDisagreement(["anthropic", "openai"], mkFinding({ severity: "high" })),
+    ]);
+    expect(out).toEqual([]);
+  });
+});
+
+describe("reviewPR single-model shadow tier", () => {
+  const ORIGINAL = process.env["ANTFLEET_SINGLE_MODEL_TIER"];
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env["ANTFLEET_SINGLE_MODEL_TIER"];
+    else process.env["ANTFLEET_SINGLE_MODEL_TIER"] = ORIGINAL;
+  });
+
+  // anthropic flags a HIGH finding; openai flags nothing → a single-model
+  // HIGH disagreement under the unanimous gate.
+  function singleModelOutputs() {
+    anthropicReview.mockResolvedValue({
+      findings: [mkFinding({ severity: "high" })],
+      inspected: { files: [], symbols: [], notes: [] },
+    });
+    openaiReview.mockResolvedValue(mkOutput());
+  }
+
+  it("populates singleModelTier with the HIGH single-model finding when the flag is ON", async () => {
+    process.env["ANTFLEET_SINGLE_MODEL_TIER"] = "true";
+    triagePRMock.mockResolvedValue(escalate());
+    singleModelOutputs();
+
+    const bundle = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    expect(bundle.agreed).toEqual([]);
+    expect(bundle.singleModelTier).toHaveLength(1);
+    expect(bundle.singleModelTier[0]?.finding.severity).toBe("high");
+    expect(bundle.singleModelTier[0]?.provider).toBe("anthropic");
+  });
+
+  it("keeps singleModelTier EMPTY when the flag is OFF (inert by default)", async () => {
+    delete process.env["ANTFLEET_SINGLE_MODEL_TIER"];
+    triagePRMock.mockResolvedValue(escalate());
+    singleModelOutputs();
+
+    const bundle = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    // Same disagreement is present, but the tier projection is inert.
+    expect(bundle.disagreements).toHaveLength(1);
+    expect(bundle.singleModelTier).toEqual([]);
+  });
+
+  it("does not change agreed[] whether the flag is ON or OFF (byte-identical)", async () => {
+    triagePRMock.mockResolvedValue(escalate());
+    // Both providers flag the same finding → agreed.
+    const shared = mkFinding({ severity: "high", title: "Shared" });
+    const bothOutputs = () => {
+      anthropicReview.mockResolvedValue({
+        findings: [shared],
+        inspected: { files: [], symbols: [], notes: [] },
+      });
+      openaiReview.mockResolvedValue({
+        findings: [shared],
+        inspected: { files: [], symbols: [], notes: [] },
+      });
+    };
+
+    delete process.env["ANTFLEET_SINGLE_MODEL_TIER"];
+    bothOutputs();
+    const off = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    process.env["ANTFLEET_SINGLE_MODEL_TIER"] = "true";
+    bothOutputs();
+    const on = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    expect(on.agreed).toEqual(off.agreed);
+    expect(on.agreed).toHaveLength(1);
+    expect(on.singleModelTier).toEqual([]);
+  });
+
+  it("returns [] for a degraded review even with the flag ON", async () => {
+    process.env["ANTFLEET_SINGLE_MODEL_TIER"] = "true";
+    triagePRMock.mockResolvedValue(escalate());
+    // Only one provider succeeds → degraded (unanimous requires 2).
+    anthropicReview.mockResolvedValue({
+      findings: [mkFinding({ severity: "critical" })],
+      inspected: { files: [], symbols: [], notes: [] },
+    });
+    openaiReview.mockRejectedValue(new Error("openai 500"));
+
+    const bundle = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    expect(bundle.degraded).toBe(true);
+    expect(bundle.singleModelTier).toEqual([]);
   });
 });

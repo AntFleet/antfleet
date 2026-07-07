@@ -88,11 +88,22 @@ export const LIFECYCLE_PRESERVE_COLUMNS = FINDING_LIFECYCLE_CLASSIFICATION.filte
 
 // Build the drizzle predicate the reconciliation transaction uses to
 // identify trailing rows safe to delete: same reviewId, beyond the new
-// agreed-length cutoff, status still 'open', and every lifecycle
+// finding-length cutoff, status still 'open', and every lifecycle
 // preserve column is NULL.
-export function reconcilableTrailingRows(reviewId: string, agreedLength: number) {
+//
+// Win 2: scoped to a single `source` tier (default 'consensus'). Without
+// this scope a consensus reconciliation with a shorter agreed[] would delete
+// shadow rows (source='single_model') that share the same reviewId — their
+// finding_index counts from 0 into a DIFFERENT array. Each tier reconciles
+// only its own rows.
+export function reconcilableTrailingRows(
+  reviewId: string,
+  agreedLength: number,
+  source = "consensus",
+) {
   return and(
     eq(findingStatus.reviewId, reviewId),
+    eq(findingStatus.source, source),
     gte(findingStatus.findingIndex, agreedLength),
     eq(findingStatus.status, "open"),
     ...LIFECYCLE_PRESERVE_COLUMNS.map((c) => isNull(c)),
