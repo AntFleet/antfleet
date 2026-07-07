@@ -280,10 +280,11 @@ describe("precisionWindow", () => {
     expect(pw.thumbsDownCount).toBe(0);
   });
 
-  it("returns all four tiers per source (consensus first), 8 rows total", async () => {
+  it("returns all four tiers per source (consensus, single_model, two_of_three), 12 rows total", async () => {
     selectQueue = [[], [], []]; // 3 queries: posted, dismissed, thumbs
     const pw = await precisionWindow(null, null);
-    // Win 2 — segmented by source. Consensus block first, then single_model.
+    // Win 2 / Build B — segmented into three cohorts: consensus first, then the
+    // raw single_model shadow tier, then the corroborated two_of_three subset.
     expect(pw.tiers.map((t) => `${t.source}:${t.tier}`)).toEqual([
       "consensus:low",
       "consensus:medium",
@@ -293,7 +294,90 @@ describe("precisionWindow", () => {
       "single_model:medium",
       "single_model:high",
       "single_model:critical",
+      "two_of_three:low",
+      "two_of_three:medium",
+      "two_of_three:high",
+      "two_of_three:critical",
     ]);
+  });
+
+  // ── Build B — three-cohort split: a corroborated shadow finding counts in
+  // BOTH single_model (raw) and two_of_three (corroborated subset), with no
+  // contamination of the consensus cohort. ──────────────────────────────────
+  it("splits single_model into raw + two_of_three by corroborated, consensus untouched", async () => {
+    // postedRows (grouped by source, corroborated, severity):
+    //   consensus high = 4
+    //   single_model high, corroborated=false = 3
+    //   single_model high, corroborated=true  = 2  (these graduate)
+    const postedMock = [
+      { source: "consensus", corroborated: false, severity: "high", n: 4 },
+      { source: "single_model", corroborated: false, severity: "high", n: 3 },
+      { source: "single_model", corroborated: true, severity: "high", n: 2 },
+    ];
+    // dismissedRows: 2 consensus high dismisses, 2 raw shadow (1 corroborated),
+    // 1 corroborated shadow. Distinct finding ids.
+    const dismissedMock = [
+      {
+        findingId: "c1",
+        source: "consensus",
+        corroborated: false,
+        severity: "high",
+        authorAssociation: "OWNER",
+      },
+      {
+        findingId: "c2",
+        source: "consensus",
+        corroborated: false,
+        severity: "high",
+        authorAssociation: "MEMBER",
+      },
+      {
+        findingId: "s1",
+        source: "single_model",
+        corroborated: false,
+        severity: "high",
+        authorAssociation: "OWNER",
+      },
+      {
+        findingId: "s2",
+        source: "single_model",
+        corroborated: true,
+        severity: "high",
+        authorAssociation: "OWNER",
+      },
+    ];
+    const thumbsMock = [{ n: 0 }];
+    selectQueue = [[], postedMock, dismissedMock, thumbsMock];
+
+    const pw = await precisionWindow(
+      new Date("2026-07-01T00:00:00Z"),
+      new Date("2026-07-05T00:00:00Z"),
+    );
+
+    const consensusHigh = pw.tiers.find((t) => t.source === "consensus" && t.tier === "high")!;
+    const rawHigh = pw.tiers.find((t) => t.source === "single_model" && t.tier === "high")!;
+    const twoOfThreeHigh = pw.tiers.find((t) => t.source === "two_of_three" && t.tier === "high")!;
+
+    // Consensus: 4 posted, 2 dismissed → not contaminated by shadow rows.
+    expect(consensusHigh.postedCount).toBe(4);
+    expect(consensusHigh.dismissedCount).toBe(2);
+    expect(consensusHigh.dismissRate).toBeCloseTo(2 / 4);
+
+    // single_model RAW = ALL shadow rows (3 uncorroborated + 2 corroborated = 5),
+    // dismissed = s1 (raw) + s2 (corroborated, still a shadow row) = 2.
+    expect(rawHigh.postedCount).toBe(5);
+    expect(rawHigh.dismissedCount).toBe(2);
+    expect(rawHigh.dismissRate).toBeCloseTo(2 / 5);
+
+    // two_of_three = corroborated SUBSET only (2 posted), dismissed = s2 only.
+    expect(twoOfThreeHigh.postedCount).toBe(2);
+    expect(twoOfThreeHigh.dismissedCount).toBe(1);
+    expect(twoOfThreeHigh.dismissRate).toBeCloseTo(1 / 2);
+
+    // Success predicate is dismissRate(two_of_three) vs dismissRate(single_model);
+    // both are derivable and the subset is a strict subset of the raw cohort.
+    expect(twoOfThreeHigh.postedCount).toBeLessThanOrEqual(rawHigh.postedCount);
+    expect(twoOfThreeHigh.dismissedCount).toBeLessThanOrEqual(rawHigh.dismissedCount);
   });
 
   it("guards divide-by-zero: dismissRate=0 when postedCount=0", async () => {

@@ -259,7 +259,7 @@ export function renderDiffArtifactBlock(patch: PatchForRender): string[] | null 
 // the existing `@antfleet dismiss <finding-id>` footer affordance resolves
 // them. Returns null when there is nothing to show (caller appends nothing).
 export function formatSingleModelSection(
-  items: ReadonlyArray<{ finding: Finding; findingId: string | null }>,
+  items: ReadonlyArray<{ finding: Finding; findingId: string | null; corroborated?: boolean }>,
 ): string | null {
   if (items.length === 0) return null;
   const sorted = items.toSorted((a, b) => severityRank(a.finding) - severityRank(b.finding));
@@ -268,15 +268,27 @@ export function formatSingleModelSection(
     "Flagged by only one of the two reviewers (below the consensus bar). " +
     "Experimental signal, shown for feedback only.";
   const body = sorted
-    .map(({ finding, findingId }) => formatSingleModelFinding(finding, findingId))
+    .map(({ finding, findingId, corroborated }) =>
+      formatSingleModelFinding(finding, findingId, corroborated ?? false),
+    )
     .join("\n\n---\n\n");
   return `${intro}\n\n---\n\n${body}`;
 }
 
-function formatSingleModelFinding(f: Finding, findingId: string | null): string {
+function formatSingleModelFinding(
+  f: Finding,
+  findingId: string | null,
+  corroborated: boolean,
+): string {
   const ev = f.evidence[0];
   const lines: string[] = [];
-  lines.push(`**${titleCase(f.category)} · ${titleCase(f.severity)}** — ${f.title}`);
+  // Build B — corroborated shadow findings (two_of_three: an independent
+  // 3rd-model confirmed the single-model claim) get a suffix label. The label
+  // is ADDITIVE — an uncorroborated finding renders byte-identically to the
+  // pre-Build-B (Win2) header, so the section stays unchanged when no finding
+  // graduated / the adjudication flag is off.
+  const suffix = corroborated ? " · corroborated (3rd-model)" : "";
+  lines.push(`**${titleCase(f.category)} · ${titleCase(f.severity)}${suffix}** — ${f.title}`);
   if (findingId !== null) {
     lines.push(`<sub>id: \`${findingId}\`</sub>`);
   }
