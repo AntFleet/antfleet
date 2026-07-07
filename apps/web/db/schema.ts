@@ -546,6 +546,11 @@ export const installations = pgTable(
     // installs keep byte-identical public receipt behavior until explicitly
     // classified.
     isLiveProtocol: boolean("is_live_protocol").notNull().default(false),
+    // Step 0.5 migration 0050 — per-install precision-feedback override.
+    // NULL = inherit ANTFLEET_PRECISION_FEEDBACK env default (OFF).
+    // Non-null = force-on/off for this install, regardless of env. Used to
+    // canary one install (e.g. aeon-bench) before flipping env-wide.
+    precisionFeedbackEnabled: boolean("precision_feedback_enabled"),
   },
   (t) => [
     unique("installations_install_repo_uniq").on(t.installationId, t.repo),
