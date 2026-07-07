@@ -64,6 +64,13 @@ export function mapToMaintainerReactions(args: {
     actionTaken: CONTENT_TO_ACTION[r.content],
     reactionAt: new Date(r.created_at),
     maintainerComment: null,
+    // Step 0.5 item 2 (dark): persist reactor identity when available.
+    // reactor_login comes from r.user.login on the reaction poll API.
+    reactorLogin: r.user?.login ?? null,
+    // author_association is NOT available from the reaction poll endpoint
+    // (GitHub only returns it on webhook payloads, not reaction list REST).
+    // Left null here; the dismiss-reply ingestion path (Step 0.5 item 4)
+    // populates it from issue_comment.created payload author_association.
   }));
 }
 

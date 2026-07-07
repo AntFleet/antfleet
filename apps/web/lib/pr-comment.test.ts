@@ -334,3 +334,111 @@ describe("formatClosureReceipt", () => {
     expect(out).not.toMatch(/no-lines\.ts:/u);
   });
 });
+
+// ===========================================================================
+// Step 0.5 — precision feedback (flag-gated affordance)
+// ===========================================================================
+
+describe("formatPRComment — Step 0.5 precision feedback", () => {
+  const FINDING_ID_0 = `${META.reviewId}-0`;
+  const FINDING_ID_1 = `${META.reviewId}-1`;
+
+  it("flag OFF (default): output is byte-identical to pre-Step-0.5", () => {
+    const finding = mkFinding();
+    const withFlag = formatPRComment([finding], {
+      ...META,
+      precisionFeedbackEnabled: false,
+    });
+    const withoutFlag = formatPRComment([finding], META);
+    expect(withFlag).toBe(withoutFlag);
+  });
+
+  it("flag OFF with findingIds supplied: still byte-identical (ids ignored)", () => {
+    const finding = mkFinding();
+    const withIds = formatPRComment([finding], {
+      ...META,
+      precisionFeedbackEnabled: false,
+      findingIds: [FINDING_ID_0],
+    });
+    const baseline = formatPRComment([finding], META);
+    expect(withIds).toBe(baseline);
+  });
+
+  it("flag ON: includes dismiss footer line", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      findingIds: [FINDING_ID_0],
+    });
+    expect(out).toContain("@antfleet dismiss");
+    expect(out).toContain("retract it");
+  });
+
+  it("flag ON with findingIds: displays the canonical finding id near the header", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      findingIds: [FINDING_ID_0],
+    });
+    expect(out).toContain(`\`${FINDING_ID_0}\``);
+    expect(out).toContain("<sub>id:");
+  });
+
+  it("flag ON with multiple findings: each finding gets its own id", () => {
+    const out = formatPRComment([mkFinding(), mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      findingIds: [FINDING_ID_0, FINDING_ID_1],
+    });
+    expect(out).toContain(`\`${FINDING_ID_0}\``);
+    expect(out).toContain(`\`${FINDING_ID_1}\``);
+  });
+
+  it("flag ON without findingIds: no id lines, but footer still appears", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      // findingIds deliberately omitted
+    });
+    expect(out).toContain("@antfleet dismiss");
+    expect(out).not.toContain("<sub>id:");
+  });
+
+  it("flag ON: brand copy at top is untouched", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      findingIds: [FINDING_ID_0],
+    });
+    expect(out).toContain(
+      "Both reviewers flagged the items below on the changed files. AntFleet posts only what two independent frontier models agree on.",
+    );
+  });
+
+  it("flag ON: dismiss footer is the LAST line of the comment", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      findingIds: [FINDING_ID_0],
+    });
+    const lines = out.split("\n");
+    const lastLine = lines[lines.length - 1];
+    expect(lastLine).toContain("@antfleet dismiss");
+    expect(lastLine).toContain("retract it");
+  });
+
+  it("flag ON: settlement footer appears before dismiss footer", () => {
+    const txHash = "0xabc123";
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      precisionFeedbackEnabled: true,
+      findingIds: [FINDING_ID_0],
+      settlement: { channelBalanceUsdc: "2.0", lastDepositTxHash: txHash },
+    });
+    const settledPos = out.indexOf("Settled");
+    const dismissPos = out.indexOf("@antfleet dismiss");
+    expect(settledPos).toBeGreaterThan(-1);
+    expect(dismissPos).toBeGreaterThan(-1);
+    expect(settledPos).toBeLessThan(dismissPos);
+  });
+});

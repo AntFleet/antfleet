@@ -292,6 +292,76 @@ describe("runSweep", () => {
     expect(deps.stampFindingPolled).toHaveBeenCalledWith("review-1-1", NOW);
   });
 
+  // ── Step 0.5 / item 8 — channel-C reaction regression guard ────────────
+  //
+  // item 6 added a dedup SELECT for dismiss:reply rows inside
+  // recordMaintainerReactions. This describe asserts, at the sweep/cron level,
+  // that the shared `recordMaintainerReactions` dep still receives the full set
+  // of non-dismiss reactions unchanged — i.e. the dedup branch is NOT entered
+  // for channel-C reactions (thumbs_down, heart, rocket, etc.) and the
+  // onConflictDoNothing insert path remains intact.
+  describe("channel-C reaction pass — non-dismiss rows forwarded unchanged (item 8)", () => {
+    it("forwards thumbs_down/heart/rocket reactions with correct actionTaken mappings", async () => {
+      // Three channel-C reaction variants — none of these are dismiss:reply.
+      const rawReactions = [
+        { content: "-1" as const, created_at: "2026-05-17T09:00:00Z" },
+        { content: "heart" as const, created_at: "2026-05-17T09:01:00Z" },
+        { content: "rocket" as const, created_at: "2026-05-17T09:02:00Z" },
+      ];
+      const recordMaintainerReactions = vi.fn().mockResolvedValue(3);
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([mkBatch()]),
+        detectClosures: vi
+          .fn()
+          .mockResolvedValue([{ findingId: "review-1-0", status: "still_open" }]),
+        pollReactions: vi.fn().mockResolvedValue(rawReactions),
+        recordMaintainerReactions,
+      });
+      const out = await runSweep(deps);
+      expect(out.reactionsRecorded).toBe(3);
+      expect(out.errors).toEqual([]);
+      // One call per eligible finding in the batch (mkBatch has one finding).
+      expect(recordMaintainerReactions).toHaveBeenCalledTimes(1);
+      // Capture the actual rows forwarded — dedup must NOT have filtered any.
+      const rows = (recordMaintainerReactions as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0] as Array<{ actionTaken: string }>;
+      expect(rows).toHaveLength(3);
+      const actions = rows.map((r) => r.actionTaken).toSorted();
+      expect(actions).toEqual(["reaction:heart", "reaction:rocket", "reaction:thumbs_down"]);
+    });
+
+    it("accumulates channel-C count from multiple findings sharing one comment", async () => {
+      // Two findings on the same review share one pollReactions call, but each
+      // finding gets its own recordMaintainerReactions call. Both channel-C
+      // rows should reach the insert path.
+      const batch = mkBatch({
+        agreementDecision: productionAgreement(validFinding(), validFinding({ title: "second" })),
+        findings: [freshFinding("review-1-0", 0), freshFinding("review-1-1", 1)],
+      });
+      const rawReactions = [
+        { content: "-1" as const, created_at: "2026-05-17T09:00:00Z" },
+        { content: "heart" as const, created_at: "2026-05-17T09:01:00Z" },
+      ];
+      // Each finding call returns 2 (2 reactions × 1 finding each) → total 4.
+      const recordMaintainerReactions = vi.fn().mockResolvedValue(2);
+      const deps = mkDeps({
+        loadSweepWork: vi.fn().mockResolvedValue([batch]),
+        detectClosures: vi.fn().mockResolvedValue([
+          { findingId: "review-1-0", status: "still_open" },
+          { findingId: "review-1-1", status: "still_open" },
+        ]),
+        pollReactions: vi.fn().mockResolvedValue(rawReactions),
+        recordMaintainerReactions,
+      });
+      const out = await runSweep(deps);
+      // Two findings → two recordMaintainerReactions calls.
+      expect(recordMaintainerReactions).toHaveBeenCalledTimes(2);
+      // Accumulated total across both calls.
+      expect(out.reactionsRecorded).toBe(4);
+      expect(out.errors).toEqual([]);
+    });
+  });
+
   it("groups findings per batch and only one pollReactions call per review", async () => {
     // Two findings on the same review share one comment — assert one fetch.
     const batch = mkBatch({

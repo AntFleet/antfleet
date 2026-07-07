@@ -12,9 +12,17 @@ import { runReviewWorker } from "@/lib/review-worker";
 import {
   enqueueReview,
   hashRepo,
+  lookupFindingForInstall,
   markReviewTerminallyFailed,
+  recordMaintainerReactions,
+  retractFindingByDismiss,
   upsertInstallEntry,
 } from "@/db/queries";
+import {
+  DISMISS_AUTHORISED_ASSOCIATIONS,
+  isPrecisionAutoRetractEnabled,
+  isPrecisionFeedbackEnabledForInstall,
+} from "@/lib/precision-feedback-env";
 import { db } from "@/db";
 import { debitForReview, decideGate, type GateDecision } from "@/lib/paywall/gate";
 import { buildInvoice, renderInvoiceComment } from "@/lib/paywall/invoice";
@@ -78,6 +86,14 @@ type IssueCommentPayload = {
   commentUrl: string;
   body: string;
   sender: { login: string; type: string };
+  // Step 0.5 — dismiss signal ingestion. GitHub's author_association on the
+  // comment object (not the issue author). Defaults to "NONE" when the field
+  // is absent — this is the safe, least-permissive fallback. Captured here
+  // so the handler can gate on OWNER/MEMBER/COLLABORATOR without a second
+  // API call. commentCreatedAt is used as reactionAt for the
+  // maintainer_reactions row.
+  authorAssociation: string;
+  commentCreatedAt: Date;
 };
 
 // issue_comment.created payload shape — `comment.user` is the author of
@@ -106,6 +122,17 @@ function asIssueCommentPayload(raw: unknown): IssueCommentPayload | null {
   ) {
     return null;
   }
+  // author_association is present on the comment object (e.g. "OWNER",
+  // "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"). Fall back to "NONE"
+  // when absent so the dismiss gate defaults to deny.
+  const authorAssociation =
+    typeof comment["author_association"] === "string" ? comment["author_association"] : "NONE";
+  // created_at is an ISO 8601 timestamp string. Fall back to now so a
+  // missing field doesn't block recording; the dedup key is (reviewId,
+  // findingId, reactionAt, actionTaken) so a wrong timestamp at most
+  // creates a duplicate row on re-delivery.
+  const createdAtRaw = comment["created_at"];
+  const commentCreatedAt = typeof createdAtRaw === "string" ? new Date(createdAtRaw) : new Date();
   return {
     installationId,
     owner: owner["login"],
@@ -115,7 +142,35 @@ function asIssueCommentPayload(raw: unknown): IssueCommentPayload | null {
     commentUrl: comment["html_url"],
     body: comment["body"],
     sender: { login: sender["login"], type: sender["type"] },
+    authorAssociation,
+    commentCreatedAt,
   };
+}
+
+// Step 0.5 — dismiss command parser.
+//
+// Matches any line of the form (case-insensitive on "dismiss"):
+//   @antfleet dismiss <finding-id> [optional reason...]
+//
+// finding-id must match the canonical shape: <UUID>-<digits>, where UUID
+// is the standard 8-4-4-4-12 hex format. Any other shape (malformed UUID,
+// wrong keyword, wrong mention) returns null so unrelated comments are
+// silently ignored.
+//
+// Exported for unit tests; production callers import from this module.
+const CANONICAL_FINDING_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\d+$/i;
+
+export function parseDismissCommand(
+  body: string,
+): { findingId: string; reason: string | null } | null {
+  // `im` flags: case-insensitive (tolerate "Dismiss"), multiline (match any line).
+  const m = /^[ \t]*@antfleet[ \t]+dismiss[ \t]+(\S+)(?:[ \t]+(.*\S))?[ \t]*$/im.exec(body);
+  if (m === null) return null;
+  const candidateId = m[1] ?? "";
+  if (!CANONICAL_FINDING_ID_RE.test(candidateId)) return null;
+  const reason = m[2] !== undefined && m[2].length > 0 ? m[2] : null;
+  return { findingId: candidateId, reason };
 }
 
 // installation_repositories.added — fired when an existing install
@@ -288,10 +343,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   //   2. Sender is not antfleet[bot] (skip our own posts — the
   //      first-review summary, check-ins, etc., all post via the App)
   //   3. The target issue is one of our welcome issues (DB lookup)
+  // Step 0.5 adds a second path in the same after() block: dismiss command
+  // ingestion, flag-gated on ANTFLEET_PRECISION_FEEDBACK.
   if (githubEvent === "issue_comment" && action === "created") {
     const ic = asIssueCommentPayload(payload);
     if (ic !== null && ic.sender.login !== "antfleet[bot]") {
       after(async () => {
+        // Path 1: partner-reply recording (unchanged).
         try {
           const isWelcome = await isWelcomeIssue(
             ic.installationId,
@@ -299,21 +357,107 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             ic.repo,
             ic.issueNumber,
           );
-          if (!isWelcome) return;
-          await recordPartnerReply({
-            installationId: ic.installationId,
-            owner: ic.owner,
-            repo: ic.repo,
-            issueNumber: ic.issueNumber,
-            commentId: ic.commentId,
-            commentUrl: ic.commentUrl,
-            body: ic.body,
-            senderLogin: ic.sender.login,
-            senderType: ic.sender.type,
-          });
+          if (isWelcome) {
+            await recordPartnerReply({
+              installationId: ic.installationId,
+              owner: ic.owner,
+              repo: ic.repo,
+              issueNumber: ic.issueNumber,
+              commentId: ic.commentId,
+              commentUrl: ic.commentUrl,
+              body: ic.body,
+              senderLogin: ic.sender.login,
+              senderType: ic.sender.type,
+            });
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logError("webhook.partner_reply_dispatch_failed", { delivery, message });
+        }
+
+        // Path 2: dismiss command ingestion (Step 0.5, item 4).
+        // Best-effort only — errors are logged but never surface to the caller.
+        const dismissCmd = parseDismissCommand(ic.body);
+        if (dismissCmd !== null) {
+          try {
+            const enabled = await isPrecisionFeedbackEnabledForInstall(ic.installationId, ic.repo);
+            if (!enabled) return;
+
+            if (!DISMISS_AUTHORISED_ASSOCIATIONS.has(ic.authorAssociation)) {
+              logInfo("webhook.dismiss_association_denied", {
+                delivery,
+                findingId: dismissCmd.findingId,
+                authorAssociation: ic.authorAssociation,
+              });
+              return;
+            }
+
+            const found = await lookupFindingForInstall(
+              dismissCmd.findingId,
+              ic.installationId,
+              ic.repo,
+            );
+            if (found === null) {
+              logWarn("webhook.dismiss_finding_not_found", {
+                delivery,
+                findingId: dismissCmd.findingId,
+              });
+              return;
+            }
+
+            const inserted = await recordMaintainerReactions([
+              {
+                reviewId: found.reviewId,
+                findingId: dismissCmd.findingId,
+                actionTaken: "dismiss:reply",
+                reactionAt: ic.commentCreatedAt,
+                maintainerComment: dismissCmd.reason,
+                reactorLogin: ic.sender.login,
+                authorAssociation: ic.authorAssociation,
+              },
+            ]);
+            logInfo("webhook.dismiss_recorded", {
+              delivery,
+              findingId: dismissCmd.findingId,
+              reactorLogin: ic.sender.login,
+              inserted,
+            });
+
+            // Auto-retraction (item 6): only when sub-flag is ON and the
+            // dismiss row was newly inserted (inserted > 0 means not a
+            // duplicate — idempotency guard). Gates: parent precision-feedback
+            // flag (already checked above) AND ANTFLEET_PRECISION_AUTORETRACT.
+            //
+            // Forward-only: a finding dismissed while AUTORETRACT was OFF won't
+            // be retracted by a later re-dismiss from the same maintainer once
+            // the flag flips ON — the dedup guard suppresses the second insert
+            // (inserted=0), so retraction never fires for that prior event.
+            if (inserted > 0 && isPrecisionAutoRetractEnabled()) {
+              try {
+                const retracted = await retractFindingByDismiss(
+                  dismissCmd.findingId,
+                  dismissCmd.reason,
+                );
+                logInfo("webhook.dismiss_autoretracted", {
+                  delivery,
+                  findingId: dismissCmd.findingId,
+                  retracted,
+                });
+              } catch (retractErr) {
+                logError("webhook.dismiss_autoretract_failed", {
+                  delivery,
+                  findingId: dismissCmd.findingId,
+                  message: messageOf(retractErr),
+                });
+              }
+            }
+          } catch (err) {
+            logError("webhook.dismiss_command_failed", {
+              delivery,
+              findingId: dismissCmd.findingId,
+              message: messageOf(err),
+            });
+          }
         }
       });
     }

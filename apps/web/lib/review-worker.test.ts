@@ -110,6 +110,9 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     // Patch Agent v1.6 — default: click-apply lane disabled. Tests that
     // exercise the click-apply post path override these.
     isPatchAgentClickApplyEnabledForInstall: vi.fn().mockResolvedValue(false),
+    // Step 0.5 — precision feedback: default OFF so all existing tests are
+    // byte-identical to pre-Step-0.5 behavior.
+    isPrecisionFeedbackEnabledForInstall: vi.fn().mockResolvedValue(false),
     postPatchReviewComment: vi.fn().mockResolvedValue(null),
     recordPatchReviewComment: vi.fn().mockResolvedValue(undefined),
     loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow()),

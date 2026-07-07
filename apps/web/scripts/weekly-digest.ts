@@ -39,6 +39,7 @@ async function main() {
   const { findingStatus, maintainerReactions, onboardingEvents, reviews } =
     await import("../db/schema");
   const { and, count, desc, eq, gte, sql, isNotNull } = await import("drizzle-orm");
+  const { precisionWindow } = await import("../db/queries");
 
   // 1. Active installs in the window — distinct (installation_id, owner, repo)
   // tuples from reviews with a review row created since `since`.
@@ -222,6 +223,20 @@ async function main() {
     }
     console.log("");
   }
+
+  // ── Precision metric (Step 0.5, item 7) ──────────────────────────────────
+  // Global dismiss-rate per severity tier over the same window. Internal only.
+  // thumbsDownCount is channel C (un-attributable, not merged into rate).
+  const pw = await precisionWindow(since, null);
+  console.log(`━━ precision signal (last ${days} days) ━━`);
+  for (const t of pw.tiers) {
+    const rateStr = t.postedCount > 0 ? `${(t.dismissRate * 100).toFixed(1)}%` : "—";
+    console.log(
+      `  ${t.tier.padEnd(8)}: posted=${t.postedCount}  dismissed=${t.dismissedCount}  rate=${rateStr}`,
+    );
+  }
+  console.log(`  thumbs_down (ch C, secondary): ${pw.thumbsDownCount}`);
+  console.log("");
 }
 
 main().catch((e) => {
