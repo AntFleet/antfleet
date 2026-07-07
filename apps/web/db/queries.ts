@@ -2598,6 +2598,128 @@ export async function retractFindingByDismiss(
   return retractFinding(findingId, reason ?? "maintainer-dismissed via PR reply", null);
 }
 
+// ─── Step 0.5 — precision metric (item 7) ──────────────────────────────────
+//
+// Per-tier dismiss rate for the precision baseline. Joined to reviews on the
+// same publicReceipt gate as activityWindow so the numbers are comparable to
+// existing activity counters. Tiers: low | medium | high | critical.
+//
+// postedCount: finding_status rows created in window (joined to public reviews).
+// dismissedCount: DISTINCT finding_ids with a maintainer-authorised dismiss:reply
+//   in window (authorAssociation ∈ OWNER/MEMBER/COLLABORATOR).
+// dismissRate: dismissedCount / postedCount, 0.0 when postedCount is 0.
+//
+// The secondary thumbsDownCount is from channel C (reaction:thumbs_down, low-
+// trust, un-attributable) and is reported as a single aggregate — never merged
+// into the primary rate. Internal-only; never rendered on public surfaces.
+
+const DISMISS_AUTHORISED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const PRECISION_TIERS = ["low", "medium", "high", "critical"] as const;
+type PrecisionTier = (typeof PRECISION_TIERS)[number];
+
+export type PrecisionTierStats = {
+  tier: PrecisionTier;
+  postedCount: number;
+  dismissedCount: number;
+  dismissRate: number;
+};
+
+export type PrecisionWindow = {
+  tiers: PrecisionTierStats[];
+  /** Channel C secondary — thumbs:down aggregate (all tiers, not merged into rate). */
+  thumbsDownCount: number;
+};
+
+export async function precisionWindow(
+  sinceDate: Date | null,
+  untilDate: Date | null = null,
+): Promise<PrecisionWindow> {
+  const { since, until, zero } = normalizeActivityWindow(sinceDate, untilDate, new Date());
+  const empty: PrecisionWindow = {
+    tiers: PRECISION_TIERS.map((tier) => ({
+      tier,
+      postedCount: 0,
+      dismissedCount: 0,
+      dismissRate: 0,
+    })),
+    thumbsDownCount: 0,
+  };
+  if (zero) return empty;
+
+  const findingsCreatedRange = and(
+    since === null ? undefined : gte(findingStatus.createdAt, since),
+    until === null ? undefined : lt(findingStatus.createdAt, until),
+  );
+  const reactionsRange = and(
+    since === null ? undefined : gte(maintainerReactions.reactionAt, since),
+    until === null ? undefined : lt(maintainerReactions.reactionAt, until),
+  );
+  const publicGate = eq(reviews.publicReceipt, true);
+
+  // Per-tier posted count.
+  const postedRows = await db
+    .select({
+      severity: findingStatus.severity,
+      n: count(findingStatus.id),
+    })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(and(publicGate, findingsCreatedRange))
+    .groupBy(findingStatus.severity);
+
+  // Per-tier dismissed count — DISTINCT findings with maintainer-authorised
+  // dismiss:reply in the window. We pull raw rows and count in JS so we can
+  // filter authorAssociation without a dynamic inArray literal in the WHERE.
+  const dismissedRows = await db
+    .select({
+      findingId: maintainerReactions.findingId,
+      severity: findingStatus.severity,
+      authorAssociation: maintainerReactions.authorAssociation,
+    })
+    .from(maintainerReactions)
+    .innerJoin(findingStatus, eq(maintainerReactions.findingId, findingStatus.findingId))
+    .innerJoin(reviews, eq(findingStatus.reviewId, reviews.reviewId))
+    .where(and(publicGate, eq(maintainerReactions.actionTaken, "dismiss:reply"), reactionsRange));
+
+  // Channel C — thumbs_down reactions in window.
+  const thumbsRows = await db
+    .select({ n: count(maintainerReactions.reactionId) })
+    .from(maintainerReactions)
+    .innerJoin(reviews, eq(maintainerReactions.reviewId, reviews.reviewId))
+    .where(
+      and(publicGate, eq(maintainerReactions.actionTaken, "reaction:thumbs_down"), reactionsRange),
+    );
+
+  // Aggregate dismissed — deduplicate per (findingId, tier) and filter auth.
+  const dismissedPerTier = new Map<PrecisionTier, Set<string>>();
+  for (const tier of PRECISION_TIERS) dismissedPerTier.set(tier, new Set());
+  for (const row of dismissedRows) {
+    if (!DISMISS_AUTHORISED_ASSOCIATIONS.has(row.authorAssociation ?? "")) continue;
+    const tier = row.severity as PrecisionTier;
+    if (!PRECISION_TIERS.includes(tier)) continue;
+    dismissedPerTier.get(tier)!.add(row.findingId);
+  }
+
+  const postedPerTier = new Map<PrecisionTier, number>();
+  for (const row of postedRows) {
+    const tier = row.severity as PrecisionTier;
+    if (!PRECISION_TIERS.includes(tier)) continue;
+    postedPerTier.set(tier, row.n);
+  }
+
+  const tiers: PrecisionTierStats[] = PRECISION_TIERS.map((tier) => {
+    const postedCount = postedPerTier.get(tier) ?? 0;
+    const dismissedCount = dismissedPerTier.get(tier)!.size;
+    const dismissRate = postedCount > 0 ? dismissedCount / postedCount : 0;
+    return { tier, postedCount, dismissedCount, dismissRate };
+  });
+
+  return {
+    tiers,
+    thumbsDownCount: thumbsRows[0]?.n ?? 0,
+  };
+}
+
 // ─── Mission 6 — /benchmarks public view ───────────────────────────────────
 //
 // Benchmark reviews are reviews on benchmark-class repos (BENCHMARK.md at

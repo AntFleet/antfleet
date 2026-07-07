@@ -122,7 +122,7 @@ vi.mock("./index", () => ({ db: dbMocks.db }));
 // Provide the same mock under both identifiers so the module can load.
 vi.mock("@/db", () => ({ db: dbMocks.db }));
 
-import { recordMaintainerReactions, retractFindingByDismiss } from "./queries";
+import { recordMaintainerReactions, retractFindingByDismiss, precisionWindow } from "./queries";
 import { isPrecisionAutoRetractEnabled } from "@/lib/precision-feedback-env";
 
 beforeEach(() => {
@@ -253,6 +253,54 @@ describe("retractFindingByDismiss", () => {
 
     const result = await retractFindingByDismiss("already-retracted-0", "again");
     expect(result).toBe(false);
+  });
+});
+
+// ===========================================================================
+// (iii) precisionWindow — per-tier math + divide-by-zero + tier bucketing
+// ===========================================================================
+
+describe("precisionWindow", () => {
+  it("returns zero stats for an impossible window (until < since)", async () => {
+    const since = new Date("2026-07-05T00:00:00Z");
+    const until = new Date("2026-07-01T00:00:00Z"); // before since
+    const pw = await precisionWindow(since, until);
+    for (const t of pw.tiers) {
+      expect(t.postedCount).toBe(0);
+      expect(t.dismissedCount).toBe(0);
+      expect(t.dismissRate).toBe(0);
+    }
+    expect(pw.thumbsDownCount).toBe(0);
+  });
+
+  it("returns all four tiers in the canonical order", async () => {
+    selectQueue = [[], [], []]; // 3 queries: posted, dismissed, thumbs
+    const pw = await precisionWindow(null, null);
+    expect(pw.tiers.map((t) => t.tier)).toEqual(["low", "medium", "high", "critical"]);
+  });
+
+  it("guards divide-by-zero: dismissRate=0 when postedCount=0", async () => {
+    selectQueue = [[], [], []];
+    const pw = await precisionWindow(null, null);
+    for (const t of pw.tiers) {
+      expect(t.postedCount).toBe(0);
+      expect(t.dismissRate).toBe(0);
+    }
+  });
+
+  it("excludes unknown severity tiers from output tiers", async () => {
+    selectQueue = [[], [], []];
+    const pw = await precisionWindow(null, null);
+    const known = new Set(["low", "medium", "high", "critical"]);
+    for (const t of pw.tiers) {
+      expect(known.has(t.tier)).toBe(true);
+    }
+  });
+
+  it("thumbsDownCount defaults to 0 when no thumbs-down reactions exist", async () => {
+    selectQueue = [[], [], []];
+    const pw = await precisionWindow(null, null);
+    expect(pw.thumbsDownCount).toBe(0);
   });
 });
 
