@@ -1000,11 +1000,15 @@ export async function runReviewKernel(
   const shadowTier = Array.isArray(bundle.singleModelTier) ? bundle.singleModelTier : [];
   if (installationId !== null && !bundle.degraded && shadowTier.length > 0) {
     try {
-      const adjudicationEnabled = await deps.isThirdModelAdjudicationEnabledForInstall(
-        installationId,
-        repo,
-      );
-      if (adjudicationEnabled) {
+      // Fail-closed layering (spec §6): adjudication runs only when the
+      // single-model tier is ALSO enabled for the install. The corroborated
+      // results are persisted/rendered under the tier gate downstream, so
+      // running GLM without the tier on would be discarded — wasted spend.
+      const [adjudicationEnabled, tierEnabled] = await Promise.all([
+        deps.isThirdModelAdjudicationEnabledForInstall(installationId, repo),
+        deps.isSingleModelTierEnabledForInstall(installationId, repo),
+      ]);
+      if (adjudicationEnabled && tierEnabled) {
         const applied = await deps.applyThirdModelAdjudication({
           singleModelTier: shadowTier,
           ...(signal !== undefined ? { signal } : {}),
