@@ -19,6 +19,7 @@ import {
 } from "./onboarder";
 import { runPatchAgent as realRunPatchAgent } from "./patch-agent";
 import { isPatchAgentClickApplyEnabledForInstall as realIsPatchAgentClickApplyEnabledForInstall } from "./patch-agent-env";
+import { isPrecisionFeedbackEnabledForInstall as realIsPrecisionFeedbackEnabledForInstall } from "./precision-feedback-env";
 import { postPatchReviewComment as realPostPatchReviewComment } from "./patch-review-comment";
 import {
   applyReachabilityGate as realApplyReachabilityGate,
@@ -109,6 +110,7 @@ export type WorkerDeps = {
   recordPatchProposedEvent: typeof realRecordPatchProposedEvent;
   runPatchAgent: typeof realRunPatchAgent;
   isPatchAgentClickApplyEnabledForInstall: typeof realIsPatchAgentClickApplyEnabledForInstall;
+  isPrecisionFeedbackEnabledForInstall: typeof realIsPrecisionFeedbackEnabledForInstall;
   postPatchReviewComment: typeof realPostPatchReviewComment;
   recordPatchReviewComment: typeof realRecordPatchReviewComment;
   loadReviewQueueRow: typeof realLoadReviewQueueRow;
@@ -155,6 +157,7 @@ export function realWorkerDeps(): WorkerDeps {
     recordPatchProposedEvent: realRecordPatchProposedEvent,
     runPatchAgent: realRunPatchAgent,
     isPatchAgentClickApplyEnabledForInstall: realIsPatchAgentClickApplyEnabledForInstall,
+    isPrecisionFeedbackEnabledForInstall: realIsPrecisionFeedbackEnabledForInstall,
     postPatchReviewComment: realPostPatchReviewComment,
     recordPatchReviewComment: realRecordPatchReviewComment,
     loadReviewQueueRow: realLoadReviewQueueRow,
@@ -447,6 +450,7 @@ export type ReviewKernelInstallLane = {
   runFirstReviewSummary: typeof realRunFirstReviewSummary;
   runPatchAgent: typeof realRunPatchAgent;
   isPatchAgentClickApplyEnabledForInstall: typeof realIsPatchAgentClickApplyEnabledForInstall;
+  isPrecisionFeedbackEnabledForInstall: typeof realIsPrecisionFeedbackEnabledForInstall;
   postPatchReviewComment: typeof realPostPatchReviewComment;
   recordPatchReviewComment: typeof realRecordPatchReviewComment;
   loadReviewSettlement: (reviewId: string) => Promise<ReviewSettlement | null>;
@@ -1373,6 +1377,34 @@ async function runInstallLane(args: {
     }
   }
 
+  // Step 0.5 — precision feedback affordance gate. Resolved once here so
+  // both the finding-id display per-finding AND the footer dismiss line see
+  // the same answer. Defaults to false on any lookup failure — conservative,
+  // preserves byte-identical output for the vast majority of installs.
+  let precisionFeedbackEnabled = false;
+  try {
+    precisionFeedbackEnabled = await lane.isPrecisionFeedbackEnabledForInstall(
+      lane.installationId,
+      repo,
+    );
+  } catch (err) {
+    logError("precision_feedback.gate_lookup_failed", {
+      reviewId,
+      message: messageOf(err),
+    });
+  }
+  // When precision feedback is on, pass the canonical finding IDs so the
+  // comment can display them for the dismiss affordance. The IDs are indexed
+  // to match the `publicAgreed` array: embargoed findings are excluded from
+  // both publicAgreed and publicFindingIds so the indices align.
+  // When the flag is off (default), publicFindingIds is not passed and the
+  // output is byte-identical to pre-Step-0.5 behavior.
+  const publicFindingIds = precisionFeedbackEnabled
+    ? embargoedDisclosureIndexes.size === 0
+      ? findingIds
+      : findingIds.filter((_, i) => !embargoedDisclosureIndexes.has(i))
+    : undefined;
+
   // Lifecycle persistence + comment posting. Finding lifecycle rows are
   // written BEFORE the GitHub comment so a DB failure cannot leave the
   // public comment as the only record of agreed findings. setReviewComment
@@ -1401,6 +1433,8 @@ async function runInstallLane(args: {
       ? { patchesByIndex: patchOutcome.byIndex }
       : {}),
     clickApplyEnabled,
+    precisionFeedbackEnabled,
+    ...(publicFindingIds !== undefined ? { findingIds: publicFindingIds } : {}),
   });
   // findingIds were already written by the kernel above. The install
   // lane consumes the same array for canonical-id translation below.
@@ -1657,6 +1691,7 @@ async function processClaimedRow(
         runFirstReviewSummary: deps.runFirstReviewSummary,
         runPatchAgent: deps.runPatchAgent,
         isPatchAgentClickApplyEnabledForInstall: deps.isPatchAgentClickApplyEnabledForInstall,
+        isPrecisionFeedbackEnabledForInstall: deps.isPrecisionFeedbackEnabledForInstall,
         postPatchReviewComment: deps.postPatchReviewComment,
         recordPatchReviewComment: deps.recordPatchReviewComment,
         loadReviewSettlement: deps.loadReviewSettlement,

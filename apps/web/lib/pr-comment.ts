@@ -66,6 +66,18 @@ export type ReviewMeta = {
   // byte-identically. Operator decision Q1 LOCKED to REMOVE the inline
   // <details> when click-apply is on (no duplicate suggestion render).
   clickApplyEnabled?: boolean;
+  // Step 0.5 — precision feedback affordance. Default false → comment is
+  // byte-identical to pre-Step-0.5 output. When true:
+  //   • Each finding header gains a <sub> line showing its canonical id.
+  //   • A single dismiss instruction footer line is appended.
+  // findingIds[i] must be the canonical finding_status.finding_id for the
+  // finding at position i in the `findings` array passed to formatPRComment
+  // (i.e. indexed to match the input, not the post-sort order). Callers
+  // MUST supply findingIds when precisionFeedbackEnabled is true; if the
+  // array is absent or shorter than findings, the id is silently omitted
+  // for that finding — the flag-off path is always preserved.
+  precisionFeedbackEnabled?: boolean;
+  findingIds?: readonly string[];
 };
 
 export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
@@ -79,9 +91,15 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
     `## AntFleet · ${findings.length} finding${findings.length === 1 ? "" : "s"}\n\n` +
     "Both reviewers flagged the items below on the changed files. AntFleet posts only what two independent frontier models agree on.";
   const clickApplyEnabled = meta.clickApplyEnabled === true;
+  const precisionFeedbackEnabled = meta.precisionFeedbackEnabled === true;
   const body = sorted
     .map(({ f, originalIndex }) =>
-      formatFinding(f, meta.patchesByIndex?.get(originalIndex) ?? null, clickApplyEnabled),
+      formatFinding(
+        f,
+        meta.patchesByIndex?.get(originalIndex) ?? null,
+        clickApplyEnabled,
+        precisionFeedbackEnabled ? (meta.findingIds?.[originalIndex] ?? null) : null,
+      ),
     )
     .join("\n\n---\n\n");
   const stack = Object.values(meta.modelIds)
@@ -94,6 +112,11 @@ export function formatPRComment(findings: Finding[], meta: ReviewMeta): string {
   if (meta.settlement !== undefined) {
     const patchIncluded = meta.patchesByIndex !== undefined && meta.patchesByIndex.size > 0;
     footerLines.push(formatSettlementFooter(meta.settlement, patchIncluded));
+  }
+  if (precisionFeedbackEnabled) {
+    footerLines.push(
+      "<sub>Wrong call? Reply `@antfleet dismiss <finding-id> [reason]` on this PR and we'll retract it.</sub>",
+    );
   }
   return `${intro}\n\n---\n\n${body}\n\n—\n\n${footerLines.join("\n")}`;
 }
@@ -120,10 +143,14 @@ function formatFinding(
   f: Finding,
   patch: PatchForRender | null,
   clickApplyEnabled: boolean,
+  findingId: string | null = null,
 ): string {
   const ev = f.evidence[0];
   const lines: string[] = [];
   lines.push(`**${titleCase(f.category)} · ${titleCase(f.severity)}** — ${f.title}`);
+  if (findingId !== null) {
+    lines.push(`<sub>id: \`${findingId}\`</sub>`);
+  }
   if (ev !== undefined) {
     lines.push(`\`${formatEvidencePath(ev)}\``);
   }
