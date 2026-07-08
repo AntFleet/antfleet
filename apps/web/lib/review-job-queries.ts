@@ -211,31 +211,67 @@ export async function createAcpReviewJob(
   const status = args.initialStatus ?? "billing_pending";
   const idempotencyKey = args.idempotencyKey ?? `acp:${args.acpJobId}`;
   const clientWallet = args.clientAgentWallet.toLowerCase();
-  const result = await q.execute(sql`
-    INSERT INTO review_jobs (
-      job_id, installation_id, wallet_address, repo_owner, repo_name,
-      pr_number, sha, idempotency_key, status, expires_at,
-      caller_wallet, payment_rail, acp_job_id, acp_client_wallet,
-      acp_target_key, acp_request_payload, acp_budget_status, acp_submit_status
-    ) VALUES (
-      ${jobId}, 'acp', ${clientWallet},
-      ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
-      ${idempotencyKey}, ${status}, ${expiresAt},
-      ${clientWallet}, 'acp', ${args.acpJobId}, ${clientWallet},
-      ${args.targetKey ?? null}, ${JSON.stringify(args.requestPayload)}::jsonb, 'pending', 'pending'
-    )
-    ON CONFLICT DO NOTHING
-    RETURNING ${JOB_SELECT}
-  `);
-  const row = firstRow<ReviewJobRow>(result);
+  const targetKey = args.targetKey ?? null;
+  const runInsert = (): Promise<unknown> =>
+    q.execute(sql`
+      INSERT INTO review_jobs (
+        job_id, installation_id, wallet_address, repo_owner, repo_name,
+        pr_number, sha, idempotency_key, status, expires_at,
+        caller_wallet, payment_rail, acp_job_id, acp_client_wallet,
+        acp_target_key, acp_request_payload, acp_budget_status, acp_submit_status
+      ) VALUES (
+        ${jobId}, 'acp', ${clientWallet},
+        ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
+        ${idempotencyKey}, ${status}, ${expiresAt.toISOString()}::timestamptz,
+        ${clientWallet}, 'acp', ${args.acpJobId}, ${clientWallet},
+        ${targetKey}, ${JSON.stringify(args.requestPayload)}::jsonb, 'pending', 'pending'
+      )
+      ON CONFLICT DO NOTHING
+      RETURNING ${JOB_SELECT}
+    `);
+  let row = firstRow<ReviewJobRow>(await runInsert());
+  if (row === null && targetKey !== null) {
+    // The target-key unique index (idx_review_jobs_acp_target_key_unique) is NOT
+    // status-scoped, so a terminally failed/expired job that still holds this
+    // target key blocks the INSERT even though findAcpJobByTargetKey (which
+    // excludes failed/expired) already reported the target free. Release that
+    // stale holder — matching the documented "failed/expired releases the
+    // target so it can be reviewed again" semantics — and retry the insert once.
+    const released = await releaseTerminalAcpTargetKey(q, targetKey);
+    if (released) row = firstRow<ReviewJobRow>(await runInsert());
+  }
   if (row !== null) return { row: normalizeRow(row), created: true };
   const existing = await findAcpJobByIdempotencyKey(q, idempotencyKey);
   if (existing !== null) return { row: existing, created: false };
-  if (args.targetKey !== null && args.targetKey !== undefined) {
-    const existingTarget = await findAcpJobByTargetKey(q, args.targetKey);
+  if (targetKey !== null) {
+    const existingTarget = await findAcpJobByTargetKey(q, targetKey);
     if (existingTarget !== null) return { row: existingTarget, created: false };
   }
+  // We could not resolve the conflict to an existing row. Post-fix this is a rare
+  // lost-insert race: a concurrent create grabbed the same acp_job_id/idempotency
+  // key between our lookup and insert and its row isn't committed/visible yet. A
+  // plain throw lets the ACP event inbox retry (bounded to MAX_EVENT_ATTEMPTS),
+  // which is the correct resolution once the winner commits — so we deliberately
+  // do NOT tag it non-retryable. The common failed-target case never reaches here:
+  // releaseTerminalAcpTargetKey above frees the stale key and the retry succeeds.
   throw new Error("createAcpReviewJob: idempotency conflict returned no existing row");
+}
+
+// Releases the ACP target held by a terminally failed/expired job so the target
+// can be reviewed again. The target-key unique index only covers non-null keys,
+// so nulling the stale holder's key clears the way for a fresh job. Only ever
+// touches failed/expired rows — active and completed jobs keep their target and
+// continue to dedupe. Returns true when a stale holder was released.
+async function releaseTerminalAcpTargetKey(q: Queryable, targetKey: string): Promise<boolean> {
+  const result = await q.execute(sql`
+    UPDATE review_jobs
+    SET acp_target_key = NULL
+    WHERE payment_rail = 'acp'
+      AND acp_target_key = ${targetKey}
+      AND status IN ('failed', 'expired')
+    RETURNING job_id
+  `);
+  return firstRow<{ job_id: string }>(result) !== null;
 }
 
 export async function markJobQueued(q: Queryable, jobId: string): Promise<boolean> {

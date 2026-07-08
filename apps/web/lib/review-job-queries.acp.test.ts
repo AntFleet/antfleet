@@ -66,6 +66,107 @@ describe("ACP review job queries", () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 
+  it("releases a terminally-failed target holder and retries the insert (M5)", async () => {
+    const newRow = { ...existingAcpRow, jobId: "af-new-target", acpJobId: "new-marketplace-job" };
+    // findAcpJobByAcpJobId → none; findAcpJobByTargetKey (excludes failed) → none;
+    // insert → ON CONFLICT no row (stale failed holder still owns the key);
+    // releaseTerminalAcpTargetKey → released one; retry insert → new row.
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce([]) // findAcpJobByAcpJobId
+      .mockResolvedValueOnce([]) // findAcpJobByTargetKey (pre-insert)
+      .mockResolvedValueOnce([]) // insert → conflict, no row
+      .mockResolvedValueOnce([{ job_id: "af-old-failed" }]) // releaseTerminalAcpTargetKey
+      .mockResolvedValueOnce([newRow]); // retry insert → created
+
+    const result = await createAcpReviewJob(
+      { execute },
+      {
+        acpJobId: "new-marketplace-job",
+        clientAgentWallet: "0x1111111111111111111111111111111111111111",
+        repoOwner: "AntFleet",
+        repoName: "acp-fixture",
+        prNumber: 7,
+        sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+        requestPayload: {} as never,
+        targetKey: existingAcpRow.acpTargetKey,
+      },
+    );
+
+    expect(result).toEqual({ row: newRow, created: true });
+    // 5 execute calls = acpJobId lookup, target lookup, insert (conflict),
+    // release, retry insert — proves the release-and-retry path fired.
+    expect(execute).toHaveBeenCalledTimes(5);
+  });
+
+  it("does not release an ACTIVE holder; returns the in-flight job as existing (M5)", async () => {
+    // The pre-insert target lookup misses (TOCTOU: active holder appeared after),
+    // the insert conflicts, releaseTerminalAcpTargetKey finds nothing to release
+    // (holder is active, not failed/expired), and the post-insert lookup returns
+    // the in-flight job. No new row is created.
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce([]) // findAcpJobByAcpJobId
+      .mockResolvedValueOnce([]) // findAcpJobByTargetKey (pre-insert)
+      .mockResolvedValueOnce([]) // insert → conflict
+      .mockResolvedValueOnce([]) // releaseTerminalAcpTargetKey → nothing released
+      .mockResolvedValueOnce([]) // findAcpJobByIdempotencyKey
+      .mockResolvedValueOnce([existingAcpRow]); // findAcpJobByTargetKey (post-insert)
+
+    const result = await createAcpReviewJob(
+      { execute },
+      {
+        acpJobId: "new-marketplace-job",
+        clientAgentWallet: "0x1111111111111111111111111111111111111111",
+        repoOwner: "AntFleet",
+        repoName: "acp-fixture",
+        prNumber: 7,
+        sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+        requestPayload: {} as never,
+        targetKey: existingAcpRow.acpTargetKey,
+      },
+    );
+
+    expect(result).toEqual({ row: existingAcpRow, created: false });
+  });
+
+  it("throws a retryable error on an unresolvable (lost-race) conflict (M5)", async () => {
+    // Insert conflicts, nothing to release, and neither post-insert finder
+    // resolves it — a rare lost-insert race. It must throw a plain (retryable)
+    // error so the ACP event inbox retries; it must NOT be tagged non-retryable.
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce([]) // findAcpJobByAcpJobId
+      .mockResolvedValueOnce([]) // findAcpJobByTargetKey (pre-insert)
+      .mockResolvedValueOnce([]) // insert → conflict
+      .mockResolvedValueOnce([]) // releaseTerminalAcpTargetKey → nothing
+      .mockResolvedValueOnce([]) // findAcpJobByIdempotencyKey
+      .mockResolvedValueOnce([]); // findAcpJobByTargetKey (post-insert)
+
+    let thrown: unknown;
+    try {
+      await createAcpReviewJob(
+        { execute },
+        {
+          acpJobId: "new-marketplace-job",
+          clientAgentWallet: "0x1111111111111111111111111111111111111111",
+          repoOwner: "AntFleet",
+          repoName: "acp-fixture",
+          prNumber: 7,
+          sha: "4d967f2a8f5a6f1d7a8235e8e6a9d2b7c8e9f001",
+          requestPayload: {} as never,
+          targetKey: existingAcpRow.acpTargetKey,
+        },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain("idempotency conflict returned no existing row");
+    // Deliberately retryable — no non-retryable failureModeTag.
+    expect((thrown as { failureModeTag?: unknown }).failureModeTag).toBeUndefined();
+  });
+
   it("does not automatically reclaim stale ACP budget setting rows", async () => {
     const execute = vi.fn().mockResolvedValue([]);
 
