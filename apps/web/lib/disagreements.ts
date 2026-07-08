@@ -1,6 +1,7 @@
-import { and, count, desc, eq, lt, max, sql } from "drizzle-orm";
+import { and, count, desc, lt, max, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import { reviews } from "@/db/schema";
+import { embargoSafePublicReceiptCondition } from "@/db/public-receipt";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
 import { shortenReviewId } from "@/lib/short-id";
@@ -48,7 +49,7 @@ function reviewPublicGate() {
   // cyber-repo reviewer findings on an unauthenticated public surface
   // whenever ANTFLEET_CYBER_TIER is on (security audit pass-1, high).
   return and(
-    isDisclosureGateEnabled() ? sql<boolean>`false` : eq(reviews.publicReceipt, true),
+    isDisclosureGateEnabled() ? sql<boolean>`false` : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
   );
 }

@@ -167,13 +167,25 @@ export function mapReceiptEligibleRows(rows: readonly OutgoingPr[]): {
 // through: they are upstream PRs AntFleet itself opened, never private.
 // Same privacy contract as /receipts in the "known public" case, more
 // permissive than loadPublicReceiptsPage for the "unknown source" case.
+// Fail-closed even with the disclosure gate off: besides retracted findings and
+// non-public reviews, exclude any source finding that is in an active-embargo
+// disclosure state (anything other than 'none'/'published'). A finding with no
+// finding_disclosure row (not yet backfilled) is still treated as public, so no
+// legitimate cross-repo receipt is hidden — we only fail closed on an explicit
+// embargo, so an operator clearing a disclosure flag can't leak a mid-embargo
+// live-protocol finding here (audit M4).
 const legacyPublicReceiptGate = sql`NOT EXISTS (
   SELECT 1 FROM ${findingStatus}
   INNER JOIN ${reviews} ON ${reviews.reviewId} = ${findingStatus.reviewId}
+  LEFT JOIN ${findingDisclosure} ON ${findingDisclosure.findingId} = ${findingStatus.findingId}
   WHERE ${findingStatus.findingId} = ${outgoingPrs.sourceFindingId}
     AND (
       ${findingStatus.retractedAt} IS NOT NULL
       OR ${reviews.publicReceipt} = false
+      OR (
+        ${findingDisclosure.findingId} IS NOT NULL
+        AND ${findingDisclosure.state} NOT IN ('none', 'published')
+      )
     )
 )`;
 

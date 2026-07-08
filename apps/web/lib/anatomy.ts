@@ -1,6 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/index";
-import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import {
+  derivedPublicReceiptCondition,
+  embargoSafePublicReceiptCondition,
+} from "@/db/public-receipt";
 import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
@@ -51,7 +54,7 @@ export type AnatomyBundle = {
 export async function loadAnatomyBundle(findingId: string): Promise<AnatomyBundle | null> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const visibilityCondition = and(
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
     // Reader guard (Win 2): the /anatomy page resolves findingIndex against
     // agreement_decision.agreed[]. A shadow finding_id (`-s` namespace) would

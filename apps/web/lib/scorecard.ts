@@ -1,7 +1,10 @@
 import { cache } from "react";
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import { db } from "@/db/index";
-import { reviewDerivedPublicReceiptCondition } from "@/db/public-receipt";
+import {
+  embargoSafePublicReceiptCondition,
+  reviewDerivedPublicReceiptCondition,
+} from "@/db/public-receipt";
 import { reviews, findingStatus } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
@@ -12,7 +15,7 @@ function reviewPublicGate() {
   return and(
     isDisclosureGateEnabled()
       ? reviewDerivedPublicReceiptCondition
-      : eq(reviews.publicReceipt, true),
+      : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
   );
 }
