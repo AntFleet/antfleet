@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { and, eq, gte, inArray, lt } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import {
   embargoSafePublicReceiptCondition,
@@ -390,33 +390,62 @@ export type AllTimeAgreement = {
 };
 
 export const loadAllTimeAgreementRate = cache(async (): Promise<AllTimeAgreement | null> => {
-  const reviewRows = await db
-    .select({
-      reviewId: reviews.reviewId,
-      providerResponses: reviews.providerResponses,
-    })
-    .from(reviews)
-    .where(reviewPublicGate());
-
-  if (reviewRows.length === 0) return null;
-
-  const reviewIds = reviewRows.map((r) => r.reviewId);
-  const findingRows = await db
-    .select({ reviewId: findingStatus.reviewId })
-    .from(findingStatus)
-    .where(and(inArray(findingStatus.reviewId, reviewIds), eq(findingStatus.source, "consensus")));
-
-  let denominator = 0;
-  for (const row of reviewRows) {
-    for (const entry of parsePerProvider(row.providerResponses)) {
-      if (entry.name === "anthropic" || entry.name === "openai") {
-        denominator += entry.output?.findings.length ?? 0;
-      }
-    }
-  }
-
-  const findingsPosted = findingRows.length;
+  // Aggregate-pushdown (audit M6): the previous impl fanned full
+  // reviews.provider_responses JSONB (two frontier-model outputs each) for every
+  // public review just to sum `perProvider[name in ('anthropic','openai')].
+  // output.findings.length`. StatsStrip renders on three force-dynamic pages
+  // (/impact, /scorecard, /activity) so every crawler hit re-ran the fan —
+  // corpus-linear cost per request. Push both sides into SQL so we return two
+  // scalars.
+  //
+  // Denominator subquery: sum jsonb_array_length(findings) across each review's
+  // perProvider entries whose `name` is anthropic or openai. Uses jsonb_array_
+  // elements so we don't need a JSONPath extension. COALESCE to 0 when the
+  // review's provider_responses is a skipped-run shape (no perProvider array)
+  // or when a provider's output/findings is missing — matches parsePerProvider.
+  type DenominatorRow = { denominator: string | number | null };
+  const denominatorResult = await db.execute(sql`
+    SELECT COALESCE(SUM(
+      -- Guard the SRF invocation OUTSIDE the SELECT so jsonb_array_elements
+      -- never runs on a non-array value (e.g. skipped-run shape). A WHERE-only
+      -- guard would rely on the planner eliding the SRF, which is not a
+      -- documented stability contract — this shape is bug-free regardless.
+      CASE
+        WHEN jsonb_typeof(pr->'perProvider') = 'array' THEN (
+          SELECT COALESCE(SUM(
+            CASE
+              WHEN entry->>'name' IN ('anthropic', 'openai')
+                AND jsonb_typeof(entry->'output') = 'object'
+                AND jsonb_typeof(entry->'output'->'findings') = 'array'
+              THEN jsonb_array_length(entry->'output'->'findings')
+              ELSE 0
+            END
+          ), 0)
+          FROM jsonb_array_elements(pr->'perProvider') AS entry
+        )
+        ELSE 0
+      END
+    ), 0)::bigint AS denominator
+    FROM ${reviews}
+    CROSS JOIN LATERAL (SELECT ${reviews.providerResponses} AS pr) src
+    WHERE ${reviewPublicGate()}
+  `);
+  // db.execute returns different shapes across drivers (array under neon-http,
+  // { rows } under neon-serverless / node-postgres). Match the existing unwrap
+  // pattern used by queries.ts:1891/3499.
+  const denominatorRows = Array.isArray(denominatorResult)
+    ? (denominatorResult as unknown as DenominatorRow[])
+    : ((denominatorResult as unknown as { rows?: DenominatorRow[] }).rows ?? []);
+  const denominator = Number(denominatorRows[0]?.denominator ?? 0);
   if (denominator === 0) return null;
+
+  const [postedRow] = await db
+    .select({ value: count() })
+    .from(findingStatus)
+    .innerJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
+    .where(and(reviewPublicGate(), eq(findingStatus.source, "consensus")));
+  const findingsPosted = Number(postedRow?.value ?? 0);
+
   return {
     rate: findingsPosted / denominator,
     findingsPosted,
