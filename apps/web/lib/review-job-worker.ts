@@ -70,7 +70,7 @@ import {
   type X402AuthorizationState,
   type SettlementResult,
 } from "@/lib/x402/facilitator";
-import { isFreeX402ReviewPrice, loadX402Config } from "@/lib/x402/env";
+import { loadX402Config } from "@/lib/x402/env";
 import { X402_MAX_TIMEOUT_SECONDS } from "@/lib/x402/env";
 import {
   X402_SETTLED_FAILURE_MODES,
@@ -139,8 +139,14 @@ export async function processReviewJob(jobId: string): Promise<JobWorkerOutcome>
         });
       }
     } else if (job.paymentRail === "x402") {
-      const config = loadX402Config();
-      if (isFreeX402ReviewPrice(config)) {
+      // Free-vs-paid is decided from the job's server-set `paymentPayloadBase64`
+      // (empty for the free lane — see isFreeX402Job), NOT from a live
+      // loadX402Config() read. Reading the price at execution time let an
+      // operator's mid-flight X402_REVIEW_PRICE_USDC toggle mis-settle in-flight
+      // jobs — a paid job settled under a now-zero price would skip capture
+      // (revenue lost), and a free job under a now-positive price would attempt
+      // to settle an empty payload (audit M3).
+      if (isFreeX402Job(job)) {
         await markX402SettlementNotSettled(db, jobId);
         await markJobComplete(db, jobId, result, new Date());
       } else {
@@ -1151,6 +1157,22 @@ async function settleX402Job(
   }
 }
 
+// True when the job was enqueued through the free ($0) x402 lane. The
+// discriminator MUST be a server-authoritative field, not caller-supplied JSON:
+// the free lane's `makeFreeAuthorizationState` sets `paymentPayloadBase64` to the
+// empty string, while the paid lane stores the caller's non-empty base64
+// PAYMENT-SIGNATURE (which an empty value could never pass /verify to obtain). We
+// deliberately do NOT key on the inner `paymentPayload.kind`, because that object
+// is the verbatim caller payload — the EIP-3009 signature only binds the nested
+// `authorization` struct, so a paying caller could inject a sibling
+// `kind:"free_trial"` and skip capture (revenue bypass). This is an immutable,
+// per-job signal set at enqueue, so the worker never re-reads the live price
+// config to decide whether to settle (audit M3).
+function isFreeX402Job(job: ReviewJobRow): boolean {
+  const authorization = readAuthorizationState(job.x402PaymentPayload);
+  return authorization !== null && authorization.paymentPayloadBase64 === "";
+}
+
 function readRequiredAuthorization(job: ReviewJobRow): X402AuthorizationState {
   const authorization = readAuthorizationState(job.x402PaymentPayload);
   if (authorization === null) {
@@ -1211,7 +1233,7 @@ async function handleX402JobFailure(args: {
       message: messageOf(args.err),
     };
     await markX402SettlementFailed(db, args.jobId, settlementResponse);
-  } else if (shouldSettleX402Failure(failureMode) && !isFreeX402ReviewPrice(loadX402Config())) {
+  } else if (shouldSettleX402Failure(failureMode) && !isFreeX402Job(latestJob)) {
     try {
       const settlement = await settleX402Job(latestJob, readRequiredAuthorization(latestJob));
       settlementStatus = "settled";

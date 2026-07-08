@@ -79,9 +79,13 @@ vi.mock("@/lib/paywall/refund", () => ({
   isRefundableFailureMode: () => false,
   safeFailureMessage: (mode: string) => `safe:${mode}`,
 }));
+const TREASURY = "0x000000000000000000000000000000000000dEaD";
+const envMocks = vi.hoisted(() => ({
+  loadX402Config: vi.fn(),
+}));
 vi.mock("@/lib/x402/env", () => ({
   X402_MAX_TIMEOUT_SECONDS: 600,
-  loadX402Config: () => ({ treasury: "0x000000000000000000000000000000000000dEaD" }),
+  loadX402Config: envMocks.loadX402Config,
 }));
 vi.mock("@/lib/x402/facilitator", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/x402/facilitator")>();
@@ -134,6 +138,7 @@ const x402Job = {
 describe("processReviewJob x402 settlement lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    envMocks.loadX402Config.mockReturnValue({ treasury: TREASURY });
     queryMocks.getReviewJob.mockResolvedValue(x402Job);
     queryMocks.markJobRunning.mockResolvedValue(true);
     dbQueryMocks.hashRepo.mockReturnValue("repo-hash");
@@ -211,6 +216,77 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     expect(events).toEqual(["settle", "mark-settled", "mark-complete-settled"]);
     expect(queryMocks.markJobComplete).not.toHaveBeenCalled();
     expect(queryMocks.markX402JobFailedWithResultAndSettlement).not.toHaveBeenCalled();
+  });
+
+  it("skips settlement for a free-lane job (empty payloadBase64), not from the live price config (M3)", async () => {
+    // A free-lane job is created server-side by makeFreeAuthorizationState with an
+    // empty paymentPayloadBase64. The worker must decide free-vs-paid from THIS
+    // server-set field, never from loadX402Config() — so the free job skips
+    // settlement and completes regardless of the price config.
+    const freeJob = {
+      ...x402Job,
+      x402SettlementStatus: "not_settled" as const,
+      x402PaymentPayload: {
+        kind: "x402_authorization",
+        paymentPayload: { kind: "free_trial", resource: authorizationState.resource },
+        paymentPayloadBase64: "",
+        validAfter: authorizationState.validAfter,
+        validBefore: authorizationState.validBefore,
+        resource: authorizationState.resource,
+        verifyResponse: { free: true },
+      },
+    };
+    queryMocks.getReviewJob.mockResolvedValue(freeJob);
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("job-x402");
+
+    expect(outcome).toEqual({ kind: "complete", jobId: "job-x402" });
+    expect(facilitatorMocks.settlePayment).not.toHaveBeenCalled();
+    expect(queryMocks.markX402SettlementSettled).not.toHaveBeenCalled();
+    expect(queryMocks.markX402JobCompleteSettled).not.toHaveBeenCalled();
+    expect(queryMocks.markX402SettlementNotSettled).toHaveBeenCalledWith({}, "job-x402");
+    expect(queryMocks.markJobComplete).toHaveBeenCalled();
+  });
+
+  it("still SETTLES a paid job that injected an inner paymentPayload.kind='free_trial' (spoof-resistant, revenue-safe)", async () => {
+    // The inner paymentPayload is the verbatim caller JSON; the EIP-3009 signature
+    // only binds the nested `authorization` struct, so a paying caller can inject a
+    // sibling kind:"free_trial". The decision keys on the server-set
+    // paymentPayloadBase64 (non-empty for a real paid signature), so the injected
+    // marker must NOT let the caller skip capture.
+    const spoofedPaidJob = {
+      ...x402Job,
+      x402PaymentPayload: {
+        ...authorizationState,
+        paymentPayload: { kind: "free_trial", authorization: { from: x402Job.walletAddress } },
+        paymentPayloadBase64: "eyJhdXRob3JpemF0aW9uIjp7fX0=", // real, non-empty signature
+      },
+    };
+    queryMocks.getReviewJob.mockResolvedValue(spoofedPaidJob);
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("job-x402");
+
+    expect(outcome).toEqual({ kind: "complete", jobId: "job-x402" });
+    expect(facilitatorMocks.settlePayment).toHaveBeenCalled();
+    expect(queryMocks.markX402JobCompleteSettled).toHaveBeenCalled();
+    expect(queryMocks.markX402SettlementNotSettled).not.toHaveBeenCalled();
+  });
+
+  it("SETTLES a paid job even when the live price config now reports free (config-independence, M3)", async () => {
+    // The core M3 invariant: a paid job in flight must settle even if an operator
+    // toggled X402_REVIEW_PRICE_USDC to 0 after enqueue. The decision comes from the
+    // job, not the live config.
+    envMocks.loadX402Config.mockReturnValue({ treasury: TREASURY, priceBaseUnits: "0" });
+
+    const { processReviewJob } = await import("./review-job-worker");
+    const outcome = await processReviewJob("job-x402");
+
+    expect(outcome).toEqual({ kind: "complete", jobId: "job-x402" });
+    expect(facilitatorMocks.settlePayment).toHaveBeenCalled();
+    expect(queryMocks.markX402JobCompleteSettled).toHaveBeenCalled();
+    expect(queryMocks.markX402SettlementNotSettled).not.toHaveBeenCalled();
   });
 
   it("redacts embargoed findings from cached x402 result payloads", async () => {
