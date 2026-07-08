@@ -14,7 +14,25 @@ import { config as loadDotenv } from "dotenv";
 import type { recordAcpProviderEvent } from "@/lib/acp/event-inbox";
 import { messageOf } from "../lib/log";
 
-loadDotenv({ path: ".env.local", quiet: true });
+// Load operator config from .env.local. dotenv does not override variables
+// already present in the ambient environment, so a stale or empty provider
+// credential injected into the shell (e.g. an ANTHROPIC_API_KEY exported by
+// another tool) would silently shadow the configured key and degrade every
+// review to a single model. Explicitly prefer the .env.local values for
+// provider credentials, while leaving everything else (DATABASE_URL, etc.)
+// overridable from the process environment.
+const dotenvResult = loadDotenv({ path: ".env.local", quiet: true });
+for (const credentialKey of [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "ZHIPU_API_KEY",
+]) {
+  const configured = dotenvResult.parsed?.[credentialKey];
+  if (configured !== undefined && configured !== "") {
+    process.env[credentialKey] = configured;
+  }
+}
 
 const execFileAsync = promisify(execFile);
 type AcpInboxDb = Parameters<typeof recordAcpProviderEvent>[0];
@@ -181,13 +199,25 @@ function summarizeAcpOutcome(outcome: unknown): Record<string, unknown> {
 async function drainEventLines(file: string, limit: string): Promise<string[]> {
   const { stdout } = await execFileAsync(
     "acp",
-    ["events", "drain", "--file", file, "--limit", limit],
+    ["events", "drain", "--file", file, "--limit", limit, "--json"],
     {
       maxBuffer: 10 * 1024 * 1024,
       env: process.env,
     },
   );
-  return stdout
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) return [];
+  // acp CLI >=1.0.x `events drain --json` returns a single wrapper object
+  // `{"events":[...],"remaining":N}`; older builds emitted bare JSON lines.
+  try {
+    const parsed = JSON.parse(trimmed) as { events?: unknown };
+    if (parsed && Array.isArray(parsed.events)) {
+      return parsed.events.map((event) => JSON.stringify(event));
+    }
+  } catch {
+    // fall through to legacy line-delimited parsing
+  }
+  return trimmed
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);

@@ -1774,9 +1774,11 @@ export async function loadPublicReviewReceipt(
           LEFT JOIN finding_status fs ON fs.review_id = r.review_id
           LEFT JOIN finding_disclosure fd ON fd.finding_id = fs.finding_id
           LEFT JOIN review_jobs j ON (
-            j.x402_review_id = r.review_id
+            j.x402_review_id = r.review_id::text
+            OR j.acp_review_id = r.review_id::text
             OR (
               j.x402_review_id IS NULL
+              AND j.acp_review_id IS NULL
               AND lower(j.repo_owner) = lower(COALESCE(r.owner, ''))
               AND lower(j.repo_name) = lower(COALESCE(r.repo, ''))
               AND j.pr_number = r.pr_number
@@ -1855,9 +1857,11 @@ export async function loadPublicReviewReceipt(
           FROM reviews r
           LEFT JOIN finding_status fs ON fs.review_id = r.review_id
           LEFT JOIN review_jobs j ON (
-            j.x402_review_id = r.review_id
+            j.x402_review_id = r.review_id::text
+            OR j.acp_review_id = r.review_id::text
             OR (
               j.x402_review_id IS NULL
+              AND j.acp_review_id IS NULL
               AND lower(j.repo_owner) = lower(COALESCE(r.owner, ''))
               AND lower(j.repo_name) = lower(COALESCE(r.repo, ''))
               AND j.pr_number = r.pr_number
