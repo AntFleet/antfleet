@@ -181,13 +181,25 @@ function summarizeAcpOutcome(outcome: unknown): Record<string, unknown> {
 async function drainEventLines(file: string, limit: string): Promise<string[]> {
   const { stdout } = await execFileAsync(
     "acp",
-    ["events", "drain", "--file", file, "--limit", limit],
+    ["events", "drain", "--file", file, "--limit", limit, "--json"],
     {
       maxBuffer: 10 * 1024 * 1024,
       env: process.env,
     },
   );
-  return stdout
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) return [];
+  // acp CLI >=1.0.x `events drain --json` returns a single wrapper object
+  // `{"events":[...],"remaining":N}`; older builds emitted bare JSON lines.
+  try {
+    const parsed = JSON.parse(trimmed) as { events?: unknown };
+    if (parsed && Array.isArray(parsed.events)) {
+      return parsed.events.map((event) => JSON.stringify(event));
+    }
+  } catch {
+    // fall through to legacy line-delimited parsing
+  }
+  return trimmed
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);

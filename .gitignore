@@ -13,6 +13,11 @@ coverage/
 .env
 .env.local
 .env.*.local
+# Backups/variants of local env files (e.g. .env.local.prod-bak.<ts>) — these
+# carry real prod secrets and must never be stage-able.
+.env.local.*
+.env*.bak
+.env*~
 *.pem
 .fleet/runs/
 .fleet/findings/
@@ -34,3 +39,10 @@ examples/antseed-corpus/apps/
 # would not protect a teammate who runs `git add .` on a fresh clone. See
 # audit/DECISION-sting-home.md (T2.5).
 /sting/
+
+# Internal security audit + remediation prompts/reports — operator-only, never
+# publish or commit (findings are exploitable on the live service).
+audit/
+
+# ACP CLI event scratch (local round-trip smoke)
+apps/web/.acp/
