@@ -15,14 +15,12 @@ export type AeonGateDeps = {
   env: Record<string, string | undefined>;
 };
 
-export function requireAeonContext(
+export type VerifiedAeonContext = { ok: true; sessionId: string; kid: string };
+
+export function verifyAeonContext(
   req: Pick<NextRequest, "headers">,
   deps: AeonGateDeps = { now: () => new Date(), env: process.env },
-): AeonGateResult {
-  if ((deps.env["X402_REQUIRE_AEON_CONTEXT"] ?? "true").toLowerCase() === "false") {
-    return { ok: true, required: false, sessionId: null, kid: null };
-  }
-
+): VerifiedAeonContext | { ok: false; code: typeof AEON_GATE_ERROR_CODE; message: typeof AEON_GATE_ERROR_MESSAGE } {
   const header = req.headers.get("x-aeon-context");
   if (header === null || header.trim() === "") return reject();
 
@@ -41,7 +39,20 @@ export function requireAeonContext(
   const expected = createHmac("sha256", secret).update(signed).digest("hex");
   if (!safeEqualHex(expected, parsed.hmac)) return reject();
 
-  return { ok: true, required: true, sessionId: parsed.sessionId, kid: parsed.kid };
+  return { ok: true, sessionId: parsed.sessionId, kid: parsed.kid };
+}
+
+export function requireAeonContext(
+  req: Pick<NextRequest, "headers">,
+  deps: AeonGateDeps = { now: () => new Date(), env: process.env },
+): AeonGateResult {
+  if ((deps.env["X402_REQUIRE_AEON_CONTEXT"] ?? "true").toLowerCase() === "false") {
+    return { ok: true, required: false, sessionId: null, kid: null };
+  }
+
+  const verified = verifyAeonContext(req, deps);
+  if (!verified.ok) return verified;
+  return { ok: true, required: true, sessionId: verified.sessionId, kid: verified.kid };
 }
 
 // Repo-scan flavour of the gate. Same token-verification logic, but the

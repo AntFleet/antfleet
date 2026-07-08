@@ -249,6 +249,77 @@ describe("POST /api/v1/review/x402", () => {
     });
   });
 
+  it("enqueues fleet commit review when global aeon gate is open but caller presents a valid token", async () => {
+    const oldRequire = process.env["X402_REQUIRE_AEON_CONTEXT"];
+    const oldSecrets = process.env["AEON_GATE_SECRETS"];
+    process.env["X402_REQUIRE_AEON_CONTEXT"] = "false";
+    process.env["AEON_GATE_SECRETS"] = JSON.stringify([{ kid: "k1", secret: "secret" }]);
+    try {
+      const createJob = vi.fn(async () =>
+        job({ prNumber: 0, sha: "abc1234567890abcdef1234567890abcdef12345678" }),
+      );
+      const scheduleWorker = vi.fn();
+      const makeOctokit = vi.fn(() => ({
+        rest: {
+          pulls: { get: vi.fn() },
+          repos: {
+            listPullRequestsAssociatedWithCommit: vi.fn(async () => ({ data: [] })),
+            getCommit: vi.fn(async () => ({
+              data: { sha: "abc1234567890abcdef1234567890abcdef12345678" },
+            })),
+          },
+          git: { getTree: vi.fn() },
+        },
+      }));
+      const res = await handleX402ReviewRequest(
+        request(
+          {
+            target: { repo: "antfleet/x402-fixture", sha: "abc1234" },
+            sting: { fleet_commit_review: true, correlation_id: "corr-1" },
+          },
+          aeonHeader(),
+        ),
+        happyDeps({ createJob, scheduleWorker, loadConfig: () => config, makeOctokit }),
+      );
+
+      expect(res.status).toBe(202);
+      expect(createJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoOwner: "antfleet",
+          repoName: "x402-fixture",
+          prNumber: 0,
+        }),
+      );
+    } finally {
+      if (oldRequire === undefined) delete process.env["X402_REQUIRE_AEON_CONTEXT"];
+      else process.env["X402_REQUIRE_AEON_CONTEXT"] = oldRequire;
+      if (oldSecrets === undefined) delete process.env["AEON_GATE_SECRETS"];
+      else process.env["AEON_GATE_SECRETS"] = oldSecrets;
+    }
+  });
+
+  it("rejects fleet_commit_review without a valid aeon token when the global gate is open", async () => {
+    const oldRequire = process.env["X402_REQUIRE_AEON_CONTEXT"];
+    process.env["X402_REQUIRE_AEON_CONTEXT"] = "false";
+    try {
+      const res = await handleX402ReviewRequest(
+        request({
+          target: { repo: "antfleet/x402-fixture", sha: "abc1234" },
+          sting: { fleet_commit_review: true, correlation_id: "corr-1" },
+        }),
+        happyDeps({ loadConfig: () => config }),
+      );
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { code: "aeon_context_required" },
+      });
+    } finally {
+      if (oldRequire === undefined) delete process.env["X402_REQUIRE_AEON_CONTEXT"];
+      else process.env["X402_REQUIRE_AEON_CONTEXT"] = oldRequire;
+    }
+  });
+
   it("still requires an open PR head for sha-only requests without fleet_commit_review", async () => {
     await withGate(async () => {
       const makeOctokit = vi.fn(() => ({

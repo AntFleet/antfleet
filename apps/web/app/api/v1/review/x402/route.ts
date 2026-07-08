@@ -12,7 +12,7 @@ import {
   type ReviewJobRow,
 } from "@/lib/review-job-queries";
 import { processReviewJob } from "@/lib/review-job-worker";
-import { requireAeonContext } from "@/lib/x402/aeon-gate";
+import { requireAeonContext, verifyAeonContext, type AeonGateResult } from "@/lib/x402/aeon-gate";
 import {
   buildPaymentRequired,
   PAYMENT_REQUIRED_HEADER,
@@ -246,8 +246,11 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
       throw err;
     }
 
+    const fleetGate = resolveFleetCommitReviewGate(req, gate, parsed.data, deps.now);
+    if (!fleetGate.ok) return jsonError(fleetGate.status, fleetGate.code, fleetGate.message);
+
     const target = await resolveTarget(parsed.data, deps.makeOctokit(), {
-      allowFleetCommitReview: gate.required,
+      allowFleetCommitReview: fleetGate.allow,
     });
     if (target.kind === "error") return jsonError(target.status, target.code, target.message);
 
@@ -353,7 +356,30 @@ export async function handleX402ReviewRequest(req: NextRequest, deps: X402RouteD
   }
 }
 
-type AeonGateOk = Extract<Awaited<ReturnType<typeof requireAeonContext>>, { ok: true }>;
+type AeonGateOk = Extract<AeonGateResult, { ok: true }>;
+
+type FleetCommitReviewGate =
+  | { ok: true; allow: boolean; sessionId: string | null }
+  | { ok: false; status: number; code: string; message: string };
+
+function resolveFleetCommitReviewGate(
+  req: NextRequest,
+  gate: AeonGateOk,
+  body: ParsedBody,
+  now: () => Date,
+): FleetCommitReviewGate {
+  if (body.sting?.fleet_commit_review !== true) {
+    return { ok: true, allow: false, sessionId: null };
+  }
+  if (gate.required) {
+    return { ok: true, allow: true, sessionId: gate.sessionId };
+  }
+  const verified = verifyAeonContext(req, { now, env: process.env });
+  if (!verified.ok) {
+    return { ok: false, status: 403, code: verified.code, message: verified.message };
+  }
+  return { ok: true, allow: true, sessionId: verified.sessionId };
+}
 
 async function enqueueFreeX402Review(
   req: NextRequest,
@@ -370,13 +396,16 @@ async function enqueueFreeX402Review(
     return jsonError(400, "invalid_input", parsed.error.issues[0]?.message ?? "bad request");
   }
 
+  const fleetGate = resolveFleetCommitReviewGate(req, args.gate, parsed.data, deps.now);
+  if (!fleetGate.ok) return jsonError(fleetGate.status, fleetGate.code, fleetGate.message);
+
   const target = await resolveTarget(parsed.data, deps.makeOctokit(), {
-    allowFleetCommitReview: args.gate.required,
+    allowFleetCommitReview: fleetGate.allow,
   });
   if (target.kind === "error") return jsonError(target.status, target.code, target.message);
 
   const callerWallet = freeReviewCallerWallet({
-    sessionId: args.gate.required ? args.gate.sessionId : null,
+    sessionId: fleetGate.sessionId ?? (args.gate.required ? args.gate.sessionId : null),
     correlationId: parsed.data.sting?.correlation_id ?? null,
   });
 

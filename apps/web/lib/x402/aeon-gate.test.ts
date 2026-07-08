@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mintAeonContextToken, requireAeonContext } from "./aeon-gate";
+import { mintAeonContextToken, requireAeonContext, verifyAeonContext } from "./aeon-gate";
 
 function req(token: string | null) {
   return {
@@ -56,5 +56,31 @@ describe("requireAeonContext", () => {
     });
 
     expect(result).toEqual({ ok: true, required: false, sessionId: null, kid: null });
+  });
+});
+
+describe("verifyAeonContext", () => {
+  it("validates tokens even when the global gate is open", () => {
+    const now = new Date("2026-05-29T00:00:00Z");
+    const token = mintAeonContextToken({
+      kid: "k1",
+      secret: "secret",
+      sessionId: "session-1",
+      timestamp: Math.floor(now.getTime() / 1000),
+    });
+    const deps = {
+      now: () => now,
+      env: { AEON_GATE_SECRETS: JSON.stringify([{ kid: "k1", secret: "secret" }]) },
+    };
+
+    expect(verifyAeonContext(req(token), deps)).toEqual({
+      ok: true,
+      sessionId: "session-1",
+      kid: "k1",
+    });
+    expect(verifyAeonContext(req(null), deps)).toMatchObject({
+      ok: false,
+      code: "aeon_context_required",
+    });
   });
 });
