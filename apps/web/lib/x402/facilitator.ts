@@ -212,11 +212,29 @@ export function makeAuthorizationState(payment: VerifiedPayment): X402Authorizat
   };
 }
 
-export function freeReviewCallerWallet(args: {
-  sessionId: string | null;
-  correlationId?: string | null;
-}): string {
-  const seed = args.sessionId?.trim() || args.correlationId?.trim() || "anonymous";
+// The identity we bucket free-lane rate-limiting / cooldown / idempotency on.
+// A `sessionId` is HMAC-verified by the Aeon gate and cannot be forged or
+// rotated by a caller — safe to bucket per-session. A `correlationId` comes
+// verbatim from the request body (`sting.correlation_id`) and IS
+// caller-controlled: rotating it per request would mint a fresh callerWallet,
+// resetting the cooldown / idempotency / rate-limit and defeating the only
+// spend cap on unbounded frontier-model reviews (audit M2).
+//
+// Fix: when no verified sessionId is present, collapse EVERY caller into ONE
+// global bucket (`__free_global__`) — a caller-supplied correlationId no
+// longer creates a fresh identity, so per-wallet limits + per-repo/sha
+// cooldowns + idempotency all apply globally to the free lane. Combined with
+// the Aeon-gate default (X402_REQUIRE_AEON_CONTEXT=true), this closes the
+// escalation-to-High vector the moment the operator opens the lane.
+export const FREE_LANE_GLOBAL_SEED = "__free_global__";
+
+// The signature deliberately accepts ONLY sessionId. Do NOT re-introduce
+// `correlationId` (or any other caller-controlled field) — that was the exact
+// vector this fix closed (audit M2). Any future re-introduction should be a
+// deliberate signature change visible in review.
+export function freeReviewCallerWallet(args: { sessionId: string | null }): string {
+  const sessionId = args.sessionId?.trim();
+  const seed = sessionId !== undefined && sessionId !== "" ? sessionId : FREE_LANE_GLOBAL_SEED;
   return `0x${createHash("sha256").update(`antfleet:x402:free:${seed}`).digest("hex").slice(0, 40)}`;
 }
 

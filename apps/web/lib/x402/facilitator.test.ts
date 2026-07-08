@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { isPaymentRequiredV2 } from "@x402/core/schemas";
 import {
   buildPaymentRequired,
   extractClaimedSigner,
+  freeReviewCallerWallet,
   makeAuthorizationState,
   settlePayment,
   verifyPayment,
@@ -265,5 +267,72 @@ describe("x402 facilitator wrapper", () => {
     ).rejects.toMatchObject({
       code: "x402_settle_failed",
     } satisfies Partial<X402PaymentError>);
+  });
+});
+
+// Audit M2 — free-lane identity must never key on any caller-controlled field.
+// The pre-fix impl fell through to `correlationId` (from the request body's
+// `sting.correlation_id`) when sessionId was null; a caller rotating it per
+// request would mint a fresh callerWallet, resetting the per-wallet rate limit
+// + per-repo/sha cooldown + idempotency dedupe and defeating the only spend
+// cap on unbounded frontier-model reviews when the operator opens the free
+// lane (X402_REQUIRE_AEON_CONTEXT=false). Post-fix the function signature
+// accepts ONLY sessionId — a re-introduction requires a visible signature
+// change, and sessionless callers collapse into one global bucket.
+describe("freeReviewCallerWallet (audit M2 — non-rotatable identity)", () => {
+  it("buckets on the HMAC-verified Aeon sessionId when one is present", () => {
+    const a = freeReviewCallerWallet({ sessionId: "verified-session-A" });
+    const b = freeReviewCallerWallet({ sessionId: "verified-session-B" });
+    expect(a).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(a).not.toBe(b);
+    expect(freeReviewCallerWallet({ sessionId: "verified-session-A" })).toBe(a);
+  });
+
+  it("collapses to a SINGLE global bucket when no sessionId is available (Aeon gate off)", () => {
+    // All sessionless variants (null, empty string, whitespace) share one
+    // bucket AND that bucket is exactly sha256("antfleet:x402:free:__free_global__").
+    // Pinning the seed explicitly means a future rename of FREE_LANE_GLOBAL_SEED
+    // would break this test, which is the intent — bucket identity is a wire-
+    // level invariant (existing DB cooldown / rate-limit rows are keyed on it).
+    const anon = freeReviewCallerWallet({ sessionId: null });
+    const emptyString = freeReviewCallerWallet({ sessionId: "" });
+    const whitespace = freeReviewCallerWallet({ sessionId: "   " });
+    expect(anon).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(emptyString).toBe(anon);
+    expect(whitespace).toBe(anon);
+
+    const expected = `0x${createHash("sha256")
+      .update("antfleet:x402:free:__free_global__")
+      .digest("hex")
+      .slice(0, 40)}`;
+    expect(anon).toBe(expected);
+  });
+
+  it("global bucket does NOT collide with a typical Aeon sessionId (UUID)", () => {
+    const global = freeReviewCallerWallet({ sessionId: null });
+    const typicalSession = freeReviewCallerWallet({
+      sessionId: "a1b2c3d4-e5f6-4789-8abc-def012345678",
+    });
+    expect(typicalSession).not.toBe(global);
+  });
+
+  it("signature accepts ONLY sessionId — a caller-controlled correlationId is a compile-time error", () => {
+    // Load-bearing regression pin. Pre-fix the signature had
+    //   { sessionId: string | null; correlationId?: string | null }
+    // and the body fell through to correlationId. Post-fix the signature
+    // rejects correlationId, so any future re-introduction of a caller-
+    // controlled field must be a deliberate signature change visible in review.
+    // @ts-expect-error correlationId is intentionally NOT part of the signature (audit M2)
+    freeReviewCallerWallet({ sessionId: null, correlationId: "attacker-rotates" });
+    // (Runtime assertion: at the same call site, TS-ignoring the error, we
+    // still get the global bucket — no rotation is possible.)
+    const withExtra = (
+      freeReviewCallerWallet as unknown as (a: {
+        sessionId: string | null;
+        correlationId: string;
+      }) => string
+    )({ sessionId: null, correlationId: "attacker-A" });
+    const base = freeReviewCallerWallet({ sessionId: null });
+    expect(withExtra).toBe(base);
   });
 });

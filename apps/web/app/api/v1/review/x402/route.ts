@@ -404,10 +404,13 @@ async function enqueueFreeX402Review(
   });
   if (target.kind === "error") return jsonError(target.status, target.code, target.message);
 
-  const callerWallet = freeReviewCallerWallet({
-    sessionId: fleetGate.sessionId ?? (args.gate.required ? args.gate.sessionId : null),
-    correlationId: parsed.data.sting?.correlation_id ?? null,
-  });
+  // Bucket the free-lane identity on the HMAC-verified Aeon sessionId when we
+  // have one; otherwise fall back to a single global free-lane bucket. Do NOT
+  // seed on `sting.correlation_id` — that is caller-supplied and rotating it
+  // per request would defeat every spend cap (audit M2).
+  const freeSessionId = fleetGate.sessionId ?? (args.gate.required ? args.gate.sessionId : null);
+  const callerWallet = freeReviewCallerWallet({ sessionId: freeSessionId });
+  const freeGlobalBucket = freeSessionId === null;
 
   const cooldownHit = await deps.findRecentRepoShaJob({
     owner: target.owner,
@@ -433,6 +436,15 @@ async function enqueueFreeX402Review(
     now: args.now,
   });
   if (!rate.ok) {
+    // Distinguish "your session is limited" from "the free lane's global
+    // bucket is saturated" — with the Aeon gate off, all callers share one
+    // bucket, and this log tells operators which mode was in play.
+    if (freeGlobalBucket) {
+      logWarn("x402_review_endpoint.free_global_bucket_rate_limited", {
+        limit: rate.limit,
+        retryAfterSeconds: rate.retryAfterSeconds,
+      });
+    }
     const res = jsonError(
       429,
       "rate_limited_wallet",
