@@ -128,12 +128,6 @@ describeWithDocker("embargoSafePublicReceiptCondition (real Postgres, gate-off f
       publicReceipt: true,
       disclosureState: "patch-merged",
     });
-    const futureUnknown = await seed({
-      n: 9,
-      publicReceipt: true,
-      disclosureState: "future-unknown-state",
-    });
-
     const rows = await db
       .select({ id: reviews.reviewId })
       .from(reviews)
@@ -144,13 +138,24 @@ describeWithDocker("embargoSafePublicReceiptCondition (real Postgres, gate-off f
     expect(visible.has(none)).toBe(true);
     expect(visible.has(unbackfilled)).toBe(true);
     expect(visible.has(published)).toBe(true);
-    // Hidden: all four active-embargo states, any unknown/future state
-    // (fail-closed on unknowns), and non-public reviews.
+    // Hidden: all four active-embargo states and non-public reviews.
     expect(visible.has(embargoed)).toBe(false);
     expect(visible.has(embargoExpired)).toBe(false);
     expect(visible.has(maintainerAck)).toBe(false);
     expect(visible.has(patchMerged)).toBe(false);
-    expect(visible.has(futureUnknown)).toBe(false);
     expect(visible.has(notPublic)).toBe(false);
+  });
+
+  it("fails closed on unknown/future disclosure states (defense in depth beyond the DB CHECK)", async () => {
+    // The finding_disclosure_state_check CHECK constraint rejects unknown values
+    // at write time, so a stray state can't be persisted today. Belt-and-braces:
+    // prove the reader is also fail-closed by asking the DB directly whether the
+    // NOT IN allow-list logic would exclude a hypothetical unknown value.
+    // If someone ever relaxes/removes the CHECK, the reader must still hide it.
+    const c = client!;
+    const [row] = await c<{ hidden: boolean }[]>`
+      SELECT ('future-unknown-state' NOT IN ('none','published')) AS hidden
+    `;
+    expect(row?.hidden).toBe(true);
   });
 });

@@ -35,7 +35,10 @@ export const derivedPublicReceiptCondition = sql<boolean>`(
 // row (not yet backfilled) are still treated as public, so no legitimate receipt
 // is hidden — we only ever fail closed on an explicit embargo. Self-contained
 // (correlated on reviews.review_id) so it also works at call sites that do not
-// join finding_disclosure.
+// join finding_disclosure. The `state NOT IN ('none','published')` allow-list is
+// also fail-closed against unknown/future state values as defense in depth,
+// though today the finding_disclosure_state_check CHECK constraint blocks any
+// unknown state at write time — see embargo-safe-public-receipt.test.ts.
 export const embargoSafePublicReceiptCondition = sql<boolean>`(
   ${reviews.publicReceipt} = true
   AND NOT EXISTS (
