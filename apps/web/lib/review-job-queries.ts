@@ -222,7 +222,7 @@ export async function createAcpReviewJob(
       ) VALUES (
         ${jobId}, 'acp', ${clientWallet},
         ${args.repoOwner}, ${args.repoName}, ${args.prNumber}, ${args.sha},
-        ${idempotencyKey}, ${status}, ${expiresAt},
+        ${idempotencyKey}, ${status}, ${expiresAt.toISOString()}::timestamptz,
         ${clientWallet}, 'acp', ${args.acpJobId}, ${clientWallet},
         ${targetKey}, ${JSON.stringify(args.requestPayload)}::jsonb, 'pending', 'pending'
       )
