@@ -358,6 +358,11 @@ export async function findAcpJobByTargetKey(
     FROM review_jobs
     WHERE payment_rail = 'acp'
       AND acp_target_key = ${targetKey}
+      -- Terminally failed/expired jobs (e.g. a degraded review the buyer
+      -- rejected and was refunded for) release the target so it can be
+      -- reviewed again. Same-job idempotency is still enforced upstream via
+      -- findAcpJobByAcpJobId; active and completed jobs continue to dedupe.
+      AND status NOT IN ('failed', 'expired')
     LIMIT 1
   `);
   const row = firstRow<ReviewJobRow>(result);
