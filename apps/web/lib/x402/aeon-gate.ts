@@ -15,12 +15,18 @@ export type AeonGateDeps = {
   env: Record<string, string | undefined>;
 };
 
+export type AeonGateReject = {
+  ok: false;
+  code: typeof AEON_GATE_ERROR_CODE;
+  message: typeof AEON_GATE_ERROR_MESSAGE;
+};
+
 export type VerifiedAeonContext = { ok: true; sessionId: string; kid: string };
 
 export function verifyAeonContext(
   req: Pick<NextRequest, "headers">,
   deps: AeonGateDeps = { now: () => new Date(), env: process.env },
-): VerifiedAeonContext | { ok: false; code: typeof AEON_GATE_ERROR_CODE; message: typeof AEON_GATE_ERROR_MESSAGE } {
+): VerifiedAeonContext | AeonGateReject {
   const header = req.headers.get("x-aeon-context");
   if (header === null || header.trim() === "") return reject();
 
@@ -127,6 +133,6 @@ function safeEqualHex(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-function reject(): AeonGateResult {
+function reject(): AeonGateReject {
   return { ok: false, code: AEON_GATE_ERROR_CODE, message: AEON_GATE_ERROR_MESSAGE };
 }
