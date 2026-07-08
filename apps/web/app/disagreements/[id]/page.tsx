@@ -3,7 +3,10 @@ import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { TweetIntent } from "@/components/TweetIntent";
 import { db } from "@/db/index";
-import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import {
+  derivedPublicReceiptCondition,
+  embargoSafePublicReceiptCondition,
+} from "@/db/public-receipt";
 import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
@@ -22,7 +25,7 @@ type RelatedFinding = { findingId: string; title: string; severity: string; cate
 export async function loadRelatedFindings(reviewId: string): Promise<RelatedFinding[]> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const visibilityCondition = and(
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
     // Reader guard (Win2): "these findings passed the unanimous gate" is consensus
     // only. Single-model shadow rows share the reviewId and would otherwise render

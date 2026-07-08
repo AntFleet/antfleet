@@ -1,7 +1,10 @@
 import type { MetadataRoute } from "next";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db/index";
-import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import {
+  derivedPublicReceiptCondition,
+  embargoSafePublicReceiptCondition,
+} from "@/db/public-receipt";
 import { findingDisclosure, findingStatus, reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
@@ -11,7 +14,7 @@ const BASE = "https://www.antfleet.dev";
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const visibilityCondition = and(
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
   );
   const sitemapCondition = and(

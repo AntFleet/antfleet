@@ -58,6 +58,7 @@ import {
 } from "./schema";
 import {
   derivedPublicReceiptCondition,
+  embargoSafePublicReceiptCondition,
   reviewDerivedPublicReceiptCondition,
 } from "./public-receipt";
 import { writePostDraft } from "@/lib/post-drafts";
@@ -1395,14 +1396,14 @@ export async function loadPublicReceiptsPage(args: {
     args.before === undefined
       ? and(
           eq(findingStatus.status, "closed"),
-          disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+          disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
           nonCyberTierRepoCondition(),
           isNull(findingStatus.retractedAt),
           consensusOnly,
         )
       : and(
           eq(findingStatus.status, "closed"),
-          disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+          disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
           nonCyberTierRepoCondition(),
           isNull(findingStatus.retractedAt),
           lt(findingStatus.closureDetectedAt, args.before),
@@ -1411,7 +1412,7 @@ export async function loadPublicReceiptsPage(args: {
 
   const totalConditions = and(
     eq(findingStatus.status, "closed"),
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
     isNull(findingStatus.retractedAt),
     consensusOnly,
@@ -1519,7 +1520,7 @@ export async function loadTopClosuresBetween(
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const baseConditions = and(
     eq(findingStatus.status, "closed"),
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
     gte(findingStatus.closureDetectedAt, since),
     lt(findingStatus.closureDetectedAt, until),
@@ -1615,7 +1616,7 @@ export const loadPublicReceiptDetail = cache(
   async (findingId: string): Promise<PublicReceiptDetailRow | null> => {
     const disclosureGateEnabled = isDisclosureGateEnabled();
     const visibilityCondition = and(
-      disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+      disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
       nonCyberTierRepoCondition(),
       // Reader guard (Win 2): the /receipts/{id} detail page resolves
       // findingIndex against agreement_decision.agreed[]. A shadow finding_id
@@ -1870,6 +1871,17 @@ export async function loadPublicReviewReceipt(
           )
           WHERE r.review_id = ${reviewId}
             AND r.public_receipt = true
+            -- Fail closed even with the disclosure gate off: never serve a
+            -- review that carries an explicitly-embargoed finding (audit M4).
+            -- Findings with no finding_disclosure row (un-backfilled) still pass.
+            AND NOT EXISTS (
+              SELECT 1
+              FROM finding_status embargo_fs
+              JOIN finding_disclosure embargo_fd
+                ON embargo_fd.finding_id = embargo_fs.finding_id
+              WHERE embargo_fs.review_id = r.review_id
+                AND embargo_fd.state NOT IN ('none', 'published')
+            )
             ${cyberExclude}
           GROUP BY r.review_id, j.job_id
           ORDER BY j.created_at DESC NULLS LAST
@@ -1998,11 +2010,11 @@ export async function loadFleetActivity(): Promise<FleetActivityPage> {
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const cyberTierGate = nonCyberTierRepoCondition();
   const reviewPublicGate = and(
-    disclosureGateEnabled ? reviewDerivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? reviewDerivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     cyberTierGate,
   );
   const findingPublicGate = and(
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     cyberTierGate,
   );
 
@@ -2562,11 +2574,11 @@ export async function activityWindow(
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const cyberTierGate = nonCyberTierRepoCondition();
   const publicGate = and(
-    disclosureGateEnabled ? reviewDerivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? reviewDerivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     cyberTierGate,
   );
   const findingPublicGate = and(
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     cyberTierGate,
   );
 
@@ -3023,7 +3035,7 @@ export async function loadPublicBenchmarksPage(args: {
   const fetchLimit = args.limit + 1;
   const reviewPublicGate = isDisclosureGateEnabled()
     ? reviewDerivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+    : embargoSafePublicReceiptCondition;
   const baseConditions = and(
     eq(reviews.isBenchmark, true),
     reviewPublicGate,
@@ -3176,7 +3188,7 @@ export const loadAgentDetail = cache(async (address: string): Promise<AgentDetai
   const benchRepoName = first.benchRepoName;
   const reviewPublicGate = isDisclosureGateEnabled()
     ? reviewDerivedPublicReceiptCondition
-    : eq(reviews.publicReceipt, true);
+    : embargoSafePublicReceiptCondition;
 
   // Public benchmark reviews tied to this agent's bench repo. Gated on
   // publicReceipt + isBenchmark like /benchmarks. Repo names are
@@ -5098,7 +5110,7 @@ export const loadPublicFindingEvidenceBundle = cache(
     // depth so the bundle row never reaches the page even if the render
     // redaction has a bug. See lib/cyber-tier.ts.
     const visibilityCondition = and(
-      disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+      disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
       nonCyberTierRepoCondition(),
     );
     const selectColumns = {
@@ -5231,7 +5243,7 @@ export async function loadPublicSarifFindingsForRepo(args: {
   // 404s for cyber repos. Defense in depth: if a future caller forgets
   // the route-level guard, the query still returns zero rows.
   const visibilityCondition = and(
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     nonCyberTierRepoCondition(),
   );
   // SARIF export eligibility:

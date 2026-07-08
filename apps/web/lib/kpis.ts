@@ -1,7 +1,10 @@
 import { cache } from "react";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db/index";
-import { derivedPublicReceiptCondition } from "@/db/public-receipt";
+import {
+  derivedPublicReceiptCondition,
+  embargoSafePublicReceiptCondition,
+} from "@/db/public-receipt";
 import { findingDisclosure, findingStatus, outgoingPrs, reviews } from "@/db/schema";
 import { isDisclosureGateEnabled } from "@/lib/daybreak-gates-env";
 import { nonCyberTierRepoCondition } from "@/lib/cyber-tier";
@@ -34,7 +37,7 @@ export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
   const disclosureGateEnabled = isDisclosureGateEnabled();
   const cyberTierGate = nonCyberTierRepoCondition();
   const findingVisibilityGate = and(
-    disclosureGateEnabled ? derivedPublicReceiptCondition : eq(reviews.publicReceipt, true),
+    disclosureGateEnabled ? derivedPublicReceiptCondition : embargoSafePublicReceiptCondition,
     cyberTierGate,
   );
   const inRepoRows = await (disclosureGateEnabled
@@ -159,6 +162,15 @@ export const loadPatchKpis = cache(async (): Promise<PatchKpis> => {
               OR (
                 ${findingStatus.retractedAt} IS NULL
                 AND ${reviews.publicReceipt} = true
+                -- Fail closed even with the disclosure gate off: exclude any
+                -- source finding whose disclosure state is an active embargo,
+                -- so an embargoed cross-repo fix can't nudge public KPI
+                -- counters (audit M4 consistency).
+                AND NOT EXISTS (
+                  SELECT 1 FROM finding_disclosure embargo_fd
+                  WHERE embargo_fd.finding_id = ${findingStatus.findingId}
+                    AND embargo_fd.state NOT IN ('none', 'published')
+                )
               )
             )`,
           ),
