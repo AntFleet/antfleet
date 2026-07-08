@@ -16,9 +16,82 @@ export type Disagreement = {
   reason: string;
 };
 
-// Safe because findingsAgree gates category exact + severity ±1 BEFORE evidence
-// overlap, so slack only merges already-agreeing findings on the same file.
+// A "weak" evidence overlap — a sparse (path-only) wildcard, or line ranges that
+// are near but do NOT actually intersect (within LINE_OVERLAP_SLACK) — is only
+// accepted as agreement when the two findings are also textually similar (see
+// findingsSimilar). This stops one path-only or nearby finding from fabricating
+// "both models agreed" against an *unrelated* localized finding on the same file
+// (and from collapsing several distinct findings into one cluster), while still
+// recovering recall when the two providers really are describing the same bug.
+// Strong overlaps — true line intersection, same symbol, or same quote — are
+// accepted unconditionally.
 const LINE_OVERLAP_SLACK = 5;
+const SIMILARITY_THRESHOLD = 0.5;
+// Generic English function words only — no domain terms (null/data/cast/etc. are
+// signal, not noise). Kept small on purpose; the guard is a distinctness check,
+// not a stemmer.
+const SIMILARITY_STOPWORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "from",
+  "into",
+  "onto",
+  "when",
+  "then",
+  "than",
+  "but",
+  "not",
+  "are",
+  "was",
+  "were",
+  "its",
+  "has",
+  "had",
+  "have",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "can",
+  "does",
+  "did",
+  "use",
+  "used",
+  "using",
+  "via",
+  "per",
+  "out",
+  "over",
+  "under",
+  "between",
+  "because",
+  "which",
+  "while",
+  "they",
+  "them",
+  "their",
+  "there",
+  "here",
+  "also",
+  "any",
+  "all",
+  "one",
+  "two",
+  "some",
+  "such",
+  "only",
+  "same",
+  "both",
+  "each",
+  "more",
+  "most",
+]);
 
 const severityRank: Record<Finding["severity"], number> = {
   critical: 0,
@@ -40,7 +113,7 @@ export function findingsAgree(a: Finding, b: Finding): boolean {
   if (Math.abs(severityRank[a.severity] - severityRank[b.severity]) > 1) {
     return false;
   }
-  return evidenceOverlaps(a.evidence, b.evidence);
+  return evidenceOverlaps(a, b);
 }
 
 export function mergeFindings(
@@ -157,18 +230,28 @@ function thresholdFor(mode: AgreementMode, total: number): number {
   return 1;
 }
 
-function evidenceOverlaps(a: Finding["evidence"], b: Finding["evidence"]): boolean {
-  for (const ea of a) {
-    for (const eb of b) {
+type EvidenceEntry = Finding["evidence"][number];
+
+// A strong overlap is accepted on its own. A weak overlap (sparse-path wildcard or
+// near-but-not-touching line ranges) is accepted only when the two findings are
+// also textually similar — see findingsSimilar / the LINE_OVERLAP_SLACK comment.
+function evidenceOverlaps(a: Finding, b: Finding): boolean {
+  let sawWeak = false;
+  for (const ea of a.evidence) {
+    for (const eb of b.evidence) {
       if (normalizePath(ea.path) !== normalizePath(eb.path)) {
         continue;
       }
-      if (evidenceEntriesOverlap(ea, eb)) {
+      const strength = entryOverlapStrength(ea, eb);
+      if (strength === "strong") {
         return true;
+      }
+      if (strength === "weak") {
+        sawWeak = true;
       }
     }
   }
-  return false;
+  return sawWeak ? findingsSimilar(a, b) : false;
 }
 
 function normalizePath(p: string): string {
@@ -180,42 +263,100 @@ function lineRangesOverlap(
   aEnd: number | null,
   bStart: number | null,
   bEnd: number | null,
+  slack: number,
 ): boolean {
   if ((aStart === null && aEnd === null) || (bStart === null && bEnd === null)) return false;
   const aS = aStart ?? aEnd ?? 0;
   const aE = aEnd ?? aStart ?? 0;
   const bS = bStart ?? bEnd ?? 0;
   const bE = bEnd ?? bStart ?? 0;
-  return aS <= bE + LINE_OVERLAP_SLACK && bS <= aE + LINE_OVERLAP_SLACK;
+  return aS <= bE + slack && bS <= aE + slack;
 }
 
-function evidenceEntriesOverlap(
-  a: Finding["evidence"][number],
-  b: Finding["evidence"][number],
-): boolean {
-  if (lineRangesOverlap(a.startLine, a.endLine, b.startLine, b.endLine)) return true;
-  if (a.symbol !== null && b.symbol !== null && a.symbol === b.symbol) return true;
-  if (a.quote !== null && b.quote !== null && a.quote === b.quote) return true;
+// Classifies one same-path evidence-entry pair. "strong" anchors (real line
+// intersection, matching symbol, matching quote) are trusted alone. "weak"
+// signals (line ranges within LINE_OVERLAP_SLACK but not intersecting, or a
+// fully-sparse path-only entry) require a similarity check upstream before they
+// count as agreement.
+function entryOverlapStrength(a: EvidenceEntry, b: EvidenceEntry): "strong" | "weak" | "none" {
+  const aHasLine = a.startLine !== null || a.endLine !== null;
+  const bHasLine = b.startLine !== null || b.endLine !== null;
+  // Strong anchors — accepted unconditionally. ALL strong conditions are checked
+  // before any weak one, so a matching symbol/quote is never downgraded to weak
+  // just because the two line ranges happen to sit within LINE_OVERLAP_SLACK.
+  if (
+    aHasLine &&
+    bHasLine &&
+    lineRangesOverlap(a.startLine, a.endLine, b.startLine, b.endLine, 0)
+  ) {
+    return "strong";
+  }
+  if (a.symbol !== null && b.symbol !== null && a.symbol === b.symbol) return "strong";
+  if (a.quote !== null && b.quote !== null && a.quote === b.quote) return "strong";
+  // Weak signals — corroborated by findingsSimilar upstream before they count as
+  // agreement.
+  if (
+    aHasLine &&
+    bHasLine &&
+    lineRangesOverlap(a.startLine, a.endLine, b.startLine, b.endLine, LINE_OVERLAP_SLACK)
+  ) {
+    return "weak";
+  }
   // Sparse-evidence fallback: GPT-5 (and other OpenAI reasoning models) sometimes
-  // emit findings with only a file path — startLine/endLine/symbol/quote all null —
-  // because the structured-output schema allows nullability and the model isn't
-  // confident about the position. Without this fallback, a unanimous-mode review
-  // pairing a fully-localized Anthropic finding with a path-only GPT-5 finding on
-  // the same file returns no consensus, even when both clearly identify the same
-  // bug (observed in bench-claude-mem PR #1, mergeSettings data-loss finding).
-  //
-  // The caller (`evidenceOverlaps`) already confirmed path equality before we
-  // get here, and `findingsAgree` already required category + severity proximity.
-  // Treating a fully-sparse evidence entry as a path-level wildcard is bounded by
-  // those upstream gates. A single sparse finding may cluster with multiple
-  // non-sparse findings in the same file under the same category, which is the
-  // correct behavior — we'd rather over-cluster than silently drop consensus.
-  if (isPathOnly(a) || isPathOnly(b)) return true;
-  return false;
+  // emit findings with only a file path — startLine/endLine/symbol/quote all null.
+  // We still let these match a localized counterpart on the same file, but only as
+  // a "weak" signal that the caller must corroborate with findingsSimilar, so a
+  // path-only finding can no longer wildcard-match an unrelated localized finding
+  // (or collapse several distinct findings) into a false public receipt. The
+  // recall recovery it was added for — e.g. bench-claude-mem PR #1 mergeSettings —
+  // survives because those genuinely-same findings clear the similarity gate.
+  if (isPathOnly(a) || isPathOnly(b)) return "weak";
+  return "none";
 }
 
-function isPathOnly(e: Finding["evidence"][number]): boolean {
+function isPathOnly(e: EvidenceEntry): boolean {
   return e.startLine === null && e.endLine === null && e.symbol === null && e.quote === null;
+}
+
+// Minimum number of shared meaningful tokens for a weak overlap to count as
+// agreement. Without this floor, a finding that tokenizes to only two words could
+// clear the overlap-coefficient on a SINGLE coincidental shared domain token
+// (e.g. two unrelated findings that both say "data"), which would partially
+// reintroduce the false-receipt vector this guard exists to close.
+const SIMILARITY_MIN_SHARED = 2;
+
+// Deterministic distinctness check for weak evidence overlaps: the fraction of the
+// shorter finding's meaningful tokens (title + reasoning) that also appear in the
+// longer one, subject to an absolute floor of SIMILARITY_MIN_SHARED shared tokens.
+// Overlap-coefficient rather than Jaccard so a terse path-only finding isn't
+// penalized for the counterpart's longer prose. No LLM, no network — this runs
+// inside the merge path on every candidate pair.
+function findingsSimilar(a: Finding, b: Finding): boolean {
+  const ta = tokenize(`${a.title} ${a.reasoning}`);
+  const tb = tokenize(`${b.title} ${b.reasoning}`);
+  const smaller = ta.size <= tb.size ? ta : tb;
+  const larger = smaller === ta ? tb : ta;
+  if (smaller.size === 0) return false;
+  let shared = 0;
+  for (const token of smaller) {
+    if (larger.has(token)) shared++;
+  }
+  if (shared < SIMILARITY_MIN_SHARED) return false;
+  return shared / smaller.size >= SIMILARITY_THRESHOLD;
+}
+
+function tokenize(text: string): Set<string> {
+  const tokens = new Set<string>();
+  // Unicode letters/digits, so a non-ASCII (accented/CJK/Cyrillic) title+reasoning
+  // still tokenizes instead of collapsing to the empty set and silently refusing
+  // every weak overlap.
+  for (const match of text.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)) {
+    const token = match[0];
+    if (token.length < 3) continue;
+    if (SIMILARITY_STOPWORDS.has(token)) continue;
+    tokens.add(token);
+  }
+  return tokens;
 }
 
 function pickRepresentative(findings: Finding[]): Finding {

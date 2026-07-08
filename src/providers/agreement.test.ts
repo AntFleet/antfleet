@@ -372,6 +372,166 @@ describe("findingsAgree", () => {
     expect(findingsAgree(a, b)).toBe(false);
   });
 
+  // ── H1 / M1 distinctness guard ──────────────────────────────────────────────
+  // Weak overlaps (a fully path-only wildcard, or line ranges within slack that do
+  // NOT actually intersect) must be corroborated by title/reasoning similarity
+  // before they count as agreement — otherwise one model's path-only finding can
+  // fabricate a "both models agreed" receipt against an unrelated localized finding.
+
+  it("H1: a path-only finding does NOT agree with a DISSIMILAR localized finding on the same file", () => {
+    const sparse = makeFinding({
+      title: "Race condition on the shared session cache",
+      reasoning:
+        "two request handlers mutate the in-memory session map concurrently without a lock",
+      evidence: [{ path: "src/x.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+    });
+    const localized = makeFinding({
+      title: "Unvalidated email address reaches the SQL query",
+      reasoning: "the email string is interpolated into a raw query with no sanitization",
+      evidence: [{ path: "src/x.ts", startLine: 100, endLine: 200, symbol: null, quote: null }],
+    });
+    expect(findingsAgree(sparse, localized)).toBe(false);
+  });
+
+  it("recall preserved: a path-only finding DOES agree with a SIMILAR localized finding (mergeSettings case)", () => {
+    const sparse = makeFinding({
+      title: "Data loss in mergeSettings",
+      reasoning:
+        "mergeSettings overwrites nested user config keys instead of deep-merging, so nested settings data is dropped on save",
+      evidence: [
+        { path: "src/settings.ts", startLine: null, endLine: null, symbol: null, quote: null },
+      ],
+    });
+    const localized = makeFinding({
+      category: "data-loss",
+      title: "mergeSettings clobbers nested config",
+      reasoning:
+        "mergeSettings does a shallow overwrite so nested user config keys are lost; nested settings data dropped on save",
+      evidence: [
+        { path: "src/settings.ts", startLine: 40, endLine: 60, symbol: null, quote: null },
+      ],
+    });
+    // same category so the category gate passes; both about mergeSettings losing nested config
+    const sparseDataLoss = makeFinding({
+      ...sparse,
+      category: "data-loss",
+    });
+    expect(findingsAgree(sparseDataLoss, localized)).toBe(true);
+  });
+
+  it("M1: near-adjacent (gap≤5) but DISSIMILAR findings do NOT agree", () => {
+    const a = makeFinding({
+      title: "Off-by-one in the pagination cursor",
+      reasoning: "the cursor skips the last row because the boundary uses < instead of <=",
+      evidence: [{ path: "src/page.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      title: "Unclosed file handle leaks a descriptor",
+      reasoning: "the read stream is never closed on the error path so descriptors leak",
+      evidence: [{ path: "src/page.ts", startLine: 22, endLine: 30, symbol: null, quote: null }],
+    });
+    // gap = 22 − 20 = 2 ≤ slack, but the two findings are unrelated
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
+  it("recall preserved: near-adjacent (gap≤5) SIMILAR findings still agree", () => {
+    const a = makeFinding({
+      title: "Null dereference in the request handler",
+      reasoning: "handler dereferences req.user before the null guard runs",
+      evidence: [{ path: "src/handler.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      title: "Null dereference on req.user in handler",
+      reasoning: "the handler reads req.user null field before guarding against null",
+      evidence: [{ path: "src/handler.ts", startLine: 23, endLine: 30, symbol: null, quote: null }],
+    });
+    expect(findingsAgree(a, b)).toBe(true);
+  });
+
+  it("strong anchors are unaffected: real line intersection agrees even when wording is dissimilar", () => {
+    const a = makeFinding({
+      title: "Off-by-one in pagination cursor",
+      reasoning: "boundary comparison uses < instead of <=",
+      evidence: [{ path: "src/x.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      title: "Descriptor leak on error path",
+      reasoning: "stream never closed when the read throws",
+      evidence: [{ path: "src/x.ts", startLine: 15, endLine: 25, symbol: null, quote: null }],
+    });
+    // ranges truly intersect (15–20) → strong → accepted without a similarity check
+    expect(findingsAgree(a, b)).toBe(true);
+  });
+
+  it("strong anchors are unaffected: same symbol agrees even when wording is dissimilar", () => {
+    const a = makeFinding({
+      title: "Off-by-one in pagination cursor",
+      reasoning: "boundary comparison uses < instead of <=",
+      evidence: [
+        { path: "src/x.ts", startLine: null, endLine: null, symbol: "paginate", quote: null },
+      ],
+    });
+    const b = makeFinding({
+      title: "Descriptor leak on error path",
+      reasoning: "stream never closed when the read throws",
+      evidence: [
+        { path: "src/x.ts", startLine: 999, endLine: 1010, symbol: "paginate", quote: null },
+      ],
+    });
+    expect(findingsAgree(a, b)).toBe(true);
+  });
+
+  it("strong anchors are unaffected: same symbol with lines present and gap≤5 stays STRONG (not downgraded to weak)", () => {
+    // Regression window for the strong/weak ordering: BOTH sides have line ranges
+    // within slack AND share a symbol AND are textually dissimilar. The symbol is a
+    // strong anchor and must win — it must not be downgraded to a weak signal and
+    // then rejected by the similarity gate.
+    const a = makeFinding({
+      title: "Off-by-one in the pagination cursor",
+      reasoning: "boundary comparison uses < instead of <=",
+      evidence: [{ path: "src/x.ts", startLine: 10, endLine: 20, symbol: "paginate", quote: null }],
+    });
+    const b = makeFinding({
+      title: "File descriptor leak on the error path",
+      reasoning: "stream never closed when the read throws",
+      evidence: [{ path: "src/x.ts", startLine: 23, endLine: 30, symbol: "paginate", quote: null }],
+    });
+    // gap = 23 − 20 = 3 ≤ slack, dissimilar wording — only the shared symbol links them
+    expect(findingsAgree(a, b)).toBe(true);
+  });
+
+  it("H1/M1 floor: a two-token finding sharing exactly ONE common token does NOT agree via a weak overlap", () => {
+    // Overlap-coefficient alone would give 1/2 = 0.5 and pass; the shared-token floor
+    // must reject a single coincidental domain word bridging two distinct findings.
+    const sparse = makeFinding({
+      title: "Data race",
+      reasoning: "",
+      evidence: [{ path: "src/x.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+    });
+    const localized = makeFinding({
+      title: "Stale cache serves data",
+      reasoning: "the cache never invalidates so old data is returned to the client",
+      evidence: [{ path: "src/x.ts", startLine: 100, endLine: 120, symbol: null, quote: null }],
+    });
+    // only shared meaningful token is "data" → below the 2-token floor
+    expect(findingsAgree(sparse, localized)).toBe(false);
+  });
+
+  it("H1/M1 floor: near-adjacent findings sharing exactly ONE common token do NOT agree", () => {
+    const a = makeFinding({
+      title: "Data race",
+      reasoning: "",
+      evidence: [{ path: "src/x.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const b = makeFinding({
+      title: "Cache drops data",
+      reasoning: "eviction removes live entries",
+      evidence: [{ path: "src/x.ts", startLine: 23, endLine: 30, symbol: null, quote: null }],
+    });
+    // gap = 3 ≤ slack but only shared token is "data" → below the floor
+    expect(findingsAgree(a, b)).toBe(false);
+  });
+
   it("degenerate reversed range is handled without throwing", () => {
     // aStart > aEnd is ill-formed but should not throw
     const a = makeFinding({
@@ -635,6 +795,57 @@ describe("mergeFindings", () => {
     ]);
     expect(agreedCount).toBe(1);
     expect(disagreementCount).toBe(0);
+  });
+
+  // ── H1 end-to-end: false-receipt and swallowed-finding prevention ───────────
+
+  it("H1: a path-only finding dissimilar to a lone localized finding produces NO consensus (no false receipt)", () => {
+    const localized = makeFinding({
+      title: "Unvalidated email reaches the SQL query",
+      reasoning: "email string interpolated into a raw query without sanitization",
+      evidence: [{ path: "src/x.ts", startLine: 100, endLine: 120, symbol: null, quote: null }],
+    });
+    const sparse = makeFinding({
+      title: "Race condition on the shared cache",
+      reasoning: "two handlers mutate the in-memory map concurrently without a lock",
+      evidence: [{ path: "src/x.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+    });
+    const { agreedCount, disagreementCount } = run("unanimous", [
+      review("anthropic", [localized]),
+      review("openai", [sparse]),
+    ]);
+    // pre-fix these wildcard-merged into one false "both agreed" receipt
+    expect(agreedCount).toBe(0);
+    expect(disagreementCount).toBe(2);
+  });
+
+  it("H1: one path-only finding does NOT collapse two DISTINCT localized findings — the unmatched one is surfaced, not swallowed", () => {
+    const sqlInjection = makeFinding({
+      title: "SQL injection in the search endpoint",
+      reasoning: "user query text is concatenated into a raw SQL string with no escaping",
+      evidence: [{ path: "src/x.ts", startLine: 10, endLine: 20, symbol: null, quote: null }],
+    });
+    const nullDeref = makeFinding({
+      title: "Null dereference when config is absent",
+      reasoning: "config.timeout is read before checking config for null",
+      evidence: [{ path: "src/x.ts", startLine: 100, endLine: 110, symbol: null, quote: null }],
+    });
+    const sparseSqlOnly = makeFinding({
+      title: "SQL injection risk in search",
+      reasoning: "the search query interpolates user text into raw SQL without escaping",
+      evidence: [{ path: "src/x.ts", startLine: null, endLine: null, symbol: null, quote: null }],
+    });
+    const { result } = run("unanimous", [
+      review("anthropic", [sqlInjection, nullDeref]),
+      review("openai", [sparseSqlOnly]),
+    ]);
+    // The sparse SQL finding corroborates ONLY the SQL-injection finding.
+    // The null-deref finding must NOT be swallowed into that cluster — it has no
+    // second-provider support, so it belongs in disagreements.
+    expect(result.agreed).toHaveLength(1);
+    expect(result.agreed[0]?.title).toContain("SQL injection");
+    expect(result.disagreements).toHaveLength(1);
+    expect(result.disagreements[0]?.finding.title).toContain("Null dereference");
   });
 
   it("gap=6 stays disjoint even in mergeFindings end-to-end", () => {
