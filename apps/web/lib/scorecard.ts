@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, count as sqlCount, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db/index";
 import {
   embargoSafePublicReceiptCondition,
@@ -440,7 +440,7 @@ export const loadAllTimeAgreementRate = cache(async (): Promise<AllTimeAgreement
   if (denominator === 0) return null;
 
   const [postedRow] = await db
-    .select({ value: count() })
+    .select({ value: sqlCount() })
     .from(findingStatus)
     .innerJoin(reviews, eq(reviews.reviewId, findingStatus.reviewId))
     .where(and(reviewPublicGate(), eq(findingStatus.source, "consensus")));
