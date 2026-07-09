@@ -355,6 +355,18 @@ describe("processReviewJob x402 settlement lifecycle", () => {
     }
   });
 
+  it("re-runs inference when idempotent x402 enqueue hits a stale pending review", async () => {
+    paywallQueryMocks.loadReviewForResponse.mockResolvedValue({
+      reviewId: "review-1",
+      processingStatus: "pending",
+    });
+
+    const { processReviewJob } = await import("./review-job-worker");
+    await processReviewJob("job-x402");
+
+    expect(reviewPipelineMocks.reviewPR).toHaveBeenCalled();
+  });
+
   it("marks settlement_failed and fails the job when post-review settlement fails", async () => {
     queryMocks.getReviewJob
       .mockResolvedValueOnce(x402Job)

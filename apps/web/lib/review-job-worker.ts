@@ -422,7 +422,16 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         failureModeTag: "internal",
       });
     }
-    return reviewResultPayload(await redactReviewPayloadForPublicDisclosure(cached), true);
+    // Only short-circuit when inference actually finished. A pending row from a
+    // prior failed/expired x402 job must be re-run, not returned as complete.
+    if (cached.processingStatus === "done") {
+      return reviewResultPayload(await redactReviewPayloadForPublicDisclosure(cached), true);
+    }
+    logInfo("review_job.x402_retry_stale_review", {
+      jobId: job.jobId,
+      reviewId: enqueued.reviewId,
+      processingStatus: cached.processingStatus,
+    });
   }
 
   const files = fleetCommitReview

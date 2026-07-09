@@ -15,6 +15,9 @@ export class PublicRepoAccessError extends Error {
 }
 
 export function makePublicOctokit(): Octokit {
+  // Fleet-commit x402 reviews (pr_number=0) read public repos via this client.
+  // Without GITHUB_PUBLIC_TOKEN, unauthenticated requests hit tight rate limits
+  // and 403s that surface as user_input failures to STING hunters.
   const token = process.env["GITHUB_PUBLIC_TOKEN"];
   return token ? new Octokit({ auth: token }) : new Octokit();
 }
