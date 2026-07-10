@@ -26,6 +26,8 @@
 // When no patch ships we record the most informative reason available:
 //   - All providers skipped for the same structural reason → that reason
 //     (e.g. all said `outside_diff_hunk` — the finding isn't fixable here)
+//   - `patch_apply_failed` = the diff's old-side did not match the real file
+//     (hallucinated/stale context; the patch would fail `git apply`)
 //   - Both declined / errored with no shippable patch → `models_disagreed`
 //   - All providers errored → `generation_error`
 
@@ -36,7 +38,8 @@ export type PatchSkipReason =
   | "outside_diff_hunk"
   | "generation_error"
   | "disabled"
-  | "size_cap";
+  | "size_cap"
+  | "patch_apply_failed";
 
 // Token spend for one provider call. Structurally re-declared (same shape
 // as types.ts TokenUsage) so patch-gate keeps zero deps on the web app /
@@ -243,9 +246,13 @@ function pickReason(group: readonly ProviderPatchProposal[]): PatchSkipReason | 
   }
   // Priority: most-informative-first. `disabled` is in the union for the
   // worker-layer fallthrough (env flag off) but the orchestrator never
-  // emits it from `proposePatch` calls — the four real reasons below
-  // are what we see here. Kept in the priority chain for completeness.
+  // emits it from `proposePatch` calls — the real reasons below are what we
+  // see here. `patch_apply_failed` ranks just under `generation_error`: a
+  // patch whose old-side didn't match the real file (hallucinated/stale
+  // context) is a strong, informative reason and outranks size_cap /
+  // outside_diff_hunk. Kept `disabled` in the chain for completeness.
   if (reasons.has("generation_error")) return "generation_error";
+  if (reasons.has("patch_apply_failed")) return "patch_apply_failed";
   if (reasons.has("size_cap")) return "size_cap";
   if (reasons.has("outside_diff_hunk")) return "outside_diff_hunk";
   if (reasons.has("disabled")) return "disabled";

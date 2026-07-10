@@ -135,6 +135,37 @@ describe("decidePatchOutcomes — skip-reason surfacing", () => {
     expect(out[0]?.gateOutcome).toBe("size_cap");
   });
 
+  it("both providers hit patch_apply_failed → gateOutcome patch_apply_failed, no patch", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ patch: null, skipReason: "patch_apply_failed" }),
+      openai({ patch: null, skipReason: "patch_apply_failed" }),
+    ]);
+    expect(out[0]?.patch).toBeNull();
+    expect(out[0]?.gateOutcome).toBe("patch_apply_failed");
+    expect(out[0]?.confidence).toBeNull();
+    expect(out[0]?.selector).toBe("no-candidates");
+    expect(out[0]?.skipReasons).toEqual({
+      opus: "patch_apply_failed",
+      gpt5: "patch_apply_failed",
+    });
+  });
+
+  it("prioritizes generation_error over patch_apply_failed", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ skipReason: "generation_error" }),
+      openai({ skipReason: "patch_apply_failed" }),
+    ]);
+    expect(out[0]?.gateOutcome).toBe("generation_error");
+  });
+
+  it("prioritizes patch_apply_failed over size_cap", () => {
+    const out = decidePatchOutcomes([
+      anthropic({ skipReason: "patch_apply_failed" }),
+      openai({ skipReason: "size_cap" }),
+    ]);
+    expect(out[0]?.gateOutcome).toBe("patch_apply_failed");
+  });
+
   it("falls back to models_disagreed when reasons mix in ways the priority doesn't cover", () => {
     const out = decidePatchOutcomes([
       anthropic({ skipReason: "disabled" }),

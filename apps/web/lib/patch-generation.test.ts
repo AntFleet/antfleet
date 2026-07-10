@@ -3,6 +3,7 @@ import {
   generateReviewPatches,
   PATCH_SIZE_LINE_CAP,
   buildPatchPrompt,
+  extractSourceWindow,
   type PatchProposingProvider,
   type GenerateReviewPatchesArgs,
 } from "./patch-generation";
@@ -32,9 +33,15 @@ const stubFinding = (overrides: Partial<Finding> = {}): Finding => ({
   ...overrides,
 });
 
+// Real source of src/foo.ts. The apply-floor (normalizePatchForApply) locates
+// each proposed patch's old-side block inside this content and refuses to ship
+// a patch whose old-side isn't present. The suite's mock patches edit the
+// `old` / `old2` / `different` lines, so those must exist here verbatim.
+const STUB_FILE_CONTENTS = "const a = 1;\nold\nold2\ndifferent\nline-a\nline-b\nline-c\n";
+
 const stubFile = (overrides: Partial<ChangedFile> = {}): ChangedFile => ({
   filename: "src/foo.ts",
-  contents: "const a = 1;\n",
+  contents: STUB_FILE_CONTENTS,
   status: "modified",
   sha: "abc",
   patch: "@@ -1,5 +1,15 @@\n const a = 1;\n+added\n+added\n+added\n+added\n",
@@ -67,7 +74,10 @@ const buildCountingPatchProviders = () => {
     async proposePatch() {
       calls.push(name);
       return {
-        patch: "@@ -12,1 +12,1 @@\n-old\n+new\n",
+        // Full unified diff (with --- / +++ headers) so the apply-floor's
+        // parser can read the path and anchor the old-side `old` against
+        // STUB_FILE_CONTENTS.
+        patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -12,1 +12,1 @@\n-old\n+new\n",
         rationale: null,
         modelId: `${name}-test-model`,
       };
@@ -90,7 +100,7 @@ const baseArgs = (
 describe("generateReviewPatches — fan-out", () => {
   it("returns one proposal per (finding × provider)", async () => {
     const opus = buildProvider("anthropic", async () => ({
-      patch: "@@ -10,1 +10,1 @@\n-old\n+new\n",
+      patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-old\n+new\n",
       rationale: "Trivial swap.",
     }));
     const gpt = buildProvider("openai", async () => ({ patch: null, rationale: "decline" }));
@@ -274,13 +284,18 @@ describe("generateReviewPatches — diff-hunk filter", () => {
   });
 
   it("accepts a returned patch whose file header targets the evidence path", async () => {
+    // Old-side `old` exists in STUB_FILE_CONTENTS, so the apply-floor locates
+    // it and ships. The shipped patch is the adapter's re-anchored form (a
+    // clean `diff --git` envelope), so we assert on its content, not byte
+    // identity with the raw model output.
     const patch = "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-old\n+new\n";
     const provider = buildProvider("anthropic", async () => ({
       patch,
       rationale: null,
     }));
     const result = await generateReviewPatches(baseArgs({ providers: [provider] }));
-    expect(result.proposals[0]?.patch).toBe(patch);
+    expect(result.proposals[0]?.patch).toContain("-old");
+    expect(result.proposals[0]?.patch).toContain("+new");
     expect(result.proposals[0]?.skipReason).toBeNull();
   });
 
@@ -302,7 +317,7 @@ describe("generateReviewPatches — diff-hunk filter", () => {
 
   it("accepts a returned patch hunk inside a broader evidence range", async () => {
     const provider = buildProvider("anthropic", async () => ({
-      patch: "@@ -14,1 +14,1 @@\n-old\n+new\n",
+      patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -14,1 +14,1 @@\n-old\n+new\n",
       rationale: null,
     }));
     const finding = stubFinding({
@@ -342,8 +357,12 @@ describe("generateReviewPatches — size cap", () => {
   });
 
   it("accepts a patch exactly at the 20-line cap", async () => {
+    // 20 added lines (exactly at the cap) plus one old-side line (`old`,
+    // present in STUB_FILE_CONTENTS) so the apply-floor can anchor it. The
+    // count of ADDED lines is what the cap measures — the single `-old` does
+    // not count against it.
     const cappedPatch =
-      "@@ -10,1 +10,20 @@\n" +
+      "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,20 @@\n-old\n" +
       Array.from({ length: PATCH_SIZE_LINE_CAP }, (_, i) => `+l${i}\n`).join("");
     const provider = buildProvider("anthropic", async () => ({
       patch: cappedPatch,
@@ -355,8 +374,81 @@ describe("generateReviewPatches — size cap", () => {
         providers: [provider],
       }),
     );
-    expect(result.proposals[0]?.patch).toBe(cappedPatch);
+    // Shipped patch is the apply-floor's re-anchored form; assert content and
+    // that the full added-line set survived, rather than byte identity.
+    expect(result.proposals[0]?.patch).toContain("+l0");
+    expect(result.proposals[0]?.patch).toContain(`+l${PATCH_SIZE_LINE_CAP - 1}`);
     expect(result.proposals[0]?.skipReason).toBeNull();
+  });
+});
+
+describe("generateReviewPatches — apply-floor", () => {
+  // Real source of the changed file. The provider patches below either match
+  // this old-side (ships) or hallucinate a block that isn't here (rejected).
+  const REAL_CONTENTS =
+    "export function key(parts: string[]): string {\n  return parts.join('|');\n}\n";
+  const realFile = stubFile({ filename: "src/key.ts", contents: REAL_CONTENTS });
+  const findingInKeyFile = stubFinding({
+    evidence: [{ path: "src/key.ts", startLine: 2, endLine: 2, symbol: "key", quote: null }],
+  });
+  // stubFile's default hunk covers 1..15; a patch targeting line 2 lands
+  // inside it, so it passes the targeting check and reaches the apply-floor.
+  const keyFileArgs = {
+    changedFiles: [realFile],
+    findings: [findingInKeyFile],
+  };
+
+  it("rejects a patch whose old-side does NOT match the real file (hallucinated context)", async () => {
+    // The real function is `return parts.join('|');`, but the model proposes a
+    // patch editing a `JSON.stringify({...})` block that does not exist in the
+    // source. It would fail `git apply` (exit 128); the floor catches it.
+    const provider = buildProvider("anthropic", async () => ({
+      patch:
+        "--- a/src/key.ts\n+++ b/src/key.ts\n@@ -2,1 +2,1 @@\n" +
+        "-  return JSON.stringify({ parts });\n" +
+        "+  return parts.join('::');\n",
+      rationale: "swap delimiter",
+    }));
+    const result = await generateReviewPatches(baseArgs({ ...keyFileArgs, providers: [provider] }));
+    expect(result.proposals[0]?.patch).toBeNull();
+    expect(result.proposals[0]?.skipReason).toBe("patch_apply_failed");
+    expect(result.proposals[0]?.rationale).toBe("swap delimiter");
+    expect(result.proposals[0]?.modelId).toBe("anthropic-test-model");
+  });
+
+  it("ships a patch whose old-side matches the real file", async () => {
+    const provider = buildProvider("anthropic", async () => ({
+      patch:
+        "--- a/src/key.ts\n+++ b/src/key.ts\n@@ -2,1 +2,1 @@\n" +
+        "-  return parts.join('|');\n+  return parts.join('::');\n",
+      rationale: null,
+    }));
+    const result = await generateReviewPatches(baseArgs({ ...keyFileArgs, providers: [provider] }));
+    expect(result.proposals[0]?.patch).not.toBeNull();
+    expect(result.proposals[0]?.skipReason).toBeNull();
+    expect(result.proposals[0]?.patch).toContain("+  return parts.join('::');");
+  });
+
+  it("ships the NORMALIZED (re-anchored) patch for a malformed-but-locatable diff", async () => {
+    // Malformed: the old-side line is present and the hunk header's start line
+    // (2) lands inside the PR hunk so targeting passes, but the diff lacks a
+    // `diff --git` header and its hunk counts drift (says ,9 with only one
+    // -/+ line). git apply would reject the raw shape. The old-side still
+    // locates in the real file, so the floor re-anchors and ships a clean,
+    // git-appliable diff that differs from the raw model output.
+    const raw =
+      "--- a/src/key.ts\n+++ b/src/key.ts\n@@ -2,9 +2,9 @@\n" +
+      "-  return parts.join('|');\n+  return parts.join('::');\n";
+    const provider = buildProvider("anthropic", async () => ({ patch: raw, rationale: null }));
+    const result = await generateReviewPatches(baseArgs({ ...keyFileArgs, providers: [provider] }));
+    const shipped = result.proposals[0]?.patch;
+    expect(shipped).not.toBeNull();
+    expect(result.proposals[0]?.skipReason).toBeNull();
+    // Re-anchored: carries a proper diff --git envelope and the true count
+    // (,1) header, not the raw model's drifting @@ -2,9 header.
+    expect(shipped).not.toBe(raw);
+    expect(shipped).toContain("diff --git a/src/key.ts b/src/key.ts");
+    expect(shipped).toContain("@@ -2,1 +2,1 @@");
   });
 });
 
@@ -389,7 +481,11 @@ describe("generateReviewPatches — failure isolation", () => {
     const opus: PatchProposingProvider = {
       name: "anthropic",
       async proposePatch() {
-        return { patch: "@@ -10,1 +10,1 @@\n-old\n+new\n", rationale: null, modelId: "stub-model" };
+        return {
+          patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-old\n+new\n",
+          rationale: null,
+          modelId: "stub-model",
+        };
       },
     };
     const gpt: PatchProposingProvider = {
@@ -459,10 +555,50 @@ describe("buildPatchPrompt", () => {
     expect(prompt).toContain("(none provided)");
   });
 
-  it("rule 3 forbids describing the patch as a decline rationale", () => {
+  it("rule forbids describing the patch as a decline rationale", () => {
     const prompt = buildPatchPrompt(stubFinding());
     expect(prompt).toContain("WHY a patch is impossible");
     expect(prompt).toContain("MUST NOT");
     expect(prompt).toContain("describe what the patch would do");
+  });
+
+  it("embeds the real SOURCE window and a verbatim-copy rule when given an excerpt", () => {
+    const excerpt = { text: "const x = 1;\nconst y = 2;", firstLine: 8 };
+    const prompt = buildPatchPrompt(stubFinding(), "inline", excerpt);
+    expect(prompt).toContain("SOURCE — exact current contents");
+    expect(prompt).toContain("starting at line 8");
+    expect(prompt).toContain("const x = 1;");
+    expect(prompt).toContain("VERBATIM");
+    expect(prompt).toContain("Do not invent surrounding code");
+  });
+
+  it("tells the model to decline when no source is shown", () => {
+    const prompt = buildPatchPrompt(stubFinding(), "inline", null);
+    expect(prompt).toContain("source not shown");
+    expect(prompt).not.toContain("SOURCE — exact current contents");
+  });
+});
+
+describe("extractSourceWindow", () => {
+  const file = Array.from({ length: 200 }, (_v, i) => `line ${i + 1}`).join("\n");
+
+  it("windows ±40 lines around the evidence and reports the first line", () => {
+    const w = extractSourceWindow(file, 100, 100);
+    expect(w).not.toBeNull();
+    expect(w?.firstLine).toBe(60);
+    expect(w?.text).toContain("line 60");
+    expect(w?.text).toContain("line 100");
+    expect(w?.text).toContain("line 140");
+    expect(w?.text).not.toContain("line 59\n");
+  });
+
+  it("clamps the window to the file bounds", () => {
+    const w = extractSourceWindow(file, 5, 5);
+    expect(w?.firstLine).toBe(1);
+    expect(w?.text.startsWith("line 1")).toBe(true);
+  });
+
+  it("returns null for empty contents", () => {
+    expect(extractSourceWindow("", 10, 12)).toBeNull();
   });
 });
