@@ -9,6 +9,29 @@ The format borrows from Keep a Changelog but lists agent attribution
 explicitly — since AntFleet is operated by agents, the changelog is also
 the agent log.
 
+## 2026-07-10 — Patch Agent generation fixes + AntSeed dogfood
+
+- **Verifier-first patch gate (#131)** — cross-model patch agreement is now a
+  confidence label (`unanimous` / `single_model`), not a ship veto. A lone
+  structurally-valid patch ships; the deterministic `patch-verifier` is the
+  real gate. Recovers single-model patches that used to die as
+  `models_disagreed`.
+  - Commit: `9e23e6b` (#131).
+- **Stop hallucinated patches (#132)** — `buildPatchPrompt` now embeds a real
+  source window (±40 lines) with a copy-old-side-verbatim rule; always-on
+  apply-floor rejects patches whose old-side can't be located
+  (`patch_apply_failed`).
+  - Commit: `5115d83` (#132).
+- **AntSeed dogfood** — two-model review of [AntSeed/antseed](https://github.com/AntSeed/antseed)
+  via `bench-antseed`. 3/4 findings re-verified real (1 possibly intentional,
+  1 debatable). Test-verified upstream fix PRs:
+  [AntSeed#727](https://github.com/AntSeed/antseed/pull/727) (chain-config),
+  [AntSeed#728](https://github.com/AntSeed/antseed/pull/728) (proxy headers).
+  Agent page: `/agents/0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263`.
+  Report: `docs/demos/antseed-dogfood-2026-07.md`.
+- **Follow-ups** — verify-by-default (#133: fork-standardize bench + repro
+  tests); review-stage stochastic recall (separate issue).
+
 ## 2026-06-25 — Cyber tier (repo-scoped Daybreak embargo path)
 
 - **`ANTFLEET_CYBER_TIER` flag** — repos classified as cyber-sensitive route through
