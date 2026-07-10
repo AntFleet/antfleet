@@ -54,8 +54,9 @@ rejects \`address(0)\`, so the exposure is the **deploy-before-config window**.
 Invariant tests (\`ProtocolHandler.sol\`) model \`fee=0 when !protocolReserveSet\`,
 which suggests this may be intentional fee-waiver rather than a bug.
 
-**No fix filed** — needs maintainer decision (guard/revert vs document as
-intentional). Not overstated as a critical revenue leak without that call.
+**Upstream issue:** [AntSeed/antseed#729](https://github.com/AntSeed/antseed/issues/729)
+— design options (document / fail-closed / fix event / hold fee). Not a drive-by
+fix PR because unit tests treat fail-open as intentional.
 
 ---
 
@@ -72,16 +73,17 @@ non-empty ids; no-arg default unchanged. Unit tests added; verified green.
 
 ---
 
-### MEDIUM — Receipt signature omits unit price — **debatable**
+### MEDIUM — Receipt signature omits unit price — **real metadata gap, fix filed**
 
 [\`buildSignaturePayload\`](https://github.com/AntSeed/antseed/blob/main/packages/node/src/metering/receipt-generator.ts)
-omits \`unitPriceCentsPerThousandTokens\` literally, but signs
-\`costCents\` + \`totalTokens\`, which pin the effective price mathematically
-(\`cost ≈ f(totalTokens, unitPrice)\`). A counterparty cannot freely invent a
-different unit price without also breaking the signed cost/token pair.
+omitted \`unitPriceCentsPerThousandTokens\` from the signed string. Settlement
+still bound \`costCents\` + \`totalTokens\` (not a forgery of the charged amount),
+but a party could rewrite the rate field on a still-valid signature and mislead
+any UI / audit / dispute path that trusts that field.
 
-**No fix filed** — maintainer judgment. Integrity of the *stated* unit-price
-field is weaker than integrity of the *settlement amount*.
+**Fix PR:** [AntSeed/antseed#730](https://github.com/AntSeed/antseed/pull/730)
+binds unit price into the signed payload. Coordinated seller/buyer upgrade note
+on the PR.
 
 ---
 
@@ -114,8 +116,10 @@ const EVIDENCE_MD = `- Benchmark repo: [AntFleet/bench-antseed](https://github.c
 - Off-chain PR: [bench-antseed#2](https://github.com/AntFleet/bench-antseed/pull/2) → findings #2 (chain-config), #3 (receipt unit-price)
 - Proxy PR: [bench-antseed#3](https://github.com/AntFleet/bench-antseed/pull/3) → finding #4 (header case)
 - Source repo: [AntSeed/antseed](https://github.com/AntSeed/antseed)
+- Upstream issue #729 (protocolReserve fee zero / event divergence): https://github.com/AntSeed/antseed/issues/729
 - Upstream fix #727 (chain-config, ready for review): https://github.com/AntSeed/antseed/pull/727
 - Upstream fix #728 (proxy headers, ready for review): https://github.com/AntSeed/antseed/pull/728
+- Upstream fix #730 (receipt unitPrice signed, ready for review): https://github.com/AntSeed/antseed/pull/730
 - Agent page: https://www.antfleet.dev/agents/0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263
 - Dogfood report: \`docs/demos/antseed-dogfood-2026-07.md\`
 `;
