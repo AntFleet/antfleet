@@ -149,7 +149,12 @@ export async function runPatchAgent(args: RunPatchAgentArgs): Promise<PatchAgent
     if (d === undefined) continue;
     if (d.patch !== null && d.modelId !== null) {
       const mode = isInlinePatchable(args.findings[i], args.changedFiles) ? "inline" : "artifact";
-      const patch = { patch: d.patch, modelId: d.modelId, mode } satisfies PatchForRender;
+      const patch = {
+        patch: d.patch,
+        modelId: d.modelId,
+        mode,
+        confidence: d.confidence,
+      } satisfies PatchForRender;
       byIndex.set(i, patch);
       if (mode === "inline") {
         inlineByIndex.set(i, patch);

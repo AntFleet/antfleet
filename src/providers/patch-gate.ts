@@ -1,24 +1,32 @@
-// Patch Agent v1.5 — patch agreement gate.
+// Patch Agent — verifier-first patch gate.
 //
 // Sits between the patch-generation orchestrator (which fans out one
 // `proposePatch` call per (finding × provider) and emits a flat
 // `ProviderPatchProposal[]`) and the comment renderer (PR4). For each
-// distinct findingId, decides whether a patch ships — by the rule:
+// distinct findingId, decides whether a patch ships.
 //
-//   "Agreement" = both providers returned a non-null patch proposal for
-//   the SAME findingId. Diff content need not match byte-for-byte; we
-//   ship the anthropic (Opus) patch deterministically.
+// KEY RULE (v2 — inversion): cross-model agreement is a CONFIDENCE LABEL,
+// not a ship gate. A single structurally-valid patch SHIPS; the downstream
+// deterministic patch-verifier (applies the patch in an ephemeral worktree,
+// runs tests + PoC) is the real gate. Previously a valid Opus patch was
+// discarded whenever the other model failed for an unrelated reason
+// (usually `outside_diff_hunk`) or declined — nulling recoverable fixes
+// into `models_disagreed`. We now let the one-sided-valid patch flow
+// through so the verifier decides.
 //
-// This is the lightest defensible interpretation of "unanimous patch":
-// the agreement signal is "both willing to fix here" rather than "both
-// proposed the same fix". A future eval harness can move us toward
-// content-overlap voting; until then, byte-overlap would be too strict
-// (semantic-equivalent diffs differ in whitespace, identifier choice).
+//   - Both providers returned a non-null patch → ship the anthropic (Opus)
+//     patch, `confidence: "unanimous"`.
+//   - Exactly one side returned a patch → ship that patch (prefer Opus),
+//     `confidence: "single_model"`. Diff content need not match; the
+//     verifier vets it downstream.
+//   - Neither side produced a shippable patch → no patch ships. This is
+//     the ONLY `models_disagreed` case now: "neither side produced a
+//     shippable patch", not "sides differed".
 //
-// On disagreement, we record the most informative reason available:
+// When no patch ships we record the most informative reason available:
 //   - All providers skipped for the same structural reason → that reason
 //     (e.g. all said `outside_diff_hunk` — the finding isn't fixable here)
-//   - One provider proposed, the other did not → `models_disagreed`
+//   - Both declined / errored with no shippable patch → `models_disagreed`
 //   - All providers errored → `generation_error`
 
 // Re-declared structurally so this module doesn't take a dep on the web
@@ -65,10 +73,17 @@ export type PatchSelector =
 export type PatchDecision = {
   findingId: string;
   // Non-null when the gate selected a winning patch. The winner is the
-  // anthropic (Opus) proposal by spec; modelId reflects the resolved
-  // model id the provider actually used.
+  // anthropic (Opus) proposal when present; otherwise the lone non-anthropic
+  // patch. modelId reflects the resolved model id the provider actually used.
   patch: string | null;
   modelId: string | null;
+  // Confidence label attached to a shipped patch (v2 inversion). Not a ship
+  // gate — the downstream verifier is. `"unanimous"` = both providers
+  // proposed a non-null patch; `"single_model"` = exactly one side did (the
+  // shipped patch is unverified consensus, vetted only by the verifier).
+  // `null` when no patch ships. The renderer surfaces `single_model` honestly
+  // so we never present a lone patch as if two models agreed.
+  confidence: "unanimous" | "single_model" | null;
   // Gate-level verdict. Null when a patch shipped. When no patch shipped, the
   // aggregate reason: models_disagreed when sides disagreed, or the shared
   // structural reason (outside_diff_hunk / generation_error / size_cap / disabled)
@@ -99,10 +114,10 @@ const WINNING_PROVIDER = "anthropic";
  * finding_status via the queries layer.
  *
  * Inputs are NOT required to be aligned by findingId; this function groups
- * them. A findingId with only one provider's proposal yields
- * `models_disagreed` (the other provider must have been missing from the
- * orchestrator's input — that itself is a degenerate case the gate refuses
- * to ship through).
+ * them. A findingId with only one provider's non-null patch ships that patch
+ * with `confidence: "single_model"` (the verifier vets it downstream). A
+ * findingId where NO provider produced a shippable patch yields
+ * `models_disagreed` / `patch: null` / `confidence: null`.
  */
 export function decidePatchOutcomes(proposals: readonly ProviderPatchProposal[]): PatchDecision[] {
   const byFinding = groupByFinding(proposals);
@@ -153,6 +168,7 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
       // null value so the receipt comment doesn't say "(model: null)".
       modelId: anthropic.modelId ?? WINNING_PROVIDER,
       gateOutcome: null,
+      confidence: "unanimous",
       candidates,
       rationales,
       skipReasons,
@@ -160,18 +176,25 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     };
   }
 
-  // Disagreement: one-sided proposal. Per spec, fall back to findings-only
-  // with `models_disagreed`. The orchestrator may have separately surfaced
-  // a structural reason on the declining side — prefer that when it's
-  // more informative than the generic "disagreed".
+  // One-sided proposal (v2 inversion): exactly one side produced a
+  // structurally-valid patch. SHIP it — the downstream verifier is the real
+  // gate. Prefer the anthropic (Opus) patch; if only the non-anthropic side
+  // has one, ship that. Confidence is `single_model` so the renderer can be
+  // honest that this patch did not clear cross-model consensus. The selector
+  // (`no-gpt5-deterministic-skip` / `no-opus-deterministic-skip`) already
+  // encodes which side was present.
   if (withPatch.length > 0) {
+    const shipped = anthropic ?? otherWithPatch;
+    // `anthropic || otherWithPatch` is non-null here because withPatch is
+    // non-empty and every element is one or the other provider role.
     const selector: PatchSelector =
       candidates.opus !== null ? "no-gpt5-deterministic-skip" : "no-opus-deterministic-skip";
     return {
       findingId,
-      patch: null,
-      modelId: null,
-      gateOutcome: "models_disagreed",
+      patch: shipped?.patch ?? null,
+      modelId: shipped?.modelId ?? shipped?.providerName ?? null,
+      gateOutcome: null,
+      confidence: "single_model",
       candidates,
       rationales,
       skipReasons,
@@ -179,15 +202,20 @@ function decideOne(findingId: string, group: readonly ProviderPatchProposal[]): 
     };
   }
 
-  // No provider proposed a patch. Surface the shared reason when one
-  // exists; otherwise pick the most informative single reason. Priority:
+  // No provider proposed a patch — nothing shippable. Surface the shared
+  // reason when one exists; otherwise pick the most informative single
+  // reason. Priority:
   //   generation_error > size_cap > outside_diff_hunk > disabled > null-decline
+  // This (and pickReason's null-decline fallthrough) is now the ONLY path
+  // that yields `models_disagreed`: it means "neither side produced a
+  // shippable patch", not "sides differed".
   const reason = pickReason(group);
   return {
     findingId,
     patch: null,
     modelId: null,
     gateOutcome: reason,
+    confidence: null,
     candidates,
     rationales,
     skipReasons,

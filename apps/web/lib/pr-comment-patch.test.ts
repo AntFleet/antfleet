@@ -219,6 +219,33 @@ describe("formatPRComment — flag-on rendering", () => {
     expect(out).not.toContain("```suggestion");
     expect(out).not.toContain("Commit suggestion");
   });
+
+  it("labels a single_model patch honestly and leaves unanimous/undefined bare", () => {
+    const single = formatPRComment([mkFinding()], {
+      ...META,
+      patchesByIndex: new Map([[0, { ...PATCH, confidence: "single_model" }]]),
+    });
+    expect(single).toContain(
+      "<summary>Proposed patch (model: claude-opus-4-7 — single-model (unverified consensus))</summary>",
+    );
+
+    const unanimous = formatPRComment([mkFinding()], {
+      ...META,
+      patchesByIndex: new Map([[0, { ...PATCH, confidence: "unanimous" }]]),
+    });
+    expect(unanimous).toContain("<summary>Proposed patch (model: claude-opus-4-7)</summary>");
+    expect(unanimous).not.toContain("single-model");
+  });
+
+  it("labels a single_model out-of-hunk artifact honestly", () => {
+    const out = formatPRComment([mkFinding()], {
+      ...META,
+      patchesByIndex: new Map([[0, { ...PATCH, mode: "artifact", confidence: "single_model" }]]),
+    });
+    expect(out).toContain(
+      "Out-of-hunk patch artifact (model: claude-opus-4-7 — single-model (unverified consensus))",
+    );
+  });
 });
 
 describe("formatPRComment — settlement footer with patch", () => {

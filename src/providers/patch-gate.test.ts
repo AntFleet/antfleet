@@ -27,24 +27,29 @@ const openai = (overrides: Partial<ProviderPatchProposal> = {}): ProviderPatchPr
 });
 
 describe("decidePatchOutcomes — the four spec cases", () => {
-  it("both propose → ships anthropic's patch", () => {
+  it("both propose → ships anthropic's patch (confidence unanimous)", () => {
     const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: PATCH_B })]);
     expect(out).toHaveLength(1);
     expect(out[0]?.patch).toBe(PATCH_A);
     expect(out[0]?.modelId).toBe("claude-opus-4-7");
     expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("unanimous");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: PATCH_B });
     expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.selector).toBe("deterministic-opus");
   });
 
-  it("only anthropic proposes → models_disagreed (findings-only)", () => {
+  it("only anthropic proposes → ships opus patch as single_model", () => {
     const out = decidePatchOutcomes([
       anthropic({ patch: PATCH_A, rationale: "fixes the branch" }),
       openai({ patch: null, rationale: "no in-hunk safe fix" }),
     ]);
-    expect(out[0]?.patch).toBeNull();
-    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    // v2 inversion: a lone valid Opus patch now ships; the verifier is the
+    // gate, and confidence flags it as single_model (unverified consensus).
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.modelId).toBe("claude-opus-4-7");
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("single_model");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
     expect(out[0]?.rationales).toEqual({
       opus: "fixes the branch",
@@ -54,47 +59,53 @@ describe("decidePatchOutcomes — the four spec cases", () => {
     expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
   });
 
-  it("only openai proposes → models_disagreed (findings-only)", () => {
+  it("only openai proposes → ships gpt5 patch as single_model", () => {
     const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: PATCH_B })]);
-    expect(out[0]?.patch).toBeNull();
-    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out[0]?.patch).toBe(PATCH_B);
+    expect(out[0]?.modelId).toBe("gpt-5.5");
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("single_model");
     expect(out[0]?.candidates).toEqual({ opus: null, gpt5: PATCH_B });
     expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.selector).toBe("no-opus-deterministic-skip");
   });
 
-  it("neither proposes (both clean declines) → models_disagreed", () => {
+  it("neither proposes (both clean declines) → models_disagreed, no patch", () => {
     const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: null })]);
     expect(out[0]?.patch).toBeNull();
     expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out[0]?.confidence).toBeNull();
     expect(out[0]?.candidates).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
     expect(out[0]?.selector).toBe("no-candidates");
   });
 });
 
-describe("decidePatchOutcomes — shipping behavior regression", () => {
-  it("shipped patch is byte-identical to pre-refactor output (both propose)", () => {
+describe("decidePatchOutcomes — shipping behavior (verifier-first)", () => {
+  it("both-propose still ships the anthropic patch unchanged", () => {
     const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: PATCH_B })]);
-    // Pre-refactor: returned { patch: PATCH_A, modelId: 'claude-opus-4-7', skipReason: null }
     expect(out[0]?.patch).toBe(PATCH_A);
     expect(out[0]?.modelId).toBe("claude-opus-4-7");
     expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("unanimous");
   });
 
-  it("shipped patch is null when only anthropic proposes (pre-refactor behavior)", () => {
+  it("ships the opus patch when only anthropic proposes (single_model)", () => {
     const out = decidePatchOutcomes([anthropic({ patch: PATCH_A }), openai({ patch: null })]);
-    expect(out[0]?.patch).toBeNull();
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.confidence).toBe("single_model");
   });
 
-  it("shipped patch is null when only openai proposes (pre-refactor behavior)", () => {
+  it("ships the gpt5 patch when only openai proposes (single_model)", () => {
     const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: PATCH_B })]);
-    expect(out[0]?.patch).toBeNull();
+    expect(out[0]?.patch).toBe(PATCH_B);
+    expect(out[0]?.confidence).toBe("single_model");
   });
 
-  it("shipped patch is null when neither proposes (pre-refactor behavior)", () => {
+  it("ships no patch when neither proposes", () => {
     const out = decidePatchOutcomes([anthropic({ patch: null }), openai({ patch: null })]);
     expect(out[0]?.patch).toBeNull();
+    expect(out[0]?.confidence).toBeNull();
   });
 });
 
@@ -133,39 +144,43 @@ describe("decidePatchOutcomes — skip-reason surfacing", () => {
   });
 });
 
-describe("decidePatchOutcomes — disagreement keeps the loser's reason out", () => {
-  it("anthropic proposes but openai hit size_cap → models_disagreed (not size_cap)", () => {
-    // Spec: any one-sided proposal is `models_disagreed`. We don't escalate
-    // the structural reason here — the agreement signal is what matters.
+describe("decidePatchOutcomes — one-sided ships, loser's reason surfaced per-side", () => {
+  it("anthropic proposes but openai hit size_cap → ships opus (single_model), keeps per-side reason", () => {
+    // v2: the lone valid Opus patch ships; the verifier gates. The declining
+    // side's structural reason stays in the per-side skipReasons for
+    // observability but no longer nulls the shipment.
     const out = decidePatchOutcomes([
       anthropic({ patch: PATCH_A }),
       openai({ skipReason: "size_cap" }),
     ]);
-    expect(out[0]?.patch).toBeNull();
-    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("single_model");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
     expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: "size_cap" });
     expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
   });
 
-  it("propagates per-side skipReason: opus shipped, gpt5 generation_error", () => {
+  it("propagates per-side skipReason: opus shipped single_model, gpt5 generation_error", () => {
     const out = decidePatchOutcomes([
       anthropic({ patch: PATCH_A, skipReason: null }),
       openai({ patch: null, skipReason: "generation_error" }),
     ]);
-    expect(out[0]?.patch).toBeNull();
-    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("single_model");
     expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: "generation_error" });
     expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
   });
 
-  it("propagates per-side skipReason: gpt5 shipped, opus generation_error", () => {
+  it("propagates per-side skipReason: gpt5 shipped single_model, opus generation_error", () => {
     const out = decidePatchOutcomes([
       anthropic({ patch: null, skipReason: "generation_error" }),
       openai({ patch: PATCH_B, skipReason: null }),
     ]);
-    expect(out[0]?.patch).toBeNull();
-    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out[0]?.patch).toBe(PATCH_B);
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("single_model");
     expect(out[0]?.skipReasons).toEqual({ opus: "generation_error", gpt5: null });
     expect(out[0]?.selector).toBe("no-opus-deterministic-skip");
   });
@@ -187,7 +202,10 @@ describe("decidePatchOutcomes — multi-finding fan-out", () => {
     expect(byId.get("fid-A")?.selector).toBe("deterministic-opus");
     expect(byId.get("fid-B")?.gateOutcome).toBe("outside_diff_hunk");
     expect(byId.get("fid-B")?.selector).toBe("no-candidates");
-    expect(byId.get("fid-C")?.gateOutcome).toBe("models_disagreed");
+    // fid-C: only anthropic proposed → ships opus as single_model.
+    expect(byId.get("fid-C")?.patch).toBe(PATCH_A);
+    expect(byId.get("fid-C")?.gateOutcome).toBeNull();
+    expect(byId.get("fid-C")?.confidence).toBe("single_model");
     expect(byId.get("fid-C")?.selector).toBe("no-gpt5-deterministic-skip");
   });
 
@@ -207,13 +225,13 @@ describe("decidePatchOutcomes — degenerate inputs", () => {
     expect(decidePatchOutcomes([])).toEqual([]);
   });
 
-  it("treats a single-provider-only group as models_disagreed even when that provider proposed", () => {
-    // A future stack with just one provider would always be 'agreement of
-    // one' — the gate refuses to ship through. PR3's contract is that
-    // BOTH providers must propose.
+  it("ships a single-provider-only group as single_model (verifier gates it)", () => {
+    // v2: a lone valid patch ships regardless of how many providers were in
+    // the group — the deterministic verifier is the gate, not consensus.
     const out = decidePatchOutcomes([anthropic({ patch: PATCH_A })]);
-    expect(out[0]?.patch).toBeNull();
-    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("single_model");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
     expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: null });
   });
@@ -301,8 +319,11 @@ describe("decidePatchOutcomes — provider-keyed candidates (T3.8c)", () => {
       anthropic({ patch: PATCH_A }),
       virtual({ patch: null, skipReason: "outside_diff_hunk" }),
     ]);
-    expect(out[0]?.patch).toBeNull();
-    expect(out[0]?.gateOutcome).toBe("models_disagreed");
+    // v2: opus's lone patch ships single_model; the declining virtual side's
+    // reason still lands in the gpt5 slot for observability.
+    expect(out[0]?.patch).toBe(PATCH_A);
+    expect(out[0]?.gateOutcome).toBeNull();
+    expect(out[0]?.confidence).toBe("single_model");
     expect(out[0]?.candidates).toEqual({ opus: PATCH_A, gpt5: null });
     expect(out[0]?.skipReasons).toEqual({ opus: null, gpt5: "outside_diff_hunk" });
     expect(out[0]?.selector).toBe("no-gpt5-deterministic-skip");
