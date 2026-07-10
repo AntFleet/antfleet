@@ -126,8 +126,7 @@ const finding: NewAgentFinding = {
   agentName: "AntSeed",
   repoFullName: "AntSeed/antseed",
   benchRepoName: "bench-antseed",
-  title:
-    "getChainConfig silent mainnet fallback + proxy header case-sensitivity (2 fix PRs open)",
+  title: "getChainConfig silent mainnet fallback + proxy header case-sensitivity (2 fix PRs open)",
   severity: "medium",
   summary: SUMMARY_MD,
   evidence: EVIDENCE_MD,
