@@ -130,20 +130,12 @@ Some findings also include Patch Agent output:
 - File-level findings can get a non-click-to-apply artifact, but
   not an inline suggestion, because GitHub suggestions require a
   line anchor inside the PR diff.
-- As of 2026-07 (#131/#132): a single structurally-valid model patch can
-  ship (cross-model agreement is a confidence label, not a veto); prompts
-  include a real source window so patches apply; the deterministic
-  patch-verifier is the real gate. Tags distinguish `verified` /
-  `(unverified)` / `(no PoC)`.
 
 For benchmark/manual onboarding runs where Patch Agent output is
 part of the goal, create the benchmark hunk adjacent to the suspected
 target line or function. Top-of-file marker comments are useful for
 reviewer detection, but they are not a good Patch Agent anchor unless
-the suspected fix is also near the top of the file. Prefer a **fork of
-the source repo** as the bench target when you want the verifier to
-return real `verified`/`regressed` outcomes — scaffold file-subsets
-have no runnable test suite and force `inconclusive` (see issue #133).
+the suspected fix is also near the top of the file.
 
 Once Onboarder ships, a second comment from Onboarder will appear
 shortly after your _first_ PR review: a partner-private framing of
@@ -261,7 +253,7 @@ exactly what your repo provides.
 | **Reviewer**    | `apps/web/lib/review-pipeline.ts` (calls `src/providers/{anthropic,openai}.ts`) | Two-model unanimous gate on every PR                                                | Live     |
 | **Sweeper**     | `apps/web/lib/sweep.ts`                                                         | Daily cron; closure receipts pinned to merge SHA                                    | Live     |
 | **Onboarder**   | `apps/web/lib/onboarder.ts`                                                     | Install welcome, first-review summary, 7-day check-in, partner_reply signal capture | Live     |
-| **Patch Agent** | `apps/web/lib/patch-agent.ts` (+ `patch-review-comment.ts`)                     | Proposes per-finding unified-diff patches; v1.6 click-to-apply; verifier-first gate (#131) + real-source apply-floor (#132) | Live (gated on `PATCH_AGENT_ENABLED`) |
+| **Patch Agent** | `apps/web/lib/patch-agent.ts` (+ `patch-review-comment.ts`)                     | Proposes per-finding unified-diff patches; v1.6 click-to-apply lane on supported PRs | Live (gated on `PATCH_AGENT_ENABLED`) |
 
 The fleet is open source under MIT
 (<https://github.com/AntFleet/antfleet>). The agents you don't see
@@ -270,5 +262,5 @@ shipping in order of trust-substrate value.
 
 ---
 
-Document last updated: 2026-07-10. Canonical version:
+Document last updated: 2026-05-17. Canonical version:
 <https://github.com/AntFleet/antfleet/blob/main/docs/ONBOARDING.md>.
