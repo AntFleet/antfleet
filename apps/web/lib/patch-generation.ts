@@ -23,6 +23,7 @@ import {
 } from "./diff-hunks";
 import type { PatchSuggestionResult } from "@antfleet/cli/types";
 import type { PatchSkipReason, ProviderPatchProposal } from "@antfleet/cli/providers/patch-gate";
+import { normalizePatchForApply } from "./patch-adapter";
 
 // Per-call timeout. The whole review must finish under 240s; the existing
 // per-provider review call already burns up to ~60s, so the patch call
@@ -84,6 +85,9 @@ export type GenerateReviewPatchesArgs = {
  *   - A patch that targets a path absent from the PR diff, or lines outside
  *     a hunk → `{ patch: null, skipReason: "outside_diff_hunk" }`.
  *   - A patch that exceeds the line cap → `{ patch: null, skipReason: "size_cap" }`.
+ *   - A patch whose old-side block can't be located in the real source file
+ *     (hallucinated/stale context that would fail `git apply`) →
+ *     `{ patch: null, skipReason: "patch_apply_failed" }` (always-on apply-floor).
  *   - A `patch: null` decline from the model → carried through with no
  *     skipReason; the gate interprets the absence as "this provider opted out".
  *     Equivalent to "models_disagreed" once paired with the other side.
@@ -107,6 +111,13 @@ export async function generateReviewPatches(
   }
   const hunksByPath = buildHunkIndex(args.changedFiles);
   const changedPaths = new Set(args.changedFiles.map((f) => normalizePath(f.filename)));
+  // Apply-floor input: the real source of each changed file, keyed by
+  // normalized path. runOneProposal re-anchors each proposed patch against
+  // this content and refuses to ship one whose old-side doesn't match.
+  const contentsByPath = new Map<string, string>();
+  for (const f of args.changedFiles) {
+    contentsByPath.set(normalizePath(f.filename), f.contents);
+  }
 
   const calls: Array<Promise<ProviderPatchProposal>> = [];
   for (const [index, finding] of args.findings.entries()) {
@@ -120,6 +131,7 @@ export async function generateReviewPatches(
           findingId,
           hunksByPath,
           changedPaths,
+          contentsByPath,
           model: args.model ?? null,
           timeoutMs,
         }),
@@ -137,6 +149,10 @@ type RunOneProposalArgs = {
   findingId: string;
   hunksByPath: Map<string, HunkRange[]>;
   changedPaths: ReadonlySet<string>;
+  // Real source contents of each changed file, keyed by normalized path.
+  // Drives the always-on apply-floor: a proposed patch whose old-side block
+  // can't be located in the real file is a hallucination and never ships.
+  contentsByPath: ReadonlyMap<string, string>;
   model: string | null;
   timeoutMs: number;
 };
@@ -174,11 +190,23 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
   }
   const mode = evidenceOverlapsHunk ? "inline" : "artifact";
 
-  // Step 2: make the provider call with a hard timeout.
+  // Step 2: make the provider call with a hard timeout. Feed the model the
+  // REAL source window around the evidence so it writes the diff's old-side
+  // against actual code instead of reconstructing it from the finding prose —
+  // the latter is the documented hallucination source (patches anchored to
+  // code that doesn't exist, failing `git apply`).
+  const sourceExcerpt = (() => {
+    const fc = args.contentsByPath.get(normalized);
+    return fc === undefined ? null : extractSourceWindow(fc, evidence.startLine, evidence.endLine);
+  })();
   let raw: PatchSuggestionResult;
   try {
     raw = await withTimeout(
-      args.provider.proposePatch(".", buildPatchPrompt(args.finding, mode), args.model),
+      args.provider.proposePatch(
+        ".",
+        buildPatchPrompt(args.finding, mode, sourceExcerpt),
+        args.model,
+      ),
       args.timeoutMs,
     );
   } catch {
@@ -248,10 +276,48 @@ async function runOneProposal(args: RunOneProposalArgs): Promise<ProviderPatchPr
       usage: raw.usage ?? null,
     };
   }
+
+  // Step 4: apply-floor (always-on). The `targetable` check above only proves
+  // the patch AIMS at the right line range — it never checks the diff's
+  // old-side actually MATCHES the real file. A hallucinated/stale old-side
+  // (editing code that doesn't exist) sails through targeting yet fails
+  // `git apply` (exit 128) and, on repos without a test runner, ships as an
+  // "unverified" suggestion. normalizePatchForApply locates the old-side
+  // block inside the real source and re-anchors it: {ok:false} is the
+  // hallucination signal; {ok:true} returns a clean, applicable diff (also
+  // fixing applicable-but-malformed whitespace/line-count drift).
+  const shippablePatch = (() => {
+    const fileContents = args.contentsByPath.get(normalized);
+    if (fileContents === undefined) {
+      // Edge: evidence file wasn't in the changed set, so we have no real
+      // source to verify against. Keep prior behavior and ship raw.patch;
+      // applicability can't be checked here.
+      return { ok: true as const, patch: raw.patch };
+    }
+    const res = normalizePatchForApply({
+      patch: raw.patch,
+      evidencePath: evidence.path,
+      fileContents,
+    });
+    if (!res.ok) return { ok: false as const };
+    return { ok: true as const, patch: res.patch };
+  })();
+  if (!shippablePatch.ok) {
+    return {
+      providerName: args.provider.name,
+      findingId: args.findingId,
+      patch: null,
+      modelId: raw.modelId,
+      skipReason: "patch_apply_failed",
+      rationale: raw.rationale,
+      usage: raw.usage ?? null,
+    };
+  }
+
   return {
     providerName: args.provider.name,
     findingId: args.findingId,
-    patch: raw.patch,
+    patch: shippablePatch.patch,
     modelId: raw.modelId,
     skipReason: null,
     rationale: raw.rationale,
@@ -318,14 +384,57 @@ function normalizePath(p: string): string {
   return p.replace(/^\.\//u, "").replace(/\\/gu, "/");
 }
 
-// Prompt for the proposePatch call. Intentionally compact — the model has
-// already produced this finding once; we don't re-narrate the codebase, just
-// ask for the patch. Falls back gracefully when reproduction is absent.
-export function buildPatchPrompt(finding: Finding, mode: PatchPromptMode = "inline"): string {
+// How many lines of real source to show on each side of the evidence, and a
+// hard char cap so the prompt stays bounded on large files. The apply-floor
+// re-anchors the patch, so exact @@ line numbers aren't load-bearing — the
+// window only needs to contain the lines the model will copy as old-side.
+const PATCH_SOURCE_WINDOW_LINES = 40;
+const PATCH_SOURCE_MAX_CHARS = 12_000;
+
+export type SourceExcerpt = { text: string; firstLine: number };
+
+// Extract the real source window around the evidence lines so the patch model
+// diffs against actual code. Returns null when there's nothing to show.
+export function extractSourceWindow(
+  fileContents: string,
+  startLine: number | null,
+  endLine: number | null,
+): SourceExcerpt | null {
+  if (fileContents.length === 0) return null;
+  const lines = fileContents.split("\n");
+  const anchorStart = startLine === null || startLine <= 0 ? 1 : startLine;
+  const anchorEnd = endLine === null || endLine < anchorStart ? anchorStart : endLine;
+  const from = Math.max(1, anchorStart - PATCH_SOURCE_WINDOW_LINES);
+  const to = Math.min(lines.length, anchorEnd + PATCH_SOURCE_WINDOW_LINES);
+  let text = lines.slice(from - 1, to).join("\n");
+  if (text.length > PATCH_SOURCE_MAX_CHARS) text = text.slice(0, PATCH_SOURCE_MAX_CHARS);
+  return { text, firstLine: from };
+}
+
+// Prompt for the proposePatch call. Embeds the REAL source window (when
+// available) so the model copies the diff's old-side verbatim instead of
+// reconstructing the code from the finding prose — the historical
+// hallucination source. Falls back gracefully when the excerpt is absent.
+export function buildPatchPrompt(
+  finding: Finding,
+  mode: PatchPromptMode = "inline",
+  sourceExcerpt: SourceExcerpt | null = null,
+): string {
   const ev = finding.evidence[0];
   const target = ev === undefined ? "(unknown)" : formatEvidencePath(ev);
   const reproduction = finding.reproduction === null ? "(none provided)" : finding.reproduction;
   const artifactMode = mode === "artifact";
+  const sourceBlock =
+    sourceExcerpt === null
+      ? []
+      : [
+          `SOURCE — exact current contents of ${target} (starting at line ${sourceExcerpt.firstLine}).`,
+          `Copy the diff's old-side (context and removed lines) VERBATIM from this — do NOT paraphrase or reconstruct:`,
+          "```",
+          sourceExcerpt.text,
+          "```",
+          ``,
+        ];
   return [
     `You previously flagged a ${finding.category} (${finding.severity}) finding titled:`,
     `  ${finding.title}`,
@@ -336,24 +445,28 @@ export function buildPatchPrompt(finding: Finding, mode: PatchPromptMode = "inli
     `Recommendation: ${finding.recommendation}`,
     `Reproduction: ${reproduction}`,
     ``,
+    ...sourceBlock,
     artifactMode
       ? `Propose a SINGLE-FILE unified-diff patch artifact that fixes this finding.`
       : `Propose a SINGLE-FILE unified-diff patch that fixes this finding.`,
     ``,
     `Hard rules:`,
-    `  1. Output ≤ ${PATCH_SIZE_LINE_CAP} added lines total.`,
+    sourceExcerpt === null
+      ? `  1. (source not shown — decline with patch=null unless the fix is unambiguous)`
+      : `  1. Every context and removed (' '/'-') line in your diff MUST appear VERBATIM in SOURCE above. If the code needing the change isn't shown, return patch=null. Do not invent surrounding code.`,
+    `  2. Output ≤ ${PATCH_SIZE_LINE_CAP} added lines total.`,
     artifactMode
-      ? `  2. The patch may target this file outside the PR diff hunk; it will be rendered as a non-click-to-apply artifact.`
-      : `  2. The patch must target lines INSIDE the PR's diff hunks for this file.`,
-    `  3. If no clean fix fits within those rules, return { "patch": null,`,
+      ? `  3. The patch may target this file outside the PR diff hunk; it will be rendered as a non-click-to-apply artifact.`
+      : `  3. The patch must target lines INSIDE the PR's diff hunks for this file.`,
+    `  4. If no clean fix fits within those rules, return { "patch": null,`,
     `     "rationale": "<one sentence on WHY a patch is impossible>" }.`,
     `     The rationale must explain WHY a localized fix cannot be written`,
     `     (e.g. "needs changes in 3 other files", "requires architectural`,
     `     refactor", "exceeds ${PATCH_SIZE_LINE_CAP}-line cap"). It MUST NOT`,
     `     describe what the patch would do. If you can describe a fix in one`,
-    `     sentence and it fits rules 1–2, you have enough certainty — write`,
+    `     sentence and it fits rules 1–3, you have enough certainty — write`,
     `     the unified diff instead of declining.`,
-    `  4. Do NOT propose deferred fixes. Never output TODO comments, "fix in a follow-up",`,
+    `  5. Do NOT propose deferred fixes. Never output TODO comments, "fix in a follow-up",`,
     `     or "address in a later PR". Either ship a minimal in-scope patch now, or return`,
     `     patch=null with a concrete skip reason (needs architectural change, unsafe without`,
     `     more context, exceeds line cap). Deferral is not a valid patch outcome.`,
