@@ -35,6 +35,13 @@ export type PatchForRender = {
   // an alarming tag so legitimate patches don't get penalised by
   // missing test infra.
   verifyInconclusiveReason?: string | null;
+  // Cross-model agreement label from the patch gate (v2 inversion). When
+  // "single_model", exactly one model produced this patch — it shipped
+  // because the deterministic verifier is the real gate, not because two
+  // models agreed. The renderer appends an honest caption so we never
+  // present a lone patch as consensus. "unanimous" (both proposed) and
+  // undefined render as today.
+  confidence?: "unanimous" | "single_model" | null;
 };
 
 export type ReviewMeta = {
@@ -199,11 +206,16 @@ function formatFinding(
         !SOFT_INCONCLUSIVE.has(patch.verifyInconclusiveReason ?? "")
           ? " (unverified)"
           : "";
+      // Honest label for a patch only one model produced. It shipped because
+      // the deterministic verifier gates it, not because two models agreed —
+      // so we never render it as consensus. Unanimous / undefined stay bare.
+      const singleModelTag =
+        patch.confidence === "single_model" ? " — single-model (unverified consensus)" : "";
       if (mode === "artifact") {
         lines.push("");
         lines.push(`<details>`);
         lines.push(
-          `<summary>Out-of-hunk patch artifact (model: ${patch.modelId}${verifyTag})</summary>`,
+          `<summary>Out-of-hunk patch artifact (model: ${patch.modelId}${verifyTag}${singleModelTag})</summary>`,
         );
         lines.push("");
         lines.push(
@@ -215,12 +227,14 @@ function formatFinding(
       } else if (clickApplyEnabled && evidenceIsSingleLine) {
         lines.push("");
         lines.push(
-          `→ Proposed patch${verifyTag} as a reviewable comment below (click \`Commit suggestion\`)`,
+          `→ Proposed patch${verifyTag}${singleModelTag} as a reviewable comment below (click \`Commit suggestion\`)`,
         );
       } else {
         lines.push("");
         lines.push(`<details>`);
-        lines.push(`<summary>Proposed patch (model: ${patch.modelId}${verifyTag})</summary>`);
+        lines.push(
+          `<summary>Proposed patch (model: ${patch.modelId}${verifyTag}${singleModelTag})</summary>`,
+        );
         lines.push("");
         lines.push(...block);
         lines.push(`</details>`);

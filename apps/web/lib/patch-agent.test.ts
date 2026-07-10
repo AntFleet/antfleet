@@ -142,7 +142,10 @@ describe("runPatchAgent — happy path", () => {
     });
   });
 
-  it("omits the byIndex entry when the gate skips (one-sided)", async () => {
+  it("ships the lone opus patch as single_model when the other side declines", async () => {
+    // v2 verifier-first inversion: a one-sided valid patch now flows through
+    // to byIndex (and thus to the downstream verifier) instead of being nulled
+    // into models_disagreed. The decision carries confidence single_model.
     const onlyOpus = opus;
     const decline: PatchProposingProvider = {
       name: "openai",
@@ -159,8 +162,11 @@ describe("runPatchAgent — happy path", () => {
       providers: [onlyOpus, decline],
       enabled: () => true,
     });
-    expect(out!.byIndex.size).toBe(0);
-    expect(out!.decisions[0]?.gateOutcome).toBe("models_disagreed");
+    expect(out!.byIndex.size).toBe(1);
+    expect(out!.byIndex.get(0)?.patch).toBe("@@ -10,1 +10,1 @@\n-old\n+new\n");
+    expect(out!.byIndex.get(0)?.confidence).toBe("single_model");
+    expect(out!.decisions[0]?.gateOutcome).toBeNull();
+    expect(out!.decisions[0]?.confidence).toBe("single_model");
     expect(out!.decisions[0]?.rationales).toEqual({ opus: null, gpt5: null });
   });
 });
