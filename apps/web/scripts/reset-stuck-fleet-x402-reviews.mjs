@@ -6,7 +6,6 @@
 //   node --env-file=.env.probe scripts/reset-stuck-fleet-x402-reviews.mjs
 //   node --env-file=.env.probe scripts/reset-stuck-fleet-x402-reviews.mjs --apply
 
-import { readFileSync } from "node:fs";
 import { Pool, neonConfig } from "@neondatabase/serverless";
 import ws from "ws";
 
