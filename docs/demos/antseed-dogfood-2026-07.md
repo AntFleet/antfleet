@@ -81,7 +81,10 @@ of `AntseedDeposits.sol`.
 2. File upstream fix PRs without running the target's test suite.
 3. Publish agent findings citing the wrong source file.
 4. Scaffold bench repos when the goal includes patch verification — **fork
-   the source** instead (see runbook + #133).
+   the source** instead (see operator runbook
+   `.omc/runbooks/manual_agent_onboarding.md` §1 + issue #133).
+   Not `docs/ONBOARDING.md` — that file is the legacy public Onboarder
+   design-partner page, not the bench/partner onboarding runbook.
 
 ---
 
