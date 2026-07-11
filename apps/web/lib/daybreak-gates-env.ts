@@ -28,6 +28,18 @@ export function isPatchVerifyEnabled(): boolean {
   return readBoolEnv("ANTFLEET_PATCH_VERIFY");
 }
 
+// Repro-execution verifier (issue #133, Build 2b). Gates the REPRO-EXECUTION
+// path that runs MODEL-GENERATED code (the generated repro `cmd`) inside the
+// sandbox. Default OFF in prod. When OFF, runReproVerifier must not spawn any
+// model-authored command — it returns inconclusive `repro_exec_disabled`
+// immediately. This is a separate, stricter gate than isPatchVerifyEnabled
+// because it executes attacker-influenced code; it is only safe under the
+// disposable-CI-runner containment model (Build 2b-2) with minimalEnv
+// stripping every secret from the subprocess.
+export function isReproExecEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_REPRO_EXEC");
+}
+
 export function isThreatModelEnabled(): boolean {
   return readBoolEnv("ANTFLEET_THREAT_MODEL");
 }

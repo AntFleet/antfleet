@@ -1,0 +1,608 @@
+// Repro-execution verifier (issue #133, Build 2b) — the prove-the-bug verifier.
+//
+// Runs AFTER Build 2a's generateReproTest produces a ReproTestSuggestion and
+// BEFORE a finding is treated as machine-proven. Where runPatchVerifier
+// ASSUMES the finding's PoC reproduced pre-patch (it only re-runs the PoC
+// post-patch and infers), this verifier PROVES it by running the generated
+// repro TWICE against the same worktree:
+//
+//   1. Clone + checkout the reviewed SHA (reuses patch-verifier's setup steps).
+//   2. Write the generated repro file into the worktree — SAFELY (symlink-safe,
+//      no-clobber, never under .git, restricted mode, inside the worktree).
+//   3. Run repro.cmd PRE-patch. REQUIRE exit 0 (== bug reproduces, per the
+//      exit-0-on-unpatched convention repro-generation.ts authors to). If it
+//      does NOT exit 0 we could not prove the bug → inconclusive, NEVER
+//      verified.
+//   4. git apply the patch.
+//   5. Run the auto-detected test suite. A post-patch test failure → regressed.
+//   6. Run repro.cmd POST-patch. REQUIRE exit non-zero (== bug fixed). If it
+//      still exits 0 the patch did not close the bug → regressed. If it exits
+//      non-zero → verified, with BOTH observations (pre 0, post non-zero)
+//      recorded on the outcome so the verdict is a genuine proof.
+//
+// SECURITY — this executes MODEL-GENERATED code:
+//   - The whole path is gated behind ANTFLEET_REPRO_EXEC (default OFF). When
+//     OFF, no model cmd is ever spawned — we return inconclusive
+//     `repro_exec_disabled` immediately.
+//   - Executing model code is only safe under the disposable-CI-runner
+//     containment model (Build 2b-2) with minimalEnv stripping EVERY secret
+//     from the subprocess. This module reuses patch-verifier's minimalEnv,
+//     /tmp-only worktree, wall-clock SIGKILL timeout, and finally teardown
+//     verbatim — it does NOT reinvent or weaken any of them.
+//   - repro.cmd is re-validated here (defense in depth) through the SAME
+//     matchesPocCommandAllowlist + a \p{Cc} control-char reject before exec,
+//     and is spawned argv-direct (never through a shell).
+//   - The repro file write is symlink-safe (lstat no-follow on every path
+//     component), no-clobber, refuses any path under .git, and is confined to
+//     the worktree via a resolve + startsWith check.
+//
+// runPatchVerifier is UNCHANGED and independent — its PoC path does not run
+// through here.
+
+import type { Finding } from "./review-types";
+import type { ReproTestSuggestion } from "@antfleet/cli/types";
+import { isReproExecEnabled } from "./daybreak-gates-env";
+import { isSafeReproPath } from "./repro-generation";
+import {
+  detectRunner,
+  isSafeRepoUrl,
+  isSafeSha,
+  matchesPocCommandAllowlist,
+  minimalEnv,
+  runSetupSteps,
+  runTestStep,
+  splitCommand,
+  truncate,
+  type PatchVerifierIo,
+  type PatchVerifyOutcome,
+  type RunnerKind,
+} from "./patch-verifier";
+
+const DEFAULT_TIMEOUT_MS = 120_000;
+
+// Restrictive mode for the written repro file: owner read/write only. The file
+// is executed indirectly (interpreted by an allowlisted runner), never given
+// the execute bit, and never made group/other readable.
+const REPRO_FILE_MODE = 0o600;
+
+// Control characters (newline, CR, tab, NUL, …). A repro run command is always
+// a single line; a control char is a smuggling attempt (a second line the
+// allowlisted prefix would otherwise carry to the runner). Unicode property
+// escape — oxlint's no-control-regex forbids literal control chars in a regex.
+const CONTROL_CHAR = /\p{Cc}/u;
+
+// The repro verifier extends PatchVerifierIo with two write-side seams the
+// existing verifier never needed: an lstat-based symlink probe used to walk
+// every path COMPONENT before writing (not just the leaf, unlike the
+// evidence-read `isSymlink`), and a mode-restricted file writer. Both are
+// injectable so the unit tests stay hermetic; production wiring binds them to
+// real fs calls in realReproVerifierIo.
+export type ReproVerifierIo = PatchVerifierIo & {
+  // lstat WITHOUT following symlinks: returns true iff `path` itself is a
+  // symlink. Used on every parent directory AND the target before writing.
+  lstatIsSymlink: (path: string) => Promise<boolean>;
+  // Write `contents` to `path` with `mode`, refusing to overwrite an existing
+  // file (no-clobber — implemented with the `wx` flag in prod). Throws on
+  // clobber or any other write error.
+  writeFileNoClobber: (path: string, contents: string, mode: number) => Promise<void>;
+};
+
+export type RunReproVerifierArgs = {
+  // Local mirror to git-clone from. Null → inconclusive (no source to prove
+  // against), mirroring runPatchVerifier.
+  repoUrl: string | null;
+  sha: string;
+  patch: string;
+  repro: ReproTestSuggestion;
+  finding: Finding;
+  // Default 120s per child process; SIGKILL on timeout.
+  timeoutMs?: number;
+  io: ReproVerifierIo;
+};
+
+export async function runReproVerifier(args: RunReproVerifierArgs): Promise<PatchVerifyOutcome> {
+  const t0 = args.io.now();
+  const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // HARD GATE. When the flag is OFF we must not spawn any model-generated
+  // command. Return before touching the worktree, the network, or the cmd —
+  // there is nothing to clean up because nothing ran.
+  if (!isReproExecEnabled()) {
+    return reproInconclusive({
+      worktreePath: "(repro-exec-disabled)",
+      notes: "ANTFLEET_REPRO_EXEC is disabled; repro-execution verifier skipped",
+      ms: args.io.now() - t0,
+      kind: "repro_exec_disabled",
+    });
+  }
+
+  // Model DECLINE: cmd === null means Build 2a could not author a runnable
+  // repro. No proof is possible; do not claim verified.
+  if (args.repro.cmd === null) {
+    return reproInconclusive({
+      worktreePath: "(no-repro)",
+      notes: `model declined to author a repro${
+        args.repro.rationale !== null ? `: ${args.repro.rationale}` : ""
+      }`,
+      ms: args.io.now() - t0,
+      kind: "no_repro",
+    });
+  }
+  const reproCmd = args.repro.cmd;
+
+  // Defense in depth: the cmd was allowlist + control-char validated at
+  // generation time, but re-validate here before exec because THIS is the call
+  // site that actually spawns it. Reject any control character first (a single
+  // line always), then require an allowlisted runner prefix with no shell
+  // metacharacter. Never routed through a shell — spawned argv-direct below.
+  if (CONTROL_CHAR.test(reproCmd) || matchesPocCommandAllowlist(reproCmd) === null) {
+    return reproInconclusive({
+      worktreePath: "(invalid-repro-cmd)",
+      notes: "repro cmd failed the allowlist / control-char gate; refusing to execute",
+      ms: args.io.now() - t0,
+      kind: "invalid_input",
+    });
+  }
+
+  if (args.repoUrl === null) {
+    return reproInconclusive({
+      worktreePath: "(no-repo-url)",
+      notes: "repro-verifier requires a repoUrl to clone from; skipping",
+      ms: args.io.now() - t0,
+      kind: "no_repo_url",
+    });
+  }
+  // Same argument-injection defense as runPatchVerifier: repoUrl and sha go
+  // straight into git argv, so reject a `--upload-pack=` URL or a `-`-leading
+  // sha before spawning git.
+  if (!isSafeRepoUrl(args.repoUrl)) {
+    return reproInconclusive({
+      worktreePath: "(invalid-repo-url)",
+      notes: "repro-verifier rejected unsafe repoUrl shape",
+      ms: args.io.now() - t0,
+      kind: "invalid_input",
+    });
+  }
+  if (!isSafeSha(args.sha)) {
+    return reproInconclusive({
+      worktreePath: "(invalid-sha)",
+      notes: "repro-verifier rejected non-hex sha",
+      ms: args.io.now() - t0,
+      kind: "invalid_input",
+    });
+  }
+
+  let worktree: string | null = null;
+  let homeDir: string | null = null;
+  try {
+    worktree = await args.io.mkWorktreeRoot();
+    // Per-call HOME dir — see the runPatchVerifier comment: hardcoding HOME
+    // would let a planted /tmp/.gitconfig / .npmrc trigger command execution
+    // on the next call. Created here, removed in the same finally.
+    homeDir = await args.io.mkWorktreeRoot();
+    const sandboxEnv = minimalEnv(homeDir);
+
+    // Reuse the EXACT clone/checkout sequence runPatchVerifier uses. Kept
+    // byte-identical (init → remote add → fetch by SHA → checkout FETCH_HEAD)
+    // so both verifiers land on the same reviewed SHA the same way.
+    const initialised = await runSetupSteps(
+      args.io,
+      worktree,
+      [
+        { command: "git", args: ["init", "--quiet", "--", worktree] },
+        {
+          command: "git",
+          args: ["-C", worktree, "remote", "add", "origin", "--", args.repoUrl],
+        },
+        {
+          command: "git",
+          args: ["-C", worktree, "fetch", "--depth", "1", "--quiet", "origin", "--", args.sha],
+        },
+        { command: "git", args: ["-C", worktree, "checkout", "--quiet", "FETCH_HEAD", "--"] },
+      ],
+      timeoutMs,
+      sandboxEnv,
+    );
+    if (initialised.error !== null) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        notes: initialised.error,
+        ms: args.io.now() - t0,
+        kind: "setup_failed",
+      });
+    }
+
+    // Write the generated repro file SAFELY, if one was provided. A bare-curl
+    // repro carries file=null and needs no write.
+    if (args.repro.file !== null) {
+      const write = await safeWriteReproFile(args.io, worktree, args.repro.file);
+      if (!write.ok) {
+        return reproInconclusive({
+          worktreePath: worktree,
+          notes: write.notes,
+          ms: args.io.now() - t0,
+          kind: write.kind,
+        });
+      }
+    }
+
+    // ── Observation 1: run the repro PRE-patch. Require exit 0 == the bug
+    // reproduces against the unpatched source. If it does not exit 0 we have
+    // NOT proven the bug — return inconclusive, never verified. This is the
+    // whole difference from the assume-reproduction PoC path.
+    const preStep = await runReproStep(args.io, worktree, reproCmd, timeoutMs, sandboxEnv);
+    if (preStep.timedOut) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        notes: `repro killed after ${timeoutMs}ms pre-patch — cannot prove the bug`,
+        ms: args.io.now() - t0,
+        kind: "repro_timeout",
+        reproCmd,
+        reproPreMs: preStep.ms,
+      });
+    }
+    if (preStep.exitCode !== 0) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        notes: `repro did NOT exit 0 pre-patch (exit ${
+          preStep.exitCode ?? "null"
+        }) → bug not reproduced; not verified: ${truncate(preStep.stderr)}`,
+        ms: args.io.now() - t0,
+        kind: "repro_not_reproducing",
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+
+    // Apply the patch. Unlike runPatchVerifier (which treats an apply failure
+    // as `regressed`), the repro path reports it as inconclusive
+    // `patch_apply_failed`: we proved the bug but could not evaluate this
+    // patch, which is not a regression of the patch's own behavior.
+    const patchFile = await args.io.writeTempFile(args.patch);
+    const applied = await args.io.exec({
+      command: "git",
+      args: ["-C", worktree, "apply", "--index", "--", patchFile],
+      cwd: worktree,
+      timeoutMs,
+      env: sandboxEnv,
+    });
+    if (applied.exitCode !== 0) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        notes: `git apply failed (exit ${applied.exitCode ?? "null"}): ${truncate(applied.stderr)}`,
+        ms: args.io.now() - t0,
+        kind: "patch_apply_failed",
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+
+    // Post-patch test suite. A clean non-zero exit → regressed (patch broke
+    // the suite). A timeout is inconclusive (do not drop a legit patch for a
+    // slow suite), mirroring runPatchVerifier.
+    const detector = await detectRunner(args.io, worktree);
+    let testCmd: string | null = null;
+    let testExitCode: number | null = null;
+    let testMs: number | null = null;
+    if (detector.kind !== "none") {
+      const testStep = await runTestStep(args.io, worktree, detector, timeoutMs, sandboxEnv);
+      testCmd = detector.cmd;
+      testMs = testStep.ms;
+      if (testStep.timedOut) {
+        return reproInconclusive({
+          worktreePath: worktree,
+          detector: detector.kind,
+          notes: `tests killed after ${timeoutMs}ms — verifier cannot decide (testCmd=${detector.cmd})`,
+          ms: args.io.now() - t0,
+          kind: "test_timeout",
+          testCmd: detector.cmd,
+          testMs: testStep.ms,
+          reproCmd,
+          reproPreExitCode: preStep.exitCode,
+          reproPreMs: preStep.ms,
+        });
+      }
+      testExitCode = testStep.exitCode;
+      if (testStep.exitCode !== 0) {
+        return {
+          verdict: "regressed",
+          detector: detector.kind,
+          testCmd: detector.cmd,
+          testExitCode: testStep.exitCode,
+          testMs: testStep.ms,
+          pocCmd: null,
+          pocExitCode: null,
+          pocMs: null,
+          ms: args.io.now() - t0,
+          notes: `tests failed after patch (exit ${
+            testStep.exitCode ?? "null"
+          }): ${truncate(testStep.stderr)}`,
+          worktreePath: worktree,
+          error: null,
+          inconclusiveReason: null,
+          reproCmd,
+          reproPreExitCode: preStep.exitCode,
+          reproPostExitCode: null,
+          reproPreMs: preStep.ms,
+          reproPostMs: null,
+        };
+      }
+    }
+
+    // ── Observation 2: run the repro POST-patch. Require exit non-zero == the
+    // bug is fixed. A repro timeout post-patch is inconclusive; a still-0 exit
+    // means the patch did not close the bug → regressed; a non-zero exit is the
+    // proof → verified, with BOTH observations recorded.
+    const postStep = await runReproStep(args.io, worktree, reproCmd, timeoutMs, sandboxEnv);
+    if (postStep.timedOut) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: `repro killed after ${timeoutMs}ms post-patch — cannot confirm the fix`,
+        ms: args.io.now() - t0,
+        kind: "repro_timeout",
+        testCmd,
+        testExitCode,
+        testMs,
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+        reproPostMs: postStep.ms,
+      });
+    }
+    if (postStep.exitCode === 0) {
+      return {
+        verdict: "regressed",
+        detector: detector.kind,
+        testCmd,
+        testExitCode,
+        testMs,
+        pocCmd: null,
+        pocExitCode: null,
+        pocMs: null,
+        ms: args.io.now() - t0,
+        notes: `repro still exits 0 post-patch → patch did NOT close the bug (proved reproducing pre-patch)`,
+        worktreePath: worktree,
+        error: null,
+        inconclusiveReason: null,
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPostExitCode: postStep.exitCode,
+        reproPreMs: preStep.ms,
+        reproPostMs: postStep.ms,
+      };
+    }
+    return {
+      verdict: "verified",
+      detector: detector.kind,
+      testCmd,
+      testExitCode,
+      testMs,
+      pocCmd: null,
+      pocExitCode: null,
+      pocMs: null,
+      ms: args.io.now() - t0,
+      notes: `PROVED: repro exited 0 pre-patch (bug reproduced) and exit ${
+        postStep.exitCode ?? "null"
+      } post-patch (bug fixed)`,
+      worktreePath: worktree,
+      error: null,
+      inconclusiveReason: null,
+      reproCmd,
+      reproPreExitCode: preStep.exitCode,
+      reproPostExitCode: postStep.exitCode,
+      reproPreMs: preStep.ms,
+      reproPostMs: postStep.ms,
+    };
+  } catch (err) {
+    return reproInconclusive({
+      worktreePath: worktree ?? "(unset)",
+      notes: `repro-verifier threw: ${err instanceof Error ? err.message : String(err)}`,
+      ms: args.io.now() - t0,
+      error: err instanceof Error ? err.message : String(err),
+      kind: "exception",
+    });
+  } finally {
+    // Tear down BOTH the worktree and the per-call HOME dir — best effort,
+    // never bubble cleanup failures. Same posture as runPatchVerifier.
+    for (const dir of [worktree, homeDir]) {
+      if (dir === null) continue;
+      try {
+        await args.io.removeDir(dir);
+      } catch {
+        // swallow — the OS reclaims /tmp eventually
+      }
+    }
+  }
+}
+
+// Run the model-generated repro cmd through the same spawn + minimalEnv +
+// timeout path the existing PoC step uses. The cmd is split argv-direct (never
+// a shell) and was already allowlist + control-char validated by the caller.
+async function runReproStep(
+  io: PatchVerifierIo,
+  worktree: string,
+  reproCmd: string,
+  timeoutMs: number,
+  env: Record<string, string>,
+): Promise<{
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  ms: number;
+  timedOut: boolean;
+}> {
+  const { command, args } = splitCommand(reproCmd);
+  return io.exec({
+    command,
+    args,
+    cwd: worktree,
+    timeoutMs,
+    env,
+  });
+}
+
+type SafeWriteResult =
+  | { ok: true }
+  | { ok: false; kind: "unsafe_repro_write" | "invalid_input"; notes: string };
+
+// Write the generated repro file into the worktree with every write-side
+// safety check the spec requires:
+//   - re-validate the repo-relative path (isSafeReproPath: no traversal, no
+//     leading slash, no backslash / drive),
+//   - refuse any path under `.git`,
+//   - confine the resolved target strictly inside the worktree
+//     (resolve + startsWith, matching the evidence-path guard),
+//   - lstat (NO-follow) every parent directory AND the target: refuse if any
+//     component is a symlink (a symlinked parent could redirect the write out
+//     of the worktree even though the string path looks clean),
+//   - no-clobber: refuse to overwrite an existing file,
+//   - restrict the file mode.
+async function safeWriteReproFile(
+  io: ReproVerifierIo,
+  worktree: string,
+  file: { path: string; contents: string },
+): Promise<SafeWriteResult> {
+  // Path shape (same gate the generator applied).
+  if (!isSafeReproPath(file.path)) {
+    return {
+      ok: false,
+      kind: "unsafe_repro_write",
+      notes: `repro file path '${file.path}' failed the safe-path gate; refusing to write`,
+    };
+  }
+  // Never write under .git — a repro that plants a hook / config there could
+  // execute on the next git invocation. Reject `.git` as any path segment.
+  const segments = file.path.split("/").filter((s) => s.length > 0);
+  if (segments.some((seg) => seg === ".git")) {
+    return {
+      ok: false,
+      kind: "unsafe_repro_write",
+      notes: `repro file path '${file.path}' is under .git; refusing to write`,
+    };
+  }
+
+  const { resolve: resolvePath, sep } = await import("node:path");
+  const absoluteWorktree = resolvePath(worktree);
+  const absoluteTarget = resolvePath(absoluteWorktree, file.path);
+  // Confine strictly inside the worktree. The trailing `+ sep` stops a sibling
+  // `/tmp/antfleet-pv-xxxxabc` from passing when worktree is
+  // `/tmp/antfleet-pv-xxxx`. The path can never equal the worktree itself (a
+  // repro must be a file, not the root), so no `=== worktree` allowance.
+  if (!absoluteTarget.startsWith(absoluteWorktree + sep)) {
+    return {
+      ok: false,
+      kind: "unsafe_repro_write",
+      notes: `repro file path '${file.path}' resolves outside the worktree; refusing to write`,
+    };
+  }
+
+  // Walk every path COMPONENT from the worktree down to (and including) the
+  // target and lstat it WITHOUT following symlinks. isSafeReproPath already
+  // proved a POSIX relative path with no `..`, so building the components by
+  // joining successive segments is sound. A symlinked component — parent or
+  // leaf — is refused: resolvePath does not dereference links, so a tracked
+  // `sub -> /etc` would pass the startsWith check yet redirect the write.
+  let current = absoluteWorktree;
+  for (const seg of segments) {
+    current = resolvePath(current, seg);
+    // The final component (the target file) must ALSO not already exist as a
+    // symlink; lstat catches both a symlinked dir and a symlinked leaf.
+    if (await io.lstatIsSymlink(current)) {
+      return {
+        ok: false,
+        kind: "unsafe_repro_write",
+        notes: `repro file path component '${seg}' is a symlink; refusing to write`,
+      };
+    }
+  }
+
+  // No-clobber + restricted mode. writeFileNoClobber throws on an existing
+  // file (prod uses the `wx` flag) — treat any write failure as a refusal
+  // rather than proceeding.
+  try {
+    await io.writeFileNoClobber(absoluteTarget, file.contents, REPRO_FILE_MODE);
+  } catch (err) {
+    return {
+      ok: false,
+      kind: "unsafe_repro_write",
+      notes: `could not write repro file '${file.path}' (no-clobber): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+  return { ok: true };
+}
+
+// Inconclusive-outcome builder for the repro path. Mirrors patch-verifier's
+// private `inconclusive` helper but threads the repro proof fields so a
+// non-verified outcome can still carry whatever observations were made before
+// it bailed (e.g. the pre-patch exit code on a patch_apply_failed).
+function reproInconclusive(args: {
+  worktreePath: string;
+  notes: string;
+  ms: number;
+  kind: PatchVerifyOutcome["inconclusiveReason"];
+  detector?: RunnerKind;
+  testCmd?: string | null;
+  testExitCode?: number | null;
+  testMs?: number | null;
+  error?: string | null;
+  reproCmd?: string | null;
+  reproPreExitCode?: number | null;
+  reproPostExitCode?: number | null;
+  reproPreMs?: number | null;
+  reproPostMs?: number | null;
+}): PatchVerifyOutcome {
+  return {
+    verdict: "inconclusive",
+    detector: args.detector ?? "none",
+    testCmd: args.testCmd ?? null,
+    testExitCode: args.testExitCode ?? null,
+    testMs: args.testMs ?? null,
+    pocCmd: null,
+    pocExitCode: null,
+    pocMs: null,
+    ms: args.ms,
+    notes: args.notes,
+    worktreePath: args.worktreePath,
+    error: args.error ?? null,
+    inconclusiveReason: args.kind,
+    reproCmd: args.reproCmd ?? null,
+    reproPreExitCode: args.reproPreExitCode ?? null,
+    reproPostExitCode: args.reproPostExitCode ?? null,
+    reproPreMs: args.reproPreMs ?? null,
+    reproPostMs: args.reproPostMs ?? null,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Real-world IO. Extends realPatchVerifierIo's bindings with the two
+// write-side seams the repro verifier adds (symlink-component probe + no-
+// clobber restricted-mode writer). Test callers pass their own ReproVerifierIo.
+// ────────────────────────────────────────────────────────────────────────
+
+export async function realReproVerifierIo(): Promise<ReproVerifierIo> {
+  const { realPatchVerifierIo } = await import("./patch-verifier");
+  const { lstat, writeFile } = await import("node:fs/promises");
+  return {
+    ...realPatchVerifierIo(),
+    lstatIsSymlink: async (path) => {
+      try {
+        return (await lstat(path)).isSymbolicLink();
+      } catch {
+        // Path does not exist yet (a not-yet-created intermediate dir or the
+        // target leaf) → it is not a symlink. Non-existence is safe; the
+        // no-clobber write handles the leaf.
+        return false;
+      }
+    },
+    writeFileNoClobber: async (path, contents, mode) => {
+      // `wx` = write, fail if the path already exists (no-clobber). `mode`
+      // applies only on creation, which is exactly the create-new case here.
+      await writeFile(path, contents, { encoding: "utf8", mode, flag: "wx" });
+    },
+  };
+}
