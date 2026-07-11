@@ -12,10 +12,17 @@ import {
   parseArgs,
   parseSpecs,
   parseVerdicts,
+  isOwnedMirrorDir,
+  realRemoveMirror,
+  pinReproMirror,
   type ReproSpec,
   type VerdictRecord,
   type FetchDeps,
+  type GitRun,
 } from "./repro-verify-batch";
+import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Contained CI repro-execution batch (issue #133 Build 2b-2 / #145 part 2) —
 // unit tests. Mirrors repro-verifier.test.ts: every IO surface is mocked /
@@ -732,6 +739,46 @@ describe("runFetchPhase — FIX C (evidence effective-path)", () => {
     // Only the real-path evidence reached the reconstructed finding (empty dropped).
     expect(seen).toEqual([[{ path: "real.ts", startLine: 3, endLine: 4 }]]);
   });
+
+  // FIX 6b — a whitespace-only path ("   ") is NOT a usable anchor and must be
+  // dropped by the effective-path filter (path.trim().length > 0), so a finding
+  // whose only evidence path is whitespace lands as no-evidence.
+  it("drops a whitespace-only evidence path and skips the finding as no-evidence (FIX 6b)", async () => {
+    const logs: string[] = [];
+    const agreed = [
+      {
+        title: "ws-ev",
+        category: "security",
+        severity: "high",
+        evidence: [{ path: "   ", startLine: 1, endLine: 1 }],
+        reasoning: "r",
+        reproduction: null,
+        recommendation: "rec",
+      },
+    ];
+    let generateCalled = 0;
+    const deps = mkFetchDeps(
+      [{ findingId: "rev-0", findingIndex: 0, source: "consensus", suggestedPatch: "p" }],
+      { agreed },
+      {
+        generate: async () => {
+          generateCalled++;
+          return mkRepro();
+        },
+      },
+    );
+    const specs = await runFetchPhase({
+      limit: 5,
+      repo: null,
+      outPath: "unused.json",
+      deps,
+      writeSpecs: async () => {},
+      log: (m) => logs.push(m),
+    });
+    expect(specs).toHaveLength(0);
+    expect(generateCalled).toBe(0);
+    expect(logs.some((l) => /no-evidence/.test(l))).toBe(true);
+  });
 });
 
 describe("runFetchPhase — FIX D (threads prNumber into createMirror)", () => {
@@ -782,12 +829,15 @@ describe("runFetchPhase — FIX D (threads prNumber into createMirror)", () => {
 describe("runExecPhase", () => {
   let saved: NodeJS.ProcessEnv;
   beforeEach(() => {
-    // The exec phase's assertNoSecretsInEnv reads the REAL process.env (no seam
-    // — that is the point), and the allowlist-only guard (FIX A) rejects ANY var
-    // not enumerated. Swap in a minimal, allowlisted-clean env so these tests are
-    // hermetic against whatever the runner exports; restore it in afterEach. The
+    // The exec phase's assertNoSecretsInEnv AND the FIX H sandbox guard both read
+    // the REAL process.env (no seam — that is the point; FIX 5 deleted the
+    // injectable sandboxMarker override), and the allowlist-only guard (FIX A)
+    // rejects ANY var not enumerated. Swap in a minimal, allowlisted-clean env so
+    // these tests are hermetic against whatever the runner exports; restore it in
+    // afterEach (exactly like the assertNoSecretsInEnv suite). The
     // ANTFLEET_REPRO_SANDBOX marker is set here so the FIX H sandbox guard passes
-    // by default (it is on the allowlist); the dedicated FIX H tests override it.
+    // by default (it is on the allowlist); the dedicated FIX H test clears the
+    // REAL var to prove exec refuses.
     saved = process.env;
     process.env = {
       PATH: saved["PATH"] ?? "/usr/bin",
@@ -929,8 +979,10 @@ describe("runExecPhase", () => {
     expect(runVerifier).not.toHaveBeenCalled();
   });
 
-  it("PROCEEDS when the ANTFLEET_REPRO_SANDBOX marker is present (FIX H)", async () => {
-    // beforeEach already set the marker; assert the happy path runs.
+  it("PROCEEDS when the ANTFLEET_REPRO_SANDBOX marker is present in the REAL env (FIX H / FIX 5)", async () => {
+    // beforeEach already set the REAL process.env marker; assert the happy path
+    // runs. FIX 5 removed the injectable sandboxMarker seam, so the guard reads
+    // process.env directly and this is the ONLY way to make it pass.
     const runVerifier = vi.fn(async () => mkOutcome({ verdict: "verified" }));
     const records = await runExecPhase({
       inPath: "x",
@@ -942,22 +994,6 @@ describe("runExecPhase", () => {
       log: () => {},
     });
     expect(runVerifier).toHaveBeenCalledOnce();
-    expect(records).toHaveLength(1);
-  });
-
-  it("also accepts the injected sandboxMarker override even with the env marker absent (FIX H)", async () => {
-    delete process.env["ANTFLEET_REPRO_SANDBOX"];
-    const runVerifier = vi.fn(async () => mkOutcome());
-    const records = await runExecPhase({
-      inPath: "x",
-      outPath: "x",
-      loadSpecs: async () => [mkSpec()],
-      runVerifier,
-      writeVerdicts: async () => {},
-      removeMirror: async () => {},
-      sandboxMarker: "1",
-      log: () => {},
-    });
     expect(records).toHaveLength(1);
   });
 
@@ -1004,9 +1040,132 @@ describe("runExecPhase", () => {
   });
 });
 
-// ── parseSpecs: STRICT per-element validation (FIX B). A null / {} / missing-
-// field element must be rejected loudly so the exec exception-recovery path can
-// never dereference a null spec.
+// ── isOwnedMirrorDir + realRemoveMirror: STRICT ownership gate for the DELETE
+// path (FIX 2). The teardown must only ever rm a dir WE created (parent ===
+// os.tmpdir() AND basename matches the exact antfleet-mirror-<...> mkdtemp
+// prefix), and must REFUSE `/`, `/tmp`, `/home/runner/work`, a `..` traversal,
+// and a non-matching basename — the shape-only isSafeLocalMirrorDir is NOT used
+// for deletion.
+describe("isOwnedMirrorDir (FIX 2)", () => {
+  it("accepts a dir directly under os.tmpdir() with the antfleet-mirror- prefix", () => {
+    expect(isOwnedMirrorDir(join(tmpdir(), "antfleet-mirror-abc123-XYZ98"))).toBe(true);
+    // A realistic mkdtemp basename: antfleet-mirror-<uuid>-<6 chars>.
+    expect(isOwnedMirrorDir(join(tmpdir(), "antfleet-mirror-1e4b2c9a-0f11-4a-3d-ab12cd"))).toBe(
+      true,
+    );
+  });
+
+  it("REFUSES `/`, `/tmp`, and `/home/runner/work` (isSafeLocalMirrorDir would allow these)", () => {
+    expect(isOwnedMirrorDir("/")).toBe(false);
+    expect(isOwnedMirrorDir("/tmp")).toBe(false);
+    expect(isOwnedMirrorDir("/home/runner/work")).toBe(false);
+  });
+
+  it("REFUSES a `..` traversal that escapes tmpdir (/tmp/antfleet-mirror-x/../../etc)", () => {
+    expect(isOwnedMirrorDir("/tmp/antfleet-mirror-x/../../etc")).toBe(false);
+  });
+
+  it("REFUSES a dir under tmpdir whose basename does NOT match the prefix", () => {
+    expect(isOwnedMirrorDir(join(tmpdir(), "not-a-mirror-xyz"))).toBe(false);
+    expect(isOwnedMirrorDir(join(tmpdir(), "antfleet-mirror"))).toBe(false); // prefix, no suffix
+    // Right prefix but a slash in the tail → NOT directly under tmpdir.
+    expect(isOwnedMirrorDir(join(tmpdir(), "antfleet-mirror-x", "child"))).toBe(false);
+  });
+
+  it("REFUSES an empty / non-string input", () => {
+    expect(isOwnedMirrorDir("")).toBe(false);
+    // @ts-expect-error — guarding the runtime path against a non-string.
+    expect(isOwnedMirrorDir(undefined)).toBe(false);
+  });
+});
+
+describe("realRemoveMirror (FIX 2 — teardown obeys ownership gate)", () => {
+  it("DELETES an owned mirror dir under os.tmpdir()", async () => {
+    // Create a real owned mirror dir (same prefix realCreateMirror uses) and a
+    // child file, then prove teardown removes it.
+    const dir = await mkdtemp(join(tmpdir(), "antfleet-mirror-test-"));
+    await mkdir(join(dir, "objects"), { recursive: true });
+    await realRemoveMirror(dir);
+    await expect(stat(dir)).rejects.toThrow(); // gone
+  });
+
+  it("REFUSES to delete a non-owned dir (leaves it intact)", async () => {
+    // A real dir that is NOT under the antfleet-mirror- prefix — teardown must
+    // skip it (warn) and leave it on disk.
+    const dir = await mkdtemp(join(tmpdir(), "totally-unrelated-"));
+    try {
+      await realRemoveMirror(dir);
+      // Still there — the ownership gate refused.
+      const s = await stat(dir);
+      expect(s.isDirectory()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── pinReproMirror: the PR-pin VERIFY step (FIX 1). The rev-parse MUST resolve
+// the ref to its COMMIT SHA (`--verify <ref>^{commit}`), not print the literal
+// ref text; a mismatch must fail the spec with a clear reason. Uses an injected
+// GitRun so nothing spawns.
+describe("pinReproMirror (FIX 1 — PR pin resolves to the commit SHA)", () => {
+  const dir = "/tmp/antfleet-mirror-abc.git";
+  const sha = "abc1234def5678";
+
+  it("verifies with `rev-parse --verify refs/pinned/<sha>^{commit}` (exact argv) and passes on match", async () => {
+    const calls: Array<readonly string[]> = [];
+    const run: GitRun = async (file, args) => {
+      expect(file).toBe("git");
+      calls.push(args);
+      // The rev-parse call resolves to the reviewed SHA.
+      if (args.includes("rev-parse")) return { stdout: `${sha}\n`, stderr: "" };
+      return { stdout: "", stderr: "" };
+    };
+    await expect(pinReproMirror(run, dir, sha, 7)).resolves.toBeUndefined();
+
+    // The fetch of the advertised PR head into the pin ref…
+    expect(calls[0]).toEqual([
+      "-C",
+      dir,
+      "fetch",
+      "--quiet",
+      "origin",
+      "--",
+      `refs/pull/7/head:refs/pinned/${sha}`,
+    ]);
+    // …then the SHA-resolving verify (the FIX 1 command — NOT `rev-parse -- <ref>`).
+    expect(calls[1]).toEqual(["-C", dir, "rev-parse", "--verify", `refs/pinned/${sha}^{commit}`]);
+  });
+
+  it("FAILS the spec with a clear reason when the resolved head != reviewed sha (force-push)", async () => {
+    const run: GitRun = async (_file, args) => {
+      if (args.includes("rev-parse")) return { stdout: "0000badc0mm1t\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    };
+    await expect(pinReproMirror(run, dir, sha, 7)).rejects.toThrow(
+      /head resolved to 0000badc0mm1t, not the reviewed sha abc1234def5678/,
+    );
+    await expect(pinReproMirror(run, dir, sha, 7)).rejects.toThrow(/force-pushed/);
+  });
+
+  it("does NOT rev-parse for a non-PR review (prNumber <= 0) — pins the raw SHA", async () => {
+    const calls: Array<readonly string[]> = [];
+    const run: GitRun = async (_file, args) => {
+      calls.push(args);
+      return { stdout: "", stderr: "" };
+    };
+    await pinReproMirror(run, dir, sha, 0);
+    // Single raw-SHA pin fetch, no rev-parse verify.
+    expect(calls).toEqual([
+      ["-C", dir, "fetch", "--quiet", "origin", "--", `${sha}:refs/pinned/${sha}`],
+    ]);
+    expect(calls.some((a) => a.includes("rev-parse"))).toBe(false);
+  });
+});
+
+// ── parseSpecs: STRICT per-element validation (FIX 3). A null / {} / missing-
+// field / wrong-typed element must be rejected loudly so the exec
+// exception-recovery path can never dereference a null spec.
 describe("parseSpecs", () => {
   const goodSpec = {
     reviewId: "rev-1",
@@ -1067,6 +1226,80 @@ describe("parseSpecs", () => {
     expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
       /repro-specs\[0\]\.repro\.cmd must be a string or null/,
     );
+  });
+
+  // FIX 3 — strict over EVERY field, not just a subset.
+  it("rejects a spec missing findingIndex", () => {
+    const { findingIndex: _drop, ...bad } = goodSpec;
+    void _drop;
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.findingIndex must be an integer >= 0/,
+    );
+  });
+
+  it("rejects a spec whose findingIndex is negative or non-integer", () => {
+    expect(() => parseSpecs(JSON.stringify([{ ...goodSpec, findingIndex: -1 }]))).toThrow(
+      /findingIndex must be an integer >= 0/,
+    );
+    expect(() => parseSpecs(JSON.stringify([{ ...goodSpec, findingIndex: 1.5 }]))).toThrow(
+      /findingIndex must be an integer >= 0/,
+    );
+  });
+
+  it("rejects a spec missing repoUrl", () => {
+    const { repoUrl: _drop, ...bad } = goodSpec;
+    void _drop;
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.repoUrl must be a string/,
+    );
+  });
+
+  it("rejects a spec missing specDigest", () => {
+    const bad = { ...goodSpec, specDigest: "" };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.specDigest must be a non-empty string/,
+    );
+  });
+
+  it("rejects a spec whose repro.rationale is a number", () => {
+    const bad = { ...goodSpec, repro: { ...goodSpec.repro, rationale: 7 } };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.repro\.rationale must be a string or null/,
+    );
+  });
+
+  it("rejects a spec whose repro.modelId is a number", () => {
+    const bad = { ...goodSpec, repro: { ...goodSpec.repro, modelId: 42 } };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.repro\.modelId must be a string or null/,
+    );
+  });
+
+  it("accepts a spec whose repro.modelId is explicit null", () => {
+    const ok = { ...goodSpec, repro: { ...goodSpec.repro, modelId: null } };
+    expect(() => parseSpecs(JSON.stringify([ok]))).not.toThrow();
+  });
+
+  it("rejects a spec whose repro.file is a half-formed object (missing contents)", () => {
+    const bad = { ...goodSpec, repro: { ...goodSpec.repro, file: { path: "x.py" } } };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.repro\.file must have string path and contents/,
+    );
+  });
+
+  it("rejects a spec whose repro.file is a non-object non-null (a string)", () => {
+    const bad = { ...goodSpec, repro: { ...goodSpec.repro, file: "nope" } };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.repro\.file must be an object or null/,
+    );
+  });
+
+  it("accepts a spec whose repro.file is a well-formed {path,contents} object", () => {
+    const ok = {
+      ...goodSpec,
+      repro: { ...goodSpec.repro, file: { path: "repro_test.py", contents: "assert True\n" } },
+    };
+    expect(() => parseSpecs(JSON.stringify([ok]))).not.toThrow();
   });
 });
 
@@ -1171,6 +1404,43 @@ describe("parseVerdicts", () => {
     };
     expect(() => parseVerdicts(JSON.stringify([inconclusive]))).not.toThrow();
   });
+
+  // FIX 4 — detector must be validated against the real RunnerKind domain
+  // (pnpm|npm|go|pytest|none) for EVERY record, and a `verified` must name a REAL
+  // runner (not "", "bogus", or "none").
+  it("rejects ANY record (even inconclusive) whose detector is out of the RunnerKind domain", () => {
+    const badInconclusive = {
+      ...good,
+      verdict: "inconclusive",
+      inconclusiveReason: "no_runner",
+      detector: "bogus",
+      testExitCode: null,
+      reproPostExitCode: null,
+    };
+    expect(() => parseVerdicts(JSON.stringify([badInconclusive]))).toThrow(
+      /detector must be one of pnpm\|npm\|go\|pytest\|none/,
+    );
+  });
+
+  it('rejects a verified record whose detector is empty ("")', () => {
+    const forged = { ...good, detector: "" };
+    expect(() => parseVerdicts(JSON.stringify([forged]))).toThrow(
+      /detector must be one of pnpm\|npm\|go\|pytest\|none/,
+    );
+  });
+
+  it("rejects a verified record whose detector is a bogus (out-of-domain) runner", () => {
+    const forged = { ...good, detector: "bogus" };
+    expect(() => parseVerdicts(JSON.stringify([forged]))).toThrow(
+      /detector must be one of pnpm\|npm\|go\|pytest\|none/,
+    );
+  });
+
+  it("accepts a verified record for each REAL runner detector (npm/go/pytest)", () => {
+    for (const detector of ["npm", "go", "pytest"] as const) {
+      expect(() => parseVerdicts(JSON.stringify([{ ...good, detector }]))).not.toThrow();
+    }
+  });
 });
 
 // ── record phase: dry-run must write NOTHING; --record must call the writer;
@@ -1185,7 +1455,7 @@ describe("runRecordPhase", () => {
   ];
 
   it("dry-run (no --record) writes nothing", async () => {
-    const writeGateOutcome = vi.fn(async () => {});
+    const writeGateOutcome = vi.fn(async () => true);
     const written = await runRecordPhase({
       inPath: "unused.json",
       record: false,
@@ -1203,6 +1473,7 @@ describe("runRecordPhase", () => {
     const writeGateOutcome = vi.fn(
       async (reviewId: string, row: { findingId: string; verdict: string; evidence: unknown }) => {
         calls.push({ reviewId, findingId: row.findingId, verdict: row.verdict });
+        return true; // the DB inserted the row (FIX 6a)
       },
     );
     const written = await runRecordPhase({
@@ -1229,6 +1500,7 @@ describe("runRecordPhase", () => {
       loadVerdicts: async () => [verdicts[0] as VerdictRecord],
       writeGateOutcome: async (_reviewId, row) => {
         capturedEvidence = row.evidence;
+        return true;
       },
       gateOutcomeExists: async () => false,
       log: () => {},
@@ -1248,6 +1520,7 @@ describe("runRecordPhase", () => {
     const logs: string[] = [];
     const writeGateOutcome = vi.fn(async (reviewId: string, row: { findingId: string }) => {
       calls.push(`${reviewId}/${row.findingId}`);
+      return true;
     });
     // rev-1/a-0 already recorded; rev-2/b-1 is new.
     const gateOutcomeExists = vi.fn(
@@ -1266,6 +1539,30 @@ describe("runRecordPhase", () => {
     expect(calls).toEqual(["rev-2/b-1"]);
     expect(gateOutcomeExists).toHaveBeenCalledWith("rev-1", "a-0", "repro_verify");
     expect(logs.some((l) => /already recorded/.test(l))).toBe(true);
+  });
+
+  // FIX 6a — a writer that reports NO insert (ON CONFLICT DO NOTHING no-op, e.g. a
+  // concurrent run that wrote the row between our existence pre-check and the
+  // insert) must NOT be counted in `written`. It is reported as skipped instead.
+  it("does NOT count a write that the DB did not insert (ON CONFLICT no-op) (FIX 6a)", async () => {
+    const logs: string[] = [];
+    // Existence pre-check says "new", but the write reports false: the second
+    // verdict lost the insert race and DID NOTHING.
+    const writeGateOutcome = vi.fn(async (reviewId: string, _row: { findingId: string }) => {
+      return reviewId === "rev-1"; // rev-1 inserted; rev-2 was a no-op
+    });
+    const written = await runRecordPhase({
+      inPath: "unused.json",
+      record: true,
+      loadVerdicts: async () => verdicts,
+      writeGateOutcome,
+      gateOutcomeExists: async () => false,
+      log: (m) => logs.push(m),
+    });
+    // Only the row the DB actually inserted counts.
+    expect(written).toBe(1);
+    expect(writeGateOutcome).toHaveBeenCalledTimes(2);
+    expect(logs.some((l) => /no-op \(already recorded by a concurrent run\)/.test(l))).toBe(true);
   });
 });
 

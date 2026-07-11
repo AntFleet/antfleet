@@ -51,6 +51,8 @@
 import { config as loadDotenv } from "dotenv";
 import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { basename, dirname, join, resolve as resolvePath } from "node:path";
+import { tmpdir } from "node:os";
 import type { Finding } from "@/lib/review-types";
 import type { ReproTestSuggestion } from "@antfleet/cli/types";
 import type { PatchVerifyOutcome } from "@/lib/patch-verifier";
@@ -124,6 +126,12 @@ const DEFAULT_FETCH_LIMIT = 5;
 const DEFAULT_SPECS_PATH = "repro-specs.json";
 const DEFAULT_VERDICTS_PATH = "repro-verdicts.json";
 
+// The mkdtemp basename prefix realCreateMirror uses for every disposable bare
+// mirror: `antfleet-mirror-<uuid>-<6 random chars>` under os.tmpdir(). Kept as a
+// shared constant so isOwnedMirrorDir's ownership regex (FIX 2) and the mkdtemp
+// template can never drift apart.
+const MIRROR_BASENAME_PREFIX = "antfleet-mirror-";
+
 // The stage value written to review_gate_outcomes for this side-table. The DB
 // column is plain free-text (no enum). Kept as a shared constant so the writer,
 // the read-only existence probe, and the partial-unique-index predicate
@@ -181,6 +189,14 @@ export type VerdictRecord = {
 // The three verdict strings a repro run can produce. Used by parseVerdicts's
 // strict shape check (FIX 6) so a corrupt artifact is rejected loudly.
 const VERDICT_VALUES = new Set(["verified", "regressed", "inconclusive"]);
+
+// The valid detector domain — the RunnerKind values patch-verifier/repro-verifier
+// emit (`pnpm|npm|go|pytest|none`). parseVerdicts (FIX 4) validates every record's
+// detector against this, and additionally requires a `verified` record to name a
+// REAL runner (the "none" sentinel is only ever an inconclusive/no-runner marker,
+// never a proof). Kept in sync with RunnerKind in lib/patch-verifier.ts.
+const REAL_RUNNER_DETECTORS = new Set(["pnpm", "npm", "go", "pytest"]);
+const DETECTOR_VALUES = new Set([...REAL_RUNNER_DETECTORS, "none"]);
 
 // ────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -585,10 +601,6 @@ export type ExecPhaseOptions = {
   // Injectable mirror-teardown seam (FIX E). Production omits it and binds a real
   // recursive rmdir; tests inject a spy to assert each spec's mirror is removed.
   removeMirror?: (mirrorDir: string) => Promise<void>;
-  // Injectable sandbox-marker override, for tests (FIX H). Production omits it and
-  // reads process.env[ANTFLEET_REPRO_SANDBOX]. When present+non-empty the phase
-  // runs; when absent it refuses (bare-host guard).
-  sandboxMarker?: string;
   log?: (msg: string) => void;
 };
 
@@ -600,14 +612,17 @@ export async function runExecPhase(opts: ExecPhaseOptions): Promise<VerdictRecor
   // secret separation held.
   assertNoSecretsInEnv();
 
-  // HARD SANDBOX GUARD (FIX H): the exec phase executes model-generated code and
-  // is only safe inside Part-3's disposable `--network none` container. Refuse
-  // to run unless the trusted container step set the ANTFLEET_REPRO_SANDBOX
-  // marker — this stops anyone running the exec phase on a bare host. The marker
-  // is set ONLY by that trusted step (documented on REPRO_SANDBOX_MARKER); it is
-  // NOT a security control by itself (a caller could export it), but it makes the
-  // "ran outside the sandbox" mistake fail closed rather than silently execute.
-  if (!isEnvValuePresent(opts.sandboxMarker ?? process.env[REPRO_SANDBOX_MARKER])) {
+  // HARD SANDBOX GUARD (FIX H + FIX 5): the exec phase executes model-generated
+  // code and is only safe inside Part-3's disposable `--network none` container.
+  // Refuse to run unless the trusted container step set the ANTFLEET_REPRO_SANDBOX
+  // marker — this stops anyone running the exec phase on a bare host. The guard
+  // reads process.env DIRECTLY and fails CLOSED: there is deliberately NO
+  // injectable override around a security guard (FIX 5 removed the test-only
+  // sandboxMarker seam), so a test cannot dodge the check — it sets/clears the
+  // REAL env var. The marker is set ONLY by that trusted step (documented on
+  // REPRO_SANDBOX_MARKER); it is NOT a security control by itself (a caller could
+  // export it), but it makes the "ran outside the sandbox" mistake fail closed.
+  if (!isEnvValuePresent(process.env[REPRO_SANDBOX_MARKER])) {
     throw new Error(
       `[repro-verify-batch] REFUSING to run the exec phase: ${REPRO_SANDBOX_MARKER} is not set. ` +
         `This phase executes model-generated code and MUST run inside the trusted disposable ` +
@@ -726,11 +741,14 @@ export type RecordPhaseOptions = {
   record: boolean;
   // Injectable writer seam. Production omits it and binds recordGateOutcome
   // lazily; the dry-run path never touches it. Tests inject a spy to assert it
-  // is NOT called without --record.
+  // is NOT called without --record. Returns TRUE iff the DB actually INSERTED a
+  // row (FIX 6a): an ON CONFLICT DO NOTHING no-op returns false so a concurrent
+  // re-run that races past the app-level existence pre-check does NOT over-report
+  // `written`.
   writeGateOutcome?: (
     reviewId: string,
     row: { findingId: string; verdict: string; evidence: unknown },
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   // Idempotency probe (FIX 6): true iff a review_gate_outcomes row already exists
   // for (reviewId, findingId, stage). Injectable; production binds the real
   // lookup lazily. When it returns true the row is SKIPPED (logged) rather than
@@ -789,14 +807,25 @@ export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> 
       log(`[record] already recorded — skipping review=${v.reviewId} finding=${v.findingId}`);
       continue;
     }
-    await write(v.reviewId, {
+    const inserted = await write(v.reviewId, {
       findingId: v.findingId,
       verdict: v.verdict,
       // Persist the full enriched record as evidence so the row is
       // self-describing (sha, repro/test details, exit codes, timings, digest).
       evidence: v,
     });
-    written++;
+    // FIX 6a: only count a row the DB ACTUALLY inserted. ON CONFLICT DO NOTHING
+    // returns false for a row a concurrent run already wrote between our
+    // existence pre-check and this insert, so `written` never over-reports.
+    if (inserted) {
+      written++;
+    } else {
+      skipped++;
+      log(
+        `[record] no-op (already recorded by a concurrent run) — review=${v.reviewId} ` +
+          `finding=${v.findingId}`,
+      );
+    }
   }
   log(
     `[record] wrote ${written} review_gate_outcomes row(s) (stage=${REPRO_VERIFY_STAGE}); ` +
@@ -823,13 +852,19 @@ function isNumberOrNull(x: unknown): x is number | null {
 function isStringOrNull(x: unknown): x is string | null {
   return x === null || typeof x === "string";
 }
+function isIntegerGteZero(x: unknown): x is number {
+  return typeof x === "number" && Number.isInteger(x) && x >= 0;
+}
 
-// STRICT (FIX B): validate EVERY element, not just "is an array". The exec
-// exception-recovery path dereferences spec.reviewId / spec.repro.cmd / etc., so
-// a null / {} / missing-field element must be rejected here rather than blow up
-// mid-batch. Each element must carry: non-empty reviewId, findingId, sha, patch;
-// the mirror path field exec reads (mirrorDir); and a `repro` object whose `cmd`
-// is a string OR explicit null.
+// STRICT (FIX 3): validate EVERY field of EVERY element, not just "is an array"
+// and not just a subset. The exec exception-recovery path dereferences
+// spec.reviewId / spec.repro.cmd / spec.repro.modelId / etc., and computeSpecDigest
+// (re-run downstream) reads spec.repro.file, so a null / {} / missing-field / wrong-
+// typed element must be rejected here rather than blow up or misbehave mid-batch.
+// The shape mirrors exactly what runFetchPhase emits: non-empty reviewId/findingId/
+// sha/patch/mirrorDir/specDigest strings, an integer findingIndex >= 0, a string
+// repoUrl, and a `repro` object with cmd (string|null), file ({path,contents} or
+// null), rationale (string|null), and modelId (string|null).
 export function parseSpecs(json: string): ReproSpec[] {
   const parsed: unknown = JSON.parse(json);
   if (!Array.isArray(parsed)) throw new Error("repro-specs file did not contain a JSON array");
@@ -838,18 +873,52 @@ export function parseSpecs(json: string): ReproSpec[] {
       throw new Error(`repro-specs[${i}] is not an object`);
     }
     const r = rec as Record<string, unknown>;
-    for (const field of ["reviewId", "findingId", "sha", "patch", "mirrorDir"] as const) {
+    for (const field of [
+      "reviewId",
+      "findingId",
+      "sha",
+      "patch",
+      "mirrorDir",
+      "specDigest",
+    ] as const) {
       if (!isNonEmptyString(r[field])) {
         throw new Error(`repro-specs[${i}].${field} must be a non-empty string`);
       }
+    }
+    if (!isIntegerGteZero(r["findingIndex"])) {
+      throw new Error(`repro-specs[${i}].findingIndex must be an integer >= 0`);
+    }
+    if (typeof r["repoUrl"] !== "string") {
+      throw new Error(`repro-specs[${i}].repoUrl must be a string`);
     }
     const repro = r["repro"];
     if (repro === null || typeof repro !== "object") {
       throw new Error(`repro-specs[${i}].repro must be an object`);
     }
-    const cmd = (repro as Record<string, unknown>)["cmd"];
-    if (!isStringOrNull(cmd)) {
+    const rp = repro as Record<string, unknown>;
+    if (!isStringOrNull(rp["cmd"])) {
       throw new Error(`repro-specs[${i}].repro.cmd must be a string or null`);
+    }
+    if (!isStringOrNull(rp["rationale"])) {
+      throw new Error(`repro-specs[${i}].repro.rationale must be a string or null`);
+    }
+    if (!isStringOrNull(rp["modelId"])) {
+      throw new Error(`repro-specs[${i}].repro.modelId must be a string or null`);
+    }
+    // file: either explicit null (the model wrote no file — a bare-cmd repro) or
+    // a { path: string, contents: string } object. A half-formed file object is
+    // rejected loudly.
+    const file = rp["file"];
+    if (file !== null) {
+      if (typeof file !== "object") {
+        throw new Error(`repro-specs[${i}].repro.file must be an object or null`);
+      }
+      const f = file as Record<string, unknown>;
+      if (typeof f["path"] !== "string" || typeof f["contents"] !== "string") {
+        throw new Error(
+          `repro-specs[${i}].repro.file must have string path and contents (or be null)`,
+        );
+      }
     }
   });
   return parsed as ReproSpec[];
@@ -890,8 +959,8 @@ export function parseVerdicts(json: string): VerdictRecord[] {
     if (!isStringOrNull(r["reproCmd"])) {
       throw new Error(`repro-verdicts[${i}].reproCmd must be a string or null`);
     }
-    if (typeof r["detector"] !== "string") {
-      throw new Error(`repro-verdicts[${i}].detector must be a string`);
+    if (typeof r["detector"] !== "string" || !DETECTOR_VALUES.has(r["detector"])) {
+      throw new Error(`repro-verdicts[${i}].detector must be one of pnpm|npm|go|pytest|none`);
     }
     for (const field of [
       "testExitCode",
@@ -926,8 +995,12 @@ export function parseVerdicts(json: string): VerdictRecord[] {
       const testExit = r["testExitCode"];
       const pre = r["reproPreExitCode"];
       const post = r["reproPostExitCode"];
+      // detector must name a REAL runner (FIX 4) — "none" (or any non-runner value)
+      // is only ever an inconclusive marker, never a proof. This rejects a forged
+      // verified with detector:"" / "bogus" / "none" in addition to the exit-code
+      // proof invariant below.
       const proven =
-        detector !== "none" &&
+        REAL_RUNNER_DETECTORS.has(detector) &&
         testExit === 0 &&
         pre === 0 &&
         typeof post === "number" &&
@@ -937,8 +1010,9 @@ export function parseVerdicts(json: string): VerdictRecord[] {
       if (!proven) {
         throw new Error(
           `repro-verdicts[${i}] claims verdict:"verified" without a valid proof ` +
-            `(need detector!=="none", testExitCode===0, reproPreExitCode===0, a concrete non-zero ` +
-            `reproPostExitCode, and inconclusiveReason===null); refusing a forged verified record`,
+            `(need a real runner detector ∈ pnpm|npm|go|pytest, testExitCode===0, ` +
+            `reproPreExitCode===0, a concrete non-zero reproPostExitCode, and ` +
+            `inconclusiveReason===null); refusing a forged verified record`,
         );
       }
     }
@@ -1018,7 +1092,9 @@ function extractAgreed(agreementDecision: unknown): (AgreedFinding | null)[] {
           startLine: typeof e["startLine"] === "number" ? e["startLine"] : null,
           endLine: typeof e["endLine"] === "number" ? e["endLine"] : null,
         }))
-        .filter((e) => e.path.length > 0),
+        // EFFECTIVE-PATH (FIX 6b): reject whitespace-only paths too — a `"   "`
+        // path is not a usable anchor, so trim before the emptiness test.
+        .filter((e) => e.path.trim().length > 0),
       reasoning: typeof f["reasoning"] === "string" ? f["reasoning"] : "",
       reproduction: typeof f["reproduction"] === "string" ? f["reproduction"] : null,
       recommendation: typeof f["recommendation"] === "string" ? f["recommendation"] : "",
@@ -1184,7 +1260,10 @@ async function realFetchDeps(): Promise<FetchDeps> {
 //      GC. There are TWO ways to pin (FIX D):
 //        a) prNumber > 0 → fetch the ADVERTISED PR ref
 //           `refs/pull/<n>/head:refs/pinned/<sha>` then VERIFY
-//           `git rev-parse refs/pinned/<sha>` equals `<sha>`. A PR head SHA is
+//           `git rev-parse --verify refs/pinned/<sha>^{commit}` equals `<sha>`
+//           (`^{commit}` peels to and prints the COMMIT object id — a bare
+//           `rev-parse -- <ref>` prints the literal ref text, never the SHA). A
+//           PR head SHA is
 //           frequently HIDDEN (unadvertised) on the branch tips, so a direct
 //           raw-SHA fetch fails under git protocol v0; the PR ref is always
 //           advertised. If the fetched head does not match the reviewed SHA
@@ -1196,48 +1275,85 @@ async function realFetchDeps(): Promise<FetchDeps> {
 // user-controlled reaches git argv unchecked; the `--` separators are the
 // second layer. On ANY failure the partially-created temp dir is removed so a
 // failed clone/fetch/verify does not leak (FIX E).
+// The argv-direct git runner seam. `execFile`-style: (file, args) with NO shell,
+// resolving to the captured stdout/stderr. realCreateMirror binds the real
+// promisified child_process.execFile; pinReproMirror takes it as a param so a
+// test can assert the EXACT argv without spawning git.
+export type GitRun = (
+  file: string,
+  args: readonly string[],
+) => Promise<{ stdout: string; stderr: string }>;
+
+// Pin the reviewed SHA under refs/pinned/<sha> inside an already-cloned bare
+// mirror `dir`, and (for a PR) VERIFY the advertised head resolves to that SHA
+// (FIX D + FIX 1). Extracted + exported so a test can inject `run` and assert the
+// exact rev-parse argv. Throws (with a clear reason) on a PR head/SHA mismatch.
+//   - prNumber > 0: fetch refs/pull/<n>/head into the pin ref, then
+//     `git -C <dir> rev-parse --verify refs/pinned/<sha>^{commit}` — `^{commit}`
+//     peels the ref to its COMMIT object id and PRINTS the 40-char SHA (a bare
+//     `rev-parse -- <ref>` prints the literal ref text, never the SHA, so the
+//     `=== sha` check would ALWAYS fail and turn every PR spec into a mirror
+//     error). The `^{commit}` is inside the SAME argv element — still argv-direct
+//     via execFile, no shell parsing.
+//   - prNumber <= 0: pin the raw `<sha>:refs/pinned/<sha>` (advertised-SHA path).
+export async function pinReproMirror(
+  run: GitRun,
+  dir: string,
+  sha: string,
+  prNumber: number,
+): Promise<void> {
+  const pinnedRef = `refs/pinned/${sha}`;
+  if (Number.isInteger(prNumber) && prNumber > 0) {
+    // Pin via the ADVERTISED PR head ref, then verify it is the reviewed SHA.
+    await run("git", [
+      "-C",
+      dir,
+      "fetch",
+      "--quiet",
+      "origin",
+      "--",
+      `refs/pull/${prNumber}/head:${pinnedRef}`,
+    ]);
+    const { stdout } = await run("git", [
+      "-C",
+      dir,
+      "rev-parse",
+      "--verify",
+      `${pinnedRef}^{commit}`,
+    ]);
+    const resolved = stdout.trim();
+    if (resolved !== sha) {
+      throw new Error(
+        `PR #${prNumber} head resolved to ${resolved || "(empty)"}, not the reviewed sha ${sha} ` +
+          `(the PR may have been force-pushed after review); refusing to pin the wrong commit`,
+      );
+    }
+  } else {
+    // Non-PR review: pin the raw SHA under the durable ref (advertised-SHA path).
+    await run("git", ["-C", dir, "fetch", "--quiet", "origin", "--", `${sha}:${pinnedRef}`]);
+  }
+}
+
 async function realCreateMirror(repoUrl: string, sha: string, prNumber: number): Promise<string> {
   const { mkdtemp, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
   const { randomUUID } = await import("node:crypto");
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const { isSafeRepoUrl, isSafeSha } = await import("@/lib/patch-verifier");
-  const run = promisify(execFile);
+  const run = promisify(execFile) as GitRun;
 
   if (!isSafeRepoUrl(repoUrl)) throw new Error(`unsafe repoUrl for mirror: ${repoUrl}`);
   if (!isSafeSha(sha)) throw new Error(`unsafe sha for mirror: ${sha}`);
 
-  const dir = await mkdtemp(join(tmpdir(), `antfleet-mirror-${randomUUID()}-`));
-  const pinnedRef = `refs/pinned/${sha}`;
+  // Basename prefix is the SHARED constant isOwnedMirrorDir matches on (FIX 2) —
+  // they must never drift. mkdtemp appends 6 random chars, so the final basename
+  // is `antfleet-mirror-<uuid>-<6 chars>`.
+  const dir = await mkdtemp(join(tmpdir(), `${MIRROR_BASENAME_PREFIX}${randomUUID()}-`));
   try {
     // Full bare mirror. `--` guards the URL from being read as a flag.
     await run("git", ["clone", "--bare", "--quiet", "--", repoUrl, dir]);
-
-    if (Number.isInteger(prNumber) && prNumber > 0) {
-      // Pin via the ADVERTISED PR head ref, then verify it is the reviewed SHA.
-      await run("git", [
-        "-C",
-        dir,
-        "fetch",
-        "--quiet",
-        "origin",
-        "--",
-        `refs/pull/${prNumber}/head:${pinnedRef}`,
-      ]);
-      const { stdout } = await run("git", ["-C", dir, "rev-parse", "--", pinnedRef]);
-      const resolved = stdout.trim();
-      if (resolved !== sha) {
-        throw new Error(
-          `PR #${prNumber} head resolved to ${resolved || "(empty)"}, not the reviewed sha ${sha} ` +
-            `(the PR may have been force-pushed after review); refusing to pin the wrong commit`,
-        );
-      }
-    } else {
-      // Non-PR review: pin the raw SHA under the durable ref (advertised-SHA path).
-      await run("git", ["-C", dir, "fetch", "--quiet", "origin", "--", `${sha}:${pinnedRef}`]);
-    }
+    // Pin (+ verify for a PR) via the extracted, tested helper.
+    await pinReproMirror(run, dir, sha, prNumber);
     return dir;
   } catch (err) {
     // Clean up the partially-created mirror so a failed clone/fetch/verify does
@@ -1293,17 +1409,39 @@ function minimalFindingForVerify(): Finding {
   };
 }
 
+// STRICT ownership predicate for the DELETE path (FIX 2). isSafeLocalMirrorDir is
+// a SHAPE gate — it returns true for `/`, `/tmp`, `/home/runner`, and any other
+// absolute traversal-free POSIX path — so it must NEVER gate a recursive rm: a
+// forged spec.mirrorDir could redirect the delete at an arbitrary tree. This
+// returns true ONLY for a directory WE created: its parent is exactly
+// os.tmpdir() AND its basename matches the EXACT mkdtemp prefix
+// realCreateMirror uses (`antfleet-mirror-<uuid+random>`). resolve() first so a
+// `.../antfleet-mirror-x/../../etc` traversal collapses to its real parent/base
+// and is refused. Pure + exported for tests.
+export function isOwnedMirrorDir(dir: string): boolean {
+  if (typeof dir !== "string" || dir.length === 0) return false;
+  const resolved = resolvePath(dir);
+  if (dirname(resolved) !== tmpdir()) return false;
+  const base = basename(resolved);
+  return new RegExp(`^${MIRROR_BASENAME_PREFIX}[A-Za-z0-9_-]+$`).test(base);
+}
+
 // Remove a per-spec disposable bare mirror after its verifier run (FIX E). The
-// dir is our own (fetch-phase mkdtemp under tmpdir()), but validate its shape
-// against the same isSafeLocalMirrorDir gate the verifier uses before an rm -rf
-// so a corrupt spec can never point teardown at an arbitrary path. Recursive +
-// force so a partially-cloned mirror is still cleaned; best-effort at the call
-// site (never fails the batch).
-async function realRemoveMirror(mirrorDir: string): Promise<void> {
+// dir is our own (fetch-phase mkdtemp under tmpdir()); gate the recursive rm on
+// the STRICT ownership predicate (FIX 2) — NOT the shape-only isSafeLocalMirrorDir,
+// which waves through `/`, `/tmp`, `/home/runner`. A forged spec that points
+// teardown at anything we did not create is REFUSED (warn + skip), so the
+// teardown can only ever delete one of our own tmp mirrors. Recursive + force so
+// a partially-cloned mirror is still cleaned; best-effort at the call site (never
+// fails the batch). Exported so the teardown's ownership gate can be tested
+// end-to-end against a real tmp dir.
+export async function realRemoveMirror(mirrorDir: string): Promise<void> {
   const { rm } = await import("node:fs/promises");
-  const { isSafeLocalMirrorDir } = await import("@/lib/repro-verifier");
-  if (!isSafeLocalMirrorDir(mirrorDir)) {
-    throw new Error(`refusing to remove unsafe mirror dir: ${mirrorDir}`);
+  if (!isOwnedMirrorDir(mirrorDir)) {
+    console.warn(
+      `[exec] refusing to remove mirror dir we do not own (skipping teardown): ${mirrorDir}`,
+    );
+    return;
   }
   await rm(mirrorDir, { recursive: true, force: true });
 }
@@ -1312,7 +1450,7 @@ async function realGateWriter(): Promise<
   (
     reviewId: string,
     row: { findingId: string; verdict: string; evidence: unknown },
-  ) => Promise<void>
+  ) => Promise<boolean>
 > {
   const { db } = await import("@/db");
   const { reviewGateOutcomes } = await import("@/db/schema");
@@ -1326,7 +1464,7 @@ async function realGateWriter(): Promise<
     // bypass queries.recordGateOutcome (kept unmodified) because that helper does
     // a bare insert with no conflict target; the "repro_verify" stage is a plain
     // text value (the column has no enum) so no cast is needed here.
-    await db
+    const inserted = await db
       .insert(reviewGateOutcomes)
       .values({
         reviewId,
@@ -1342,7 +1480,12 @@ async function realGateWriter(): Promise<
         // NOTHING`, which matches the partial unique index (migration 0053).
         target: [reviewGateOutcomes.reviewId, reviewGateOutcomes.findingId],
         where: sql`${reviewGateOutcomes.stage} = 'repro_verify'`,
-      });
+      })
+      // RETURNING lets us tell a real INSERT from an ON CONFLICT DO NOTHING no-op
+      // (FIX 6a): a conflict yields zero returned rows, so `.length > 0` is true
+      // ONLY when this call actually wrote the row.
+      .returning({ id: reviewGateOutcomes.id });
+    return inserted.length > 0;
   };
 }
 
