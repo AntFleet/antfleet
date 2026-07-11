@@ -70,16 +70,39 @@ jobs:
           --repo "${{ inputs.repo }}"
           --out repro-specs.json
 
-      # ── egress lockdown — DROP all outbound network before we execute any
-      # model-generated code. Loopback (-o lo) and already-ESTABLISHED/RELATED
-      # connections are allowed so the runner's existing sockets keep working;
-      # every NEW outbound connection the repro tries to open is denied. This is
-      # what stops the model repro from reaching the network or cloud metadata.
-      - name: egress lockdown (deny outbound network to the repro)
+      # ── egress lockdown — deny outbound network before we execute any
+      # model-generated code, EXCEPT the minimum the verifier needs to clone the
+      # repo: DNS + HTTPS to GitHub only. runReproVerifier does `git fetch <sha>`
+      # from github.com at exec time, so a blanket DROP would fail every clone
+      # (setup_failed) and produce zero verdicts. We therefore pin egress to the
+      # GitHub host IPs (resolved now) on 443, allow DNS to resolve them, and DROP
+      # everything else — so the model repro can reach GitHub (public source, and
+      # this runner is SECRETLESS so there is nothing confidential to exfiltrate)
+      # but NOT arbitrary hosts / ports / cloud metadata.
+      #
+      # HARDENING FOLLOW-UP (before enabling the flag in anger): pre-mirror the
+      # repo in the fetch step (which has network) and run exec fully offline
+      # against a local mirror, so egress can be a total DROP. That needs a
+      # vetted local-clone mode in runReproVerifier; tracked for Build 2b-3.
+      - name: egress lockdown (deny outbound except the GitHub clone)
         run: |
-          sudo iptables -A OUTPUT -o lo -j ACCEPT
-          sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-          sudo iptables -A OUTPUT -j DROP
+          set -euo pipefail
+          # loopback + already-open connections keep working
+          sudo iptables  -A OUTPUT -o lo -j ACCEPT
+          sudo iptables  -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+          # DNS so git can resolve the clone host
+          sudo iptables  -A OUTPUT -p udp --dport 53 -j ACCEPT
+          sudo iptables  -A OUTPUT -p tcp --dport 53 -j ACCEPT
+          # HTTPS to GitHub host IPs ONLY (the git clone source)
+          for host in github.com codeload.github.com; do
+            for ip in $(getent ahostsv4 "$host" | awk '{print $1}' | sort -u); do
+              echo "allow 443 -> $host ($ip)"
+              sudo iptables -A OUTPUT -p tcp -d "$ip" --dport 443 -j ACCEPT
+            done
+          done
+          # deny all other IPv4 egress
+          sudo iptables  -A OUTPUT -j DROP
+          # deny IPv6 entirely (git falls back to the allowed IPv4)
           sudo ip6tables -A OUTPUT -o lo -j ACCEPT
           sudo ip6tables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
           sudo ip6tables -A OUTPUT -j DROP
