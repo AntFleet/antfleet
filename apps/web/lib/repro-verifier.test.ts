@@ -540,4 +540,92 @@ describe("runReproVerifier", () => {
     expect(out.notes).toMatch(/exceed .*bytes/);
     expect(writeFileNoClobber).not.toHaveBeenCalled();
   });
+
+  it("clones from localMirrorDir OFFLINE and IGNORES repoUrl (no URL reaches git argv)", async () => {
+    const MIRROR = "/mnt/mirrors/o-r.git";
+    let remoteAddSource: string | null = null;
+    let sawHttpArg = false;
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (args.some((a) => a.includes("http"))) sawHttpArg = true;
+      if (command === "git") {
+        const verb = gitVerb(args);
+        // `git -C <wt> remote add origin -- <source>` → source is the last arg.
+        if (verb === "remote") remoteAddSource = args[args.length - 1] ?? null;
+        if (GIT_SETUP_VERBS.has(verb)) return ok();
+      }
+      if (command === "pnpm" && args[0] === "test") return ok("pass");
+      if (command === "pytest") {
+        pytestCall += 1;
+        return pytestCall === 1 ? ok("reproduced") : fail("fixed", 2);
+      }
+      return ok();
+    });
+    // exists=true for the mirror dir AND the pnpm lockfile; symlink=false.
+    const exists = vi.fn(async (p: string) => p === MIRROR || p.endsWith("pnpm-lock.yaml"));
+    const out = await runReproVerifier({
+      ...BASE_ARGS, // BASE_ARGS.repoUrl is an https URL — offline must IGNORE it
+      localMirrorDir: MIRROR,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists }),
+    });
+    expect(out.verdict).toBe("verified");
+    // Cloned from the LOCAL mirror; the http repoUrl never reached git argv.
+    expect(remoteAddSource).toBe(MIRROR);
+    expect(sawHttpArg).toBe(false);
+    expect(out.reproPreExitCode).toBe(0);
+    expect(out.reproPostExitCode).toBe(2);
+  });
+
+  it("rejects an unsafe localMirrorDir shape (relative / traversal / dash) without spawning", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => ok());
+    const io = mkIo({ exec });
+    for (const bad of ["relative/mirror.git", "/mnt/../etc", "-x/mirror.git"]) {
+      const out = await runReproVerifier({
+        ...BASE_ARGS,
+        repoUrl: null,
+        localMirrorDir: bad,
+        repro: mkRepro(),
+        finding: mkFinding(),
+        io,
+      });
+      expect(out.verdict).toBe("inconclusive");
+      expect(out.inconclusiveReason).toBe("invalid_input");
+    }
+    // Shape gate runs before any worktree/spawn.
+    expect(io.mkWorktreeRoot).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("returns invalid_input when the localMirrorDir is missing or a symlink", async () => {
+    const MIRROR = "/mnt/mirrors/o-r.git";
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      return ok();
+    });
+    const missing = await runReproVerifier({
+      ...BASE_ARGS,
+      repoUrl: null,
+      localMirrorDir: MIRROR,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists: vi.fn(async () => false) }),
+    });
+    expect(missing.inconclusiveReason).toBe("invalid_input");
+    expect(missing.notes).toMatch(/missing or a symlink/);
+
+    const symlinked = await runReproVerifier({
+      ...BASE_ARGS,
+      repoUrl: null,
+      localMirrorDir: MIRROR,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists: vi.fn(async () => true), lstatIsSymlink: vi.fn(async () => true) }),
+    });
+    expect(symlinked.inconclusiveReason).toBe("invalid_input");
+    expect(symlinked.notes).toMatch(/missing or a symlink/);
+    // The reject path must NOT spawn git — the mirror check gates the clone.
+    expect(exec).not.toHaveBeenCalled();
+  });
 });
