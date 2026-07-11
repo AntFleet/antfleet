@@ -669,3 +669,32 @@ describe("processReviewJob ACP rail", () => {
     );
   });
 });
+
+const jobWithOptions = (options: unknown) => ({ acpRequestPayload: { options } }) as never;
+
+describe("shouldIncludeAcpTradingDisclaimer (#83 residual — acknowledgement triggers disclaimer)", () => {
+  it("includes the disclaimer when the request acknowledged the boundary", async () => {
+    const { shouldIncludeAcpTradingDisclaimer } = await import("./review-job-worker");
+    expect(
+      shouldIncludeAcpTradingDisclaimer(jobWithOptions({ acknowledge_not_financial_advice: true })),
+    ).toBe(true);
+  });
+
+  it("still includes the disclaimer for the trading-risk focus tag", async () => {
+    const { shouldIncludeAcpTradingDisclaimer } = await import("./review-job-worker");
+    expect(shouldIncludeAcpTradingDisclaimer(jobWithOptions({ focus: ["trading-risk"] }))).toBe(
+      true,
+    );
+  });
+
+  it("omits the disclaimer when neither signal is present, or the payload is malformed", async () => {
+    const { shouldIncludeAcpTradingDisclaimer } = await import("./review-job-worker");
+    expect(shouldIncludeAcpTradingDisclaimer(jobWithOptions({ focus: ["security"] }))).toBe(false);
+    expect(
+      shouldIncludeAcpTradingDisclaimer(
+        jobWithOptions({ acknowledge_not_financial_advice: false }),
+      ),
+    ).toBe(false);
+    expect(shouldIncludeAcpTradingDisclaimer({ acpRequestPayload: null } as never)).toBe(false);
+  });
+});
