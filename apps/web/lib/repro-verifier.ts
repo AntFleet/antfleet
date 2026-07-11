@@ -110,17 +110,26 @@ export type RunReproVerifierArgs = {
   // Git clone SOURCE. Two modes, resolved in this order:
   //   - localMirrorDir (OFFLINE): when set, clone from this local bare git
   //     mirror that the TRUSTED fetch phase pre-materialised. The verifier then
-  //     needs NO network, which is what lets the exec sandbox run with
-  //     `--network none` (the model repro can reach nothing at all — the whole
-  //     reason the single-job egress-firewall design failed its audit). repoUrl
-  //     is ignored in this mode (kept only for provenance/logging).
+  //     needs NO network — which is what lets the exec sandbox run under
+  //     `--network none`. NOTE: that container-level flag (Build 2b-2 v2's job),
+  //     NOT this module, is what actually denies the model repro all network;
+  //     minimalEnv only strips secrets from the subprocess env. repoUrl is
+  //     IGNORED in this mode.
   //   - repoUrl (ONLINE): the http(s) URL to clone from. Null → inconclusive
   //     (no source to prove against), mirroring runPatchVerifier.
   repoUrl: string | null;
   // Absolute path to a local bare git mirror to clone from OFFLINE. Set by the
   // trusted fetch phase (Build 2b-2 v2, issue #145); omit for the online path.
-  // Validated defensively (isSafeLocalMirrorDir + existence + symlink) even
-  // though the path is our own — it never carries model-controlled input.
+  // Validated defensively (isSafeLocalMirrorDir + existence + a LEAF symlink
+  // check) even though the path is our own and never carries model-controlled
+  // input. PART-3 MIRROR CONTRACT — the fetch phase MUST honor these, this
+  // module trusts them: the mirror is disposable / mounted read-only under a
+  // fixed trusted root (no repro may mutate it for a later call; the leaf-only
+  // lstat here does NOT catch a symlinked ANCESTOR — a read-only trusted root
+  // is what closes that), self-contained (no partial-clone promisor / external
+  // alternates), and CONTAINS the reviewed SHA pinned under a durable ref (e.g.
+  // refs/pull/<n>/head) so it survives GC and is fetchable under any git
+  // protocol version (protocol v0 rejects an unadvertised raw SHA).
   localMirrorDir?: string | null;
   sha: string;
   patch: string;

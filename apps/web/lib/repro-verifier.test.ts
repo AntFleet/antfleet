@@ -541,11 +541,13 @@ describe("runReproVerifier", () => {
     expect(writeFileNoClobber).not.toHaveBeenCalled();
   });
 
-  it("clones from localMirrorDir OFFLINE (no network, no repoUrl) and proves the bug", async () => {
+  it("clones from localMirrorDir OFFLINE and IGNORES repoUrl (no URL reaches git argv)", async () => {
     const MIRROR = "/mnt/mirrors/o-r.git";
     let remoteAddSource: string | null = null;
+    let sawHttpArg = false;
     let pytestCall = 0;
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (args.some((a) => a.includes("http"))) sawHttpArg = true;
       if (command === "git") {
         const verb = gitVerb(args);
         // `git -C <wt> remote add origin -- <source>` → source is the last arg.
@@ -562,16 +564,16 @@ describe("runReproVerifier", () => {
     // exists=true for the mirror dir AND the pnpm lockfile; symlink=false.
     const exists = vi.fn(async (p: string) => p === MIRROR || p.endsWith("pnpm-lock.yaml"));
     const out = await runReproVerifier({
-      ...BASE_ARGS,
-      repoUrl: null, // OFFLINE needs no URL
+      ...BASE_ARGS, // BASE_ARGS.repoUrl is an https URL — offline must IGNORE it
       localMirrorDir: MIRROR,
       repro: mkRepro(),
       finding: mkFinding(),
       io: mkIo({ exec, exists }),
     });
     expect(out.verdict).toBe("verified");
-    // Cloned from the LOCAL mirror, never a network URL.
+    // Cloned from the LOCAL mirror; the http repoUrl never reached git argv.
     expect(remoteAddSource).toBe(MIRROR);
+    expect(sawHttpArg).toBe(false);
     expect(out.reproPreExitCode).toBe(0);
     expect(out.reproPostExitCode).toBe(2);
   });
@@ -623,5 +625,7 @@ describe("runReproVerifier", () => {
     });
     expect(symlinked.inconclusiveReason).toBe("invalid_input");
     expect(symlinked.notes).toMatch(/missing or a symlink/);
+    // The reject path must NOT spawn git — the mirror check gates the clone.
+    expect(exec).not.toHaveBeenCalled();
   });
 });
