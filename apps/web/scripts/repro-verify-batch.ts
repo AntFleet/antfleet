@@ -197,6 +197,28 @@ const VERDICT_VALUES = new Set(["verified", "regressed", "inconclusive"]);
 // never a proof). Kept in sync with RunnerKind in lib/patch-verifier.ts.
 const REAL_RUNNER_DETECTORS = new Set(["pnpm", "npm", "go", "pytest"]);
 const DETECTOR_VALUES = new Set([...REAL_RUNNER_DETECTORS, "none"]);
+// The closed InconclusiveReason union (patch-verifier.ts). A verdict record's
+// inconclusiveReason must be null or one of these — a forged/garbage reason
+// string is rejected so it can never be persisted as a gate-outcome tag.
+const INCONCLUSIVE_REASON_VALUES = new Set<string>([
+  "no_runner",
+  "no_poc",
+  "test_timeout",
+  "poc_timeout",
+  "adapter_refused",
+  "evidence_unreadable",
+  "no_repo_url",
+  "invalid_input",
+  "setup_failed",
+  "exception",
+  "repro_exec_disabled",
+  "no_repro",
+  "repro_not_reproducing",
+  "repro_timeout",
+  "unsafe_repro_write",
+  "patch_apply_failed",
+  "abnormal_exit",
+]);
 
 // ────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -846,14 +868,22 @@ export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> 
 function isNonEmptyString(x: unknown): x is string {
   return typeof x === "string" && x.length > 0;
 }
-function isNumberOrNull(x: unknown): x is number | null {
-  return x === null || typeof x === "number";
-}
 function isStringOrNull(x: unknown): x is string | null {
   return x === null || typeof x === "string";
 }
 function isIntegerGteZero(x: unknown): x is number {
   return typeof x === "number" && Number.isInteger(x) && x >= 0;
+}
+// A process exit code: null (killed / no clean exit) or an integer in [0,255].
+// Rejects negative / fractional values a forged verdict artifact might carry —
+// notably a negative `reproPostExitCode` that would otherwise satisfy the
+// verified proof invariant's `!== 0` check.
+function isExitCodeOrNull(x: unknown): x is number | null {
+  return x === null || (typeof x === "number" && Number.isInteger(x) && x >= 0 && x <= 255);
+}
+// A wall-clock duration in ms: null or a finite number >= 0 (no negatives).
+function isNonNegNumberOrNull(x: unknown): x is number | null {
+  return x === null || (typeof x === "number" && Number.isFinite(x) && x >= 0);
 }
 
 // STRICT (FIX 3): validate EVERY field of EVERY element, not just "is an array"
@@ -950,8 +980,16 @@ export function parseVerdicts(json: string): VerdictRecord[] {
         `repro-verdicts[${i}].verdict must be one of verified|regressed|inconclusive`,
       );
     }
-    if (!isStringOrNull(r["inconclusiveReason"])) {
-      throw new Error(`repro-verdicts[${i}].inconclusiveReason must be a string or null`);
+    if (
+      r["inconclusiveReason"] !== null &&
+      !(
+        typeof r["inconclusiveReason"] === "string" &&
+        INCONCLUSIVE_REASON_VALUES.has(r["inconclusiveReason"])
+      )
+    ) {
+      throw new Error(
+        `repro-verdicts[${i}].inconclusiveReason must be null or a known InconclusiveReason`,
+      );
     }
     if (!isNonEmptyString(r["sha"])) {
       throw new Error(`repro-verdicts[${i}].sha must be a non-empty string`);
@@ -962,20 +1000,20 @@ export function parseVerdicts(json: string): VerdictRecord[] {
     if (typeof r["detector"] !== "string" || !DETECTOR_VALUES.has(r["detector"])) {
       throw new Error(`repro-verdicts[${i}].detector must be one of pnpm|npm|go|pytest|none`);
     }
-    for (const field of [
-      "testExitCode",
-      "reproPreExitCode",
-      "reproPostExitCode",
-      "testMs",
-      "reproPreMs",
-      "reproPostMs",
-    ] as const) {
-      if (!isNumberOrNull(r[field])) {
-        throw new Error(`repro-verdicts[${i}].${field} must be number|null`);
+    for (const field of ["testExitCode", "reproPreExitCode", "reproPostExitCode"] as const) {
+      if (!isExitCodeOrNull(r[field])) {
+        throw new Error(
+          `repro-verdicts[${i}].${field} must be null or an integer exit code in [0,255]`,
+        );
       }
     }
-    if (typeof r["totalMs"] !== "number") {
-      throw new Error(`repro-verdicts[${i}].totalMs must be a number`);
+    for (const field of ["testMs", "reproPreMs", "reproPostMs"] as const) {
+      if (!isNonNegNumberOrNull(r[field])) {
+        throw new Error(`repro-verdicts[${i}].${field} must be null or a number >= 0`);
+      }
+    }
+    if (typeof r["totalMs"] !== "number" || !Number.isFinite(r["totalMs"]) || r["totalMs"] < 0) {
+      throw new Error(`repro-verdicts[${i}].totalMs must be a number >= 0`);
     }
     if (!isStringOrNull(r["modelId"])) {
       throw new Error(`repro-verdicts[${i}].modelId must be a string or null`);
@@ -1418,6 +1456,15 @@ function minimalFindingForVerify(): Finding {
 // realCreateMirror uses (`antfleet-mirror-<uuid+random>`). resolve() first so a
 // `.../antfleet-mirror-x/../../etc` traversal collapses to its real parent/base
 // and is refused. Pure + exported for tests.
+//
+// RESIDUAL (audit MEDIUM, #145): this is a PATHNAME convention, not process
+// ownership — a forged spec.mirrorDir naming a DIFFERENT process's
+// `antfleet-mirror-*` dir would still match. The cross-process/forged-artifact
+// boundary is closed by Part 3's containment, NOT here: each exec job runs in a
+// disposable `--network none` container with its OWN /tmp (no other process's
+// mirrors exist in it), and the specs artifact is produced by the trusted fetch
+// job. Within a single trusted run this convention is sufficient; it must not be
+// relied on as the sole isolation outside that container.
 export function isOwnedMirrorDir(dir: string): boolean {
   if (typeof dir !== "string" || dir.length === 0) return false;
   const resolved = resolvePath(dir);

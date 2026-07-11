@@ -1359,11 +1359,40 @@ describe("parseVerdicts", () => {
     expect(() => parseVerdicts(JSON.stringify([bad]))).toThrow(/verdict must be one of/);
   });
 
-  it("rejects a record whose exit code is not number|null", () => {
-    const bad = { ...good, reproPreExitCode: "zero" };
-    expect(() => parseVerdicts(JSON.stringify([bad]))).toThrow(
-      /reproPreExitCode must be number\|null/,
+  it("rejects a record whose exit code is not an integer in [0,255]", () => {
+    expect(() => parseVerdicts(JSON.stringify([{ ...good, reproPreExitCode: "zero" }]))).toThrow(
+      /reproPreExitCode must be null or an integer exit code/,
     );
+    // Negative and fractional exit codes are invalid — this is what let a forged
+    // `verified` with a negative post-exit slip the proof invariant before FIX.
+    expect(() => parseVerdicts(JSON.stringify([{ ...good, reproPostExitCode: -1 }]))).toThrow(
+      /reproPostExitCode must be null or an integer exit code/,
+    );
+    expect(() => parseVerdicts(JSON.stringify([{ ...good, testExitCode: 1.5 }]))).toThrow(
+      /testExitCode must be null or an integer exit code/,
+    );
+  });
+
+  it("rejects a record with a negative timing", () => {
+    expect(() => parseVerdicts(JSON.stringify([{ ...good, reproPostMs: -3 }]))).toThrow(
+      /reproPostMs must be null or a number >= 0/,
+    );
+  });
+
+  it("rejects a record with an unknown inconclusiveReason, accepts a known one", () => {
+    expect(() =>
+      parseVerdicts(
+        JSON.stringify([{ ...good, verdict: "inconclusive", inconclusiveReason: "made_up" }]),
+      ),
+    ).toThrow(/must be null or a known InconclusiveReason/);
+    const okRec = {
+      ...good,
+      verdict: "inconclusive",
+      detector: "none",
+      reproPostExitCode: null,
+      inconclusiveReason: "no_runner",
+    };
+    expect(parseVerdicts(JSON.stringify([okRec]))).toHaveLength(1);
   });
 
   it("rejects a record missing an enriched field (sha)", () => {
