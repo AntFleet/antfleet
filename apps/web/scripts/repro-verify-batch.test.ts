@@ -1104,6 +1104,14 @@ describe("realRemoveMirror (FIX 2 — teardown obeys ownership gate)", () => {
   });
 });
 
+// A GitRun stub whose rev-parse resolves to a DIFFERENT sha than requested
+// (simulates a force-push between review and mirror creation). Module-scope so
+// it does not trip unicorn/consistent-function-scoping (it captures nothing).
+const forcePushGitRun: GitRun = async (_file, args) =>
+  args.includes("rev-parse")
+    ? { stdout: "0000badc0mm1t\n", stderr: "" }
+    : { stdout: "", stderr: "" };
+
 // ── pinReproMirror: the PR-pin VERIFY step (FIX 1). The rev-parse MUST resolve
 // the ref to its COMMIT SHA (`--verify <ref>^{commit}`), not print the literal
 // ref text; a mismatch must fail the spec with a clear reason. Uses an injected
@@ -1138,14 +1146,10 @@ describe("pinReproMirror (FIX 1 — PR pin resolves to the commit SHA)", () => {
   });
 
   it("FAILS the spec with a clear reason when the resolved head != reviewed sha (force-push)", async () => {
-    const run: GitRun = async (_file, args) => {
-      if (args.includes("rev-parse")) return { stdout: "0000badc0mm1t\n", stderr: "" };
-      return { stdout: "", stderr: "" };
-    };
-    await expect(pinReproMirror(run, dir, sha, 7)).rejects.toThrow(
+    await expect(pinReproMirror(forcePushGitRun, dir, sha, 7)).rejects.toThrow(
       /head resolved to 0000badc0mm1t, not the reviewed sha abc1234def5678/,
     );
-    await expect(pinReproMirror(run, dir, sha, 7)).rejects.toThrow(/force-pushed/);
+    await expect(pinReproMirror(forcePushGitRun, dir, sha, 7)).rejects.toThrow(/force-pushed/);
   });
 
   it("does NOT rev-parse for a non-PR review (prNumber <= 0) — pins the raw SHA", async () => {
