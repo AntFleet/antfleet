@@ -935,11 +935,23 @@ function readModelIds(value: unknown): Record<string, string> {
   return result;
 }
 
-function shouldIncludeAcpTradingDisclaimer(job: ReviewJobRow): boolean {
+// Exported for unit testing (pure predicate, no side effects).
+export function shouldIncludeAcpTradingDisclaimer(job: ReviewJobRow): boolean {
   const request = job.acpRequestPayload;
   if (typeof request !== "object" || request === null) return false;
-  const options = (request as { options?: { focus?: unknown } }).options;
-  return Array.isArray(options?.focus) && options.focus.includes("trading-risk");
+  // Include the trading/financial-boundary disclaimer whenever the requester
+  // acknowledged that boundary (`acknowledge_not_financial_advice`), not only
+  // when they set `focus: ["trading-risk"]`. A request that acknowledged the
+  // boundary but didn't set the focus tag used to receive a deliverable with no
+  // disclaimer — the exact gap the acknowledgement is meant to close. (#83
+  // audit, residual Medium.)
+  const options = (
+    request as { options?: { acknowledge_not_financial_advice?: unknown; focus?: unknown } }
+  ).options;
+  return (
+    options?.acknowledge_not_financial_advice === true ||
+    (Array.isArray(options?.focus) && options.focus.includes("trading-risk"))
+  );
 }
 
 function absoluteAntfleetUrl(path: string): string {
