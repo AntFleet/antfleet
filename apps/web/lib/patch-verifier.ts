@@ -592,7 +592,7 @@ async function runPocStep(
 // shell snippet in a temp dir would be too much trust. The allowlist of
 // command prefixes keeps the attack surface tiny while still catching the
 // common pytest / npm / go-test / curl PoCs the reviewers actually emit.
-const POC_PREFIX_ALLOWLIST: readonly string[] = [
+export const POC_PREFIX_ALLOWLIST: readonly string[] = [
   "pytest",
   "go test",
   "node ",
@@ -605,6 +605,29 @@ const POC_PREFIX_ALLOWLIST: readonly string[] = [
   "sh ",
 ];
 
+// Shell metacharacters that suggest piping / redirection / substitution. The
+// child_process call is exec-style without a shell, so a `>` or `|` in an
+// allowlisted prefix would just be a garbage argv to that interpreter. We
+// refuse rather than try to interpret a shell expression in JS.
+const POC_SHELL_METACHARACTERS = /[|&;<>$`\\]/;
+
+// Single-line command gate shared by sniffPocCommand (finding reproduction)
+// and the repro-test generator's `cmd` validation (repro-generation.ts). A
+// candidate passes only if it is short, contains no shell metacharacters, and
+// begins with a known interpreter / script runner. Returns the command
+// unchanged on success, null on rejection. This is the sole allowlist +
+// metacharacter surface: both call sites route through it so they cannot
+// drift, and the generated `cmd` (which 2b executes in the sandbox) is gated
+// exactly as strictly as a model-authored PoC reproduction.
+export function matchesPocCommandAllowlist(candidate: string): string | null {
+  if (candidate.length > 500) return null;
+  if (POC_SHELL_METACHARACTERS.test(candidate)) return null;
+  for (const prefix of POC_PREFIX_ALLOWLIST) {
+    if (candidate.startsWith(prefix)) return candidate;
+  }
+  return null;
+}
+
 export function sniffPocCommand(finding: Finding): string | null {
   const repro = finding.reproduction;
   if (repro === null || repro === undefined) return null;
@@ -614,16 +637,7 @@ export function sniffPocCommand(finding: Finding): string | null {
     .filter((l) => l.length > 0);
   if (lines.length === 0) return null;
   const head = lines[0]!;
-  if (head.length > 500) return null;
-  // Forbid shell metacharacters that suggest piping / redirection — the
-  // child_process call is exec-style without a shell, and a `>` or `|` in
-  // an allowlisted prefix would just be a garbage argv to that interpreter.
-  // We refuse rather than try to interpret a shell expression in JS.
-  if (/[|&;<>$`\\]/.test(head)) return null;
-  for (const prefix of POC_PREFIX_ALLOWLIST) {
-    if (head.startsWith(prefix)) return head;
-  }
-  return null;
+  return matchesPocCommandAllowlist(head);
 }
 
 // Minimal subprocess env. We deliberately drop secrets that the verifier

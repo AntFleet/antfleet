@@ -443,6 +443,37 @@ export const patchSuggestionOutputSchema = z.object({
 
 export type PatchSuggestionOutput = z.infer<typeof patchSuggestionOutputSchema>;
 
+// Repro-test generation (issue #133, Build 2) — per-finding executable-repro
+// payload. Mirrors patchSuggestionOutputSchema. Returned by the provider's
+// `proposeReproTest` call, one call per confirmed finding. `file` is the
+// test/PoC file to write into the repo root ({path, contents}), or null when
+// the run command needs no new file (e.g. a bare `curl`). `cmd` is how to run
+// the repro (e.g. `pytest repro_test.py`); null means the model declined
+// because no self-contained repro could be written from the shown source.
+// `rationale` is debug-only. SEMANTIC CONVENTION (consumed by Build 2b): the
+// generated repro is authored to exit 0 (success) against the CURRENT,
+// UNPATCHED source (success == the bug reproduces) and exit non-zero once the
+// finding's recommended fix is applied — matching patch-verifier's PoC
+// convention (pocStep.exitCode === 0 == "still exploits").
+export const reproTestOutputSchema = z.object({
+  // `.default(null)` tolerates an OMITTED key (Opus intermittently drops keys —
+  // the #134 evidenceRef failure mode), coercing missing → null instead of
+  // throwing; output type stays `... | null`. Nested file.path/contents stay
+  // required: a half-formed file object is unusable, so it should fail the parse
+  // (→ per-finding generation_error) rather than yield a null-path file.
+  file: z
+    .object({
+      path: z.string(),
+      contents: z.string(),
+    })
+    .nullable()
+    .default(null),
+  cmd: z.string().nullable().default(null),
+  rationale: z.string().nullable().default(null),
+});
+
+export type ReproTestOutput = z.infer<typeof reproTestOutputSchema>;
+
 // Token spend for a single provider call. Captured from the SDK response's
 // usage block (Anthropic: input_tokens/output_tokens; OpenAI:
 // prompt_tokens/completion_tokens) and threaded out so the patch lane can
@@ -464,6 +495,17 @@ export type TokenUsage = {
 // older SDK path may omit it, in which case the cost layer reads it as
 // "unknown" (priced at $0) rather than failing.
 export type PatchSuggestionResult = PatchSuggestionOutput & {
+  modelId: string;
+  usage?: TokenUsage | null;
+};
+
+// Provider-returned per-call repro payload. Mirrors PatchSuggestionResult:
+// carries the resolved modelId alongside the schema-validated content, plus
+// the call's token spend (`usage`) for cost accounting. `usage` is optional
+// and null-able — the real provider always populates it, but a mock or older
+// SDK path may omit it (read as "unknown" / $0 by the cost layer) rather than
+// failing.
+export type ReproTestSuggestion = ReproTestOutput & {
   modelId: string;
   usage?: TokenUsage | null;
 };
