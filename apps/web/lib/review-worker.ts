@@ -98,10 +98,17 @@ import {
   type ThreatModelPublicAccess,
 } from "./repo-threat-model";
 
-import { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS } from "./review-worker-config";
+import {
+  BACKOFF_SECONDS,
+  isTransientError,
+  MAX_PROCESSING_ATTEMPTS,
+  STUCK_AFTER_MS,
+} from "./review-worker-config";
 // Re-exported so existing call sites (./review-retry.ts, tests) keep working
-// without an import path churn.
-export { BACKOFF_SECONDS, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS };
+// without an import path churn. isTransientError now lives in the leaf config
+// module (so review-pipeline.ts can share it without cycling through the
+// worker) and is re-exported here for its historical callers/tests.
+export { BACKOFF_SECONDS, isTransientError, MAX_PROCESSING_ATTEMPTS, STUCK_AFTER_MS };
 
 export type WorkerOutcome =
   | { kind: "done"; reviewId: string; agreedCount: number; degraded: boolean }
@@ -328,14 +335,47 @@ export async function runReviewWorker(
   const attemptsAfterClaim = row.processingAttempts + 1;
 
   try {
-    await processClaimedRow(reviewId, dispatchRow, deps, attemptsAfterClaim);
+    const signal = await processClaimedRow(reviewId, dispatchRow, deps, attemptsAfterClaim);
+
+    // Issue #134 — transient-degradation retry. The kernel has ALREADY
+    // persisted the degraded bundle (provider_responses + agreement_decision)
+    // via updateReview before returning, so the audit trail survives on every
+    // attempt including the last. If the review degraded because a provider
+    // failed TRANSIENTLY and we still have attempts left, schedule another run
+    // through the SAME retry machinery the catch block uses — both models
+    // re-run and can reach true 2/2 consensus. This does NOT loosen the
+    // consensus gate (still 2/2 to post `agreed`); it only gives a transient
+    // failure another chance. A degraded review that is non-transient, or has
+    // exhausted its attempts, falls through to a terminal `done` degraded
+    // outcome — NOT `failed`, and with NO alertCritical: degraded is a
+    // legitimate "no consensus" terminal state.
+    if (signal.retryableDegradation && attemptsAfterClaim < MAX_PROCESSING_ATTEMPTS) {
+      const error = "degraded: transient provider error, retrying for consensus";
+      const nextRetryAt = computeNextRetryAt(deps.now(), attemptsAfterClaim);
+      await deps.markReviewFailedForRetry({ reviewId, nextRetryAt, error });
+      logInfo("worker.degraded_retry_scheduled", {
+        reviewId,
+        source,
+        attempts: attemptsAfterClaim,
+        nextRetryAt: nextRetryAt.toISOString(),
+      });
+      return { kind: "retried", reviewId, attempts: attemptsAfterClaim, nextRetryAt, error };
+    }
+
     await deps.markReviewSucceeded({ reviewId, now: deps.now() });
     logInfo("worker.completed", {
       reviewId,
       source,
       attempts: attemptsAfterClaim,
+      agreedCount: signal.agreedCount,
+      degraded: signal.degraded,
     });
-    return { kind: "done", reviewId, agreedCount: 0, degraded: false };
+    return {
+      kind: "done",
+      reviewId,
+      agreedCount: signal.agreedCount,
+      degraded: signal.degraded,
+    };
   } catch (err) {
     const message = messageOf(err);
     const retryable = isTransientError(err);
@@ -441,6 +481,17 @@ export type ReviewKernelOutcome =
       kind: "completed";
       bundle: Awaited<ReturnType<typeof realReviewPR>>;
       findingIds: string[];
+      // Consensus outcome surfaced to the worker's retry decision (issue
+      // #134). `degraded` mirrors the persisted bundle. `retryableDegradation`
+      // is true only when the review degraded AND at least one FAILED provider
+      // (output === null) carried a transient error — i.e. re-running both
+      // models has a real chance of reaching 2/2. A degraded review whose
+      // failures were all persistent (non-transient), or a non-degraded
+      // review, sets this false. `agreedCount` is the count of consensus
+      // findings actually recorded (0 when degraded).
+      degraded: boolean;
+      retryableDegradation: boolean;
+      agreedCount: number;
     };
 
 export type ReviewKernelDeps = {
@@ -1309,10 +1360,25 @@ export async function runReviewKernel(
     });
   }
 
+  // Issue #134 — surface the consensus/retryability signal to the worker's
+  // retry decision. A review degrades (bundle.degraded) when fewer than the
+  // required providers succeeded; it is RETRYABLE only when at least one of
+  // those FAILED providers (output === null) failed transiently, so a re-run
+  // of both models can plausibly reach true 2/2. Computed off the un-redacted
+  // `bundle` here (redaction only strips embargoed agreed findings, never
+  // perProvider, but we keep the read on the source of truth). A degraded
+  // review whose failures were all persistent → retryableDegradation false →
+  // the worker completes it as a terminal `done` degraded review, NOT failed.
+  const retryableDegradation =
+    bundle.degraded && bundle.perProvider.some((p) => p.output === null && p.transient);
+
   return {
     kind: "completed",
     bundle: redactBundleForPublicDisclosure(bundle, embargoedDisclosureIndexes),
     findingIds: redactFindingIdsForPublicDisclosure(findingIds, embargoedDisclosureIndexes),
+    degraded: bundle.degraded,
+    retryableDegradation,
+    agreedCount: bundle.agreed.length,
   };
 }
 
@@ -1910,18 +1976,31 @@ async function runInstallLane(args: {
   }
 }
 
+// What processClaimedRow reports back to runReviewWorker's success branch
+// (issue #134). The worker uses `retryableDegradation` to decide between
+// scheduling another attempt (transient degradation, attempts remain) and
+// completing as a terminal `done` degraded review. `agreedCount`/`degraded`
+// are the real values persisted by the kernel — the success branch reports
+// them in the WorkerOutcome instead of the old hardcoded 0/false.
+type ProcessedReviewSignal = {
+  degraded: boolean;
+  retryableDegradation: boolean;
+  agreedCount: number;
+};
+
 // Inner review work for the installation rail. After audit T2.3 this is
 // a thin wrapper around `runReviewKernel`: it fetches files using the
 // install-token client, then invokes the kernel with the install-only
 // lane (onboarder + patch agent + PR comment + click-apply) wired
 // through. Any throw bubbles up to runReviewWorker's catch where retry
-// decisions are made.
+// decisions are made. Returns the degraded/retryability signal (issue
+// #134) so the success branch can schedule a transient-degradation retry.
 async function processClaimedRow(
   reviewId: string,
   row: ReviewQueueRow & { installationId: number; owner: string; repo: string },
   deps: WorkerDeps,
   reviewAttempt: number,
-): Promise<void> {
+): Promise<ProcessedReviewSignal> {
   const installationToken = await deps.getInstallationToken(row.installationId);
   const files = await deps.getChangedFiles({
     installationId: row.installationId,
@@ -2024,54 +2103,22 @@ async function processClaimedRow(
       getRepoCyberTier: deps.getRepoCyberTier,
     },
   );
-  if (kernelOutcome.kind === "skipped") return;
-
   // installationToken is consumed implicitly through getChangedFiles /
   // postPRComment via the GitHub App auth path; the explicit fetch above
   // surfaces install-token failures early (before LLM calls). Suppress
   // the unused-binding lint.
   void installationToken;
-}
 
-// Heuristic: which errors are worth retrying. The cheap signal we have
-// is the error message string — the SDKs we use (Anthropic, OpenAI,
-// Octokit) all surface HTTP status codes in the message. Anything that
-// looks like a transient infra problem (429, 5xx, fetch failed, timeout)
-// is retryable. Anything that looks like our own bug or a 4xx other
-// than 429 is not — retrying won't help and we'd burn LLM budget.
-export function isTransientError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  const lower = message.toLowerCase();
-  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("rate_limit")) {
-    return true;
+  // Empty-files skip is a clean terminal outcome — never degraded, never
+  // retryable (there was nothing to review).
+  if (kernelOutcome.kind === "skipped") {
+    return { degraded: false, retryableDegradation: false, agreedCount: 0 };
   }
-  if (
-    lower.includes("500") ||
-    lower.includes("502") ||
-    lower.includes("503") ||
-    lower.includes("504")
-  ) {
-    return true;
-  }
-  if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("aborted")) {
-    return true;
-  }
-  if (
-    lower.includes("etimedout") ||
-    lower.includes("econnreset") ||
-    lower.includes("econnrefused")
-  ) {
-    return true;
-  }
-  if (lower.includes("fetch failed") || lower.includes("network")) {
-    return true;
-  }
-  // reviewPR itself never throws on per-provider failure (each provider
-  // is caught and surfaced in perProvider.error). But if the WHOLE
-  // pipeline throws, it's almost certainly an infrastructure issue;
-  // err on the retryable side. Terminal-failure on attempts cap will
-  // still stop the bleeding.
-  return true;
+  return {
+    degraded: kernelOutcome.degraded,
+    retryableDegradation: kernelOutcome.retryableDegradation,
+    agreedCount: kernelOutcome.agreedCount,
+  };
 }
 
 // Compute the absolute timestamp at which the next retry becomes eligible.

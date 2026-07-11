@@ -48,6 +48,7 @@ function mkBundle(overrides: Record<string, unknown> = {}): {
     modelId: string;
     output: { findings: unknown[] } | null;
     error: string | null;
+    transient: boolean;
     ms: number;
   }>;
   modelIds: Record<string, string>;
@@ -67,9 +68,17 @@ function mkBundle(overrides: Record<string, unknown> = {}): {
         modelId: "m1",
         output: { findings: [mkFinding()] },
         error: null,
+        transient: false,
         ms: 1000,
       },
-      { name: "openai", modelId: "m2", output: { findings: [mkFinding()] }, error: null, ms: 1100 },
+      {
+        name: "openai",
+        modelId: "m2",
+        output: { findings: [mkFinding()] },
+        error: null,
+        transient: false,
+        ms: 1100,
+      },
     ],
     modelIds: { anthropic: "m1", openai: "m2" },
     agreed: [mkFinding()],
@@ -700,6 +709,9 @@ describe("runReviewWorker", () => {
   });
 
   it("does not post a comment when the review degrades", async () => {
+    // Both providers succeeded in mkBundle's default perProvider, so this
+    // degraded bundle has NO failed (output === null) provider — it is a
+    // non-retryable degradation and completes as a terminal `done`.
     const deps = mkDeps({
       reviewPR: vi.fn().mockResolvedValue(mkBundle({ degraded: true, agreed: [] })),
     });
@@ -708,6 +720,118 @@ describe("runReviewWorker", () => {
     expect(deps.postPRComment).not.toHaveBeenCalled();
     expect(deps.recordFindingStatuses).not.toHaveBeenCalled();
     expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  // Issue #134 — transient-degradation retry. reviewPR CATCHES provider
+  // errors and returns a degraded bundle (agreed=[], degraded=true) rather
+  // than throwing, so the worker's success branch — not its catch — owns the
+  // retry decision. A degraded review whose failing provider erred TRANSIENTLY
+  // must be retried (both models re-run, can reach 2/2); one that exhausted
+  // its attempts or degraded for a PERSISTENT reason must complete as a
+  // terminal `done` degraded review (never `failed`, never alertCritical).
+  describe("issue #134 — transient degradation retry", () => {
+    // A degraded bundle: the surviving provider (anthropic) returned nothing
+    // consensus-worthy on its own; the other (openai) FAILED. `transient`
+    // toggles whether that failure is retryable infra noise.
+    function degradedBundle(opts: { transient: boolean }) {
+      return mkBundle({
+        degraded: true,
+        degradedReason: "1/2 providers succeeded; unanimous requires 2",
+        agreed: [],
+        perProvider: [
+          {
+            name: "anthropic",
+            modelId: "m1",
+            output: { findings: [] },
+            error: null,
+            transient: false,
+            ms: 1000,
+          },
+          {
+            name: "openai",
+            modelId: "m2",
+            output: null,
+            error: opts.transient ? "HTTP 429 rate limit exceeded" : "invalid JSON from model",
+            transient: opts.transient,
+            ms: 1100,
+          },
+        ],
+      });
+    }
+
+    it("(a) schedules a retry when a provider failed TRANSIENTLY and attempts remain", async () => {
+      const deps = mkDeps({
+        loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow({ processingAttempts: 0 })),
+        reviewPR: vi.fn().mockResolvedValue(degradedBundle({ transient: true })),
+      });
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+      expect(outcome.kind).toBe("retried");
+      expect(deps.markReviewFailedForRetry).toHaveBeenCalledTimes(1);
+      const args = (deps.markReviewFailedForRetry as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(args.reviewId).toBe("rev-1");
+      // First failure → 60-second backoff (same schedule as thrown transients).
+      expect(args.nextRetryAt.getTime() - NOW.getTime()).toBe(60_000);
+      expect(args.error).toMatch(/degraded: transient/u);
+      // The degraded bundle was still persisted before the retry decision.
+      expect(deps.updateReview).toHaveBeenCalled();
+      // Not a success, not a terminal failure.
+      expect(deps.markReviewSucceeded).not.toHaveBeenCalled();
+      expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+      expect(deps.postPRComment).not.toHaveBeenCalled();
+    });
+
+    it("(b) completes as done-degraded (no retry) when attempts are exhausted", async () => {
+      // attemptsAfterClaim === MAX_PROCESSING_ATTEMPTS after the pre-claim
+      // bump — the retry guard (attemptsAfterClaim < MAX) is false.
+      const deps = mkDeps({
+        loadReviewQueueRow: vi
+          .fn()
+          .mockResolvedValue(mkRow({ processingAttempts: MAX_PROCESSING_ATTEMPTS - 1 })),
+        reviewPR: vi.fn().mockResolvedValue(degradedBundle({ transient: true })),
+      });
+      const outcome = await runReviewWorker("rev-1", "cron", deps);
+      expect(outcome.kind).toBe("done");
+      if (outcome.kind === "done") {
+        expect(outcome.degraded).toBe(true);
+        expect(outcome.agreedCount).toBe(0);
+      }
+      // Terminal done — bundle persisted, marked succeeded, NOT failed, no alert.
+      expect(deps.updateReview).toHaveBeenCalled();
+      expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+      expect(deps.markReviewFailedForRetry).not.toHaveBeenCalled();
+      expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+      expect(deps.postPRComment).not.toHaveBeenCalled();
+    });
+
+    it("(c) completes as done-degraded immediately when the failure is NON-transient", async () => {
+      const deps = mkDeps({
+        loadReviewQueueRow: vi.fn().mockResolvedValue(mkRow({ processingAttempts: 0 })),
+        reviewPR: vi.fn().mockResolvedValue(degradedBundle({ transient: false })),
+      });
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+      expect(outcome.kind).toBe("done");
+      if (outcome.kind === "done") {
+        expect(outcome.degraded).toBe(true);
+        expect(outcome.agreedCount).toBe(0);
+      }
+      expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+      expect(deps.markReviewFailedForRetry).not.toHaveBeenCalled();
+      expect(deps.markReviewTerminallyFailed).not.toHaveBeenCalled();
+    });
+
+    it("(d) a healthy 2/2 review still completes done with degraded=false (unchanged)", async () => {
+      const deps = mkDeps();
+      const outcome = await runReviewWorker("rev-1", "webhook", deps);
+      expect(outcome.kind).toBe("done");
+      if (outcome.kind === "done") {
+        expect(outcome.degraded).toBe(false);
+        // mkBundle's default has one agreed finding.
+        expect(outcome.agreedCount).toBe(1);
+      }
+      expect(deps.markReviewSucceeded).toHaveBeenCalledTimes(1);
+      expect(deps.markReviewFailedForRetry).not.toHaveBeenCalled();
+      expect(deps.postPRComment).toHaveBeenCalledTimes(1);
+    });
   });
 
   // Patch Agent v1.5 — wiring tests. The orchestrator runs between
@@ -1279,6 +1403,25 @@ describe("isTransientError", () => {
     expect(isTransientError(new Error("ETIMEDOUT"))).toBe(true);
     expect(isTransientError(new Error("ECONNRESET"))).toBe(true);
     expect(isTransientError(new Error("fetch failed"))).toBe(true);
+  });
+
+  it("treats deterministic auth + oversize-input failures as NON-transient (retry can't help)", () => {
+    expect(isTransientError(new Error("HTTP 401 invalid api key"))).toBe(false);
+    expect(isTransientError(new Error("403 Forbidden"))).toBe(false);
+    expect(isTransientError(new Error("authentication failed"))).toBe(false);
+    expect(isTransientError(new Error("HTTP 413 payload too large"))).toBe(false);
+    expect(isTransientError(new Error("maximum context length exceeded"))).toBe(false);
+    expect(isTransientError(new Error("too many tokens in prompt"))).toBe(false);
+  });
+
+  it("keeps model schema/parse failures transient — they are stochastic and a re-sample recovers them (#134)", () => {
+    // Deliberately NOT denylisted: a Zod parse throw carries no HTTP-status
+    // substring, so it falls through to retryable — exactly what #134 needs.
+    expect(isTransientError(new Error("Invalid input: expected string, received undefined"))).toBe(
+      true,
+    );
+    expect(isTransientError(new Error("model returned malformed output"))).toBe(true);
+    expect(isTransientError(new Error("something unexpected"))).toBe(true);
   });
 });
 
