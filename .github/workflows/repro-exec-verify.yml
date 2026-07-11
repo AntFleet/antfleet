@@ -1,0 +1,124 @@
+# Contained CI repro-execution verifier (issue #133, Build 2b-2).
+#
+# This workflow EXECUTES MODEL-GENERATED CODE — the repro `cmd` that the
+# anthropic provider authored per finding (lib/repro-verifier.ts →
+# runReproVerifier). The process-level hardening inside that module is NOT a
+# security boundary against attacker-authored code; the 2026-07-11 audit was
+# explicit that it must be paired with a disposable, secretless CI runner. This
+# workflow IS that containment:
+#
+#   1. Disposable runner  — a fresh ubuntu-latest VM, thrown away after the run.
+#   2. Per-step secret separation — the fetch/record steps get exactly the
+#      secret they need; the EXEC step gets NO secrets at all. The batch script's
+#      assertNoSecretsInEnv() fails the run CLOSED if any secret leaks into exec.
+#   3. Network-egress lockdown — before exec, iptables/ip6tables DROP all OUTPUT
+#      except loopback + established connections, so the model repro cannot phone
+#      home or hit cloud metadata.
+#
+# The ANTFLEET_REPRO_EXEC app flag stays OFF everywhere except the exec step's
+# own process (set explicitly below). DO NOT add secrets to the exec step — that
+# is the whole point of the containment. workflow_dispatch only (no schedule yet)
+# so a human triggers each run.
+
+name: repro-exec-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max candidate findings to fetch + execute"
+        required: false
+        default: "5"
+      repo:
+        description: "Optional owner/repo filter (blank = any)"
+        required: false
+        default: ""
+      record:
+        description: "Write verdicts to review_gate_outcomes (stage=repro_verify)"
+        required: false
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+
+jobs:
+  repro-exec-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.1.2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # ── fetch — WITH secrets (DB read + model call). Generates repro specs.
+      # Executes nothing. This is the only step that gets the model API key.
+      - name: fetch (generate repro specs)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: >
+          pnpm --dir apps/web exec tsx scripts/repro-verify-batch.ts
+          --phase fetch
+          --limit ${{ inputs.limit }}
+          --repo "${{ inputs.repo }}"
+          --out repro-specs.json
+
+      # ── egress lockdown — DROP all outbound network before we execute any
+      # model-generated code. Loopback (-o lo) and already-ESTABLISHED/RELATED
+      # connections are allowed so the runner's existing sockets keep working;
+      # every NEW outbound connection the repro tries to open is denied. This is
+      # what stops the model repro from reaching the network or cloud metadata.
+      - name: egress lockdown (deny outbound network to the repro)
+        run: |
+          sudo iptables -A OUTPUT -o lo -j ACCEPT
+          sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+          sudo iptables -A OUTPUT -j DROP
+          sudo ip6tables -A OUTPUT -o lo -j ACCEPT
+          sudo ip6tables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+          sudo ip6tables -A OUTPUT -j DROP
+
+      # ── exec — NO secrets. This is the security-critical step: it runs the
+      # model-generated repros. The ONLY env set here is the exec flag; NO
+      # DATABASE_URL / ANTHROPIC_API_KEY / token of any kind. The script's
+      # assertNoSecretsInEnv() proves that separation held and fails the run
+      # CLOSED otherwise. DO NOT ADD SECRETS TO THIS STEP.
+      - name: exec (run model-generated repros — secretless)
+        env:
+          ANTFLEET_REPRO_EXEC: "true"
+        run: >
+          pnpm --dir apps/web exec tsx scripts/repro-verify-batch.ts
+          --phase exec
+          --in repro-specs.json
+          --out repro-verdicts.json
+
+      # ── record — WITH the DB secret, but only when the operator opted in.
+      # Writes one review_gate_outcomes row per verdict (stage=repro_verify).
+      - name: record (persist verdicts)
+        if: ${{ inputs.record == 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: >
+          pnpm --dir apps/web exec tsx scripts/repro-verify-batch.ts
+          --phase record
+          --in repro-verdicts.json
+          --record
+
+      # ── artifacts — always upload both JSON files for audit, even on failure.
+      - name: upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-exec-verify
+          # The batch script runs via `pnpm --dir apps/web exec`, whose cwd is
+          # apps/web, so it writes the JSON files there — not at the repo root.
+          path: |
+            apps/web/repro-specs.json
+            apps/web/repro-verdicts.json
+          if-no-files-found: warn
