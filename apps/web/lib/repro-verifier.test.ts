@@ -403,7 +403,7 @@ describe("runReproVerifier", () => {
     expect(removeDir).toHaveBeenCalledTimes(2);
   });
 
-  it("proves the bug with a file=null bare-curl repro without writing anything", async () => {
+  it("returns no_runner (never verified) when no test runner is detected, even with a clean repro differential", async () => {
     let curlCall = 0;
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
       if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
@@ -413,8 +413,9 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    // No runner detected → post-patch test step is skipped; the two repro runs
-    // still gate the verdict.
+    // exists all-false → detectRunner returns "none". A `verified` proof must
+    // confirm non-regression, so with no runner the verdict is inconclusive and
+    // the post-patch repro never runs. (Audit 2026-07-11: was false-verified.)
     const writeFileNoClobber = vi.fn(async () => {});
     const out = await runReproVerifier({
       ...BASE_ARGS,
@@ -422,10 +423,121 @@ describe("runReproVerifier", () => {
       finding: mkFinding(),
       io: mkIo({ exec, writeFileNoClobber }),
     });
-    expect(out.verdict).toBe("verified");
-    expect(out.reproPreExitCode).toBe(0);
-    expect(out.reproPostExitCode).toBe(7);
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("verified");
+    expect(out.inconclusiveReason).toBe("no_runner");
+    expect(out.reproPreExitCode).toBe(0); // differential WAS observed pre-patch
     expect(out.detector).toBe("none");
+    expect(curlCall).toBe(1); // post-patch repro never ran
+    expect(writeFileNoClobber).not.toHaveBeenCalled();
+  });
+
+  it("returns abnormal_exit (never verified) when the post-patch repro exits null without timing out", async () => {
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") return ok("all pass");
+      if (command === "pytest") {
+        pytestCall += 1;
+        // pre: exit 0 (reproduces). post: null exit that is NOT a timeout
+        // (signal / OOM / spawn failure) — must NOT be treated as "fixed".
+        return pytestCall === 1
+          ? ok("bug reproduced")
+          : { exitCode: null, stdout: "", stderr: "killed", ms: 5, timedOut: false };
+      }
+      return ok();
+    });
+    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("verified");
+    expect(out.inconclusiveReason).toBe("abnormal_exit");
+    expect(out.reproPreExitCode).toBe(0);
+    expect(pytestCall).toBe(2);
+  });
+
+  it("returns abnormal_exit (not regressed) when the post-patch test suite exits null without timing out", async () => {
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test")
+        return { exitCode: null, stdout: "", stderr: "runner crashed", ms: 5, timedOut: false };
+      if (command === "pytest") {
+        pytestCall += 1;
+        return ok("bug reproduced"); // pre-patch exit 0
+      }
+      return ok();
+    });
+    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("regressed");
+    expect(out.inconclusiveReason).toBe("abnormal_exit");
+    // A patch is NOT dropped for an undecidable suite; post-patch repro skipped.
+    expect(pytestCall).toBe(1);
+  });
+
+  it("removes the repro before the test suite and re-materialises it before the post-patch run", async () => {
+    const removed: string[] = [];
+    const written: string[] = [];
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") return ok("pass");
+      if (command === "pytest") {
+        pytestCall += 1;
+        return pytestCall === 1 ? ok("reproduced") : fail("fixed", 1);
+      }
+      return ok();
+    });
+    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const io = mkIo({ exec, exists });
+    io.removeDir = vi.fn(async (p: string) => {
+      removed.push(p);
+    });
+    io.writeFileNoClobber = vi.fn(async (p: string) => {
+      written.push(p);
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io,
+    });
+    expect(out.verdict).toBe("verified");
+    // The repro leaf was removed before the suite (so the runner can't collect
+    // the failing repro and flip a correct patch to regressed)…
+    expect(removed.some((p) => p.endsWith("/repro_test.py"))).toBe(true);
+    // …and written TWICE: the initial write + the pre-post-run re-materialise.
+    expect(written.filter((p) => p.endsWith("/repro_test.py"))).toHaveLength(2);
+  });
+
+  it("refuses to write and returns unsafe_repro_write when the repro contents exceed the byte cap", async () => {
+    const writeFileNoClobber = vi.fn(async () => {});
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      return ok();
+    });
+    const huge = "a".repeat(20000); // well over REPRO_FILE_MAX_BYTES
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro({ file: { path: "repro_test.py", contents: huge } }),
+      finding: mkFinding(),
+      io: mkIo({ exec, writeFileNoClobber }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.inconclusiveReason).toBe("unsafe_repro_write");
+    expect(out.notes).toMatch(/exceed .*bytes/);
     expect(writeFileNoClobber).not.toHaveBeenCalled();
   });
 });

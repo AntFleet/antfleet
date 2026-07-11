@@ -33,8 +33,27 @@
 //     matchesPocCommandAllowlist + a \p{Cc} control-char reject before exec,
 //     and is spawned argv-direct (never through a shell).
 //   - The repro file write is symlink-safe (lstat no-follow on every path
-//     component), no-clobber, refuses any path under .git, and is confined to
-//     the worktree via a resolve + startsWith check.
+//     component), no-clobber, refuses any path under .git, size-capped, and is
+//     confined to the worktree via a resolve + startsWith check.
+//
+// CONTAINMENT IS BUILD 2b-2's JOB (do NOT enable ANTFLEET_REPRO_EXEC without it).
+// A 3-lane external audit (2026-07-11) confirmed the process-level hardening here
+// (minimalEnv secret-strip on BOTH spawns, /tmp worktree, timeout, teardown) is
+// NOT a security boundary against attacker-authored code and MUST be paired with
+// the disposable-CI-runner model before the flag is turned on. Explicitly
+// out-of-scope for THIS module and deferred to 2b-2's runner:
+//   - separate PID/user/mount namespaces + restricted procfs (a same-UID payload
+//     can otherwise read the launcher's /proc/<ppid>/environ),
+//   - network-egress / cloud-metadata denial at the network layer (minimalEnv's
+//     IMDS vars only stop cooperative SDKs),
+//   - whole-process-tree / cgroup teardown (the timeout SIGKILLs only the direct
+//     child; a daemonized grandchild survives),
+//   - openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS) to fully close the parent-dir
+//     symlink TOCTOU (the leaf is already O_EXCL/`wx` no-clobber safe).
+// The verdict is also an UNTRUSTED differential: the repro is model-authored, so
+// a `verified` proves "exit 0 pre → non-zero post under the test suite", not a
+// cryptographic guarantee the patch is the cause. It is a strictly stronger
+// signal than the assume-reproduction PoC path, contained to a suggestion tag.
 //
 // runPatchVerifier is UNCHANGED and independent — its PoC path does not run
 // through here.
@@ -42,7 +61,7 @@
 import type { Finding } from "./review-types";
 import type { ReproTestSuggestion } from "@antfleet/cli/types";
 import { isReproExecEnabled } from "./daybreak-gates-env";
-import { isSafeReproPath } from "./repro-generation";
+import { isSafeReproPath, REPRO_FILE_MAX_BYTES } from "./repro-generation";
 import {
   detectRunner,
   isSafeRepoUrl,
@@ -213,7 +232,10 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     }
 
     // Write the generated repro file SAFELY, if one was provided. A bare-curl
-    // repro carries file=null and needs no write.
+    // repro carries file=null and needs no write. Capture the resolved absolute
+    // path so we can remove it before the test suite (so the runner cannot
+    // auto-collect it) and re-materialise it before the post-patch run.
+    let writtenReproPath: string | null = null;
     if (args.repro.file !== null) {
       const write = await safeWriteReproFile(args.io, worktree, args.repro.file);
       if (!write.ok) {
@@ -224,6 +246,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
           kind: write.kind,
         });
       }
+      writtenReproPath = write.absolutePath;
     }
 
     // ── Observation 1: run the repro PRE-patch. Require exit 0 == the bug
@@ -279,62 +302,127 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
-    // Post-patch test suite. A clean non-zero exit → regressed (patch broke
-    // the suite). A timeout is inconclusive (do not drop a legit patch for a
-    // slow suite), mirroring runPatchVerifier.
+    // Post-patch test suite. A `verified` proof asserts the patch did not break
+    // the build, so a runner is REQUIRED: with none detected we cannot confirm
+    // non-regression and must NOT reach verified on the repro differential
+    // alone. Return inconclusive `no_runner`, matching runPatchVerifier. (Audit
+    // 2026-07-11: `verified` was reachable with detector.kind === "none".)
     const detector = await detectRunner(args.io, worktree);
-    let testCmd: string | null = null;
-    let testExitCode: number | null = null;
-    let testMs: number | null = null;
-    if (detector.kind !== "none") {
-      const testStep = await runTestStep(args.io, worktree, detector, timeoutMs, sandboxEnv);
-      testCmd = detector.cmd;
-      testMs = testStep.ms;
-      if (testStep.timedOut) {
+    if (detector.kind === "none") {
+      return reproInconclusive({
+        worktreePath: worktree,
+        notes:
+          "no test runner detected post-patch — cannot confirm non-regression; " +
+          "a repro differential alone is not a verified proof",
+        ms: args.io.now() - t0,
+        kind: "no_runner",
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+
+    // Remove the written repro BEFORE the suite so the runner cannot auto-collect
+    // it (pytest discovers `*_test.py`, etc.). The repro is DESIGNED to fail
+    // post-patch; letting the suite execute it would flip a correct patch to a
+    // false `regressed`. We re-materialise it from the SAME trusted stored
+    // contents before Observation 2 — which also RESETS any self-modification the
+    // pre-patch run made to the file. (Audit 2026-07-11: pytest self-collection +
+    // shared-mutable-state.)
+    if (writtenReproPath !== null) {
+      try {
+        await args.io.removeDir(writtenReproPath);
+      } catch {
+        // best effort — if it survives, the suite may collect it; the no-clobber
+        // re-materialise below then fails closed (unsafe_repro_write).
+      }
+    }
+
+    const testStep = await runTestStep(args.io, worktree, detector, timeoutMs, sandboxEnv);
+    const testCmd: string = detector.cmd;
+    const testMs: number = testStep.ms;
+    if (testStep.timedOut) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: `tests killed after ${timeoutMs}ms — verifier cannot decide (testCmd=${detector.cmd})`,
+        ms: args.io.now() - t0,
+        kind: "test_timeout",
+        testCmd,
+        testMs,
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+    // A null test exit that did NOT time out (signal / OOM / missing runner exe)
+    // is infrastructure uncertainty, NOT evidence the patch broke tests. Do not
+    // drop a good patch — return inconclusive rather than regressed. (Audit
+    // 2026-07-11: abnormal test termination classified as regressed.)
+    if (typeof testStep.exitCode !== "number") {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: "post-patch tests produced no exit code (abnormal termination) — cannot decide",
+        ms: args.io.now() - t0,
+        kind: "abnormal_exit",
+        testCmd,
+        testMs,
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+    const testExitCode: number = testStep.exitCode;
+    if (testExitCode !== 0) {
+      return {
+        verdict: "regressed",
+        detector: detector.kind,
+        testCmd,
+        testExitCode,
+        testMs,
+        pocCmd: null,
+        pocExitCode: null,
+        pocMs: null,
+        ms: args.io.now() - t0,
+        notes: `tests failed after patch (exit ${testExitCode}): ${truncate(testStep.stderr)}`,
+        worktreePath: worktree,
+        error: null,
+        inconclusiveReason: null,
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPostExitCode: null,
+        reproPreMs: preStep.ms,
+        reproPostMs: null,
+      };
+    }
+
+    // Re-materialise the repro for Observation 2 (removed before the suite).
+    // safeWriteReproFile re-runs the FULL symlink / clobber / size gate, so if
+    // the just-run test suite planted anything at the path we fail closed.
+    if (writtenReproPath !== null && args.repro.file !== null) {
+      const rewrite = await safeWriteReproFile(args.io, worktree, args.repro.file);
+      if (!rewrite.ok) {
         return reproInconclusive({
           worktreePath: worktree,
           detector: detector.kind,
-          notes: `tests killed after ${timeoutMs}ms — verifier cannot decide (testCmd=${detector.cmd})`,
+          notes: `could not re-materialise repro for the post-patch run: ${rewrite.notes}`,
           ms: args.io.now() - t0,
-          kind: "test_timeout",
-          testCmd: detector.cmd,
-          testMs: testStep.ms,
+          kind: rewrite.kind,
+          testCmd,
+          testExitCode,
+          testMs,
           reproCmd,
           reproPreExitCode: preStep.exitCode,
           reproPreMs: preStep.ms,
         });
       }
-      testExitCode = testStep.exitCode;
-      if (testStep.exitCode !== 0) {
-        return {
-          verdict: "regressed",
-          detector: detector.kind,
-          testCmd: detector.cmd,
-          testExitCode: testStep.exitCode,
-          testMs: testStep.ms,
-          pocCmd: null,
-          pocExitCode: null,
-          pocMs: null,
-          ms: args.io.now() - t0,
-          notes: `tests failed after patch (exit ${
-            testStep.exitCode ?? "null"
-          }): ${truncate(testStep.stderr)}`,
-          worktreePath: worktree,
-          error: null,
-          inconclusiveReason: null,
-          reproCmd,
-          reproPreExitCode: preStep.exitCode,
-          reproPostExitCode: null,
-          reproPreMs: preStep.ms,
-          reproPostMs: null,
-        };
-      }
     }
 
-    // ── Observation 2: run the repro POST-patch. Require exit non-zero == the
-    // bug is fixed. A repro timeout post-patch is inconclusive; a still-0 exit
-    // means the patch did not close the bug → regressed; a non-zero exit is the
-    // proof → verified, with BOTH observations recorded.
+    // ── Observation 2: run the repro POST-patch. Require a CONCRETE non-zero
+    // exit == the bug is fixed. A timeout is inconclusive; a still-0 exit means
+    // the patch did not close the bug → regressed; a null exit (signal / spawn
+    // failure that did NOT time out) is NOT proof → inconclusive, never verified.
     const postStep = await runReproStep(args.io, worktree, reproCmd, timeoutMs, sandboxEnv);
     if (postStep.timedOut) {
       return reproInconclusive({
@@ -374,6 +462,27 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         reproPostMs: postStep.ms,
       };
     }
+    // Non-timeout null post-patch exit: the repro produced NO exit code, which is
+    // not proof the bug is fixed. Refuse to claim verified. (Audit 2026-07-11:
+    // `exitCode: null` post-patch was recorded as verified.)
+    if (typeof postStep.exitCode !== "number") {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes:
+          "repro produced no exit code post-patch (abnormal termination) — " +
+          "cannot confirm the fix; not verified",
+        ms: args.io.now() - t0,
+        kind: "abnormal_exit",
+        testCmd,
+        testExitCode,
+        testMs,
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+        reproPostMs: postStep.ms,
+      });
+    }
     return {
       verdict: "verified",
       detector: detector.kind,
@@ -384,9 +493,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       pocExitCode: null,
       pocMs: null,
       ms: args.io.now() - t0,
-      notes: `PROVED: repro exited 0 pre-patch (bug reproduced) and exit ${
-        postStep.exitCode ?? "null"
-      } post-patch (bug fixed)`,
+      notes: `PROVED: repro exited 0 pre-patch (bug reproduced) and exit ${postStep.exitCode} post-patch (bug fixed); test suite passed`,
       worktreePath: worktree,
       error: null,
       inconclusiveReason: null,
@@ -445,7 +552,7 @@ async function runReproStep(
 }
 
 type SafeWriteResult =
-  | { ok: true }
+  | { ok: true; absolutePath: string }
   | { ok: false; kind: "unsafe_repro_write" | "invalid_input"; notes: string };
 
 // Write the generated repro file into the worktree with every write-side
@@ -471,6 +578,17 @@ async function safeWriteReproFile(
       ok: false,
       kind: "unsafe_repro_write",
       notes: `repro file path '${file.path}' failed the safe-path gate; refusing to write`,
+    };
+  }
+  // Re-enforce the content-size cap at the WRITE boundary (defense in depth).
+  // Generation already caps at REPRO_FILE_MAX_BYTES, but THIS is the code that
+  // puts bytes on disk — an alternate or mutated caller must not be able to
+  // plant an arbitrarily large file. Byte length (not char length) is the cap.
+  if (Buffer.byteLength(file.contents, "utf8") > REPRO_FILE_MAX_BYTES) {
+    return {
+      ok: false,
+      kind: "unsafe_repro_write",
+      notes: `repro file '${file.path}' contents exceed ${REPRO_FILE_MAX_BYTES} bytes; refusing to write`,
     };
   }
   // Never write under .git — a repro that plants a hook / config there could
@@ -533,7 +651,7 @@ async function safeWriteReproFile(
       }`,
     };
   }
-  return { ok: true };
+  return { ok: true, absolutePath: absoluteTarget };
 }
 
 // Inconclusive-outcome builder for the repro path. Mirrors patch-verifier's
@@ -592,11 +710,14 @@ export async function realReproVerifierIo(): Promise<ReproVerifierIo> {
     lstatIsSymlink: async (path) => {
       try {
         return (await lstat(path)).isSymbolicLink();
-      } catch {
-        // Path does not exist yet (a not-yet-created intermediate dir or the
-        // target leaf) → it is not a symlink. Non-existence is safe; the
-        // no-clobber write handles the leaf.
-        return false;
+      } catch (err) {
+        // ENOENT is the expected, safe case: the intermediate dir or leaf does
+        // not exist yet → it is not a symlink (the no-clobber `wx` write handles
+        // the leaf). ANY OTHER error (EACCES, ELOOP, EIO, …) is treated AS a
+        // symlink → fail CLOSED and refuse the write rather than silently
+        // proceeding. (Audit 2026-07-11: all lstat errors were read as "safe".)
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+        return true;
       }
     },
     writeFileNoClobber: async (path, contents, mode) => {

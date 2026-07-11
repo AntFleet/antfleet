@@ -68,8 +68,11 @@ export type InconclusiveReason =
   | "no_repro" // model declined (repro.cmd === null)
   | "repro_not_reproducing" // repro did NOT exit 0 pre-patch → bug unproven
   | "repro_timeout" // repro cmd exceeded the wall-clock cap
-  | "unsafe_repro_write" // repro file path failed a symlink / clobber / .git check
-  | "patch_apply_failed"; // git apply of the patch failed under the repro path
+  | "unsafe_repro_write" // repro file path failed a symlink / clobber / .git / size check
+  | "patch_apply_failed" // git apply of the patch failed under the repro path
+  | "abnormal_exit"; // a repro/test step returned NO exit code (signal / OOM /
+// spawn failure) that did NOT time out — infra uncertainty, never a `verified`
+// proof or a `regressed` drop. Only runReproVerifier emits it.
 
 export type RunnerKind = "pnpm" | "npm" | "go" | "pytest" | "none";
 
