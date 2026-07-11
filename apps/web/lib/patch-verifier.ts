@@ -58,7 +58,21 @@ export type InconclusiveReason =
   | "no_repo_url"
   | "invalid_input"
   | "setup_failed"
-  | "exception";
+  | "exception"
+  // Repro-execution verifier (issue #133, Build 2b) reasons. These are only
+  // ever produced by runReproVerifier (repro-verifier.ts); runPatchVerifier
+  // never emits them. Kept on the shared union so the gate-outcomes side table
+  // and pr-comment renderer can carry either verifier's reason without a
+  // second type.
+  | "repro_exec_disabled" // ANTFLEET_REPRO_EXEC flag is OFF — no cmd was run
+  | "no_repro" // model declined (repro.cmd === null)
+  | "repro_not_reproducing" // repro did NOT exit 0 pre-patch → bug unproven
+  | "repro_timeout" // repro cmd exceeded the wall-clock cap
+  | "unsafe_repro_write" // repro file path failed a symlink / clobber / .git / size check
+  | "patch_apply_failed" // git apply of the patch failed under the repro path
+  | "abnormal_exit"; // a repro/test step returned NO exit code (signal / OOM /
+// spawn failure) that did NOT time out — infra uncertainty, never a `verified`
+// proof or a `regressed` drop. Only runReproVerifier emits it.
 
 export type RunnerKind = "pnpm" | "npm" | "go" | "pytest" | "none";
 
@@ -81,6 +95,18 @@ export type PatchVerifyOutcome = {
   // whether to tag the suggestion `(unverified)` (genuine indecision) vs.
   // a softer note (no PoC, no test runner, killed by timeout, …).
   inconclusiveReason: InconclusiveReason | null;
+  // Repro-execution proof (issue #133, Build 2b). Populated ONLY by
+  // runReproVerifier — runPatchVerifier leaves these undefined. They record
+  // the two-observation proof that makes a repro `verified` verdict a real
+  // proof rather than an assume-reproduction: the repro's exit code BEFORE the
+  // patch (must be 0 == bug reproduces) and AFTER the patch (must be non-zero
+  // == bug fixed). Optional so every existing PatchVerifyOutcome constructor
+  // stays valid without churn.
+  reproCmd?: string | null;
+  reproPreExitCode?: number | null;
+  reproPostExitCode?: number | null;
+  reproPreMs?: number | null;
+  reproPostMs?: number | null;
 };
 
 export type ExecResult = {
@@ -492,7 +518,10 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
 // Run a fixed sequence of setup commands (init / remote / fetch / checkout)
 // and short-circuit on the first non-zero exit. Returns a structured note
 // the caller can drop straight into a verdict payload.
-async function runSetupSteps(
+//
+// Exported so runReproVerifier (repro-verifier.ts) reuses the EXACT same
+// clone/checkout mechanics instead of reinventing the sandbox setup.
+export async function runSetupSteps(
   io: PatchVerifierIo,
   worktree: string,
   steps: ReadonlyArray<{ command: string; args: string[] }>,
@@ -522,7 +551,10 @@ async function runSetupSteps(
 // Priority: pnpm-lock.yaml → package-lock.json → go.mod → pyproject.toml /
 // requirements.txt. A repo with multiple manifests resolves to the first
 // hit in priority order (pnpm wins over npm wins over go wins over python).
-async function detectRunner(
+//
+// Exported so runReproVerifier (repro-verifier.ts) reuses the identical runner
+// detection for its post-patch test-suite step.
+export async function detectRunner(
   io: PatchVerifierIo,
   worktree: string,
 ): Promise<{ kind: RunnerKind; cmd: string }> {
@@ -549,7 +581,9 @@ async function detectRunner(
   return { kind: "none", cmd: "" };
 }
 
-async function runTestStep(
+// Exported so runReproVerifier (repro-verifier.ts) runs the post-patch test
+// suite through the exact same runner + spawn path.
+export async function runTestStep(
   io: PatchVerifierIo,
   worktree: string,
   detector: { kind: RunnerKind; cmd: string },
@@ -702,14 +736,17 @@ export function isSafeSha(sha: string): boolean {
 }
 
 // "pnpm test" → { command: "pnpm", args: ["test"] }. Naive whitespace split
-// is acceptable because the runner commands above are static.
-function splitCommand(cmd: string): { command: string; args: string[] } {
+// is acceptable because the runner commands above are static AND because the
+// only user-derived command that reaches this (a repro `cmd` in
+// runReproVerifier) is allowlist + control-char validated first, so it never
+// contains a shell metacharacter to mis-split.
+export function splitCommand(cmd: string): { command: string; args: string[] } {
   const parts = cmd.split(/\s+/u).filter((s) => s.length > 0);
   if (parts.length === 0) return { command: "true", args: [] };
   return { command: parts[0]!, args: parts.slice(1) };
 }
 
-function truncate(s: string): string {
+export function truncate(s: string): string {
   if (s.length <= 800) return s;
   return s.slice(0, 800) + "…";
 }
