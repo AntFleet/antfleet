@@ -86,7 +86,7 @@ function mkRepro(overrides: Partial<ReproTestSuggestion> = {}): ReproTestSuggest
 }
 
 const BASE_ARGS = {
-  repoUrl: "https://github.com/o/r.git",
+  repoSource: { kind: "online" as const, url: "https://github.com/o/r.git" },
   sha: "abc1234",
   patch: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
 };
@@ -375,10 +375,10 @@ describe("runReproVerifier", () => {
     expect(pytestCall).toBe(1); // never ran post-patch
   });
 
-  it("returns no_repo_url when repoUrl is null (after the flag + cmd gates)", async () => {
+  it("returns no_repo_url when the online url is null (after the flag + cmd gates)", async () => {
     const out = await runReproVerifier({
       ...BASE_ARGS,
-      repoUrl: null,
+      repoSource: { kind: "online", url: null },
       repro: mkRepro(),
       finding: mkFinding(),
       io: mkIo(),
@@ -541,7 +541,7 @@ describe("runReproVerifier", () => {
     expect(writeFileNoClobber).not.toHaveBeenCalled();
   });
 
-  it("clones from localMirrorDir OFFLINE and IGNORES repoUrl (no URL reaches git argv)", async () => {
+  it("clones from an offline mirror and no URL reaches git argv", async () => {
     const MIRROR = "/mnt/mirrors/o-r.git";
     let remoteAddSource: string | null = null;
     let sawHttpArg = false;
@@ -564,28 +564,27 @@ describe("runReproVerifier", () => {
     // exists=true for the mirror dir AND the pnpm lockfile; symlink=false.
     const exists = vi.fn(async (p: string) => p === MIRROR || p.endsWith("pnpm-lock.yaml"));
     const out = await runReproVerifier({
-      ...BASE_ARGS, // BASE_ARGS.repoUrl is an https URL — offline must IGNORE it
-      localMirrorDir: MIRROR,
+      ...BASE_ARGS,
+      repoSource: { kind: "offline", mirrorDir: MIRROR },
       repro: mkRepro(),
       finding: mkFinding(),
       io: mkIo({ exec, exists }),
     });
     expect(out.verdict).toBe("verified");
-    // Cloned from the LOCAL mirror; the http repoUrl never reached git argv.
+    // Cloned from the LOCAL mirror; no http URL ever reached git argv.
     expect(remoteAddSource).toBe(MIRROR);
     expect(sawHttpArg).toBe(false);
     expect(out.reproPreExitCode).toBe(0);
     expect(out.reproPostExitCode).toBe(2);
   });
 
-  it("rejects an unsafe localMirrorDir shape (relative / traversal / dash) without spawning", async () => {
+  it("rejects an unsafe offline mirrorDir shape (relative / traversal / dash) without spawning", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => ok());
     const io = mkIo({ exec });
     for (const bad of ["relative/mirror.git", "/mnt/../etc", "-x/mirror.git"]) {
       const out = await runReproVerifier({
         ...BASE_ARGS,
-        repoUrl: null,
-        localMirrorDir: bad,
+        repoSource: { kind: "offline", mirrorDir: bad },
         repro: mkRepro(),
         finding: mkFinding(),
         io,
@@ -598,7 +597,7 @@ describe("runReproVerifier", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it("returns invalid_input when the localMirrorDir is missing or a symlink", async () => {
+  it("returns invalid_input when the offline mirrorDir is missing or a symlink", async () => {
     const MIRROR = "/mnt/mirrors/o-r.git";
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
       if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
@@ -606,8 +605,7 @@ describe("runReproVerifier", () => {
     });
     const missing = await runReproVerifier({
       ...BASE_ARGS,
-      repoUrl: null,
-      localMirrorDir: MIRROR,
+      repoSource: { kind: "offline", mirrorDir: MIRROR },
       repro: mkRepro(),
       finding: mkFinding(),
       io: mkIo({ exec, exists: vi.fn(async () => false) }),
@@ -617,8 +615,7 @@ describe("runReproVerifier", () => {
 
     const symlinked = await runReproVerifier({
       ...BASE_ARGS,
-      repoUrl: null,
-      localMirrorDir: MIRROR,
+      repoSource: { kind: "offline", mirrorDir: MIRROR },
       repro: mkRepro(),
       finding: mkFinding(),
       io: mkIo({ exec, exists: vi.fn(async () => true), lstatIsSymlink: vi.fn(async () => true) }),

@@ -106,31 +106,37 @@ export type ReproVerifierIo = PatchVerifierIo & {
   writeFileNoClobber: (path: string, contents: string, mode: number) => Promise<void>;
 };
 
+// Git clone SOURCE — a discriminated union over the two clone modes. Folded
+// from the former (repoUrl + localMirrorDir) pair now that a real caller (the
+// #145 exec phase) drives the offline mode, so a spec can no longer set both
+// and the mode is explicit at the type level:
+//   - online:  clone the http(s) `url`. url null → inconclusive `no_repo_url`
+//     (no source to prove against, mirroring runPatchVerifier), e.g. a
+//     serverless / no-source finding.
+//   - offline: clone from `mirrorDir`, a local bare git mirror the TRUSTED
+//     fetch phase pre-materialised, so the verifier needs NO network — which is
+//     what lets the exec sandbox run under `--network none`. NOTE: that
+//     container-level flag (Build 2b-2 v2's job), NOT this module, is what
+//     actually denies the model repro all network; minimalEnv only strips
+//     secrets from the subprocess env.
+//
+// PART-3 MIRROR CONTRACT (offline) — the fetch phase MUST honor these, this
+// module trusts them: `mirrorDir` is validated defensively (isSafeLocalMirrorDir
+// + existence + a LEAF symlink check) even though it is our own path and never
+// carries model-controlled input; the mirror is disposable / mounted read-only
+// under a fixed trusted root (no repro may mutate it for a later call; the
+// leaf-only lstat here does NOT catch a symlinked ANCESTOR — a read-only trusted
+// root is what closes that), self-contained (no partial-clone promisor /
+// external alternates), and CONTAINS the reviewed SHA pinned under a durable ref
+// (e.g. refs/pull/<n>/head or refs/pinned/<sha>) so it survives GC and is
+// fetchable under any git protocol version (protocol v0 rejects an unadvertised
+// raw SHA).
+export type ReproRepoSource =
+  | { kind: "online"; url: string | null } // url null → no_repo_url (serverless/no-source)
+  | { kind: "offline"; mirrorDir: string }; // clone from a local bare mirror (no network)
+
 export type RunReproVerifierArgs = {
-  // Git clone SOURCE. Two modes, resolved in this order:
-  //   - localMirrorDir (OFFLINE): when set, clone from this local bare git
-  //     mirror that the TRUSTED fetch phase pre-materialised. The verifier then
-  //     needs NO network — which is what lets the exec sandbox run under
-  //     `--network none`. NOTE: that container-level flag (Build 2b-2 v2's job),
-  //     NOT this module, is what actually denies the model repro all network;
-  //     minimalEnv only strips secrets from the subprocess env. repoUrl is
-  //     IGNORED in this mode.
-  //   - repoUrl (ONLINE): the http(s) URL to clone from. Null → inconclusive
-  //     (no source to prove against), mirroring runPatchVerifier.
-  repoUrl: string | null;
-  // Absolute path to a local bare git mirror to clone from OFFLINE. Set by the
-  // trusted fetch phase (Build 2b-2 v2, issue #145); omit for the online path.
-  // Validated defensively (isSafeLocalMirrorDir + existence + a LEAF symlink
-  // check) even though the path is our own and never carries model-controlled
-  // input. PART-3 MIRROR CONTRACT — the fetch phase MUST honor these, this
-  // module trusts them: the mirror is disposable / mounted read-only under a
-  // fixed trusted root (no repro may mutate it for a later call; the leaf-only
-  // lstat here does NOT catch a symlinked ANCESTOR — a read-only trusted root
-  // is what closes that), self-contained (no partial-clone promisor / external
-  // alternates), and CONTAINS the reviewed SHA pinned under a durable ref (e.g.
-  // refs/pull/<n>/head) so it survives GC and is fetchable under any git
-  // protocol version (protocol v0 rejects an unadvertised raw SHA).
-  localMirrorDir?: string | null;
+  repoSource: ReproRepoSource;
   sha: string;
   patch: string;
   repro: ReproTestSuggestion;
@@ -184,35 +190,39 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     });
   }
 
-  // Resolve + validate the git clone SOURCE. OFFLINE (localMirrorDir set) clones
-  // from a local bare mirror the trusted fetch phase pre-materialised, so the
-  // exec sandbox needs NO network. ONLINE clones the http(s) repoUrl. Either way
-  // the source goes straight into git argv, so validate its shape (reject a
-  // `--upload-pack=` URL, a `-`-leading path, or a traversal) BEFORE spawning
-  // git; the `--` separator threaded after each subcommand is the second layer.
-  const mirrorDir = args.localMirrorDir ?? null;
+  // Resolve + validate the git clone SOURCE by switching on the repoSource
+  // discriminant. OFFLINE clones from a local bare mirror the trusted fetch
+  // phase pre-materialised, so the exec sandbox needs NO network. ONLINE clones
+  // the http(s) url. Either way the source goes straight into git argv, so
+  // validate its shape (reject a `--upload-pack=` URL, a `-`-leading path, or a
+  // traversal) BEFORE spawning git; the `--` separator threaded after each
+  // subcommand is the second layer. The resolved mirrorDir (offline only) is
+  // captured so the in-try existence + leaf-symlink check can re-probe it.
   let cloneSource: string;
-  if (mirrorDir !== null) {
-    if (!isSafeLocalMirrorDir(mirrorDir)) {
+  let mirrorDir: string | null = null;
+  if (args.repoSource.kind === "offline") {
+    if (!isSafeLocalMirrorDir(args.repoSource.mirrorDir)) {
       return reproInconclusive({
         worktreePath: "(invalid-mirror-dir)",
         notes:
-          "repro-verifier rejected unsafe localMirrorDir (need an absolute, traversal-free path)",
+          "repro-verifier rejected unsafe offline mirrorDir (need an absolute, traversal-free path)",
         ms: args.io.now() - t0,
         kind: "invalid_input",
       });
     }
-    cloneSource = mirrorDir;
+    mirrorDir = args.repoSource.mirrorDir;
+    cloneSource = args.repoSource.mirrorDir;
   } else {
-    if (args.repoUrl === null) {
+    if (args.repoSource.url === null) {
       return reproInconclusive({
         worktreePath: "(no-repo-url)",
-        notes: "repro-verifier requires a repoUrl (or localMirrorDir) to clone from; skipping",
+        notes:
+          "repro-verifier requires an online url (or an offline mirror) to clone from; skipping",
         ms: args.io.now() - t0,
         kind: "no_repo_url",
       });
     }
-    if (!isSafeRepoUrl(args.repoUrl)) {
+    if (!isSafeRepoUrl(args.repoSource.url)) {
       return reproInconclusive({
         worktreePath: "(invalid-repo-url)",
         notes: "repro-verifier rejected unsafe repoUrl shape",
@@ -220,7 +230,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         kind: "invalid_input",
       });
     }
-    cloneSource = args.repoUrl;
+    cloneSource = args.repoSource.url;
   }
   if (!isSafeSha(args.sha)) {
     return reproInconclusive({
