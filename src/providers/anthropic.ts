@@ -4,17 +4,20 @@ import type { Provider, ProviderCallOptions } from "../provider.js";
 import {
   fixPlanJsonSchema,
   patchSuggestionJsonSchema,
+  reproTestJsonSchema,
   reviewJsonSchema,
   revalidateJsonSchema,
 } from "../provider.js";
 import {
   FixPlanOutput,
   PatchSuggestionResult,
+  ReproTestSuggestion,
   ReviewOutput,
   RevalidateOutput,
   TokenUsage,
   fixPlanOutputSchema,
   patchSuggestionOutputSchema,
+  reproTestOutputSchema,
   reviewOutputSchema,
   revalidateOutputSchema,
 } from "../types.js";
@@ -77,6 +80,32 @@ export const anthropicProvider: Provider = {
         "or return patch=null if no clean fix fits within 20 changed lines.",
     });
     return { ...patchSuggestionOutputSchema.parse(json), modelId: resolvedModel, usage };
+  },
+  /**
+   * Repro-test generation (issue #133, Build 2) — per-finding executable-repro
+   * call. Mirrors proposePatch: returns either an executable repro (a
+   * {file, cmd} PoC that PROVES the finding's bug), or a decline (cmd=null)
+   * when a self-contained repro can't be written from the shown source. The
+   * caller (repro-generation.ts) owns the cmd-allowlist / path-safety / size
+   * validation; this method is the raw provider call only. Single-model.
+   */
+  async proposeReproTest(
+    _root: string,
+    prompt: string,
+    model: string | null,
+  ): Promise<ReproTestSuggestion> {
+    const resolvedModel = model ?? DEFAULT_MODEL;
+    const { json, usage } = await callAnthropic({
+      prompt,
+      model: resolvedModel,
+      toolName: "submit_repro_test",
+      schema: reproTestJsonSchema,
+      toolDescription:
+        "Submit a minimal, self-contained executable repro (test/PoC) that proves the given " +
+        "finding's bug, or return cmd=null if a self-contained repro cannot be written from the " +
+        "shown source. The repro MUST exit 0 against the current unpatched source.",
+    });
+    return { ...reproTestOutputSchema.parse(json), modelId: resolvedModel, usage };
   },
   async fix(_root: string, prompt: string, model: string | null): Promise<FixPlanOutput> {
     // Plan-only: providers describe a fix; applying patches is a separate

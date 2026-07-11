@@ -6,6 +6,7 @@ import { FleetError } from "./errors.js";
 import {
   FixPlanOutput,
   PatchSuggestionResult,
+  ReproTestSuggestion,
   ReviewOutput,
   RevalidateOutput,
   fixPlanOutputSchema,
@@ -46,6 +47,17 @@ export type Provider = {
     prompt: string,
     model: string | null,
   ) => Promise<PatchSuggestionResult>;
+  // Repro-test generation (issue #133, Build 2) — optional per-finding
+  // executable-repro call. Mirrors proposePatch: providers that implement it
+  // can participate in the repro lane; providers without it silently opt out.
+  // Single-model for now (anthropic only). The generation orchestrator lives
+  // in apps/web (repro-generation.ts) and is not wired into the review path in
+  // this build; a follow-up (2b) consumes it.
+  proposeReproTest?: (
+    root: string,
+    prompt: string,
+    model: string | null,
+  ) => Promise<ReproTestSuggestion>;
 };
 
 export type ProviderCallOptions = {
@@ -412,6 +424,38 @@ export const patchSuggestionJsonSchema = {
   required: ["patch", "rationale"],
   properties: {
     patch: { anyOf: [{ type: "string" }, { type: "null" }] },
+    rationale: { anyOf: [{ type: "string" }, { type: "null" }] },
+  },
+};
+
+// Repro-test generation (issue #133, Build 2) — strict structured-output
+// schema for per-finding executable repros. Mirrors patchSuggestionJsonSchema.
+// `file` is the {path, contents} of the test/PoC to write into the repo root
+// (null when `cmd` needs no new file); `cmd` is the run command (null =
+// declined). The orchestrator (repro-generation.ts) validates the cmd against
+// the same allowlist + metacharacter gate as the PoC verifier and enforces
+// path-safety / size caps before the payload is used. Single-model for now
+// (anthropic only).
+export const reproTestJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["file", "cmd", "rationale"],
+  properties: {
+    file: {
+      anyOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["path", "contents"],
+          properties: {
+            path: { type: "string" },
+            contents: { type: "string" },
+          },
+        },
+        { type: "null" },
+      ],
+    },
+    cmd: { anyOf: [{ type: "string" }, { type: "null" }] },
     rationale: { anyOf: [{ type: "string" }, { type: "null" }] },
   },
 };
