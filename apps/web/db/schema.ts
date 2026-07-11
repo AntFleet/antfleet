@@ -901,6 +901,16 @@ export const reviewGateOutcomes = pgTable(
     index("review_gate_outcomes_review_idx").on(t.reviewId),
     index("review_gate_outcomes_stage_verdict_idx").on(t.stage, t.verdict),
     index("review_gate_outcomes_review_finding_idx").on(t.reviewId, t.findingId),
+    // Idempotency for the repro_verify side-table (migration 0053, FIX G): at
+    // most one repro_verify row per (review_id, finding_id). PARTIAL — scoped to
+    // WHERE stage='repro_verify' so it does NOT constrain the existing
+    // reachability / patch_verify stages, which legitimately write multiple rows
+    // per (review, finding) across attempts. SAFE to add with no backfill:
+    // repro_verify is a brand-new stage value with zero pre-existing rows. The
+    // record phase's onConflictDoNothing targets this index.
+    uniqueIndex("review_gate_outcomes_repro_verify_uniq")
+      .on(t.reviewId, t.findingId)
+      .where(sql`${t.stage} = 'repro_verify'`),
   ],
 );
 

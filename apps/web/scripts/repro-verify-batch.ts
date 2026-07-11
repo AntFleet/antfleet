@@ -22,9 +22,12 @@
 //       phase allowed near secrets, the model API, and the network.
 //
 //   exec   (NO secrets at all — the security-critical phase)
-//     - FIRST asserts no secret is present in process.env (assertNoSecretsInEnv,
-//       fail CLOSED, named-list + suffix-pattern). This proves the workflow's
-//       per-step env separation held.
+//     - FIRST asserts the exec environment contains ONLY known-non-secret vars
+//       (assertNoSecretsInEnv — an ALLOWLIST-ONLY guard, fail CLOSED: any var
+//       not in ALLOWED_EXEC_ENV is refused, so every current AND future secret
+//       is rejected by default). This proves the workflow's per-step env
+//       separation held. THEN requires the ANTFLEET_REPRO_SANDBOX marker the
+//       trusted container step sets, refusing to run on a bare host.
 //     - Then flips ANTFLEET_REPRO_EXEC on FOR THIS PROCESS ONLY, reads the specs
 //       file, and runs each through runReproVerifier in OFFLINE mode (clone from
 //       the pre-materialised mirror — no network). The workflow additionally
@@ -34,9 +37,12 @@
 //
 //   record (WITH the DB secret, but WRITE-gated + idempotent)
 //     - reads the verdicts file and, only when --record is passed, writes one
-//       review_gate_outcomes row per verdict (stage "repro_verify"), SKIPPING
-//       any (reviewId, findingId, stage) that already has a row. Default is a
-//       dry-run that prints what it WOULD write and touches nothing.
+//       review_gate_outcomes row per verdict (stage "repro_verify"). Idempotency
+//       is enforced by the DB: an ON CONFLICT DO NOTHING against the partial
+//       unique index review_gate_outcomes_repro_verify_uniq (migration 0053) so
+//       a concurrent re-run cannot double-write. Default is a dry-run that prints
+//       what it WOULD write (consulting a read-only existence probe) and touches
+//       nothing.
 //
 // The flag stays OFF in the app. Nothing here flips it except the exec phase's
 // own process and the workflow's exec step. Run with:
@@ -49,100 +55,79 @@ import type { Finding } from "@/lib/review-types";
 import type { ReproTestSuggestion } from "@antfleet/cli/types";
 import type { PatchVerifyOutcome } from "@/lib/patch-verifier";
 
-// ── Secrets the exec phase must NEVER see, by EXPLICIT name. Kept as a named
-// constant so the assertion and its test reference the same list. Two vars
-// (DATABASE_URL, ANTHROPIC_API_KEY) do NOT match the suffix pattern below, so
-// they MUST stay here. A value counts as "present" only when it is a non-empty
-// string (an exported-but-empty var is harmless). This list is the audit-named
-// ~20 app secrets plus the obvious infra ones.
-const FORBIDDEN_EXEC_SECRETS = [
-  // Do not match the suffix pattern — must be explicit.
-  "DATABASE_URL",
-  "POSTGRES_URL",
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENROUTER_API_KEY",
-  "ZHIPU_API_KEY",
-  "VIRTUALS_API_KEY",
-  "GITHUB_TOKEN",
-  "GITHUB_PUBLIC_TOKEN",
-  "GITHUB_APP_PRIVATE_KEY",
-  "GITHUB_APP_WEBHOOK_SECRET",
-  "CRON_SECRET",
-  "CDP_API_KEY_ID",
-  "CDP_API_KEY_SECRET",
-  "X402_SMOKE_PRIVATE_KEY",
-  "ANTFLEET_CODESCANNING_PAT",
-  "ANTFLEET_OPS_GH_TOKEN",
-  "ROAST_GH_TOKEN",
-  "DISCLOSURE_HMAC_SECRET",
-  "OPTIN_HMAC_SECRET",
-  "OPERATOR_SECRET",
-  "ANTFLEET_SARIF_INGEST_HMAC_SECRET",
-  "AEON_GATE_SECRETS",
-] as const;
-
-// ── Suffix / substring PATTERN for secret-shaped env var names the explicit
-// list may not enumerate. Any var whose NAME ends in one of these (case
-// insensitive) OR contains PRIVATE_KEY is treated as a secret and refused —
-// MINUS the allowlist below. This is the fail-closed backstop: a newly added
-// FOO_TOKEN / BAR_API_KEY leaks into the exec step and this catches it without a
-// code change.
-const SECRET_NAME_PATTERN = /(_SECRET|_KEY|_TOKEN|_PAT|_PASSWORD|PRIVATE_KEY|_HMAC)$/i;
-const CONTAINS_PRIVATE_KEY = /PRIVATE_KEY/i;
-
-// ── Conservative allowlist of KNOWN-safe, non-secret var names that would
-// otherwise trip the pattern (or that we deliberately permit in the exec step).
-// EXACT-name matches only — no prefixes here except the explicit ANTFLEET_*
-// feature-flag booleans + CI/runner metadata families handled by ALLOWLIST_PREFIXES.
-const ALLOWLIST_EXACT = new Set<string>([
-  // The exec phase deliberately sets this ON for its own process.
+// ── ALLOWLIST-ONLY exec-env guard (FIX A). The exec phase runs
+// attacker-influenced (model-generated) code, so its env is a hard security
+// boundary. The prior design (explicit forbidden-list + secret-shaped suffix
+// pattern MINUS broad prefix allowlists) was LEAKY by construction: an
+// ANTFLEET_/RUNNER_/NODE_/npm_config_ prefix waved through anything, and a
+// secret whose name did not end in a known suffix (NODE_AUTH_TOKEN,
+// npm_config_authToken, ANTFLEET_ALERT_WEBHOOK_URL, RUNNER_ADMIN_SECRET,
+// ROAST_IP_SALT, a future ANTFLEET_FUTURE_TOKEN) sailed through.
+//
+// This replaces it with an EXACT allowlist that is fail-closed by construction:
+// the exec phase may ONLY see these known-non-secret vars. ANY other non-empty
+// var — including every current and FUTURE secret — is refused with NO code
+// change required, because the default is "reject". There are deliberately NO
+// prefix wildcards for any secret-capable family (ANTFLEET_/RUNNER_/npm_config_
+// etc.): each permitted metadata name is enumerated in full.
+const ALLOWED_EXEC_ENV = new Set<string>([
+  // The exec phase deliberately sets this ON for its own process, and the
+  // Part-3 container step sets the sandbox marker (FIX H) — both are
+  // non-secret booleans and must survive the guard.
   "ANTFLEET_REPRO_EXEC",
-  // GitHub Actions metadata (non-secret; the runner exports these).
-  "GITHUB_REPOSITORY",
+  "ANTFLEET_REPRO_SANDBOX",
+  // Common shell / toolchain / locale vars (non-secret).
+  "PATH",
+  "HOME",
+  "CI",
+  "PWD",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+  "TERM",
+  "TMPDIR",
+  "NODE_ENV",
+  // GitHub Actions metadata — the NON-SECRET names the runner exports. Note the
+  // secret-bearing GITHUB_TOKEN is deliberately ABSENT: it is a credential, so
+  // it must be rejected if it ever leaks into the exec step.
+  "GITHUB_ACTIONS",
+  "GITHUB_WORKFLOW",
+  "GITHUB_RUN_ID",
+  "GITHUB_RUN_NUMBER",
+  "GITHUB_JOB",
+  "GITHUB_ACTION",
   "GITHUB_SHA",
   "GITHUB_REF",
   "GITHUB_REF_NAME",
-  "GITHUB_RUN_ID",
-  "GITHUB_RUN_NUMBER",
+  "GITHUB_REPOSITORY",
   "GITHUB_WORKSPACE",
-  "GITHUB_ACTION",
-  "GITHUB_ACTOR",
-  "GITHUB_JOB",
   "GITHUB_EVENT_NAME",
-  "GITHUB_API_URL",
   "GITHUB_SERVER_URL",
-  "GITHUB_GRAPHQL_URL",
-  // Common shell / toolchain vars.
-  "CI",
-  "PATH",
-  "HOME",
-  "PWD",
-  "SHELL",
-  "SHLVL",
-  "TERM",
-  "USER",
-  "LOGNAME",
-  "LANG",
-  "TZ",
-  "TMPDIR",
+  "GITHUB_API_URL",
+  // GitHub Actions runner metadata — NON-SECRET names only (no RUNNER_*
+  // wildcard, so a RUNNER_ADMIN_SECRET is rejected).
+  "RUNNER_OS",
+  "RUNNER_ARCH",
+  "RUNNER_NAME",
+  "RUNNER_TEMP",
+  "RUNNER_WORKSPACE",
+  "RUNNER_TOOL_CACHE",
 ]);
 
-// Prefixes whose entire family is non-secret and allowlisted. ANTFLEET_* are the
-// feature-flag booleans (ANTFLEET_REPRO_EXEC etc.) and public URLs; if any real
-// secret is ever named ANTFLEET_* it MUST also live in FORBIDDEN_EXEC_SECRETS
-// (as ANTFLEET_CODESCANNING_PAT / ANTFLEET_OPS_GH_TOKEN / the SARIF HMAC do),
-// and the explicit-name check runs FIRST so those still fail closed.
-const ALLOWLIST_PREFIXES = ["ANTFLEET_", "RUNNER_", "NODE_", "npm_config_", "XDG_"] as const;
+// The env marker the trusted Part-3 container step sets to prove the exec phase
+// is running inside the disposable `--network none` sandbox (FIX H). Read by
+// runExecPhase's hard guard; also allowlisted above so it survives FIX A.
+const REPRO_SANDBOX_MARKER = "ANTFLEET_REPRO_SANDBOX";
 
 const DEFAULT_FETCH_LIMIT = 5;
 const DEFAULT_SPECS_PATH = "repro-specs.json";
 const DEFAULT_VERDICTS_PATH = "repro-verdicts.json";
 
 // The stage value written to review_gate_outcomes for this side-table. The DB
-// column is plain free-text (no enum), so the record phase casts it at the call
-// site (see realGateWriter) — kept as a shared constant so the idempotency probe
-// and the writer agree.
+// column is plain free-text (no enum). Kept as a shared constant so the writer,
+// the read-only existence probe, and the partial-unique-index predicate
+// (migration 0053) all agree on the exact string.
 const REPRO_VERIFY_STAGE = "repro_verify";
 
 // How far back to look for candidate findings, mirroring bench-dryrun's window.
@@ -220,46 +205,39 @@ export function parseArgs(argv: readonly string[]): {
   return { get, has };
 }
 
-// True iff `name` is an allowlisted, known-safe non-secret var name. EXACT match
-// or an allowlisted prefix. The explicit FORBIDDEN check always runs first, so a
-// forbidden ANTFLEET_* secret is caught before this ever permits it.
-function isAllowlistedEnvName(name: string): boolean {
-  if (ALLOWLIST_EXACT.has(name)) return true;
-  return ALLOWLIST_PREFIXES.some((p) => name.startsWith(p));
+// A var counts as "present" only when it is a non-empty string — an
+// exported-but-empty var is harmless. Module-scope so the allowlist guard and
+// any future caller share one definition (and so oxlint's
+// consistent-function-scoping stays happy; FIX I).
+function isEnvValuePresent(v: string | undefined): v is string {
+  return typeof v === "string" && v.length > 0;
 }
 
-// HARD, fail-closed guard for the exec phase. Throws if ANY secret is present
-// and non-empty in process.env, by BOTH the explicit named list AND a
-// suffix/substring pattern (minus a conservative allowlist). This is the proof
-// that the workflow's exec step really did run without secrets — if the env
-// separation ever regresses (a secret leaks into the exec step), this stops the
-// run BEFORE a single line of model-generated code executes. Exported for tests.
+// HARD, ALLOWLIST-ONLY fail-closed guard for the exec phase (FIX A). Throws if
+// ANY non-empty var in the environment is NOT in ALLOWED_EXEC_ENV. Because the
+// default is "reject", every secret — including ones added AFTER this code was
+// written (a new API key, a new NODE_AUTH_TOKEN, a future ANTFLEET_*_TOKEN) — is
+// refused with no code change. This is the proof that the workflow's exec step
+// really did run without secrets: if the per-step env separation ever regresses
+// and a credential leaks in, this stops the run BEFORE a single line of
+// model-generated code executes. The thrown error NAMES the offending var(s).
+// Exported for tests.
 export function assertNoSecretsInEnv(env: Record<string, string | undefined> = process.env): void {
-  const present = (v: string | undefined): v is string => typeof v === "string" && v.length > 0;
-
-  // 1) Explicit named secrets (includes the two that don't match the pattern).
-  const named = FORBIDDEN_EXEC_SECRETS.filter((k) => present(env[k]));
-
-  // 2) Pattern backstop: any non-empty var whose NAME looks secret-shaped and is
-  //    not allowlisted. De-duplicate against the named list.
-  const namedSet = new Set<string>(named);
-  const patterned: string[] = [];
+  const disallowed: string[] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (!present(value)) continue;
-    if (namedSet.has(key)) continue;
-    if (isAllowlistedEnvName(key)) continue;
-    if (SECRET_NAME_PATTERN.test(key) || CONTAINS_PRIVATE_KEY.test(key)) {
-      patterned.push(key);
-    }
+    if (!isEnvValuePresent(value)) continue; // empty/unset → harmless
+    if (ALLOWED_EXEC_ENV.has(key)) continue; // enumerated non-secret
+    disallowed.push(key);
   }
 
-  const leaked = [...named, ...patterned];
-  if (leaked.length > 0) {
+  if (disallowed.length > 0) {
+    disallowed.sort();
     throw new Error(
-      `[repro-verify-batch] REFUSING to execute model-generated code: secret(s) present in the ` +
-        `exec environment: ${leaked.join(", ")}. The exec phase MUST run in a secretless step; ` +
-        `this fail-closed guard proves the CI env separation held. Do NOT add secrets to the ` +
-        `exec step (add a genuinely-safe var to the allowlist if it is a false positive).`,
+      `[repro-verify-batch] REFUSING to execute model-generated code: disallowed var(s) present ` +
+        `in the exec environment: ${disallowed.join(", ")}. The exec phase must run with ONLY the ` +
+        `known-non-secret vars in ALLOWED_EXEC_ENV (allowlist-only, fail closed) — this proves the ` +
+        `CI env separation held. If a var is genuinely non-secret and legitimately needed, add its ` +
+        `EXACT name to ALLOWED_EXEC_ENV; never add a secret to the exec step.`,
     );
   }
 }
@@ -370,11 +348,15 @@ export type FetchPhaseOptions = {
 export type FetchDeps = {
   // Pushes the source='consensus' + suggested_patch IS NOT NULL + optional repo
   // filters into SQL BEFORE any row cap. Returns at most `scanCeiling` eligible
-  // candidate rows within the recency window.
+  // candidate rows within the recency window. `truncated` is an EXPLICIT flag
+  // (FIX F): true iff the eligible-row scan hit the ceiling and older candidates
+  // were dropped. It is computed from the JOINED finding-row count (not the
+  // distinct-review count), so N findings across fewer reviews still surface the
+  // truncation that a review-count check would miss.
   loadCandidates: (
     repo: string | null,
     scanCeiling: number,
-  ) => Promise<{ rows: CandidateRow[]; scanned: number; sinceIso: string }>;
+  ) => Promise<{ rows: CandidateRow[]; scanned: number; truncated: boolean; sinceIso: string }>;
   fetchChangedFiles: (
     owner: string,
     repo: string,
@@ -388,31 +370,47 @@ export type FetchDeps = {
     changedFiles: ReadonlyArray<{ filename: string; contents: string }>;
   }) => Promise<ReproTestSuggestion | null>;
   // Materialise a disposable bare git mirror of `repoUrl` pinned to `sha`, so the
-  // exec phase can clone OFFLINE. Returns the mirror dir. Injectable so tests
-  // never touch git / the network.
-  createMirror: (repoUrl: string, sha: string) => Promise<string>;
+  // exec phase can clone OFFLINE. `prNumber` lets the prod impl pin via the
+  // ADVERTISED refs/pull/<n>/head ref + verify it resolves to `sha` (FIX D) —
+  // reliable even for a hidden PR SHA. Returns the mirror dir. Injectable so
+  // tests never touch git / the network.
+  createMirror: (repoUrl: string, sha: string, prNumber: number) => Promise<string>;
 };
 
 export async function runFetchPhase(opts: FetchPhaseOptions): Promise<ReproSpec[]> {
   const log = opts.log ?? ((m: string) => console.log(m));
   const deps = opts.deps ?? (await realFetchDeps());
 
-  const { rows, scanned, sinceIso } = await deps.loadCandidates(opts.repo, CANDIDATE_SCAN_CEILING);
+  const { rows, scanned, truncated, sinceIso } = await deps.loadCandidates(
+    opts.repo,
+    CANDIDATE_SCAN_CEILING,
+  );
+  // Total ELIGIBLE findings across the loaded candidate rows (consensus + a
+  // suggested patch — the SQL already filtered to these). Drives the --limit
+  // exhaustion log below (FIX F).
+  const totalEligibleFindings = rows.reduce((n, r) => n + r.findingStatuses.length, 0);
   log(
     `[fetch] window since ${sinceIso}; scanned ${scanned} recent review(s); ` +
-      `${rows.length} carry a consensus finding with a suggested patch` +
+      `${rows.length} carry a consensus finding with a suggested patch ` +
+      `(${totalEligibleFindings} eligible finding(s))` +
       (opts.repo !== null ? ` (repo filter ${opts.repo})` : ""),
   );
-  if (scanned >= CANDIDATE_SCAN_CEILING) {
+  // TRUNCATION (FIX F): loadCandidates now reports `truncated` explicitly from
+  // the JOINED finding-row count, not the distinct-review count — so N findings
+  // across fewer reviews still surfaces here (the old `scanned >= ceiling`
+  // review-count check silently missed that case).
+  if (truncated) {
     log(
-      `[fetch] scan hit the ${CANDIDATE_SCAN_CEILING}-row ceiling — older candidates may be ` +
-        `truncated; narrow with --repo or shorten the window if you need them`,
+      `[fetch] eligible-candidate scan hit the ${CANDIDATE_SCAN_CEILING}-row ceiling — older ` +
+        `candidates were TRUNCATED; narrow with --repo or shorten the window to reach them`,
     );
   }
 
   const specs: ReproSpec[] = [];
   let attempts = 0;
   let dropped = 0;
+  let findingsConsidered = 0;
+  let limitHit = false;
   const skips = new Map<string, number>();
   const noteSkip = (reason: string, findingId: string, detail: string) => {
     dropped++;
@@ -429,7 +427,11 @@ export async function runFetchPhase(opts: FetchPhaseOptions): Promise<ReproSpec[
     let changedFiles: ReadonlyArray<{ filename: string; contents: string }> | null = null;
 
     for (const status of row.findingStatuses) {
-      if (attempts >= opts.limit) break outer;
+      if (attempts >= opts.limit) {
+        limitHit = true;
+        break outer;
+      }
+      findingsConsidered++;
 
       // FIX 1: index the RAW agreed[] array POSITIONALLY by the DB's findingIndex.
       // Never compact/renumber — a malformed earlier entry must not shift a later
@@ -444,13 +446,15 @@ export async function runFetchPhase(opts: FetchPhaseOptions): Promise<ReproSpec[
         );
         continue;
       }
-      // No evidence path → the verifier can't anchor a repro. Drop at pairing
-      // time rather than spend a generation call (does NOT consume the cap).
+      // No evidence entry with a REAL (non-empty) path → the verifier can't
+      // anchor a repro. extractAgreed already dropped empty-path entries (FIX C),
+      // so an all-`[{}]` finding lands here as length 0. Drop at pairing time
+      // rather than spend a generation call (does NOT consume the cap).
       if (agreedFinding.evidence.length === 0) {
         noteSkip(
           "no-evidence",
           status.findingId,
-          `agreed finding at index ${status.findingIndex} has no evidence path`,
+          `agreed finding at index ${status.findingIndex} has no evidence entry with a real path`,
         );
         continue;
       }
@@ -498,11 +502,14 @@ export async function runFetchPhase(opts: FetchPhaseOptions): Promise<ReproSpec[
       }
 
       // Materialise the offline mirror only once we have a runnable repro —
-      // avoids a clone for a finding the model declined.
+      // avoids a clone for a finding the model declined. Thread prNumber (FIX D)
+      // so the mirror can pin the reviewed SHA via the ADVERTISED refs/pull ref
+      // (a hidden/unadvertised PR SHA is not fetchable as a raw object under git
+      // protocol v0).
       const repoUrl = `https://github.com/${row.owner}/${row.repo}.git`;
       let mirrorDir: string;
       try {
-        mirrorDir = await deps.createMirror(repoUrl, row.commitSha);
+        mirrorDir = await deps.createMirror(repoUrl, row.commitSha, row.prNumber);
       } catch (err) {
         noteSkip(
           "mirror-error",
@@ -529,6 +536,17 @@ export async function runFetchPhase(opts: FetchPhaseOptions): Promise<ReproSpec[
         }),
       });
     }
+  }
+
+  // --limit EXHAUSTION (FIX F): if we broke on the cap and there are eligible
+  // findings we never reached, say so explicitly — otherwise a caller cannot
+  // tell an empty run apart from a capped one.
+  if (limitHit && findingsConsidered < totalEligibleFindings) {
+    log(
+      `[fetch] --limit (${opts.limit}) reached with ${
+        totalEligibleFindings - findingsConsidered
+      } eligible finding(s) still unprocessed — raise --limit or narrow --repo to reach them`,
+    );
   }
 
   const skipSummary =
@@ -564,73 +582,124 @@ export type ExecPhaseOptions = {
   loadSpecs?: () => Promise<ReproSpec[]>;
   // Injectable sink, for tests. Production omits it and writes outPath.
   writeVerdicts?: (records: VerdictRecord[]) => Promise<void>;
+  // Injectable mirror-teardown seam (FIX E). Production omits it and binds a real
+  // recursive rmdir; tests inject a spy to assert each spec's mirror is removed.
+  removeMirror?: (mirrorDir: string) => Promise<void>;
+  // Injectable sandbox-marker override, for tests (FIX H). Production omits it and
+  // reads process.env[ANTFLEET_REPRO_SANDBOX]. When present+non-empty the phase
+  // runs; when absent it refuses (bare-host guard).
+  sandboxMarker?: string;
   log?: (msg: string) => void;
 };
 
 export async function runExecPhase(opts: ExecPhaseOptions): Promise<VerdictRecord[]> {
   const log = opts.log ?? ((m: string) => console.log(m));
 
-  // FAIL CLOSED before anything else: no secret may be present in the exec
-  // environment. Proves the workflow's per-step secret separation held.
+  // FAIL CLOSED before anything else: the exec environment may contain ONLY
+  // known-non-secret vars (allowlist-only). Proves the workflow's per-step
+  // secret separation held.
   assertNoSecretsInEnv();
 
+  // HARD SANDBOX GUARD (FIX H): the exec phase executes model-generated code and
+  // is only safe inside Part-3's disposable `--network none` container. Refuse
+  // to run unless the trusted container step set the ANTFLEET_REPRO_SANDBOX
+  // marker — this stops anyone running the exec phase on a bare host. The marker
+  // is set ONLY by that trusted step (documented on REPRO_SANDBOX_MARKER); it is
+  // NOT a security control by itself (a caller could export it), but it makes the
+  // "ran outside the sandbox" mistake fail closed rather than silently execute.
+  if (!isEnvValuePresent(opts.sandboxMarker ?? process.env[REPRO_SANDBOX_MARKER])) {
+    throw new Error(
+      `[repro-verify-batch] REFUSING to run the exec phase: ${REPRO_SANDBOX_MARKER} is not set. ` +
+        `This phase executes model-generated code and MUST run inside the trusted disposable ` +
+        `container (Build 2b-2 Part 3, --network none), which sets that marker. Do NOT run it on a ` +
+        `bare host.`,
+    );
+  }
+
+  // Preserve the caller's ANTFLEET_REPRO_EXEC so the whole flip is restored on
+  // EVERY exit path (FIX I) — this process is otherwise long-lived (tests import
+  // it) and leaving the app flag ON would leak into unrelated code.
+  const priorReproExec = process.env["ANTFLEET_REPRO_EXEC"];
   // Flip the exec gate ON for THIS PROCESS ONLY. This is the sole place the app
   // flag is enabled outside the workflow's exec step; runReproVerifier is a
   // no-op (inconclusive repro_exec_disabled) without it.
   process.env["ANTFLEET_REPRO_EXEC"] = "true";
 
-  const runVerifier = opts.runVerifier ?? (await realVerifier());
-  const specs = opts.loadSpecs
-    ? await opts.loadSpecs()
-    : parseSpecs(await readFile(opts.inPath, "utf8"));
-  log(`[exec] loaded ${specs.length} spec(s) from ${opts.inPath}`);
+  try {
+    const runVerifier = opts.runVerifier ?? (await realVerifier());
+    const removeMirror = opts.removeMirror ?? realRemoveMirror;
+    const specs = opts.loadSpecs
+      ? await opts.loadSpecs()
+      : parseSpecs(await readFile(opts.inPath, "utf8"));
+    log(`[exec] loaded ${specs.length} spec(s) from ${opts.inPath}`);
 
-  const records: VerdictRecord[] = [];
-  for (const spec of specs) {
-    let outcome: PatchVerifyOutcome;
-    try {
-      outcome = await runVerifier(spec);
-    } catch (err) {
-      // A verifier throw is itself an inconclusive result — never let one bad
-      // spec abort the batch. Shape a synthetic inconclusive record (enriched
-      // from the spec so it stays self-describing).
-      records.push({
-        reviewId: spec.reviewId,
-        findingId: spec.findingId,
-        verdict: "inconclusive",
-        inconclusiveReason: "exception",
-        sha: spec.sha,
-        reproCmd: spec.repro.cmd,
-        detector: "none",
-        testExitCode: null,
-        reproPreExitCode: null,
-        reproPostExitCode: null,
-        testMs: null,
-        reproPreMs: null,
-        reproPostMs: null,
-        totalMs: 0,
-        modelId: spec.repro.modelId,
-        specDigest: spec.specDigest,
-        notes: `runReproVerifier threw: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      continue;
+    const records: VerdictRecord[] = [];
+    for (const spec of specs) {
+      // FIX E: the fetch phase created one disposable bare mirror per spec; tear
+      // it down after this spec's verifier runs so the mirrors do not leak. The
+      // read-only mount + one-mirror-per-sandbox isolation stays Part 3's
+      // container job — this is just the disk-leak cleanup for the offline mirror.
+      try {
+        let outcome: PatchVerifyOutcome;
+        try {
+          outcome = await runVerifier(spec);
+        } catch (err) {
+          // A verifier throw is itself an inconclusive result — never let one bad
+          // spec abort the batch. Shape a synthetic inconclusive record (enriched
+          // from the spec so it stays self-describing).
+          records.push({
+            reviewId: spec.reviewId,
+            findingId: spec.findingId,
+            verdict: "inconclusive",
+            inconclusiveReason: "exception",
+            sha: spec.sha,
+            reproCmd: spec.repro.cmd,
+            detector: "none",
+            testExitCode: null,
+            reproPreExitCode: null,
+            reproPostExitCode: null,
+            testMs: null,
+            reproPreMs: null,
+            reproPostMs: null,
+            totalMs: 0,
+            modelId: spec.repro.modelId,
+            specDigest: spec.specDigest,
+            notes: `runReproVerifier threw: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          continue;
+        }
+        records.push(shapeVerdictRecord(spec, outcome));
+      } finally {
+        try {
+          await removeMirror(spec.mirrorDir);
+        } catch {
+          // best effort — a leaked mirror in the disposable sandbox is reclaimed
+          // when the container is torn down; never fail the batch on cleanup.
+        }
+      }
     }
-    records.push(shapeVerdictRecord(spec, outcome));
-  }
 
-  const counts = summariseVerdicts(records);
-  log(
-    `[exec] done — verified=${counts.verified} regressed=${counts.regressed} ` +
-      `inconclusive=${counts.inconclusive} (total ${records.length})`,
-  );
+    const counts = summariseVerdicts(records);
+    log(
+      `[exec] done — verified=${counts.verified} regressed=${counts.regressed} ` +
+        `inconclusive=${counts.inconclusive} (total ${records.length})`,
+    );
 
-  if (opts.writeVerdicts) {
-    await opts.writeVerdicts(records);
-  } else {
-    await writeFile(opts.outPath, JSON.stringify(records, null, 2), "utf8");
-    log(`[exec] wrote verdicts to ${opts.outPath}`);
+    if (opts.writeVerdicts) {
+      await opts.writeVerdicts(records);
+    } else {
+      await writeFile(opts.outPath, JSON.stringify(records, null, 2), "utf8");
+      log(`[exec] wrote verdicts to ${opts.outPath}`);
+    }
+    return records;
+  } finally {
+    // Restore the flag on ALL paths (return, throw). (FIX I)
+    if (priorReproExec === undefined) {
+      delete process.env["ANTFLEET_REPRO_EXEC"];
+    } else {
+      process.env["ANTFLEET_REPRO_EXEC"] = priorReproExec;
+    }
   }
-  return records;
 }
 
 export function summariseVerdicts(records: readonly VerdictRecord[]): {
@@ -712,6 +781,9 @@ export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> 
   let skipped = 0;
   for (const v of verdicts) {
     // IDEMPOTENT: skip a verdict already recorded for (review, finding, stage).
+    // This app-level pre-check keeps the log/counters accurate; the ATOMIC guard
+    // is the DB constraint the writer targets with ON CONFLICT DO NOTHING (FIX
+    // G), so even a concurrent run that races past this check cannot double-write.
     if (await exists(v.reviewId, v.findingId, REPRO_VERIFY_STAGE)) {
       skipped++;
       log(`[record] already recorded — skipping review=${v.reviewId} finding=${v.findingId}`);
@@ -734,35 +806,74 @@ export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> 
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Parsing helpers (exported for tests) — tolerant JSON readers that fail LOUD
-// on a malformed artifact so a corrupt file never silently produces an empty or
-// wrong run.
+// Parsing helpers (exported for tests) — JSON readers that fail LOUD on a
+// malformed artifact so a corrupt file never silently produces an empty or wrong
+// run, or lets a null spec through to be dereferenced downstream.
 // ────────────────────────────────────────────────────────────────────────
 
+// Shared, module-scope shape predicates (FIX B + FIX I — hoisted out of the
+// parsers so both share one definition and oxlint's consistent-function-scoping
+// stays satisfied).
+function isNonEmptyString(x: unknown): x is string {
+  return typeof x === "string" && x.length > 0;
+}
+function isNumberOrNull(x: unknown): x is number | null {
+  return x === null || typeof x === "number";
+}
+function isStringOrNull(x: unknown): x is string | null {
+  return x === null || typeof x === "string";
+}
+
+// STRICT (FIX B): validate EVERY element, not just "is an array". The exec
+// exception-recovery path dereferences spec.reviewId / spec.repro.cmd / etc., so
+// a null / {} / missing-field element must be rejected here rather than blow up
+// mid-batch. Each element must carry: non-empty reviewId, findingId, sha, patch;
+// the mirror path field exec reads (mirrorDir); and a `repro` object whose `cmd`
+// is a string OR explicit null.
 export function parseSpecs(json: string): ReproSpec[] {
   const parsed: unknown = JSON.parse(json);
   if (!Array.isArray(parsed)) throw new Error("repro-specs file did not contain a JSON array");
+  parsed.forEach((rec, i) => {
+    if (rec === null || typeof rec !== "object") {
+      throw new Error(`repro-specs[${i}] is not an object`);
+    }
+    const r = rec as Record<string, unknown>;
+    for (const field of ["reviewId", "findingId", "sha", "patch", "mirrorDir"] as const) {
+      if (!isNonEmptyString(r[field])) {
+        throw new Error(`repro-specs[${i}].${field} must be a non-empty string`);
+      }
+    }
+    const repro = r["repro"];
+    if (repro === null || typeof repro !== "object") {
+      throw new Error(`repro-specs[${i}].repro must be an object`);
+    }
+    const cmd = (repro as Record<string, unknown>)["cmd"];
+    if (!isStringOrNull(cmd)) {
+      throw new Error(`repro-specs[${i}].repro.cmd must be a string or null`);
+    }
+  });
   return parsed as ReproSpec[];
 }
 
-// STRICT (FIX 6): validate EACH record's shape, not just "is an array". A
-// corrupt / partially-written verdicts file is rejected loudly rather than
-// silently persisted. Checks: reviewId + findingId non-empty strings, verdict in
-// the known set, and the exit codes are number|null.
+// STRICT (FIX B): validate EACH record's shape, not just "is an array". A
+// corrupt / partially-written verdicts file — or a FORGED `verified` with null
+// proofs — is rejected loudly rather than silently persisted. Beyond the field
+// types, ENFORCE the proof invariant: a verdict:"verified" record MUST carry a
+// concrete positive proof (a real detector, a passing test, a reproducing
+// pre-patch run, a concrete non-zero post-patch exit, and no inconclusiveReason)
+// — the exact shape runReproVerifier only ever emits for a genuine proof.
 export function parseVerdicts(json: string): VerdictRecord[] {
   const parsed: unknown = JSON.parse(json);
   if (!Array.isArray(parsed)) throw new Error("repro-verdicts file did not contain a JSON array");
-  const isNumOrNull = (x: unknown): x is number | null => x === null || typeof x === "number";
-  const nonEmptyStr = (x: unknown): x is string => typeof x === "string" && x.length > 0;
   parsed.forEach((rec, i) => {
     if (rec === null || typeof rec !== "object") {
       throw new Error(`repro-verdicts[${i}] is not an object`);
     }
     const r = rec as Record<string, unknown>;
-    if (!nonEmptyStr(r["reviewId"])) {
+    if (!isNonEmptyString(r["reviewId"])) {
       throw new Error(`repro-verdicts[${i}].reviewId must be a non-empty string`);
     }
-    if (!nonEmptyStr(r["findingId"])) {
+    if (!isNonEmptyString(r["findingId"])) {
       throw new Error(`repro-verdicts[${i}].findingId must be a non-empty string`);
     }
     if (typeof r["verdict"] !== "string" || !VERDICT_VALUES.has(r["verdict"])) {
@@ -770,14 +881,66 @@ export function parseVerdicts(json: string): VerdictRecord[] {
         `repro-verdicts[${i}].verdict must be one of verified|regressed|inconclusive`,
       );
     }
-    if (!isNumOrNull(r["testExitCode"])) {
-      throw new Error(`repro-verdicts[${i}].testExitCode must be number|null`);
+    if (!isStringOrNull(r["inconclusiveReason"])) {
+      throw new Error(`repro-verdicts[${i}].inconclusiveReason must be a string or null`);
     }
-    if (!isNumOrNull(r["reproPreExitCode"])) {
-      throw new Error(`repro-verdicts[${i}].reproPreExitCode must be number|null`);
+    if (!isNonEmptyString(r["sha"])) {
+      throw new Error(`repro-verdicts[${i}].sha must be a non-empty string`);
     }
-    if (!isNumOrNull(r["reproPostExitCode"])) {
-      throw new Error(`repro-verdicts[${i}].reproPostExitCode must be number|null`);
+    if (!isStringOrNull(r["reproCmd"])) {
+      throw new Error(`repro-verdicts[${i}].reproCmd must be a string or null`);
+    }
+    if (typeof r["detector"] !== "string") {
+      throw new Error(`repro-verdicts[${i}].detector must be a string`);
+    }
+    for (const field of [
+      "testExitCode",
+      "reproPreExitCode",
+      "reproPostExitCode",
+      "testMs",
+      "reproPreMs",
+      "reproPostMs",
+    ] as const) {
+      if (!isNumberOrNull(r[field])) {
+        throw new Error(`repro-verdicts[${i}].${field} must be number|null`);
+      }
+    }
+    if (typeof r["totalMs"] !== "number") {
+      throw new Error(`repro-verdicts[${i}].totalMs must be a number`);
+    }
+    if (!isStringOrNull(r["modelId"])) {
+      throw new Error(`repro-verdicts[${i}].modelId must be a string or null`);
+    }
+    if (!isNonEmptyString(r["specDigest"])) {
+      throw new Error(`repro-verdicts[${i}].specDigest must be a non-empty string`);
+    }
+    if (typeof r["notes"] !== "string") {
+      throw new Error(`repro-verdicts[${i}].notes must be a string`);
+    }
+    // PROOF INVARIANT: a `verified` record must carry a genuine proof, or it is a
+    // forgery and we reject the whole file. runReproVerifier only ever emits
+    // verified with detector!=="none", testExitCode===0, reproPreExitCode===0, a
+    // concrete nonzero integer reproPostExitCode, and inconclusiveReason===null.
+    if (r["verdict"] === "verified") {
+      const detector = r["detector"];
+      const testExit = r["testExitCode"];
+      const pre = r["reproPreExitCode"];
+      const post = r["reproPostExitCode"];
+      const proven =
+        detector !== "none" &&
+        testExit === 0 &&
+        pre === 0 &&
+        typeof post === "number" &&
+        Number.isInteger(post) &&
+        post !== 0 &&
+        r["inconclusiveReason"] === null;
+      if (!proven) {
+        throw new Error(
+          `repro-verdicts[${i}] claims verdict:"verified" without a valid proof ` +
+            `(need detector!=="none", testExitCode===0, reproPreExitCode===0, a concrete non-zero ` +
+            `reproPostExitCode, and inconclusiveReason===null); refusing a forged verified record`,
+        );
+      }
     }
   });
   return parsed as VerdictRecord[];
@@ -841,13 +1004,21 @@ function extractAgreed(agreementDecision: unknown): (AgreedFinding | null)[] {
       title,
       category,
       severity,
+      // EFFECTIVE-PATH FILTER (FIX C): keep ONLY evidence entries that carry a
+      // real, non-empty `path`. A malformed `{}` entry maps to path:"" and would
+      // otherwise inflate the array length past the no-evidence guard (which the
+      // verifier needs to anchor a repro). Dropping empty-path entries here makes
+      // the pairing-time `evidence.length === 0` check reject a finding that has
+      // zero usable evidence paths, and keeps reconstructFinding fed only real
+      // paths.
       evidence: evidence
         .filter((e): e is Record<string, unknown> => e !== null && typeof e === "object")
         .map((e) => ({
           path: typeof e["path"] === "string" ? e["path"] : "",
           startLine: typeof e["startLine"] === "number" ? e["startLine"] : null,
           endLine: typeof e["endLine"] === "number" ? e["endLine"] : null,
-        })),
+        }))
+        .filter((e) => e.path.length > 0),
       reasoning: typeof f["reasoning"] === "string" ? f["reasoning"] : "",
       reproduction: typeof f["reproduction"] === "string" ? f["reproduction"] : null,
       recommendation: typeof f["recommendation"] === "string" ? f["recommendation"] : "",
@@ -902,7 +1073,13 @@ async function realFetchDeps(): Promise<FetchDeps> {
           conds.push(eq(reviews.repo, repoF));
         }
       }
-      const joined = await db
+      // Fetch ceiling+1 JOINED rows (FIX F): the cap bounds finding rows, but the
+      // caller counts reviews, so we detect truncation by whether a (ceiling+1)th
+      // ELIGIBLE finding row exists — then slice back to the ceiling. This
+      // surfaces the "N findings across fewer reviews hit the cap" case the old
+      // review-count check silently dropped. `.orderBy(createdAt DESC, reviewId,
+      // finding_index)` makes the cut deterministic.
+      const rawJoined = await db
         .select({
           reviewId: reviews.reviewId,
           owner: reviews.owner,
@@ -919,8 +1096,15 @@ async function realFetchDeps(): Promise<FetchDeps> {
         .from(reviews)
         .innerJoin(findingStatus, eq(findingStatus.reviewId, reviews.reviewId))
         .where(and(...conds))
-        .orderBy(sql`${reviews.createdAt} DESC`)
-        .limit(scanCeiling);
+        .orderBy(
+          sql`${reviews.createdAt} DESC`,
+          sql`${reviews.reviewId}`,
+          sql`${findingStatus.findingIndex}`,
+        )
+        .limit(scanCeiling + 1);
+
+      const truncated = rawJoined.length > scanCeiling;
+      const joined = truncated ? rawJoined.slice(0, scanCeiling) : rawJoined;
 
       // Group the flat join back into per-review candidate rows, preserving the
       // DB pairing keys on each status.
@@ -952,6 +1136,7 @@ async function realFetchDeps(): Promise<FetchDeps> {
       return {
         rows: [...byReview.values()],
         scanned: seenReviews.size,
+        truncated,
         sinceIso: since.toISOString(),
       };
     },
@@ -985,25 +1170,34 @@ async function realFetchDeps(): Promise<FetchDeps> {
       const proposal = result.proposals[0];
       return proposal?.reproTest ?? null;
     },
-    createMirror: async (repoUrl, sha) => realCreateMirror(repoUrl, sha),
+    createMirror: async (repoUrl, sha, prNumber) => realCreateMirror(repoUrl, sha, prNumber),
   };
 }
 
 // Materialise a disposable BARE git mirror of repoUrl pinned to `sha`, so the
 // exec phase can clone OFFLINE with NO network. Steps:
 //   1. mkdtemp a fresh dir under tmpdir()/antfleet-mirror-<uuid> (per-mirror,
-//      disposable; a later 2b hardening mounts it read-only).
+//      disposable; Part 3 mounts it read-only).
 //   2. `git clone --bare <repoUrl> <dir>` — the full mirror.
-//   3. PIN the reviewed SHA under a durable ref: `git -C <dir> fetch origin
-//      <sha>:refs/pinned/<sha>`. A bare clone may not carry the exact SHA as a
-//      ref, and an offline raw-SHA fetch FAILS under git protocol v0 (which
-//      rejects an unadvertised object). Pinning it under refs/pinned/<sha> makes
-//      it advertised + GC-durable so the exec-phase `git fetch <sha>` resolves.
+//   3. PIN the reviewed SHA under a durable ref refs/pinned/<sha> so an offline
+//      raw-SHA fetch resolves under any protocol version and the object survives
+//      GC. There are TWO ways to pin (FIX D):
+//        a) prNumber > 0 → fetch the ADVERTISED PR ref
+//           `refs/pull/<n>/head:refs/pinned/<sha>` then VERIFY
+//           `git rev-parse refs/pinned/<sha>` equals `<sha>`. A PR head SHA is
+//           frequently HIDDEN (unadvertised) on the branch tips, so a direct
+//           raw-SHA fetch fails under git protocol v0; the PR ref is always
+//           advertised. If the fetched head does not match the reviewed SHA
+//           (e.g. the PR was force-pushed after review) we FAIL the spec with a
+//           clear reason rather than pin the wrong commit.
+//        b) prNumber <= 0 (non-PR review / ad-hoc replay) → fall back to the raw
+//           `<sha>:refs/pinned/<sha>` fetch (works when the SHA is advertised).
 // repoUrl + sha are validated (isSafeRepoUrl / isSafeSha) so nothing model- or
 // user-controlled reaches git argv unchecked; the `--` separators are the
-// second layer.
-async function realCreateMirror(repoUrl: string, sha: string): Promise<string> {
-  const { mkdtemp } = await import("node:fs/promises");
+// second layer. On ANY failure the partially-created temp dir is removed so a
+// failed clone/fetch/verify does not leak (FIX E).
+async function realCreateMirror(repoUrl: string, sha: string, prNumber: number): Promise<string> {
+  const { mkdtemp, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { randomUUID } = await import("node:crypto");
@@ -1016,12 +1210,45 @@ async function realCreateMirror(repoUrl: string, sha: string): Promise<string> {
   if (!isSafeSha(sha)) throw new Error(`unsafe sha for mirror: ${sha}`);
 
   const dir = await mkdtemp(join(tmpdir(), `antfleet-mirror-${randomUUID()}-`));
-  // Full bare mirror. `--` guards the URL from being read as a flag.
-  await run("git", ["clone", "--bare", "--quiet", "--", repoUrl, dir]);
-  // Pin the reviewed SHA under a durable, advertised ref so an offline raw-SHA
-  // fetch works under any protocol version and the object survives GC.
-  await run("git", ["-C", dir, "fetch", "--quiet", "origin", "--", `${sha}:refs/pinned/${sha}`]);
-  return dir;
+  const pinnedRef = `refs/pinned/${sha}`;
+  try {
+    // Full bare mirror. `--` guards the URL from being read as a flag.
+    await run("git", ["clone", "--bare", "--quiet", "--", repoUrl, dir]);
+
+    if (Number.isInteger(prNumber) && prNumber > 0) {
+      // Pin via the ADVERTISED PR head ref, then verify it is the reviewed SHA.
+      await run("git", [
+        "-C",
+        dir,
+        "fetch",
+        "--quiet",
+        "origin",
+        "--",
+        `refs/pull/${prNumber}/head:${pinnedRef}`,
+      ]);
+      const { stdout } = await run("git", ["-C", dir, "rev-parse", "--", pinnedRef]);
+      const resolved = stdout.trim();
+      if (resolved !== sha) {
+        throw new Error(
+          `PR #${prNumber} head resolved to ${resolved || "(empty)"}, not the reviewed sha ${sha} ` +
+            `(the PR may have been force-pushed after review); refusing to pin the wrong commit`,
+        );
+      }
+    } else {
+      // Non-PR review: pin the raw SHA under the durable ref (advertised-SHA path).
+      await run("git", ["-C", dir, "fetch", "--quiet", "origin", "--", `${sha}:${pinnedRef}`]);
+    }
+    return dir;
+  } catch (err) {
+    // Clean up the partially-created mirror so a failed clone/fetch/verify does
+    // not leak a temp dir (FIX E). Best-effort; re-throw the original error.
+    try {
+      await rm(dir, { recursive: true, force: true });
+    } catch {
+      // swallow — the OS reclaims /tmp eventually
+    }
+    throw err;
+  }
 }
 
 async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyOutcome>> {
@@ -1066,26 +1293,56 @@ function minimalFindingForVerify(): Finding {
   };
 }
 
+// Remove a per-spec disposable bare mirror after its verifier run (FIX E). The
+// dir is our own (fetch-phase mkdtemp under tmpdir()), but validate its shape
+// against the same isSafeLocalMirrorDir gate the verifier uses before an rm -rf
+// so a corrupt spec can never point teardown at an arbitrary path. Recursive +
+// force so a partially-cloned mirror is still cleaned; best-effort at the call
+// site (never fails the batch).
+async function realRemoveMirror(mirrorDir: string): Promise<void> {
+  const { rm } = await import("node:fs/promises");
+  const { isSafeLocalMirrorDir } = await import("@/lib/repro-verifier");
+  if (!isSafeLocalMirrorDir(mirrorDir)) {
+    throw new Error(`refusing to remove unsafe mirror dir: ${mirrorDir}`);
+  }
+  await rm(mirrorDir, { recursive: true, force: true });
+}
+
 async function realGateWriter(): Promise<
   (
     reviewId: string,
     row: { findingId: string; verdict: string; evidence: unknown },
   ) => Promise<void>
 > {
-  const { recordGateOutcome } = await import("@/db/queries");
+  const { db } = await import("@/db");
+  const { reviewGateOutcomes } = await import("@/db/schema");
+  const { sql } = await import("drizzle-orm");
   return async (reviewId, row) => {
-    // `stage` is typed on GateOutcomeRow as the two shipped stages; "repro_verify"
-    // is a new stage for this side-table (the DB column is a plain text field, no
-    // enum constraint). The already-merged queries.ts is intentionally NOT
-    // modified here, so the new stage value is cast at the call site. When a
-    // follow-up widens GateOutcomeRow["stage"] this cast can drop.
-    await recordGateOutcome(reviewId, {
-      findingId: row.findingId,
-      stage: REPRO_VERIFY_STAGE as "patch_verify",
-      verdict: row.verdict,
-      evidence: row.evidence,
-      modelId: null,
-    });
+    // ATOMIC IDEMPOTENT WRITE (FIX G): insert directly with ON CONFLICT DO
+    // NOTHING against the partial unique index
+    // review_gate_outcomes_repro_verify_uniq (review_id, finding_id) WHERE
+    // stage='repro_verify' (migration 0053). This replaces the racy
+    // check-then-insert: two concurrent record runs can no longer both write. We
+    // bypass queries.recordGateOutcome (kept unmodified) because that helper does
+    // a bare insert with no conflict target; the "repro_verify" stage is a plain
+    // text value (the column has no enum) so no cast is needed here.
+    await db
+      .insert(reviewGateOutcomes)
+      .values({
+        reviewId,
+        findingId: row.findingId,
+        stage: REPRO_VERIFY_STAGE,
+        verdict: row.verdict,
+        evidence: row.evidence,
+        modelId: null,
+      })
+      .onConflictDoNothing({
+        // The `where` here is the CONFLICT-ARBITER index predicate — drizzle emits
+        // `ON CONFLICT (review_id, finding_id) WHERE stage='repro_verify' DO
+        // NOTHING`, which matches the partial unique index (migration 0053).
+        target: [reviewGateOutcomes.reviewId, reviewGateOutcomes.findingId],
+        where: sql`${reviewGateOutcomes.stage} = 'repro_verify'`,
+      });
   };
 }
 

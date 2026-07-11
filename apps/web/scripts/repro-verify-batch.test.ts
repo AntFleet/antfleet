@@ -10,6 +10,7 @@ import {
   runRecordPhase,
   summariseVerdicts,
   parseArgs,
+  parseSpecs,
   parseVerdicts,
   type ReproSpec,
   type VerdictRecord,
@@ -72,14 +73,13 @@ function mkOutcome(overrides: Partial<PatchVerifyOutcome> = {}): PatchVerifyOutc
   };
 }
 
-// ── assertNoSecretsInEnv: save/restore the real process.env so the guard tests
-// never leak state into the rest of the suite.
-describe("assertNoSecretsInEnv", () => {
+// ── assertNoSecretsInEnv: ALLOWLIST-ONLY guard (FIX A). save/restore the real
+// process.env so the guard tests never leak state into the rest of the suite.
+// A clean allowlisted env swapped in so the default-arg (process.env) calls are
+// hermetic against whatever the CI shell exports.
+describe("assertNoSecretsInEnv (allowlist-only, FIX A)", () => {
   let saved: NodeJS.ProcessEnv;
   beforeEach(() => {
-    // Swap in a minimal, allowlist-clean env so the default-arg (process.env)
-    // calls are hermetic — the hardened pattern guard (FIX 5) would otherwise
-    // catch whatever secret-shaped vars the CI shell exports (e.g. *_API_KEY).
     saved = process.env;
     process.env = {
       PATH: saved["PATH"] ?? "/usr/bin",
@@ -98,85 +98,94 @@ describe("assertNoSecretsInEnv", () => {
     expect(() => assertNoSecretsInEnv()).toThrow(/REFUSING to execute/);
   });
 
-  it("throws when ANTHROPIC_API_KEY is set", () => {
-    process.env["ANTHROPIC_API_KEY"] = "sk-ant-xxx";
-    expect(() => assertNoSecretsInEnv()).toThrow(/ANTHROPIC_API_KEY/);
-  });
-
-  it("names EVERY leaked secret in the message", () => {
-    process.env["DATABASE_URL"] = "postgres://secret";
+  it("throws when GITHUB_TOKEN is set (a credential, NOT an allowlisted GITHUB_* metadata name)", () => {
     process.env["GITHUB_TOKEN"] = "ghp_xxx";
-    expect(() => assertNoSecretsInEnv()).toThrow(/DATABASE_URL/);
     expect(() => assertNoSecretsInEnv()).toThrow(/GITHUB_TOKEN/);
   });
 
-  it("passes when the environment is clean", () => {
+  it("names EVERY disallowed var in the message", () => {
     expect(() =>
-      assertNoSecretsInEnv({ PATH: "/usr/bin", HOME: "/home/x", CI: "true" }),
-    ).not.toThrow();
+      assertNoSecretsInEnv({
+        PATH: "/usr/bin",
+        DATABASE_URL: "postgres://secret",
+        GITHUB_TOKEN: "ghp_xxx",
+      }),
+    ).toThrow(/DATABASE_URL/);
+    expect(() =>
+      assertNoSecretsInEnv({
+        PATH: "/usr/bin",
+        DATABASE_URL: "postgres://secret",
+        GITHUB_TOKEN: "ghp_xxx",
+      }),
+    ).toThrow(/GITHUB_TOKEN/);
   });
 
-  it("treats an exported-but-empty secret as absent (does not throw)", () => {
+  it("treats an exported-but-empty disallowed var as absent (does not throw)", () => {
     process.env["OPENAI_API_KEY"] = "";
     expect(() => assertNoSecretsInEnv()).not.toThrow();
   });
 
-  it("can be pointed at an explicit env object", () => {
-    expect(() => assertNoSecretsInEnv({ POSTGRES_URL: "postgres://x" })).toThrow(/POSTGRES_URL/);
-    expect(() => assertNoSecretsInEnv({ SOMETHING_ELSE: "ok" })).not.toThrow();
+  // The leaky-bypass cases the audit called out — all must now be REJECTED
+  // because the guard is allowlist-only (default deny), not suffix-pattern.
+  it("REJECTS the audit-named prefix-bypass secrets (NODE_AUTH_TOKEN, npm_config_authToken, ANTFLEET_ALERT_WEBHOOK_URL)", () => {
+    expect(() => assertNoSecretsInEnv({ PATH: "/usr/bin", NODE_AUTH_TOKEN: "x" })).toThrow(
+      /NODE_AUTH_TOKEN/,
+    );
+    expect(() => assertNoSecretsInEnv({ PATH: "/usr/bin", npm_config_authToken: "x" })).toThrow(
+      /npm_config_authToken/,
+    );
+    expect(() =>
+      assertNoSecretsInEnv({ PATH: "/usr/bin", ANTFLEET_ALERT_WEBHOOK_URL: "https://x" }),
+    ).toThrow(/ANTFLEET_ALERT_WEBHOOK_URL/);
   });
 
-  // FIX 5 — the hardened pattern + named + allowlist behavior.
-  it("catches a PATTERNED secret name not on the explicit list (FOO_TOKEN)", () => {
-    expect(() => assertNoSecretsInEnv({ FOO_TOKEN: "abc" })).toThrow(/FOO_TOKEN/);
-  });
-
-  it("catches secret-shaped suffixes broadly (_SECRET, _KEY, _PASSWORD, _HMAC, _PAT)", () => {
-    expect(() => assertNoSecretsInEnv({ SOME_SECRET: "x" })).toThrow(/SOME_SECRET/);
-    expect(() => assertNoSecretsInEnv({ WEIRD_API_KEY: "x" })).toThrow(/WEIRD_API_KEY/);
-    expect(() => assertNoSecretsInEnv({ DB_PASSWORD: "x" })).toThrow(/DB_PASSWORD/);
-    expect(() => assertNoSecretsInEnv({ SIGNING_HMAC: "x" })).toThrow(/SIGNING_HMAC/);
-    expect(() => assertNoSecretsInEnv({ SOME_PAT: "x" })).toThrow(/SOME_PAT/);
-  });
-
-  it("catches a var CONTAINING PRIVATE_KEY even without a matching suffix", () => {
-    expect(() => assertNoSecretsInEnv({ MY_PRIVATE_KEY_MATERIAL: "x" })).toThrow(
-      /MY_PRIVATE_KEY_MATERIAL/,
+  it("REJECTS an arbitrary FOO_TOKEN and a FUTURE ANTFLEET_NEW_SECRET (default-deny catches unknown names)", () => {
+    expect(() => assertNoSecretsInEnv({ PATH: "/usr/bin", FOO_TOKEN: "abc" })).toThrow(/FOO_TOKEN/);
+    expect(() => assertNoSecretsInEnv({ PATH: "/usr/bin", ANTFLEET_NEW_SECRET: "x" })).toThrow(
+      /ANTFLEET_NEW_SECRET/,
     );
   });
 
-  it("catches a NAMED app secret (GITHUB_APP_PRIVATE_KEY)", () => {
-    expect(() => assertNoSecretsInEnv({ GITHUB_APP_PRIVATE_KEY: "-----BEGIN" })).toThrow(
-      /GITHUB_APP_PRIVATE_KEY/,
+  it("REJECTS a suffix-shaped RUNNER_ADMIN_SECRET and a non-suffixed ROAST_IP_SALT (no RUNNER_ wildcard)", () => {
+    expect(() => assertNoSecretsInEnv({ PATH: "/usr/bin", RUNNER_ADMIN_SECRET: "x" })).toThrow(
+      /RUNNER_ADMIN_SECRET/,
+    );
+    expect(() => assertNoSecretsInEnv({ PATH: "/usr/bin", ROAST_IP_SALT: "x" })).toThrow(
+      /ROAST_IP_SALT/,
     );
   });
 
-  it("does NOT flag allowlisted non-secret vars (GITHUB_SHA, ANTFLEET_REPRO_EXEC)", () => {
+  it("PASSES the enumerated non-secret vars (PATH, GITHUB_SHA, ANTFLEET_REPRO_EXEC, RUNNER_OS)", () => {
     expect(() =>
       assertNoSecretsInEnv({
-        GITHUB_SHA: "abcdef",
-        GITHUB_REPOSITORY: "o/r",
-        GITHUB_RUN_ID: "123",
-        RUNNER_OS: "Linux",
-        ANTFLEET_REPRO_EXEC: "true",
-        NODE_ENV: "test",
-        npm_config_registry: "https://registry.npmjs.org",
-        CI: "true",
         PATH: "/usr/bin",
-        XDG_CACHE_HOME: "/tmp/cache",
+        GITHUB_SHA: "abcdef",
+        ANTFLEET_REPRO_EXEC: "true",
+        RUNNER_OS: "Linux",
       }),
     ).not.toThrow();
   });
 
-  it("still catches a FORBIDDEN ANTFLEET_* secret even though ANTFLEET_ is an allowlisted prefix", () => {
-    // The explicit-name check runs first, so a real ANTFLEET_* secret fails
-    // closed despite the ANTFLEET_ allowlist prefix.
-    expect(() => assertNoSecretsInEnv({ ANTFLEET_OPS_GH_TOKEN: "ghp_x" })).toThrow(
-      /ANTFLEET_OPS_GH_TOKEN/,
-    );
-    expect(() => assertNoSecretsInEnv({ ANTFLEET_CODESCANNING_PAT: "x" })).toThrow(
-      /ANTFLEET_CODESCANNING_PAT/,
-    );
+  it("PASSES a fully allowlisted clean env (positive case)", () => {
+    expect(() =>
+      assertNoSecretsInEnv({
+        PATH: "/usr/bin",
+        HOME: "/home/x",
+        CI: "true",
+        NODE_ENV: "test",
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "o/r",
+        GITHUB_RUN_ID: "123",
+        GITHUB_SERVER_URL: "https://github.com",
+        RUNNER_OS: "Linux",
+        RUNNER_ARCH: "X64",
+        RUNNER_TEMP: "/tmp/runner",
+        ANTFLEET_REPRO_EXEC: "true",
+        ANTFLEET_REPRO_SANDBOX: "1",
+        TZ: "UTC",
+        TMPDIR: "/tmp",
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -337,6 +346,7 @@ function mkFetchDeps(
         },
       ],
       scanned: 1,
+      truncated: false,
       sinceIso: "2026-01-01T00:00:00.000Z",
     }),
     fetchChangedFiles: async () => [{ filename: "a.ts", contents: "code" }],
@@ -412,6 +422,7 @@ describe("runFetchPhase — FIX 1 (positional pairing, no renumber)", () => {
         // "the only finding was single_model and thus excluded".
         rows: [],
         scanned: 3,
+        truncated: false,
         sinceIso: "2026-01-01T00:00:00.000Z",
       }),
       fetchChangedFiles: async () => [],
@@ -466,17 +477,103 @@ describe("runFetchPhase — FIX 2 (limit caps generation ATTEMPTS)", () => {
         },
       },
     );
+    const logs: string[] = [];
     const specs = await runFetchPhase({
       limit: 2,
       repo: null,
       outPath: "unused.json",
       deps,
       writeSpecs: async () => {},
-      log: () => {},
+      log: (m) => logs.push(m),
     });
     // Exactly 2 attempts consumed the cap (1 decline + 1 emit); attempt 3/4 never ran.
     expect(attempts).toBe(2);
     expect(specs).toHaveLength(1);
+    // FIX F: --limit exhausted with 2 eligible findings still unprocessed → logged.
+    expect(
+      logs.some((l) =>
+        /--limit \(2\) reached with 2 eligible finding\(s\) still unprocessed/.test(l),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("runFetchPhase — FIX F (no silent truncation)", () => {
+  it("logs a TRUNCATED warning when loadCandidates reports truncated:true", async () => {
+    const logs: string[] = [];
+    const deps: FetchDeps = {
+      loadCandidates: async () => ({
+        rows: [
+          {
+            reviewId: "rev-1",
+            owner: "o",
+            repo: "r",
+            prNumber: 7,
+            commitSha: "abc1234",
+            agreementDecision: {
+              agreed: [
+                {
+                  title: "f",
+                  category: "security",
+                  severity: "high",
+                  evidence: [{ path: "a.ts", startLine: 1, endLine: 1 }],
+                  reasoning: "r",
+                  reproduction: null,
+                  recommendation: "rec",
+                },
+              ],
+            },
+            findingStatuses: [
+              { findingId: "rev-0", findingIndex: 0, source: "consensus", suggestedPatch: "p" },
+            ],
+          },
+        ],
+        scanned: 1,
+        truncated: true,
+        sinceIso: "2026-01-01T00:00:00.000Z",
+      }),
+      fetchChangedFiles: async () => [{ filename: "a.ts", contents: "code" }],
+      generateRepro: async () => mkRepro(),
+      createMirror: async () => "/tmp/m.git",
+    };
+    await runFetchPhase({
+      limit: 5,
+      repo: null,
+      outPath: "unused.json",
+      deps,
+      writeSpecs: async () => {},
+      log: (m) => logs.push(m),
+    });
+    expect(logs.some((l) => /TRUNCATED/.test(l))).toBe(true);
+  });
+
+  it("does NOT log truncation when truncated:false", async () => {
+    const logs: string[] = [];
+    const deps = mkFetchDeps(
+      [{ findingId: "rev-0", findingIndex: 0, source: "consensus", suggestedPatch: "p" }],
+      {
+        agreed: [
+          {
+            title: "f",
+            category: "security",
+            severity: "high",
+            evidence: [{ path: "a.ts", startLine: 1, endLine: 1 }],
+            reasoning: "r",
+            reproduction: null,
+            recommendation: "rec",
+          },
+        ],
+      },
+    );
+    await runFetchPhase({
+      limit: 5,
+      repo: null,
+      outPath: "unused.json",
+      deps,
+      writeSpecs: async () => {},
+      log: (m) => logs.push(m),
+    });
+    expect(logs.some((l) => /TRUNCATED/.test(l))).toBe(false);
   });
 });
 
@@ -551,6 +648,132 @@ describe("runFetchPhase — FIX 3 (real skip reason labels)", () => {
   });
 });
 
+describe("runFetchPhase — FIX C (evidence effective-path)", () => {
+  it("skips a finding whose only evidence entry has no real path (evidence:[{}])", async () => {
+    const logs: string[] = [];
+    // A single agreed finding whose evidence is [{}] — a malformed entry with no
+    // path. extractAgreed drops empty-path entries, so this lands as no-evidence
+    // at pairing time (NOT a spuriously non-empty [{path:""}]).
+    const agreed = [
+      {
+        title: "empty-ev",
+        category: "security",
+        severity: "high",
+        evidence: [{}],
+        reasoning: "r",
+        reproduction: null,
+        recommendation: "rec",
+      },
+    ];
+    let generateCalled = 0;
+    const deps = mkFetchDeps(
+      [{ findingId: "rev-0", findingIndex: 0, source: "consensus", suggestedPatch: "p" }],
+      { agreed },
+      {
+        generate: async () => {
+          generateCalled++;
+          return mkRepro();
+        },
+      },
+    );
+    const specs = await runFetchPhase({
+      limit: 5,
+      repo: null,
+      outPath: "unused.json",
+      deps,
+      writeSpecs: async () => {},
+      log: (m) => logs.push(m),
+    });
+    // Skipped as no-evidence — no spec generated, no model call.
+    expect(specs).toHaveLength(0);
+    expect(generateCalled).toBe(0);
+    expect(logs.some((l) => /no-evidence/.test(l))).toBe(true);
+  });
+
+  it("keeps a finding that has a REAL evidence path alongside an empty one", async () => {
+    const seen: Array<{ path: string; startLine: number | null; endLine: number | null }[]> = [];
+    const agreed = [
+      {
+        title: "mixed-ev",
+        category: "security",
+        severity: "high",
+        // one empty entry + one real path — the real one keeps the finding alive.
+        evidence: [{}, { path: "real.ts", startLine: 3, endLine: 4 }],
+        reasoning: "r",
+        reproduction: null,
+        recommendation: "rec",
+      },
+    ];
+    const deps = mkFetchDeps(
+      [{ findingId: "rev-0", findingIndex: 0, source: "consensus", suggestedPatch: "p" }],
+      { agreed },
+      {
+        generate: async ({ finding }) => {
+          seen.push(
+            finding.evidence.map((e) => ({
+              path: e.path,
+              startLine: e.startLine,
+              endLine: e.endLine,
+            })),
+          );
+          return mkRepro();
+        },
+      },
+    );
+    const specs = await runFetchPhase({
+      limit: 5,
+      repo: null,
+      outPath: "unused.json",
+      deps,
+      writeSpecs: async () => {},
+      log: () => {},
+    });
+    expect(specs).toHaveLength(1);
+    // Only the real-path evidence reached the reconstructed finding (empty dropped).
+    expect(seen).toEqual([[{ path: "real.ts", startLine: 3, endLine: 4 }]]);
+  });
+});
+
+describe("runFetchPhase — FIX D (threads prNumber into createMirror)", () => {
+  it("passes the review's prNumber to createMirror", async () => {
+    const mirrorCalls: Array<{ repoUrl: string; sha: string; prNumber: number }> = [];
+    const agreed = [
+      {
+        title: "f",
+        category: "security",
+        severity: "high",
+        evidence: [{ path: "a.ts", startLine: 1, endLine: 1 }],
+        reasoning: "r",
+        reproduction: null,
+        recommendation: "rec",
+      },
+    ];
+    const deps = mkFetchDeps(
+      [{ findingId: "rev-0", findingIndex: 0, source: "consensus", suggestedPatch: "p" }],
+      { agreed },
+      {
+        createMirror: async (repoUrl, sha, prNumber) => {
+          mirrorCalls.push({ repoUrl, sha, prNumber });
+          return "/tmp/antfleet-mirror-d.git";
+        },
+      },
+    );
+    const specs = await runFetchPhase({
+      limit: 5,
+      repo: null,
+      outPath: "unused.json",
+      deps,
+      writeSpecs: async () => {},
+      log: () => {},
+    });
+    expect(specs).toHaveLength(1);
+    // mkFetchDeps builds the single candidate review with prNumber 7.
+    expect(mirrorCalls).toEqual([
+      { repoUrl: "https://github.com/o/r.git", sha: "abc1234", prNumber: 7 },
+    ]);
+  });
+});
+
 // ────────────────────────────────────────────────────────────────────────
 // exec phase — runs over an in-memory specs array with an INJECTED verifier so
 // nothing is spawned; asserts verdict counts + OFFLINE wiring.
@@ -560,16 +783,18 @@ describe("runExecPhase", () => {
   let saved: NodeJS.ProcessEnv;
   beforeEach(() => {
     // The exec phase's assertNoSecretsInEnv reads the REAL process.env (no seam
-    // — that is the point), and the hardened guard (FIX 5) also catches
-    // pattern-shaped names the CI shell may export (e.g. *_API_KEY). Swap in a
-    // minimal, allowlist-clean env so these tests are hermetic against whatever
-    // the runner exports; restore it in afterEach.
+    // — that is the point), and the allowlist-only guard (FIX A) rejects ANY var
+    // not enumerated. Swap in a minimal, allowlisted-clean env so these tests are
+    // hermetic against whatever the runner exports; restore it in afterEach. The
+    // ANTFLEET_REPRO_SANDBOX marker is set here so the FIX H sandbox guard passes
+    // by default (it is on the allowlist); the dedicated FIX H tests override it.
     saved = process.env;
     process.env = {
       PATH: saved["PATH"] ?? "/usr/bin",
       HOME: saved["HOME"] ?? "/tmp",
       CI: "true",
       NODE_ENV: "test",
+      ANTFLEET_REPRO_SANDBOX: "1",
     };
   });
   afterEach(() => {
@@ -583,7 +808,12 @@ describe("runExecPhase", () => {
       mkSpec({ findingId: "c-2" }),
     ];
     const seen: string[] = [];
+    let flagDuringRun: string | undefined;
     const runVerifier = vi.fn(async (spec: ReproSpec) => {
+      // The exec flag is ON while the verifier runs (captured here) — but it is
+      // RESTORED after runExecPhase returns (FIX I), so we can't assert it on the
+      // env post-call.
+      flagDuringRun = process.env["ANTFLEET_REPRO_EXEC"];
       seen.push(spec.findingId);
       if (spec.findingId === "a-0") return mkOutcome({ verdict: "verified" });
       if (spec.findingId === "b-1") return mkOutcome({ verdict: "regressed" });
@@ -597,6 +827,7 @@ describe("runExecPhase", () => {
       loadSpecs: async () => specs,
       runVerifier,
       writeVerdicts,
+      removeMirror: async () => {},
       log: () => {},
     });
 
@@ -604,8 +835,10 @@ describe("runExecPhase", () => {
     expect(seen).toEqual(["a-0", "b-1", "c-2"]);
     expect(summariseVerdicts(records)).toEqual({ verified: 1, regressed: 1, inconclusive: 1 });
     expect(writeVerdicts).toHaveBeenCalledOnce();
-    // It flips the exec flag on for its own process.
-    expect(process.env["ANTFLEET_REPRO_EXEC"]).toBe("true");
+    // It flips the exec flag on for its own process WHILE running…
+    expect(flagDuringRun).toBe("true");
+    // …and RESTORES it afterward (was unset in this test's clean env) (FIX I).
+    expect(process.env["ANTFLEET_REPRO_EXEC"]).toBeUndefined();
   });
 
   it("fails CLOSED before running anything when a secret is present", async () => {
@@ -618,6 +851,7 @@ describe("runExecPhase", () => {
         loadSpecs: async () => [mkSpec()],
         runVerifier,
         writeVerdicts: async () => {},
+        removeMirror: async () => {},
         log: () => {},
       }),
     ).rejects.toThrow(/DATABASE_URL/);
@@ -636,6 +870,7 @@ describe("runExecPhase", () => {
       loadSpecs: async () => specs,
       runVerifier,
       writeVerdicts: async () => {},
+      removeMirror: async () => {},
       log: () => {},
     });
     expect(records).toHaveLength(2);
@@ -666,15 +901,176 @@ describe("runExecPhase", () => {
       loadSpecs: async () => [mkSpec({ mirrorDir: "/tmp/antfleet-mirror-abc.git" })],
       runVerifier,
       writeVerdicts: async () => {},
+      removeMirror: async () => {},
       log: () => {},
     });
     expect(seenSources).toEqual([
       { kind: "offline", mirrorDir: "/tmp/antfleet-mirror-abc.git", sha: "abc1234" },
     ]);
   });
+
+  // FIX H — the exec phase refuses to run outside the sandbox: it requires the
+  // ANTFLEET_REPRO_SANDBOX marker (set only by the trusted Part-3 container step).
+  it("REFUSES to run when the ANTFLEET_REPRO_SANDBOX marker is absent (FIX H)", async () => {
+    delete process.env["ANTFLEET_REPRO_SANDBOX"];
+    const runVerifier = vi.fn(async () => mkOutcome());
+    await expect(
+      runExecPhase({
+        inPath: "x",
+        outPath: "x",
+        loadSpecs: async () => [mkSpec()],
+        runVerifier,
+        writeVerdicts: async () => {},
+        removeMirror: async () => {},
+        log: () => {},
+      }),
+    ).rejects.toThrow(/ANTFLEET_REPRO_SANDBOX is not set/);
+    // Refused BEFORE running any model code.
+    expect(runVerifier).not.toHaveBeenCalled();
+  });
+
+  it("PROCEEDS when the ANTFLEET_REPRO_SANDBOX marker is present (FIX H)", async () => {
+    // beforeEach already set the marker; assert the happy path runs.
+    const runVerifier = vi.fn(async () => mkOutcome({ verdict: "verified" }));
+    const records = await runExecPhase({
+      inPath: "x",
+      outPath: "x",
+      loadSpecs: async () => [mkSpec()],
+      runVerifier,
+      writeVerdicts: async () => {},
+      removeMirror: async () => {},
+      log: () => {},
+    });
+    expect(runVerifier).toHaveBeenCalledOnce();
+    expect(records).toHaveLength(1);
+  });
+
+  it("also accepts the injected sandboxMarker override even with the env marker absent (FIX H)", async () => {
+    delete process.env["ANTFLEET_REPRO_SANDBOX"];
+    const runVerifier = vi.fn(async () => mkOutcome());
+    const records = await runExecPhase({
+      inPath: "x",
+      outPath: "x",
+      loadSpecs: async () => [mkSpec()],
+      runVerifier,
+      writeVerdicts: async () => {},
+      removeMirror: async () => {},
+      sandboxMarker: "1",
+      log: () => {},
+    });
+    expect(records).toHaveLength(1);
+  });
+
+  // FIX E — each spec's disposable mirror is removed after its verifier runs.
+  it("removes each spec's mirror dir after exec (FIX E)", async () => {
+    const removed: string[] = [];
+    const runVerifier = vi.fn(async () => mkOutcome());
+    const removeMirror = vi.fn(async (dir: string) => {
+      removed.push(dir);
+    });
+    await runExecPhase({
+      inPath: "x",
+      outPath: "x",
+      loadSpecs: async () => [
+        mkSpec({ findingId: "a-0", mirrorDir: "/tmp/antfleet-mirror-a.git" }),
+        mkSpec({ findingId: "b-1", mirrorDir: "/tmp/antfleet-mirror-b.git" }),
+      ],
+      runVerifier,
+      writeVerdicts: async () => {},
+      removeMirror,
+      log: () => {},
+    });
+    expect(removed).toEqual(["/tmp/antfleet-mirror-a.git", "/tmp/antfleet-mirror-b.git"]);
+  });
+
+  it("removes a spec's mirror even when its verifier throws (FIX E — finally)", async () => {
+    const removed: string[] = [];
+    const runVerifier = vi.fn(async () => {
+      throw new Error("spawn EACCES");
+    });
+    const removeMirror = vi.fn(async (dir: string) => {
+      removed.push(dir);
+    });
+    await runExecPhase({
+      inPath: "x",
+      outPath: "x",
+      loadSpecs: async () => [mkSpec({ mirrorDir: "/tmp/antfleet-mirror-x.git" })],
+      runVerifier,
+      writeVerdicts: async () => {},
+      removeMirror,
+      log: () => {},
+    });
+    expect(removed).toEqual(["/tmp/antfleet-mirror-x.git"]);
+  });
 });
 
-// ── parseVerdicts: STRICT shape validation (FIX 6).
+// ── parseSpecs: STRICT per-element validation (FIX B). A null / {} / missing-
+// field element must be rejected loudly so the exec exception-recovery path can
+// never dereference a null spec.
+describe("parseSpecs", () => {
+  const goodSpec = {
+    reviewId: "rev-1",
+    findingId: "abc-0",
+    findingIndex: 0,
+    repoUrl: "https://github.com/o/r.git",
+    mirrorDir: "/tmp/antfleet-mirror-x.git",
+    sha: "abc1234",
+    patch: "diff --git a/x b/x\n",
+    repro: { file: null, cmd: "pytest x", rationale: null, modelId: "m" },
+    specDigest: "deadbeefdeadbeef",
+  };
+
+  it("accepts a well-formed specs array", () => {
+    const specs = parseSpecs(JSON.stringify([goodSpec]));
+    expect(specs).toHaveLength(1);
+    expect(specs[0]?.findingId).toBe("abc-0");
+  });
+
+  it("accepts a spec whose repro.cmd is explicit null (a declined repro)", () => {
+    const declined = {
+      ...goodSpec,
+      repro: { file: null, cmd: null, rationale: "x", modelId: "m" },
+    };
+    expect(() => parseSpecs(JSON.stringify([declined]))).not.toThrow();
+  });
+
+  it("rejects a non-array file", () => {
+    expect(() => parseSpecs(JSON.stringify({ nope: true }))).toThrow(
+      /did not contain a JSON array/,
+    );
+  });
+
+  it("rejects a [null, goodSpec] file (a null element)", () => {
+    expect(() => parseSpecs(JSON.stringify([null, goodSpec]))).toThrow(
+      /repro-specs\[0\] is not an object/,
+    );
+  });
+
+  it("rejects an empty-object element {}", () => {
+    expect(() => parseSpecs(JSON.stringify([{}]))).toThrow(/repro-specs\[0\]\.reviewId/);
+  });
+
+  it("rejects a spec missing its mirror path (mirrorDir)", () => {
+    const bad = { ...goodSpec, mirrorDir: "" };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.mirrorDir must be a non-empty string/,
+    );
+  });
+
+  it("rejects a spec whose repro is not an object", () => {
+    const bad = { ...goodSpec, repro: null };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(/repro-specs\[0\]\.repro must be/);
+  });
+
+  it("rejects a spec whose repro.cmd is a number", () => {
+    const bad = { ...goodSpec, repro: { ...goodSpec.repro, cmd: 42 } };
+    expect(() => parseSpecs(JSON.stringify([bad]))).toThrow(
+      /repro-specs\[0\]\.repro\.cmd must be a string or null/,
+    );
+  });
+});
+
+// ── parseVerdicts: STRICT shape validation + the verified-proof invariant (FIX B).
 describe("parseVerdicts", () => {
   const good: VerdictRecord = {
     reviewId: "rev-1",
@@ -708,6 +1104,12 @@ describe("parseVerdicts", () => {
     );
   });
 
+  it("rejects a null element", () => {
+    expect(() => parseVerdicts(JSON.stringify([null]))).toThrow(
+      /repro-verdicts\[0\] is not an object/,
+    );
+  });
+
   it("rejects a record with a missing reviewId", () => {
     const bad = { ...good, reviewId: "" };
     expect(() => parseVerdicts(JSON.stringify([bad]))).toThrow(
@@ -725,6 +1127,49 @@ describe("parseVerdicts", () => {
     expect(() => parseVerdicts(JSON.stringify([bad]))).toThrow(
       /reproPreExitCode must be number\|null/,
     );
+  });
+
+  it("rejects a record missing an enriched field (sha)", () => {
+    const bad = { ...good, sha: "" };
+    expect(() => parseVerdicts(JSON.stringify([bad]))).toThrow(/sha must be a non-empty string/);
+  });
+
+  // PROOF INVARIANT (FIX B): a forged `verified` with null / weak proofs is rejected.
+  it("rejects a verified record with detector:'none'", () => {
+    const forged = { ...good, detector: "none" };
+    expect(() => parseVerdicts(JSON.stringify([forged]))).toThrow(/without a valid proof/);
+  });
+
+  it("rejects a verified record with a null reproPostExitCode", () => {
+    const forged = { ...good, reproPostExitCode: null };
+    expect(() => parseVerdicts(JSON.stringify([forged]))).toThrow(/without a valid proof/);
+  });
+
+  it("rejects a verified record with a zero reproPostExitCode (bug not closed)", () => {
+    const forged = { ...good, reproPostExitCode: 0 };
+    expect(() => parseVerdicts(JSON.stringify([forged]))).toThrow(/without a valid proof/);
+  });
+
+  it("rejects a verified record with a non-zero testExitCode", () => {
+    const forged = { ...good, testExitCode: 1 };
+    expect(() => parseVerdicts(JSON.stringify([forged]))).toThrow(/without a valid proof/);
+  });
+
+  it("rejects a verified record that also carries an inconclusiveReason", () => {
+    const forged = { ...good, inconclusiveReason: "exception" };
+    expect(() => parseVerdicts(JSON.stringify([forged]))).toThrow(/without a valid proof/);
+  });
+
+  it("does NOT apply the verified-invariant to inconclusive/regressed records", () => {
+    const inconclusive = {
+      ...good,
+      verdict: "inconclusive",
+      inconclusiveReason: "no_runner",
+      detector: "none",
+      testExitCode: null,
+      reproPostExitCode: null,
+    };
+    expect(() => parseVerdicts(JSON.stringify([inconclusive]))).not.toThrow();
   });
 });
 
