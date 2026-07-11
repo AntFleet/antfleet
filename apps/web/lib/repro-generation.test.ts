@@ -147,6 +147,19 @@ describe("generateReproTest — cmd validation", () => {
     expect(result.proposals[0]?.reproTest).toBeNull();
     expect(result.proposals[0]?.skipReason).toBe("cmd_not_allowlisted");
   });
+
+  it("rejects a multi-line cmd (newline could smuggle a 2nd command past the prefix gate)", async () => {
+    // The raw cmd skips sniffPocCommand's first-line extraction, so "node x\n..."
+    // would satisfy the "node " prefix; the control-char gate must reject it.
+    const provider = buildProvider("anthropic", async () => ({
+      file: { path: "repro.js", contents: "process.exit(0)\n" },
+      cmd: "node repro.js\nrm -rf /",
+      rationale: null,
+    }));
+    const result = await generateReproTest(baseArgs({ provider }));
+    expect(result.proposals[0]?.reproTest).toBeNull();
+    expect(result.proposals[0]?.skipReason).toBe("cmd_not_allowlisted");
+  });
 });
 
 describe("generateReproTest — file validation", () => {

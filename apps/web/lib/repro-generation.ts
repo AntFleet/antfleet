@@ -38,8 +38,9 @@ export const REPRO_GENERATION_TIMEOUT_MS = 60_000;
 // content. A repro needing a bigger file falls through to skipReason="size_cap".
 export const REPRO_FILE_MAX_BYTES = 8000;
 
-// Skip reasons a repro proposal can carry. `null` skipReason with a null
-// reproTest means the model declined cleanly (see runOneReproProposal).
+// Skip reasons a repro proposal can carry. A `null` skipReason with a NON-null
+// reproTest whose `cmd` is null is a clean model decline (see
+// runOneReproProposal) — NOT a validation failure.
 export type ReproSkipReason =
   | "no_evidence"
   | "generation_error"
@@ -47,10 +48,11 @@ export type ReproSkipReason =
   | "unsafe_file_path"
   | "size_cap";
 
-// One repro result per finding. `reproTest` is null when the finding was
-// skipped (skipReason set) OR when the model declined (cmd=null, skipReason
-// null, rationale preserved on the returned suggestion). Build 2b keys off
-// findingId.
+// One repro result per finding. `reproTest` is null ONLY when the finding was
+// skipped (skipReason set). On a clean model DECLINE, `reproTest` is NON-null
+// with `cmd: null` and `file: null` (skipReason null, rationale preserved). So
+// Build 2b's runnability test is `reproTest?.cmd != null`, NOT `reproTest !=
+// null`. Keyed off findingId.
 export type ReproProposal = {
   findingId: string;
   reproTest: ReproTestSuggestion | null;
@@ -212,6 +214,15 @@ async function runOneReproProposal(args: RunOneReproProposalArgs): Promise<Repro
   // allowlist + shell-metacharacter gate the PoC verifier uses. A cmd that
   // isn't an allowlisted runner, or contains a shell metacharacter, is
   // rejected outright.
+  //
+  // First reject any CONTROL character (newline, CR, tab, NUL, ...). Unlike
+  // sniffPocCommand — which extracts the first non-blank LINE before checking —
+  // this call site validates the RAW model `cmd`, so a multi-line cmd like
+  // "node ok.js\nrm -rf /" would otherwise satisfy the "node " prefix and carry
+  // the second line to 2b's runner. A repro run command is always one line.
+  if (/\p{Cc}/u.test(raw.cmd)) {
+    return { findingId: args.findingId, reproTest: null, skipReason: "cmd_not_allowlisted" };
+  }
   if (matchesPocCommandAllowlist(raw.cmd) === null) {
     return { findingId: args.findingId, reproTest: null, skipReason: "cmd_not_allowlisted" };
   }
