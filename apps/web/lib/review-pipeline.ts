@@ -13,6 +13,7 @@ import type {
 import type { ChangedFile } from "./github-files";
 import { triagePR, TRIAGE_COST_USD, type TriageResult } from "./triage-provider";
 import { isSingleModelTierEnabled } from "./single-model-tier-env";
+import { isTransientError } from "./review-worker-config";
 import { messageOf } from "./log";
 
 // A single-model shadow-tier entry (Win 2). Carries the flagging provider
@@ -25,11 +26,19 @@ export type SingleModelFinding = { finding: Finding; provider: string };
 // Per-provider outcome of one review. `error` is non-null when the API call
 // failed; `output` is non-null when it returned a parseable response. Both
 // non-null is impossible; both null is impossible.
+//
+// `transient` classifies a FAILED provider's error as retryable infra noise
+// (timeout, 429, 5xx, reasoning-starvation) vs. a persistent fault. Always
+// false on the success path (there was no error to classify). The worker
+// reads this to decide whether a degraded review — one that lost consensus
+// because a provider failed — deserves another attempt to reach true 2/2,
+// rather than terminating at 0 findings and discarding the survivor's work.
 export type PerProviderResult = {
   name: string;
   modelId: string;
   output: ReviewOutput | null;
   error: string | null;
+  transient: boolean;
   ms: number;
 };
 
@@ -144,10 +153,14 @@ export async function reviewPR(args: {
     const start = Date.now();
     try {
       const output = await provider.review(".", prompt, null, { signal: args.signal ?? null });
-      return { name, modelId, output, error: null, ms: Date.now() - start };
+      return { name, modelId, output, error: null, transient: false, ms: Date.now() - start };
     } catch (err) {
+      // Classify the raw error BEFORE stringifying — isTransientError reads
+      // `err.message` off the Error instance; messageOf collapses it to a
+      // plain string for the audit trail.
+      const transient = isTransientError(err);
       const message = messageOf(err);
-      return { name, modelId, output: null, error: message, ms: Date.now() - start };
+      return { name, modelId, output: null, error: message, transient, ms: Date.now() - start };
     }
   });
   const perProvider = await Promise.all(tasks);

@@ -337,3 +337,62 @@ describe("reviewPR single-model shadow tier", () => {
     expect(bundle.singleModelTier).toEqual([]);
   });
 });
+
+// ── Issue #134 — per-provider transient classification ──────────────────────
+// The worker reads perProvider[i].transient to decide whether a degraded
+// review deserves a retry for consensus. A failed provider must be tagged
+// with its error's transience; a successful provider is always non-transient.
+
+describe("reviewPR per-provider transient flag", () => {
+  it("flags a transient provider failure true and the surviving success false", async () => {
+    triagePRMock.mockResolvedValue(escalate());
+    // anthropic succeeds; openai throws a 429 (transient infra noise).
+    anthropicReview.mockResolvedValue(mkOutput());
+    openaiReview.mockRejectedValue(new Error("HTTP 429 rate limit exceeded"));
+
+    const bundle = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    const anthropic = bundle.perProvider.find((p) => p.name === "anthropic");
+    const openai = bundle.perProvider.find((p) => p.name === "openai");
+    // Success path: no error to classify → transient false.
+    expect(anthropic?.output).not.toBeNull();
+    expect(anthropic?.transient).toBe(false);
+    // Failure path: 429 is transient.
+    expect(openai?.output).toBeNull();
+    expect(openai?.error).toContain("429");
+    expect(openai?.transient).toBe(true);
+    expect(bundle.degraded).toBe(true);
+  });
+
+  it("classifies an unrecognized provider error as transient (heuristic catch-all)", async () => {
+    // isTransientError is an allowlist of transient patterns with a transient
+    // DEFAULT (a whole-pipeline throw is almost always infra). So even an
+    // error with no recognized keyword is flagged transient. Documented here
+    // so the worker's non-transient branch — which requires transient===false
+    // on a failed provider — is understood to be effectively unreachable via
+    // this heuristic today; a future non-transient classifier (e.g. a 4xx-
+    // other-than-429 denylist) would flip real cases to false without any
+    // worker change. The worker's own test injects transient:false directly.
+    triagePRMock.mockResolvedValue(escalate());
+    anthropicReview.mockResolvedValue(mkOutput());
+    openaiReview.mockRejectedValue(new Error("model returned malformed output"));
+
+    const bundle = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    const openai = bundle.perProvider.find((p) => p.name === "openai");
+    expect(openai?.output).toBeNull();
+    expect(openai?.transient).toBe(true);
+  });
+
+  it("is always false on the success path regardless of the error heuristic", async () => {
+    // Both providers succeed → no error to classify → transient false on both.
+    triagePRMock.mockResolvedValue(escalate());
+    anthropicReview.mockResolvedValue(mkOutput());
+    openaiReview.mockResolvedValue(mkOutput());
+
+    const bundle = await reviewPR({ files: [mkFile()], owner: "o", repo: "r", prNumber: 1 });
+
+    expect(bundle.perProvider.every((p) => p.transient === false)).toBe(true);
+    expect(bundle.degraded).toBe(false);
+  });
+});
