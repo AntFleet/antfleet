@@ -214,3 +214,85 @@ describe("tolerateReviewShape", () => {
     expect(tolerateReviewShape("string")).toBe("string");
   });
 });
+
+// Regression guard for #134 (AntSeed "0 findings on re-run"). Forensic replay
+// of 11 PROD bench-antseed reviews showed every zero-finding run was an
+// Anthropic schema-validation THROW — not model recall, not the matcher. Opus
+// 4.7 intermittently (a) OMITS an `evidence[].quote` key entirely (Zod:
+// `expected string, received undefined` at findings.N.evidence.M.quote) or
+// (b) emits an off-enum `category` (`invalid_value`). Either threw the whole
+// reviewOutputSchema.parse, and the 2-of-2 unanimous gate then discarded the
+// ENTIRE review (every other valid finding + the other model's findings). The
+// schema now tolerates exactly these two shapes; these tests pin that.
+describe("reviewOutputSchema tolerance (#134 Opus 4.7 malformed findings)", () => {
+  const validFinding = {
+    title: "platformFee is zeroed when protocolReserve is unset",
+    category: "bug",
+    severity: "high",
+    confidence: "high",
+    evidence: [
+      {
+        path: "AntseedDeposits.sol",
+        startLine: 42,
+        endLine: 44,
+        symbol: "deposit",
+        quote: "fee = 0",
+      },
+    ],
+    reasoning: "The fee is silently zeroed.",
+    reproduction: null,
+    recommendation: "Revert when protocolReserve == address(0).",
+    whyTestsDoNotAlreadyCoverThis: "No test exercises the unset-reserve path.",
+    suggestedRegressionTest: null,
+    minimumFixScope: "One guard clause.",
+  };
+  const emptyInspected = { files: [], symbols: [], notes: [] };
+  const wrap = (findings: unknown[]) => ({ findings, inspected: emptyInspected });
+
+  it("parses a finding whose evidence entry OMITS the `quote` key (the exact #134 failure), coercing it to null", () => {
+    // No `quote` key at all — pre-fix this threw at findings.0.evidence.0.quote.
+    const evidence = [
+      { path: "AntseedDeposits.sol", startLine: 42, endLine: 44, symbol: "deposit" },
+    ];
+    const parsed = reviewOutputSchema.parse(wrap([{ ...validFinding, evidence }]));
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0]!.evidence[0]!.quote).toBeNull();
+    expect(parsed.findings[0]!.evidence[0]!.symbol).toBe("deposit");
+  });
+
+  it("parses a finding whose evidence entry has ONLY `path`, defaulting every other field to null", () => {
+    const parsed = reviewOutputSchema.parse(
+      wrap([{ ...validFinding, evidence: [{ path: "a.sol" }] }]),
+    );
+    const ev = parsed.findings[0]!.evidence[0]!;
+    expect([ev.startLine, ev.endLine, ev.symbol, ev.quote]).toEqual([null, null, null, null]);
+  });
+
+  it("falls back to `bug` for an off-enum category (the #134 invalid_value failure)", () => {
+    const parsed = reviewOutputSchema.parse(wrap([{ ...validFinding, category: "correctness" }]));
+    expect(parsed.findings[0]!.category).toBe("bug");
+  });
+
+  it("tolerates omitted nullable metadata keys on the finding (reproduction, suggestedRegressionTest)", () => {
+    const { reproduction: _r, suggestedRegressionTest: _s, ...lean } = validFinding;
+    const parsed = reviewOutputSchema.parse(wrap([lean]));
+    expect(parsed.findings[0]!.reproduction).toBeNull();
+    expect(parsed.findings[0]!.suggestedRegressionTest).toBeNull();
+  });
+
+  it("does not let one malformed finding discard the rest of the batch (the core #134 harm)", () => {
+    // finding[1] carries BOTH malformations; the batch must still parse whole.
+    const bad = { ...validFinding, category: "logic", evidence: [{ path: "x.sol", symbol: "y" }] };
+    const parsed = reviewOutputSchema.parse(wrap([validFinding, bad, validFinding]));
+    expect(parsed.findings).toHaveLength(3);
+    expect(parsed.findings[1]!.category).toBe("bug");
+    expect(parsed.findings[1]!.evidence[0]!.quote).toBeNull();
+  });
+
+  it("stays strict on required CONTENT — a missing title or evidence.path still throws (no over-tolerance)", () => {
+    const { title: _t, ...noTitle } = validFinding;
+    expect(() => reviewOutputSchema.parse(wrap([noTitle]))).toThrow();
+    const noPath = { ...validFinding, evidence: [{ quote: "orphan" }] };
+    expect(() => reviewOutputSchema.parse(wrap([noPath]))).toThrow();
+  });
+});
