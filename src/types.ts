@@ -201,12 +201,23 @@ export type FeatureRecord = z.infer<typeof featureRecordSchema>;
 export type FeatureKind = FeatureRecord["kind"];
 export type TrustBoundary = FeatureRecord["trustBoundaries"][number];
 
+// Nullable evidence fields default to null so a MISSING key parses as null
+// rather than throwing. Opus 4.7 intermittently OMITS these keys entirely
+// (e.g. `quote`) instead of sending null; Zod's `.nullable()` accepts null but
+// not `undefined`, so a single omitted key used to fail the whole
+// reviewOutputSchema.parse — which, under the 2-of-2 unanimous gate, discarded
+// the entire review and every other (valid) finding. That was the AntSeed
+// "0 findings on re-run" bug (#134): 4 of the dogfood re-runs degraded to zero
+// on exactly `findings[i].evidence[j].quote: undefined`. `.default(null)`
+// keeps the OUTPUT type `string | null` (the matcher and Finding type are
+// unchanged) while tolerating the omitted key. `path` stays required — it is
+// the load-bearing anchor; a missing path makes the evidence entry unusable.
 export const evidenceRefSchema = z.object({
   path: z.string(),
-  startLine: z.number().int().positive().nullable(),
-  endLine: z.number().int().positive().nullable(),
-  symbol: z.string().nullable(),
-  quote: z.string().nullable(),
+  startLine: z.number().int().positive().nullable().default(null),
+  endLine: z.number().int().positive().nullable().default(null),
+  symbol: z.string().nullable().default(null),
+  quote: z.string().nullable().default(null),
 });
 
 export const findingHistoryEntrySchema = z.object({
@@ -328,16 +339,27 @@ export const reviewOutputSchema = z.object({
     z
       .object({
         title: z.string(),
-        category: z.enum(findingCategories),
+        // Off-enum category falls back to "bug" rather than throwing. Opus 4.7
+        // intermittently emits a category outside `findingCategories` (a #134
+        // dogfood run failed on `invalid_value` here). Nuking the whole review
+        // over one mislabeled finding is far worse than reclassifying it: a
+        // survived finding at worst fails to cluster with the other model's
+        // (different) category and lands as a single-model disagreement — it is
+        // not silently lost. Severity is a separate field, so the policy-review
+        // cap below is unaffected.
+        category: z.enum(findingCategories).catch("bug"),
         severity: z.enum(["critical", "high", "medium", "low"]),
         label: z.enum(findingLabels).default("blocking"),
         confidence: z.enum(["high", "medium", "low"]),
         evidence: z.array(evidenceRefSchema),
         reasoning: z.string(),
-        reproduction: z.string().nullable(),
+        // Same omitted-key tolerance as evidence fields (#134): a missing
+        // `reproduction`/`suggestedRegressionTest` key defaults to null instead
+        // of failing the parse. Output type stays `string | null`.
+        reproduction: z.string().nullable().default(null),
         recommendation: z.string(),
         whyTestsDoNotAlreadyCoverThis: z.string(),
-        suggestedRegressionTest: z.string().nullable(),
+        suggestedRegressionTest: z.string().nullable().default(null),
         minimumFixScope: z.string(),
         // Set when severity hinges on whether the flagged behavior is intentional
         // design (a documented limit, a granted escape hatch) rather than a bug.
