@@ -1,0 +1,187 @@
+# Contained CI repro-execution (#145 part 3/3).
+#
+# ⚠️ THIS WORKFLOW EXECUTES MODEL-GENERATED CODE. ⚠️
+# The `exec` step runs a verifier (apps/web/scripts/repro-verify-batch.ts
+# --phase exec) that spawns repro commands an LLM authored. Treat that code as
+# untrusted / attacker-influenced.
+#
+# CONTAINMENT = a kernel-enforced Docker sandbox, NOT a process-level firewall.
+# The exec step runs the verifier inside a container started with:
+#   --network none            (no network interface exists in the container —
+#                              the model repro cannot reach the internet or the
+#                              runner's metadata endpoint; a payload cannot
+#                              `sudo iptables -F` its way out, because there is
+#                              no interface to re-enable)
+#   --user <uid:gid>          (non-root; drops the ambient host-root the default
+#                              container user would have)
+#   --cap-drop ALL --security-opt no-new-privileges
+#   --pids-limit / --memory / --cpus   (blast-radius caps)
+# The container's own /proc + env are namespace-isolated from the host, so the
+# payload cannot read the host's secrets, and its PID namespace dies with
+# `docker run`, so no grandchild process survives into the later record step.
+#
+# THE EXEC STEP PASSES NO SECRETS. Do NOT add DATABASE_URL, ANTHROPIC_API_KEY,
+# GITHUB_TOKEN, or any other credential to the exec `docker run` — the
+# container's `assertNoSecretsInEnv` (allowlist-only, fail-closed) is the proof
+# that the env separation held and will REFUSE to run if a secret leaks in.
+#
+# STATUS: this workflow has NEVER been executed. It is inert (workflow_dispatch
+# only) and must NOT be trusted until an operator has test-dispatched it on a
+# KNOWN-SAFE input and reviewed the result. A 3-lane audit is pending.
+#
+# HARDENING FOLLOW-UP (documented, not yet done): run the exec step on a
+# separate, ephemeral VM/runner that has NEVER held any repository secret, so
+# even a total container escape lands on a machine with nothing to steal. Today
+# fetch (with secrets) and exec (no secrets) share one runner VM; the container
+# is the boundary between them.
+
+name: repro-exec-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max generation attempts to fetch (integer)"
+        required: false
+        default: "5"
+      repo:
+        description: "Optional owner/repo filter (empty = all eligible)"
+        required: false
+        default: ""
+      record:
+        description: "Write verdicts to review_gate_outcomes (money-path side table)"
+        required: false
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+
+# Least privilege at the top level: this workflow only ever reads the repo.
+permissions:
+  contents: read
+
+jobs:
+  repro-exec-verify:
+    runs-on: ubuntu-latest
+    steps:
+      # Do NOT persist the checkout's git credential on disk — the exec step
+      # bind-mounts $PWD into the untrusted container, so a leftover token under
+      # .git would be readable by model-generated code.
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.1.2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # DEFENSE vs expression-injection: the dispatch inputs are read into env
+      # (never interpolated inline into a run script), then validated in bash.
+      # Every later use is via the validated $LIMIT / $REPO env, quoted.
+      - name: Validate inputs
+        env:
+          LIMIT: ${{ inputs.limit }}
+          REPO: ${{ inputs.repo }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$LIMIT" | grep -Eq '^[0-9]+$'; then
+            echo "::error::limit must be a non-negative integer (got: $LIMIT)"
+            exit 1
+          fi
+          if [ -n "$REPO" ] && ! printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+            echo "::error::repo must be empty or match owner/repo (got: $REPO)"
+            exit 1
+          fi
+          echo "inputs validated: limit=$LIMIT repo=${REPO:-<all>}"
+
+      # FETCH (WITH secrets): selects consensus candidates carrying a suggested
+      # patch, calls the model to generate a repro spec per finding, and
+      # materialises a disposable bare git mirror per spec under
+      # /tmp/antfleet-mirror-* (the script's realCreateMirror). Writes
+      # apps/web/repro-specs.json. Executes NO model code.
+      - name: fetch (generate specs + mirrors)
+        env:
+          LIMIT: ${{ inputs.limit }}
+          REPO: ${{ inputs.repo }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          pnpm --dir apps/web exec tsx scripts/repro-verify-batch.ts \
+            --phase fetch --limit "$LIMIT" --repo "$REPO" --out repro-specs.json
+
+      # Build the sandbox image (network IS available here — this is the only
+      # place the image may fetch its apt packages). Tag with the run id so
+      # concurrent runs never collide.
+      - name: build sandbox image
+        run: |
+          set -euo pipefail
+          docker build -t "antfleet-repro-sandbox:${{ github.run_id }}" \
+            -f .github/repro-exec/Dockerfile .
+
+      # EXEC — the security-critical step. Runs the model-generated repros inside
+      # the disposable `--network none`, non-root, cap-dropped container.
+      #
+      # CRITICAL: this docker run passes NO secrets. The only -e vars are
+      # non-secret markers/flags (ANTFLEET_REPRO_SANDBOX, ANTFLEET_REPRO_EXEC,
+      # CI, HOME). The container's assertNoSecretsInEnv (allowlist-only) is the
+      # fail-closed proof the exec env is secretless — plus the node image's own
+      # HOSTNAME/NODE_VERSION/YARN_VERSION defaults are on that allowlist.
+      #
+      # Each fetch-created bare mirror is bound at its OWN host path :ro, so both
+      # the spec's absolute `mirrorDir` and the teardown's isOwnedMirrorDir check
+      # (dirname === os.tmpdir(), which is /tmp inside the container) resolve.
+      # $PWD (the repo) is bound read-only at /work; verdicts are written to a
+      # writable /out mount. tsx is invoked via its resolved dist entrypoint
+      # (node .../tsx/dist/cli.mjs) — that follows a RELATIVE symlink into
+      # /work/node_modules/.pnpm and needs no network and no NODE_PATH, so it
+      # works offline (the .bin/tsx shell shim bakes host-absolute NODE_PATHs and
+      # would not resolve inside the mount).
+      - name: exec (run model repros — NO secrets)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          VOLS=()
+          for d in /tmp/antfleet-mirror-*; do
+            [ -d "$d" ] && VOLS+=( -v "$d:$d:ro" )
+          done
+          docker run --rm --network none \
+            --user "$(id -u):$(id -g)" \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 512 --memory 4g --cpus 2 \
+            -e ANTFLEET_REPRO_SANDBOX=1 -e ANTFLEET_REPRO_EXEC=true -e CI=1 -e HOME=/tmp \
+            "${VOLS[@]}" \
+            -v "$PWD:/work:ro" -v "$RUNNER_TEMP/out:/out" \
+            "antfleet-repro-sandbox:${{ github.run_id }}" \
+            node /work/apps/web/node_modules/tsx/dist/cli.mjs \
+              /work/apps/web/scripts/repro-verify-batch.ts \
+              --phase exec --in /work/apps/web/repro-specs.json --out /out/repro-verdicts.json
+
+      # RECORD (WITH the DB secret, WRITE-gated + idempotent). Only runs when the
+      # operator explicitly asked to persist. Reads the verdicts the container
+      # produced; executes no model code.
+      - name: record (persist verdicts)
+        if: ${{ inputs.record == 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          pnpm --dir apps/web exec tsx scripts/repro-verify-batch.ts \
+            --phase record --in "$RUNNER_TEMP/out/repro-verdicts.json" --record
+
+      - name: upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-exec-verify-${{ github.run_id }}
+          path: |
+            apps/web/repro-specs.json
+            ${{ runner.temp }}/out/repro-verdicts.json
+          if-no-files-found: warn

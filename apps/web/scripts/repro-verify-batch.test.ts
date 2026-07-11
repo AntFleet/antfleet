@@ -194,6 +194,52 @@ describe("assertNoSecretsInEnv (allowlist-only, FIX A)", () => {
       }),
     ).not.toThrow();
   });
+
+  // #145 part 3: the Part-3 container injects the node:22-bookworm-slim image's
+  // own baseline env — HOSTNAME (Docker container id), NODE_VERSION, YARN_VERSION
+  // — which must be allowlisted or the guard would refuse to run in the sandbox.
+  it("PASSES the Docker/node container defaults (HOSTNAME, NODE_VERSION, YARN_VERSION)", () => {
+    expect(() =>
+      assertNoSecretsInEnv({
+        PATH: "/usr/local/bin",
+        HOSTNAME: "a1b2c3d4e5f6",
+        NODE_VERSION: "22.23.1",
+        YARN_VERSION: "1.22.22",
+      }),
+    ).not.toThrow();
+  });
+
+  // The exact env the Part-3 `docker run` produces: the container's own defaults
+  // (HOSTNAME/NODE_VERSION/YARN_VERSION/PATH) plus the -e markers/flags the exec
+  // step sets. This is the concrete "container env ⊆ ALLOWED_EXEC_ENV" proof.
+  it("PASSES the concrete Part-3 sandbox container env (container defaults + exec -e flags)", () => {
+    expect(() =>
+      assertNoSecretsInEnv({
+        PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        HOSTNAME: "0123456789ab",
+        NODE_VERSION: "22.23.1",
+        YARN_VERSION: "1.22.22",
+        HOME: "/tmp",
+        CI: "1",
+        ANTFLEET_REPRO_SANDBOX: "1",
+        ANTFLEET_REPRO_EXEC: "true",
+      }),
+    ).not.toThrow();
+  });
+
+  // Allowing the container defaults must NOT weaken the fail-closed property: a
+  // real secret sitting alongside HOSTNAME/NODE_VERSION is still rejected.
+  it("STILL rejects a real secret even when the allowlisted container defaults are present", () => {
+    expect(() =>
+      assertNoSecretsInEnv({
+        PATH: "/usr/local/bin",
+        HOSTNAME: "a1b2c3d4e5f6",
+        NODE_VERSION: "22.23.1",
+        YARN_VERSION: "1.22.22",
+        ANTHROPIC_API_KEY: "sk-ant-leaked",
+      }),
+    ).toThrow(/ANTHROPIC_API_KEY/);
+  });
 });
 
 // ── computeSpecDigest: stable content hash.

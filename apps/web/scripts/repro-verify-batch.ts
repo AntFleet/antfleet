@@ -90,6 +90,17 @@ const ALLOWED_EXEC_ENV = new Set<string>([
   "TERM",
   "TMPDIR",
   "NODE_ENV",
+  // Docker / node-image container defaults the Part-3 sandbox injects (FIX H,
+  // #145 part 3). Each is a NON-SECRET, exact-named var — no prefix wildcard:
+  //   HOSTNAME     — Docker sets this to the container id at `docker run` time.
+  //   NODE_VERSION — an `ENV` baked into the node:22-bookworm-slim image.
+  //   YARN_VERSION — an `ENV` baked into the node:22-bookworm-slim image.
+  // Without these the allowlist-only guard would REJECT the container's own
+  // baseline env and refuse to run inside the sandbox. They are none of them
+  // secret-shaped; a real credential still fails closed (see the guard test).
+  "HOSTNAME",
+  "NODE_VERSION",
+  "YARN_VERSION",
   // GitHub Actions metadata — the NON-SECRET names the runner exports. Note the
   // secret-bearing GITHUB_TOKEN is deliberately ABSENT: it is a credential, so
   // it must be rejected if it ever leaks into the exec step.
