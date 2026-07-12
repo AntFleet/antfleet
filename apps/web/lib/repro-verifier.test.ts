@@ -432,6 +432,120 @@ describe("runReproVerifier", () => {
     expect(writeFileNoClobber).not.toHaveBeenCalled();
   });
 
+  // ── skipTestSuite — the OFFLINE repro-exec contract (#145 Part 3). The repro IS
+  // the regression test: SKIP detectRunner + the project test suite; `verified`
+  // needs ONLY exit 0 pre-patch AND a concrete non-zero post-patch exit. A missing
+  // runner must NOT surface as no_runner here (that is the whole point — the
+  // offline sandbox cannot install the project's deps).
+  it("skipTestSuite=true: verified with NO runner detected (pre 0, post non-zero) — NOT no_runner", async () => {
+    let pytestCall = 0;
+    const detectExec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pytest") {
+        pytestCall += 1;
+        // pre: exit 0 (reproduces). post: non-zero (fixed).
+        return pytestCall === 1 ? ok("bug reproduced") : fail("AssertionError", 2);
+      }
+      return ok();
+    });
+    // exists all-false → detectRunner WOULD return "none". Under the full contract
+    // this is no_runner; under skipTestSuite it must be skipped entirely.
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      skipTestSuite: true,
+      io: mkIo({ exec: detectExec }),
+    });
+    expect(out.verdict).toBe("verified");
+    expect(out.inconclusiveReason).toBeNull();
+    expect(out.reproPreExitCode).toBe(0);
+    expect(out.reproPostExitCode).toBe(2);
+    // The suite was skipped: no detector, no test cmd/exit.
+    expect(out.detector).toBe("none");
+    expect(out.testCmd).toBeNull();
+    expect(out.testExitCode).toBeNull();
+    expect(out.notes).toMatch(/offline/);
+    expect(pytestCall).toBe(2); // repro ran pre + post, no suite in between
+    // detectRunner probes fs via io.exists — under skipTestSuite it must NOT be
+    // consulted for a runner (only git setup + the two repro runs use exec).
+    const ranNonGitNonRepro = detectExec.mock.calls.some(
+      ([a]) => a.command !== "git" && a.command !== "pytest",
+    );
+    expect(ranNonGitNonRepro).toBe(false);
+  });
+
+  it("skipTestSuite=true: regressed when the repro still exits 0 post-patch (pre 0, post 0)", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pytest") return ok("still reproduces"); // exit 0 pre AND post
+      return ok();
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      skipTestSuite: true,
+      io: mkIo({ exec }),
+    });
+    expect(out.verdict).toBe("regressed");
+    expect(out.reproPreExitCode).toBe(0);
+    expect(out.reproPostExitCode).toBe(0);
+    expect(out.detector).toBe("none");
+    expect(out.notes).toMatch(/still exits 0 post-patch/);
+  });
+
+  it("skipTestSuite=true: inconclusive abnormal_exit on a null (non-timeout) post-patch exit", async () => {
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pytest") {
+        pytestCall += 1;
+        return pytestCall === 1
+          ? ok("bug reproduced")
+          : { exitCode: null, stdout: "", stderr: "killed", ms: 5, timedOut: false };
+      }
+      return ok();
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      skipTestSuite: true,
+      io: mkIo({ exec }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("verified");
+    expect(out.inconclusiveReason).toBe("abnormal_exit");
+  });
+
+  it("skipTestSuite OMITTED is identical to today — a missing runner STILL → inconclusive no_runner", async () => {
+    // Spot check that the #143 default behavior is unchanged when the flag is
+    // absent: pre exits 0 but no runner is detected → no_runner (never verified),
+    // and the post-patch repro never runs.
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pytest") {
+        pytestCall += 1;
+        return ok("bug reproduced"); // pre-patch exit 0
+      }
+      return ok();
+    });
+    // exists all-false → detectRunner returns "none".
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("verified");
+    expect(out.inconclusiveReason).toBe("no_runner");
+    expect(out.reproPreExitCode).toBe(0);
+    expect(pytestCall).toBe(1); // post-patch repro never ran (short-circuit on no_runner)
+  });
+
   it("returns abnormal_exit (never verified) when the post-patch repro exits null without timing out", async () => {
     let pytestCall = 0;
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {

@@ -44,9 +44,28 @@
 //       what it WOULD write (consulting a read-only existence probe) and touches
 //       nothing.
 //
-// The flag stays OFF in the app. Nothing here flips it except the exec phase's
-// own process and the workflow's exec step. Run with:
-//   tsx scripts/repro-verify-batch.ts --phase <fetch|exec|record> [flags]
+// #145 Part 3 splits the single `exec` phase into a PER-SPEC entrypoint so each
+// spec runs in its OWN disposable container and the verdict DECISION is the
+// container's EXIT CODE (which the untrusted repro cannot forge), assembled on the
+// trusted host:
+//
+//   verify-one (NO secrets, INSIDE the container) runs ONLY spec[i] through the
+//     OFFLINE verifier (skipTestSuite:true — the repro IS the regression test) and
+//     process.exit()s with a DECISION code (0=verified, 20=regressed,
+//     30=inconclusive; other codes reserved for crashes). It writes a best-effort
+//     evidence file for the rich context fields.
+//
+//   assemble (NO secrets, HOST side, TRUSTED) reads the workflow's manifest of
+//     "<index> <exitcode>" lines and derives each verdict from the EXIT CODE ALONE
+//     — the payload-writable evidence file supplies only decision-INDEPENDENT
+//     context. Produces the same VerdictRecord[] the record phase consumes.
+//
+// (The original single `exec` phase is retained for local/dev use.)
+//
+// The flag stays OFF in the app. Nothing here flips it except the exec/verify-one
+// phase's own process and the workflow's exec step. Run with:
+//   tsx scripts/repro-verify-batch.ts \
+//     --phase <fetch|exec|verify-one|assemble|record> [flags]
 
 import { config as loadDotenv } from "dotenv";
 import { readFile, writeFile } from "node:fs/promises";
@@ -200,6 +219,49 @@ export type VerdictRecord = {
 // The three verdict strings a repro run can produce. Used by parseVerdicts's
 // strict shape check (FIX 6) so a corrupt artifact is rejected loudly.
 const VERDICT_VALUES = new Set(["verified", "regressed", "inconclusive"]);
+
+// ── PROVENANCE CHAIN (#145 Part 3, Issue 1). The verdict DECISION is carried by
+// the CONTAINER EXIT CODE, never by a payload-writable file:
+//
+//   verify-one (inside the container) runs ONE spec and process.exit()s with a
+//   DECISION code below → the workflow captures `$?` into a manifest line
+//   "<index> <exitcode>" → assemble (host, trusted) maps that exit code back to a
+//   verdict. The untrusted repro is PID-1's descendant: it can only DOWNGRADE the
+//   result by killing PID 1 (which yields a signal/non-decision exit → treated as
+//   inconclusive), never FORGE a `verified` (0) — the launcher chooses 0 ONLY when
+//   the verifier itself returned verified. The per-spec evidence file is
+//   best-effort context (rich fields for the record row); it is DECISION-INDEPENDENT
+//   and its self-reported `verdict` is ignored by assemble.
+//
+// Codes are chosen well apart from the small integers a crashing node process or a
+// killed PID-1 (128+signal) would emit, so an unexpected code maps to inconclusive
+// rather than being mistaken for a decision.
+const DECISION_EXIT_VERIFIED = 0;
+const DECISION_EXIT_REGRESSED = 20;
+const DECISION_EXIT_INCONCLUSIVE = 30;
+
+// Map a verifier verdict → the DECISION exit code verify-one exits with. Pure +
+// exported so the exit-code contract can be asserted without spawning a process.
+export function decisionExitCodeForVerdict(verdict: PatchVerifyOutcome["verdict"]): number {
+  if (verdict === "verified") return DECISION_EXIT_VERIFIED;
+  if (verdict === "regressed") return DECISION_EXIT_REGRESSED;
+  return DECISION_EXIT_INCONCLUSIVE;
+}
+
+// Inverse: map a captured container exit code → the assembled verdict (Issue 1).
+// 0→verified, 20→regressed, 30→inconclusive, ANYTHING ELSE → inconclusive with a
+// note (a crash, a killed PID 1 at 128+signal, or any unexpected code is NEVER a
+// proof). Pure + exported for tests. Returns the verdict AND an optional note that
+// assemble folds into the record so an odd exit is traceable.
+export function verdictFromExitCode(code: number): {
+  verdict: PatchVerifyOutcome["verdict"];
+  note: string | null;
+} {
+  if (code === DECISION_EXIT_VERIFIED) return { verdict: "verified", note: null };
+  if (code === DECISION_EXIT_REGRESSED) return { verdict: "regressed", note: null };
+  if (code === DECISION_EXIT_INCONCLUSIVE) return { verdict: "inconclusive", note: null };
+  return { verdict: "inconclusive", note: `container exited ${code}` };
+}
 
 // The valid detector domain — the RunnerKind values patch-verifier/repro-verifier
 // emit (`pnpm|npm|go|pytest|none`). parseVerdicts (FIX 4) validates every record's
@@ -765,6 +827,301 @@ export function summariseVerdicts(records: readonly VerdictRecord[]): {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// verify-one phase — NO secrets. Runs ONE spec inside the disposable
+// `--network none` container (#145 Part 3, Issue 1). The container runs ONE spec
+// per invocation so the DECISION is the CONTAINER's own exit code — which the
+// untrusted repro (a descendant of PID 1) can only downgrade by killing PID 1,
+// never forge as verified. Writes the rich evidence record to --out (best-effort
+// context) and RETURNS a decision code the CLI translates into process.exit().
+// ────────────────────────────────────────────────────────────────────────
+
+export type VerifyOnePhaseOptions = {
+  inPath: string;
+  index: number;
+  outPath: string;
+  // Injectable verifier seam, mirroring runExecPhase. Production omits it and
+  // binds the real OFFLINE runReproVerifier (skipTestSuite:true) lazily; tests
+  // inject a stub so nothing is spawned.
+  runVerifier?: (spec: ReproSpec) => Promise<PatchVerifyOutcome>;
+  // Injectable spec source. Production omits it and reads inPath.
+  loadSpecs?: () => Promise<ReproSpec[]>;
+  // Injectable evidence sink. Production omits it and writes outPath.
+  writeEvidence?: (record: VerdictRecord) => Promise<void>;
+  log?: (msg: string) => void;
+};
+
+export async function runVerifyOnePhase(opts: VerifyOnePhaseOptions): Promise<number> {
+  const log = opts.log ?? ((m: string) => console.log(m));
+
+  // SAME fail-closed posture as runExecPhase: this phase executes model-generated
+  // code, so assert the env is secretless (allowlist-only) AND require the trusted
+  // container's sandbox marker before touching a single spec. Both read the REAL
+  // process.env and fail CLOSED — no injectable override around a security guard.
+  assertNoSecretsInEnv();
+  if (!isEnvValuePresent(process.env[REPRO_SANDBOX_MARKER])) {
+    throw new Error(
+      `[repro-verify-batch] REFUSING to run the verify-one phase: ${REPRO_SANDBOX_MARKER} is not ` +
+        `set. This phase executes model-generated code and MUST run inside the trusted disposable ` +
+        `container (Build 2b-2 Part 3, --network none), which sets that marker. Do NOT run it on a ` +
+        `bare host.`,
+    );
+  }
+
+  // Validate the index is an in-range integer BEFORE loading specs so a bad
+  // --index fails loudly rather than silently reading specs[NaN] === undefined.
+  if (!Number.isInteger(opts.index) || opts.index < 0) {
+    throw new Error(
+      `[repro-verify-batch] verify-one requires an integer --index >= 0 (got ${opts.index})`,
+    );
+  }
+
+  // Restore the app flag on EVERY exit path (FIX I) — see runExecPhase.
+  const priorReproExec = process.env["ANTFLEET_REPRO_EXEC"];
+  process.env["ANTFLEET_REPRO_EXEC"] = "true";
+  try {
+    const runVerifier = opts.runVerifier ?? (await realVerifier());
+    const specs = opts.loadSpecs
+      ? await opts.loadSpecs()
+      : parseSpecs(await readFile(opts.inPath, "utf8"));
+    if (opts.index >= specs.length) {
+      throw new Error(
+        `[repro-verify-batch] verify-one --index ${opts.index} is out of range ` +
+          `(loaded ${specs.length} spec(s))`,
+      );
+    }
+    const spec = specs[opts.index] as ReproSpec;
+    log(`[verify-one] running spec[${opts.index}] finding=${spec.findingId}`);
+
+    let record: VerdictRecord;
+    try {
+      const outcome = await runVerifier(spec);
+      record = shapeVerdictRecord(spec, outcome);
+    } catch (err) {
+      // A verifier throw is itself inconclusive — shape a synthetic record (same
+      // enriched shape runExecPhase's recovery path builds) so the evidence file
+      // is still self-describing, and let the decision code below be inconclusive.
+      record = {
+        reviewId: spec.reviewId,
+        findingId: spec.findingId,
+        verdict: "inconclusive",
+        inconclusiveReason: "exception",
+        sha: spec.sha,
+        reproCmd: spec.repro.cmd,
+        detector: "none",
+        testExitCode: null,
+        reproPreExitCode: null,
+        reproPostExitCode: null,
+        testMs: null,
+        reproPreMs: null,
+        reproPostMs: null,
+        totalMs: 0,
+        modelId: spec.repro.modelId,
+        specDigest: spec.specDigest,
+        notes: `runReproVerifier threw: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    if (opts.writeEvidence) {
+      await opts.writeEvidence(record);
+    } else {
+      await writeFile(opts.outPath, JSON.stringify(record, null, 2), "utf8");
+    }
+    const code = decisionExitCodeForVerdict(record.verdict);
+    log(
+      `[verify-one] spec[${opts.index}] verdict=${record.verdict} → decision exit ${code}; ` +
+        `wrote evidence to ${opts.outPath}`,
+    );
+    return code;
+  } finally {
+    if (priorReproExec === undefined) {
+      delete process.env["ANTFLEET_REPRO_EXEC"];
+    } else {
+      process.env["ANTFLEET_REPRO_EXEC"] = priorReproExec;
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// assemble phase — HOST side, TRUSTED (no secrets, no model code). Turns each
+// container's captured exit code (the manifest) + its best-effort evidence file
+// into the VerdictRecord[] the record phase consumes (#145 Part 3, Issue 1).
+//
+// PROVENANCE: the manifest is lines "<index> <exitcode>" the workflow wrote from
+// each container's `$?`. The DECISION for a record comes from that EXIT CODE ALONE
+// (verdictFromExitCode) — NEVER from the evidence file, which is payload-writable
+// (the /out mount is writable by the container). The evidence file supplies only
+// the rich CONTEXT fields (reproPre/PostExitCode, detector, timings, sha, notes,
+// specDigest); its self-reported `verdict` is validated for TYPE then IGNORED and
+// OVERRIDDEN by the exit-code decision. A forged evidence file claiming
+// verdict:"verified" whose container exited 30 is assembled as inconclusive.
+// ────────────────────────────────────────────────────────────────────────
+
+// One parsed manifest line: the spec index + the container's captured exit code.
+export type ManifestEntry = { index: number; exitCode: number };
+
+// Parse the manifest text into entries. Each non-blank line is "<index> <exit>"
+// with both WHOLE-STRING non-negative integers; anything else is rejected loudly
+// (a corrupt manifest must not silently drop or mis-assign a spec). Exported for
+// tests.
+export function parseManifest(text: string): ManifestEntry[] {
+  const entries: ManifestEntry[] = [];
+  const lines = text.split("\n");
+  lines.forEach((line, lineNo) => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return; // skip blank lines
+    const parts = trimmed.split(/\s+/);
+    if (parts.length !== 2) {
+      throw new Error(
+        `[assemble] manifest line ${lineNo + 1} is not "<index> <exitcode>" (got: ${line})`,
+      );
+    }
+    const [idxStr, codeStr] = parts as [string, string];
+    if (!/^\d+$/.test(idxStr) || !/^\d+$/.test(codeStr)) {
+      throw new Error(
+        `[assemble] manifest line ${lineNo + 1} needs two non-negative integers (got: ${line})`,
+      );
+    }
+    entries.push({ index: Number.parseInt(idxStr, 10), exitCode: Number.parseInt(codeStr, 10) });
+  });
+  return entries;
+}
+
+export type AssemblePhaseOptions = {
+  manifestPath: string;
+  evidenceDir: string;
+  outPath: string;
+  // Injectable manifest source. Production omits it and reads manifestPath.
+  loadManifest?: () => Promise<string>;
+  // Injectable per-index evidence reader. Production omits it and reads
+  // <evidenceDir>/evidence-<index>.json; returns null when the file is absent
+  // (the container never wrote it — e.g. it was OOM-killed before writeFile).
+  loadEvidence?: (index: number) => Promise<unknown | null>;
+  // Injectable sink. Production omits it and writes outPath.
+  writeVerdicts?: (records: VerdictRecord[]) => Promise<void>;
+  log?: (msg: string) => void;
+};
+
+export async function runAssemblePhase(opts: AssemblePhaseOptions): Promise<VerdictRecord[]> {
+  const log = opts.log ?? ((m: string) => console.log(m));
+  const manifestText = opts.loadManifest
+    ? await opts.loadManifest()
+    : await readFile(opts.manifestPath, "utf8");
+  const entries = parseManifest(manifestText);
+  log(`[assemble] ${entries.length} manifest entr(y/ies) from ${opts.manifestPath}`);
+
+  const loadEvidence = opts.loadEvidence ?? realLoadEvidence(opts.evidenceDir);
+  const records: VerdictRecord[] = [];
+  for (const entry of entries) {
+    // DECISION comes from the exit code ONLY. This is the untrusted-can-only-
+    // downgrade guarantee: the repro cannot forge exit 0.
+    const decision = verdictFromExitCode(entry.exitCode);
+
+    // Best-effort CONTEXT from the payload-writable evidence file. Missing / bad
+    // evidence NEVER changes the decision — it only means we fall back to a
+    // synthetic minimal record carrying the exit-code decision.
+    let evidence: unknown = null;
+    try {
+      evidence = await loadEvidence(entry.index);
+    } catch (err) {
+      log(
+        `[assemble] could not read evidence for index ${entry.index} ` +
+          `(${err instanceof Error ? err.message : String(err)}); using exit-code decision only`,
+      );
+    }
+
+    if (evidence === null) {
+      // No usable evidence — emit a minimal record carrying ONLY the exit-code
+      // decision so this spec is still represented downstream.
+      records.push(minimalAssembledRecord(entry, decision));
+      continue;
+    }
+
+    // Validate the evidence's field TYPES with the SAME strictness as parseVerdicts
+    // (validateVerdictRecordFields) — a garbage-typed evidence file is rejected
+    // loudly. But the self-reported `verdict` is IGNORED: we OVERRIDE it with the
+    // exit-code decision. (This is the anti-forgery core of Issue 1.)
+    validateVerdictRecordFields(evidence, entry.index, "evidence");
+    const ev = evidence as VerdictRecord;
+    const overriddenNotes =
+      decision.note !== null ? `${ev.notes} [assemble: ${decision.note}]` : ev.notes;
+    records.push({
+      ...ev,
+      // OVERRIDE: verdict is exit-code-derived, never the evidence's self-report.
+      verdict: decision.verdict,
+      // If the exit code disagrees with the evidence's self-reported verdict, keep
+      // the exit-code decision but null out the inconclusiveReason unless the
+      // decision is inconclusive (a `verified`/`regressed` decision carries no
+      // reason; only an inconclusive one does).
+      inconclusiveReason:
+        decision.verdict === "inconclusive" ? (ev.inconclusiveReason ?? "exception") : null,
+      notes: overriddenNotes,
+    });
+  }
+
+  const counts = summariseVerdicts(records);
+  log(
+    `[assemble] done — verified=${counts.verified} regressed=${counts.regressed} ` +
+      `inconclusive=${counts.inconclusive} (total ${records.length})`,
+  );
+  if (opts.writeVerdicts) {
+    await opts.writeVerdicts(records);
+  } else {
+    await writeFile(opts.outPath, JSON.stringify(records, null, 2), "utf8");
+    log(`[assemble] wrote verdicts to ${opts.outPath}`);
+  }
+  return records;
+}
+
+// A minimal VerdictRecord carrying ONLY the exit-code decision, for a spec whose
+// evidence file is absent/unreadable. reviewId/findingId are unknown without the
+// evidence, so they are stamped from the manifest index — enough to represent the
+// spec downstream without inventing a self-reported proof.
+function minimalAssembledRecord(
+  entry: ManifestEntry,
+  decision: { verdict: PatchVerifyOutcome["verdict"]; note: string | null },
+): VerdictRecord {
+  return {
+    reviewId: `(unknown-review-index-${entry.index})`,
+    findingId: `(unknown-finding-index-${entry.index})`,
+    verdict: decision.verdict,
+    inconclusiveReason: decision.verdict === "inconclusive" ? "exception" : null,
+    sha: "(unknown)",
+    reproCmd: null,
+    detector: "none",
+    testExitCode: null,
+    reproPreExitCode: null,
+    reproPostExitCode: null,
+    testMs: null,
+    reproPreMs: null,
+    reproPostMs: null,
+    totalMs: 0,
+    modelId: null,
+    specDigest: "(unknown)",
+    notes:
+      `no evidence file for index ${entry.index}; verdict from container exit code ` +
+      `${entry.exitCode}${decision.note !== null ? ` (${decision.note})` : ""}`,
+  };
+}
+
+// Real per-index evidence reader: <evidenceDir>/evidence-<index>.json. Returns
+// null (not a throw) when the file is ABSENT — an OOM-killed container may never
+// have written it, which must degrade to the exit-code decision, not abort
+// assemble. Any OTHER read/parse error propagates (caught + logged by the caller).
+function realLoadEvidence(evidenceDir: string): (index: number) => Promise<unknown | null> {
+  return async (index) => {
+    const path = join(evidenceDir, `evidence-${index}.json`);
+    let raw: string;
+    try {
+      raw = await readFile(path, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+    return JSON.parse(raw);
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // record phase — WITH the DB secret, but WRITE-gated + idempotent. Default
 // dry-run.
 // ────────────────────────────────────────────────────────────────────────
@@ -965,82 +1322,97 @@ export function parseSpecs(json: string): ReproSpec[] {
   return parsed as ReproSpec[];
 }
 
+// STRICT per-FIELD validation of one verdict record, WITHOUT the verified-proof
+// invariant. Extracted (FIX B) so both parseVerdicts (online/full contract) and
+// the Part-3 `assemble` phase share ONE definition of the field types — assemble
+// validates the payload-writable evidence file's field TYPES with exactly this
+// strictness but derives the DECISION from the container exit code, never from the
+// evidence's self-reported verdict. `label` is the file kind for error messages.
+// Throws loudly on any bad field. Returns nothing — it is a type assertion.
+function validateVerdictRecordFields(rec: unknown, i: number, label: string): void {
+  if (rec === null || typeof rec !== "object") {
+    throw new Error(`${label}[${i}] is not an object`);
+  }
+  const r = rec as Record<string, unknown>;
+  if (!isNonEmptyString(r["reviewId"])) {
+    throw new Error(`${label}[${i}].reviewId must be a non-empty string`);
+  }
+  if (!isNonEmptyString(r["findingId"])) {
+    throw new Error(`${label}[${i}].findingId must be a non-empty string`);
+  }
+  if (typeof r["verdict"] !== "string" || !VERDICT_VALUES.has(r["verdict"])) {
+    throw new Error(`${label}[${i}].verdict must be one of verified|regressed|inconclusive`);
+  }
+  if (
+    r["inconclusiveReason"] !== null &&
+    !(
+      typeof r["inconclusiveReason"] === "string" &&
+      INCONCLUSIVE_REASON_VALUES.has(r["inconclusiveReason"])
+    )
+  ) {
+    throw new Error(`${label}[${i}].inconclusiveReason must be null or a known InconclusiveReason`);
+  }
+  if (!isNonEmptyString(r["sha"])) {
+    throw new Error(`${label}[${i}].sha must be a non-empty string`);
+  }
+  if (!isStringOrNull(r["reproCmd"])) {
+    throw new Error(`${label}[${i}].reproCmd must be a string or null`);
+  }
+  if (typeof r["detector"] !== "string" || !DETECTOR_VALUES.has(r["detector"])) {
+    throw new Error(`${label}[${i}].detector must be one of pnpm|npm|go|pytest|none`);
+  }
+  for (const field of ["testExitCode", "reproPreExitCode", "reproPostExitCode"] as const) {
+    if (!isExitCodeOrNull(r[field])) {
+      throw new Error(`${label}[${i}].${field} must be null or an integer exit code in [0,255]`);
+    }
+  }
+  for (const field of ["testMs", "reproPreMs", "reproPostMs"] as const) {
+    if (!isNonNegNumberOrNull(r[field])) {
+      throw new Error(`${label}[${i}].${field} must be null or a number >= 0`);
+    }
+  }
+  if (typeof r["totalMs"] !== "number" || !Number.isFinite(r["totalMs"]) || r["totalMs"] < 0) {
+    throw new Error(`${label}[${i}].totalMs must be a number >= 0`);
+  }
+  if (!isStringOrNull(r["modelId"])) {
+    throw new Error(`${label}[${i}].modelId must be a string or null`);
+  }
+  if (!isNonEmptyString(r["specDigest"])) {
+    throw new Error(`${label}[${i}].specDigest must be a non-empty string`);
+  }
+  if (typeof r["notes"] !== "string") {
+    throw new Error(`${label}[${i}].notes must be a string`);
+  }
+}
+
 // STRICT (FIX B): validate EACH record's shape, not just "is an array". A
 // corrupt / partially-written verdicts file — or a FORGED `verified` with null
 // proofs — is rejected loudly rather than silently persisted. Beyond the field
 // types, ENFORCE the proof invariant: a verdict:"verified" record MUST carry a
 // concrete positive proof (a real detector, a passing test, a reproducing
 // pre-patch run, a concrete non-zero post-patch exit, and no inconclusiveReason)
-// — the exact shape runReproVerifier only ever emits for a genuine proof.
+// — the exact shape the ONLINE / full-contract runReproVerifier emits for a proof.
+//
+// NOTE: this proof invariant is the ONLINE (full test-suite) contract and is NOT
+// applied to the Part-3 assembled verdicts: the offline repro-exec `verified`
+// legitimately has detector:"none" + testExitCode:null (the suite is skipped), and
+// its DECISION comes from the container exit code, not this self-report. The
+// assemble phase therefore validates field TYPES (validateVerdictRecordFields)
+// but sets the verdict from the exit code and does not gate it on this invariant.
 export function parseVerdicts(json: string): VerdictRecord[] {
   const parsed: unknown = JSON.parse(json);
   if (!Array.isArray(parsed)) throw new Error("repro-verdicts file did not contain a JSON array");
   parsed.forEach((rec, i) => {
-    if (rec === null || typeof rec !== "object") {
-      throw new Error(`repro-verdicts[${i}] is not an object`);
-    }
+    validateVerdictRecordFields(rec, i, "repro-verdicts");
     const r = rec as Record<string, unknown>;
-    if (!isNonEmptyString(r["reviewId"])) {
-      throw new Error(`repro-verdicts[${i}].reviewId must be a non-empty string`);
-    }
-    if (!isNonEmptyString(r["findingId"])) {
-      throw new Error(`repro-verdicts[${i}].findingId must be a non-empty string`);
-    }
-    if (typeof r["verdict"] !== "string" || !VERDICT_VALUES.has(r["verdict"])) {
-      throw new Error(
-        `repro-verdicts[${i}].verdict must be one of verified|regressed|inconclusive`,
-      );
-    }
-    if (
-      r["inconclusiveReason"] !== null &&
-      !(
-        typeof r["inconclusiveReason"] === "string" &&
-        INCONCLUSIVE_REASON_VALUES.has(r["inconclusiveReason"])
-      )
-    ) {
-      throw new Error(
-        `repro-verdicts[${i}].inconclusiveReason must be null or a known InconclusiveReason`,
-      );
-    }
-    if (!isNonEmptyString(r["sha"])) {
-      throw new Error(`repro-verdicts[${i}].sha must be a non-empty string`);
-    }
-    if (!isStringOrNull(r["reproCmd"])) {
-      throw new Error(`repro-verdicts[${i}].reproCmd must be a string or null`);
-    }
-    if (typeof r["detector"] !== "string" || !DETECTOR_VALUES.has(r["detector"])) {
-      throw new Error(`repro-verdicts[${i}].detector must be one of pnpm|npm|go|pytest|none`);
-    }
-    for (const field of ["testExitCode", "reproPreExitCode", "reproPostExitCode"] as const) {
-      if (!isExitCodeOrNull(r[field])) {
-        throw new Error(
-          `repro-verdicts[${i}].${field} must be null or an integer exit code in [0,255]`,
-        );
-      }
-    }
-    for (const field of ["testMs", "reproPreMs", "reproPostMs"] as const) {
-      if (!isNonNegNumberOrNull(r[field])) {
-        throw new Error(`repro-verdicts[${i}].${field} must be null or a number >= 0`);
-      }
-    }
-    if (typeof r["totalMs"] !== "number" || !Number.isFinite(r["totalMs"]) || r["totalMs"] < 0) {
-      throw new Error(`repro-verdicts[${i}].totalMs must be a number >= 0`);
-    }
-    if (!isStringOrNull(r["modelId"])) {
-      throw new Error(`repro-verdicts[${i}].modelId must be a string or null`);
-    }
-    if (!isNonEmptyString(r["specDigest"])) {
-      throw new Error(`repro-verdicts[${i}].specDigest must be a non-empty string`);
-    }
-    if (typeof r["notes"] !== "string") {
-      throw new Error(`repro-verdicts[${i}].notes must be a string`);
-    }
     // PROOF INVARIANT: a `verified` record must carry a genuine proof, or it is a
-    // forgery and we reject the whole file. runReproVerifier only ever emits
-    // verified with detector!=="none", testExitCode===0, reproPreExitCode===0, a
-    // concrete nonzero integer reproPostExitCode, and inconclusiveReason===null.
+    // forgery and we reject the whole file. The online runReproVerifier only ever
+    // emits verified with detector!=="none", testExitCode===0, reproPreExitCode===0,
+    // a concrete nonzero integer reproPostExitCode, and inconclusiveReason===null.
     if (r["verdict"] === "verified") {
-      const detector = r["detector"];
+      // validateVerdictRecordFields already proved detector is a valid string in
+      // the RunnerKind domain, so the cast is sound here.
+      const detector = r["detector"] as string;
       const testExit = r["testExitCode"];
       const pre = r["reproPreExitCode"];
       const post = r["reproPostExitCode"];
@@ -1430,6 +1802,11 @@ async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyO
       patch: spec.patch,
       repro: spec.repro,
       finding: minimalFindingForVerify(),
+      // OFFLINE repro-exec contract (#145 Part 3): the sandbox has NO network to
+      // install the target project's deps, so the project test suite is out of
+      // scope — the generated repro IS the regression test. Without this a
+      // missing-deps suite would surface as a false `regressed`/`no_runner`.
+      skipTestSuite: true,
       io: await realReproVerifierIo(),
     });
 }
@@ -1605,6 +1982,41 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
     return;
   }
 
+  if (phase === "verify-one") {
+    // NO loadDotenv — verify-one runs the model repro inside the container and
+    // must stay secretless. It process.exit()s with the DECISION code (0=verified,
+    // 20=regressed, 30=inconclusive; other codes are reserved for crashes and the
+    // host `assemble` treats them as inconclusive). The workflow captures `$?`.
+    const indexRaw = get("--index");
+    const index = indexRaw !== null ? Number.parseInt(indexRaw, 10) : NaN;
+    const code = await runVerifyOnePhase({
+      inPath: get("--in") ?? DEFAULT_SPECS_PATH,
+      index,
+      outPath: get("--out") ?? DEFAULT_VERDICTS_PATH,
+    });
+    process.exit(code);
+  }
+
+  if (phase === "assemble") {
+    // HOST side, TRUSTED, no secrets, no model code. Derive each verdict from the
+    // container exit code (the manifest); the evidence file is decision-independent
+    // context only.
+    const manifestPath = get("--manifest");
+    if (manifestPath === null) {
+      throw new Error("[repro-verify-batch] --phase assemble requires --manifest <file>");
+    }
+    const evidenceDir = get("--evidence-dir");
+    if (evidenceDir === null) {
+      throw new Error("[repro-verify-batch] --phase assemble requires --evidence-dir <dir>");
+    }
+    await runAssemblePhase({
+      manifestPath,
+      evidenceDir,
+      outPath: get("--out") ?? DEFAULT_VERDICTS_PATH,
+    });
+    return;
+  }
+
   if (phase === "record") {
     loadDotenv({ path: ".env.local", quiet: true });
     await runRecordPhase({
@@ -1616,7 +2028,7 @@ export async function main(argv: readonly string[] = process.argv): Promise<void
 
   throw new Error(
     `[repro-verify-batch] unknown or missing --phase (got ${JSON.stringify(phase)}); ` +
-      `expected one of fetch | exec | record`,
+      `expected one of fetch | exec | verify-one | assemble | record`,
   );
 }
 

@@ -57,6 +57,25 @@
 //
 // runPatchVerifier is UNCHANGED and independent — its PoC path does not run
 // through here.
+//
+// ── skipTestSuite — the OFFLINE repro-exec contract (#145 Build 2b-2 v2 Part 3).
+// The disposable `--network none` sandbox has NO network, so the target project's
+// dependencies frequently CANNOT be installed (a `pnpm install` / `pip install`
+// would need the network the container denies). A project test suite that fails
+// only because its deps are missing must NOT be read as a real regression. So the
+// exec phase passes skipTestSuite:true, and under that flag THE REPRO IS THE
+// REGRESSION TEST:
+//   - SKIP detectRunner + the entire post-patch project-test-suite step.
+//   - `verified` requires ONLY the two repro observations: exit 0 pre-patch (bug
+//     reproduces) AND a CONCRETE non-zero (integer in [1,255]) post-patch exit
+//     (bug fixed). Full-suite non-regression is explicitly OUT OF SCOPE offline —
+//     the offline verdict proves the differential, not that unrelated tests still
+//     pass. A still-0 post-patch exit is `regressed` (patch did not close the
+//     bug); a null/timeout post-patch is inconclusive (`abnormal_exit` /
+//     `repro_timeout`), exactly as with the full contract.
+// When skipTestSuite is false/omitted the FULL #143 contract is UNCHANGED: a
+// runner is REQUIRED, the suite must pass, and a missing runner → inconclusive
+// `no_runner`. The pre/post repro + git-apply logic is identical in both modes.
 
 import type { Finding } from "./review-types";
 import type { ReproTestSuggestion } from "@antfleet/cli/types";
@@ -143,6 +162,15 @@ export type RunReproVerifierArgs = {
   finding: Finding;
   // Default 120s per child process; SIGKILL on timeout.
   timeoutMs?: number;
+  // OFFLINE repro-exec contract (#145 Part 3). When true, SKIP detectRunner + the
+  // whole post-patch project-test-suite step and treat the generated repro AS the
+  // regression test: `verified` needs ONLY repro exit 0 pre-patch AND a concrete
+  // non-zero post-patch exit — full-suite non-regression is out of scope offline
+  // (the sandbox has no network to install the project's deps, so a missing-deps
+  // suite must never surface as a false `regressed`/`no_runner`). Default/omitted
+  // keeps the full #143 contract UNCHANGED (runner required, suite must pass,
+  // no_runner → inconclusive). See the module header.
+  skipTestSuite?: boolean;
   io: ReproVerifierIo;
 };
 
@@ -368,122 +396,146 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
-    // Post-patch test suite. A `verified` proof asserts the patch did not break
-    // the build, so a runner is REQUIRED: with none detected we cannot confirm
-    // non-regression and must NOT reach verified on the repro differential
-    // alone. Return inconclusive `no_runner`, matching runPatchVerifier. (Audit
-    // 2026-07-11: `verified` was reachable with detector.kind === "none".)
-    const detector = await detectRunner(args.io, worktree);
-    if (detector.kind === "none") {
-      return reproInconclusive({
-        worktreePath: worktree,
-        notes:
-          "no test runner detected post-patch — cannot confirm non-regression; " +
-          "a repro differential alone is not a verified proof",
-        ms: args.io.now() - t0,
-        kind: "no_runner",
-        reproCmd,
-        reproPreExitCode: preStep.exitCode,
-        reproPreMs: preStep.ms,
-      });
-    }
+    // Post-patch project test suite — the FULL #143 contract, UNLESS the OFFLINE
+    // repro-exec contract (skipTestSuite) is in force. These four summary vars are
+    // what Observation 2's outcome records carry:
+    //   - skipTestSuite === true (offline): the sandbox has no network to install
+    //     the project's deps, so the suite is out of scope. Leave them at the
+    //     "skipped" defaults (detector "none", no test cmd/exit/ms) and go
+    //     straight to Observation 2 — the repro IS the regression test.
+    //   - skipTestSuite falsy: run detectRunner + the suite; a missing runner →
+    //     inconclusive no_runner, a suite failure → regressed, exactly as before.
+    let detectorKind: RunnerKind = "none";
+    let testCmd: string | null = null;
+    let testExitCode: number | null = null;
+    let testMs: number | null = null;
 
-    // Remove the written repro BEFORE the suite so the runner cannot auto-collect
-    // it (pytest discovers `*_test.py`, etc.). The repro is DESIGNED to fail
-    // post-patch; letting the suite execute it would flip a correct patch to a
-    // false `regressed`. We re-materialise it from the SAME trusted stored
-    // contents before Observation 2 — which also RESETS any self-modification the
-    // pre-patch run made to the file. (Audit 2026-07-11: pytest self-collection +
-    // shared-mutable-state.)
-    if (writtenReproPath !== null) {
-      try {
-        await args.io.removeDir(writtenReproPath);
-      } catch {
-        // best effort — if it survives, the suite may collect it; the no-clobber
-        // re-materialise below then fails closed (unsafe_repro_write).
+    if (!args.skipTestSuite) {
+      // A `verified` proof asserts the patch did not break the build, so a runner
+      // is REQUIRED: with none detected we cannot confirm non-regression and must
+      // NOT reach verified on the repro differential alone. Return inconclusive
+      // `no_runner`, matching runPatchVerifier. (Audit 2026-07-11: `verified` was
+      // reachable with detector.kind === "none".)
+      const detector = await detectRunner(args.io, worktree);
+      if (detector.kind === "none") {
+        return reproInconclusive({
+          worktreePath: worktree,
+          notes:
+            "no test runner detected post-patch — cannot confirm non-regression; " +
+            "a repro differential alone is not a verified proof",
+          ms: args.io.now() - t0,
+          kind: "no_runner",
+          reproCmd,
+          reproPreExitCode: preStep.exitCode,
+          reproPreMs: preStep.ms,
+        });
       }
-    }
 
-    const testStep = await runTestStep(args.io, worktree, detector, timeoutMs, sandboxEnv);
-    const testCmd: string = detector.cmd;
-    const testMs: number = testStep.ms;
-    if (testStep.timedOut) {
-      return reproInconclusive({
-        worktreePath: worktree,
-        detector: detector.kind,
-        notes: `tests killed after ${timeoutMs}ms — verifier cannot decide (testCmd=${detector.cmd})`,
-        ms: args.io.now() - t0,
-        kind: "test_timeout",
-        testCmd,
-        testMs,
-        reproCmd,
-        reproPreExitCode: preStep.exitCode,
-        reproPreMs: preStep.ms,
-      });
-    }
-    // A null test exit that did NOT time out (signal / OOM / missing runner exe)
-    // is infrastructure uncertainty, NOT evidence the patch broke tests. Do not
-    // drop a good patch — return inconclusive rather than regressed. (Audit
-    // 2026-07-11: abnormal test termination classified as regressed.)
-    if (typeof testStep.exitCode !== "number") {
-      return reproInconclusive({
-        worktreePath: worktree,
-        detector: detector.kind,
-        notes: "post-patch tests produced no exit code (abnormal termination) — cannot decide",
-        ms: args.io.now() - t0,
-        kind: "abnormal_exit",
-        testCmd,
-        testMs,
-        reproCmd,
-        reproPreExitCode: preStep.exitCode,
-        reproPreMs: preStep.ms,
-      });
-    }
-    const testExitCode: number = testStep.exitCode;
-    if (testExitCode !== 0) {
-      return {
-        verdict: "regressed",
-        detector: detector.kind,
-        testCmd,
-        testExitCode,
-        testMs,
-        pocCmd: null,
-        pocExitCode: null,
-        pocMs: null,
-        ms: args.io.now() - t0,
-        notes: `tests failed after patch (exit ${testExitCode}): ${truncate(testStep.stderr)}`,
-        worktreePath: worktree,
-        error: null,
-        inconclusiveReason: null,
-        reproCmd,
-        reproPreExitCode: preStep.exitCode,
-        reproPostExitCode: null,
-        reproPreMs: preStep.ms,
-        reproPostMs: null,
-      };
-    }
+      // Remove the written repro BEFORE the suite so the runner cannot auto-collect
+      // it (pytest discovers `*_test.py`, etc.). The repro is DESIGNED to fail
+      // post-patch; letting the suite execute it would flip a correct patch to a
+      // false `regressed`. We re-materialise it from the SAME trusted stored
+      // contents before Observation 2 — which also RESETS any self-modification the
+      // pre-patch run made to the file. (Audit 2026-07-11: pytest self-collection +
+      // shared-mutable-state.)
+      if (writtenReproPath !== null) {
+        try {
+          await args.io.removeDir(writtenReproPath);
+        } catch {
+          // best effort — if it survives, the suite may collect it; the no-clobber
+          // re-materialise below then fails closed (unsafe_repro_write).
+        }
+      }
 
-    // Re-materialise the repro for Observation 2 (removed before the suite).
-    // safeWriteReproFile re-runs the FULL symlink / clobber / size gate, so if
-    // the just-run test suite planted anything at the path we fail closed.
-    if (writtenReproPath !== null && args.repro.file !== null) {
-      const rewrite = await safeWriteReproFile(args.io, worktree, args.repro.file);
-      if (!rewrite.ok) {
+      const testStep = await runTestStep(args.io, worktree, detector, timeoutMs, sandboxEnv);
+      detectorKind = detector.kind;
+      testCmd = detector.cmd;
+      testMs = testStep.ms;
+      if (testStep.timedOut) {
         return reproInconclusive({
           worktreePath: worktree,
           detector: detector.kind,
-          notes: `could not re-materialise repro for the post-patch run: ${rewrite.notes}`,
+          notes: `tests killed after ${timeoutMs}ms — verifier cannot decide (testCmd=${detector.cmd})`,
           ms: args.io.now() - t0,
-          kind: rewrite.kind,
+          kind: "test_timeout",
           testCmd,
-          testExitCode,
           testMs,
           reproCmd,
           reproPreExitCode: preStep.exitCode,
           reproPreMs: preStep.ms,
         });
       }
+      // A null test exit that did NOT time out (signal / OOM / missing runner exe)
+      // is infrastructure uncertainty, NOT evidence the patch broke tests. Do not
+      // drop a good patch — return inconclusive rather than regressed. (Audit
+      // 2026-07-11: abnormal test termination classified as regressed.)
+      if (typeof testStep.exitCode !== "number") {
+        return reproInconclusive({
+          worktreePath: worktree,
+          detector: detector.kind,
+          notes: "post-patch tests produced no exit code (abnormal termination) — cannot decide",
+          ms: args.io.now() - t0,
+          kind: "abnormal_exit",
+          testCmd,
+          testMs,
+          reproCmd,
+          reproPreExitCode: preStep.exitCode,
+          reproPreMs: preStep.ms,
+        });
+      }
+      testExitCode = testStep.exitCode;
+      if (testExitCode !== 0) {
+        return {
+          verdict: "regressed",
+          detector: detector.kind,
+          testCmd,
+          testExitCode,
+          testMs,
+          pocCmd: null,
+          pocExitCode: null,
+          pocMs: null,
+          ms: args.io.now() - t0,
+          notes: `tests failed after patch (exit ${testExitCode}): ${truncate(testStep.stderr)}`,
+          worktreePath: worktree,
+          error: null,
+          inconclusiveReason: null,
+          reproCmd,
+          reproPreExitCode: preStep.exitCode,
+          reproPostExitCode: null,
+          reproPreMs: preStep.ms,
+          reproPostMs: null,
+        };
+      }
+
+      // Re-materialise the repro for Observation 2 (removed before the suite).
+      // safeWriteReproFile re-runs the FULL symlink / clobber / size gate, so if
+      // the just-run test suite planted anything at the path we fail closed.
+      if (writtenReproPath !== null && args.repro.file !== null) {
+        const rewrite = await safeWriteReproFile(args.io, worktree, args.repro.file);
+        if (!rewrite.ok) {
+          return reproInconclusive({
+            worktreePath: worktree,
+            detector: detector.kind,
+            notes: `could not re-materialise repro for the post-patch run: ${rewrite.notes}`,
+            ms: args.io.now() - t0,
+            kind: rewrite.kind,
+            testCmd,
+            testExitCode,
+            testMs,
+            reproCmd,
+            reproPreExitCode: preStep.exitCode,
+            reproPreMs: preStep.ms,
+          });
+        }
+      }
     }
+    // OFFLINE (skipTestSuite): the repro file written before the pre-patch run is
+    // still in place — no suite ran to auto-collect it and no removal happened, so
+    // Observation 2 reuses it directly. detectorKind stays "none" and there is no
+    // test cmd/exit; the offline verdict proves the differential, not full-suite
+    // non-regression (see the module header). This offline `verified` outcome does
+    // NOT flow through parseVerdicts' runner invariant — the host `assemble` phase
+    // derives the decision from the container exit code, not this self-report.
 
     // ── Observation 2: run the repro POST-patch. Require a CONCRETE non-zero
     // exit == the bug is fixed. A timeout is inconclusive; a still-0 exit means
@@ -493,7 +545,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     if (postStep.timedOut) {
       return reproInconclusive({
         worktreePath: worktree,
-        detector: detector.kind,
+        detector: detectorKind,
         notes: `repro killed after ${timeoutMs}ms post-patch — cannot confirm the fix`,
         ms: args.io.now() - t0,
         kind: "repro_timeout",
@@ -509,7 +561,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     if (postStep.exitCode === 0) {
       return {
         verdict: "regressed",
-        detector: detector.kind,
+        detector: detectorKind,
         testCmd,
         testExitCode,
         testMs,
@@ -534,7 +586,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     if (typeof postStep.exitCode !== "number") {
       return reproInconclusive({
         worktreePath: worktree,
-        detector: detector.kind,
+        detector: detectorKind,
         notes:
           "repro produced no exit code post-patch (abnormal termination) — " +
           "cannot confirm the fix; not verified",
@@ -551,7 +603,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     }
     return {
       verdict: "verified",
-      detector: detector.kind,
+      detector: detectorKind,
       testCmd,
       testExitCode,
       testMs,
@@ -559,7 +611,9 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       pocExitCode: null,
       pocMs: null,
       ms: args.io.now() - t0,
-      notes: `PROVED: repro exited 0 pre-patch (bug reproduced) and exit ${postStep.exitCode} post-patch (bug fixed); test suite passed`,
+      notes: args.skipTestSuite
+        ? `PROVED (offline): repro exited 0 pre-patch (bug reproduced) and exit ${postStep.exitCode} post-patch (bug fixed); project test suite skipped (repro is the regression test)`
+        : `PROVED: repro exited 0 pre-patch (bug reproduced) and exit ${postStep.exitCode} post-patch (bug fixed); test suite passed`,
       worktreePath: worktree,
       error: null,
       inconclusiveReason: null,

@@ -2,11 +2,11 @@
 #
 # ⚠️ THIS WORKFLOW EXECUTES MODEL-GENERATED CODE. ⚠️
 # The `exec` step runs a verifier (apps/web/scripts/repro-verify-batch.ts
-# --phase exec) that spawns repro commands an LLM authored. Treat that code as
-# untrusted / attacker-influenced.
+# --phase verify-one) that spawns repro commands an LLM authored. Treat that code
+# as untrusted / attacker-influenced.
 #
 # CONTAINMENT = a kernel-enforced Docker sandbox, NOT a process-level firewall.
-# The exec step runs the verifier inside a container started with:
+# Each spec runs in its OWN container started with:
 #   --network none            (no network interface exists in the container —
 #                              the model repro cannot reach the internet or the
 #                              runner's metadata endpoint; a payload cannot
@@ -20,6 +20,23 @@
 # payload cannot read the host's secrets, and its PID namespace dies with
 # `docker run`, so no grandchild process survives into the later record step.
 #
+# ── PROVENANCE (#145 Part 3, Issue 1): ONE container PER SPEC, verdict = EXIT CODE.
+# The exec step runs `--phase verify-one --index <i>` per spec. The container's
+# EXIT CODE is the verdict DECISION (0=verified, 20=regressed, 30=inconclusive;
+# any other code → inconclusive). The untrusted repro is a DESCENDANT of PID 1, so
+# it can only DOWNGRADE the result by killing PID 1 (a 128+signal exit → treated as
+# inconclusive) — it can NEVER forge a `verified` (0), which the launcher emits
+# ONLY when the verifier itself returned verified. Each container also writes a
+# best-effort evidence file to the writable /out mount; that file is
+# payload-writable and its self-reported verdict is IGNORED by `assemble` — the
+# decision comes from the captured exit code alone.
+#
+# ── OFFLINE deps (#145 Part 3, Issue 2): the sandbox has NO network, so the target
+# project's deps can't be installed. verify-one runs with skipTestSuite — the
+# generated repro IS the regression test (exit-0-pre ∧ concrete-non-zero-post) and
+# the project test suite is skipped, so a missing-deps suite can NOT cause a false
+# `regressed`.
+#
 # THE EXEC STEP PASSES NO SECRETS. Do NOT add DATABASE_URL, ANTHROPIC_API_KEY,
 # GITHUB_TOKEN, or any other credential to the exec `docker run` — the
 # container's `assertNoSecretsInEnv` (allowlist-only, fail-closed) is the proof
@@ -27,7 +44,7 @@
 #
 # STATUS: this workflow has NEVER been executed. It is inert (workflow_dispatch
 # only) and must NOT be trusted until an operator has test-dispatched it on a
-# KNOWN-SAFE input and reviewed the result. A 3-lane audit is pending.
+# KNOWN-SAFE input and reviewed the result.
 #
 # HARDENING FOLLOW-UP (documented, not yet done): run the exec step on a
 # separate, ephemeral VM/runner that has NEVER held any repository secret, so
@@ -64,18 +81,20 @@ permissions:
 jobs:
   repro-exec-verify:
     runs-on: ubuntu-latest
+    # Top-level ceiling so a stuck descendant can never keep the whole run alive.
+    timeout-minutes: 60
     steps:
       # Do NOT persist the checkout's git credential on disk — the exec step
       # bind-mounts $PWD into the untrusted container, so a leftover token under
       # .git would be readable by model-generated code.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 11.1.2
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 26
           cache: pnpm
@@ -83,23 +102,30 @@ jobs:
       - run: pnpm build
 
       # DEFENSE vs expression-injection: the dispatch inputs are read into env
-      # (never interpolated inline into a run script), then validated in bash.
-      # Every later use is via the validated $LIMIT / $REPO env, quoted.
+      # (never interpolated inline into a run script), then validated in bash with
+      # WHOLE-STRING bash matches (`=~` / `==`) — NOT `grep -Eq`, which accepts a
+      # multiline value where an early line matches. Every later use is via the
+      # validated $LIMIT / $REPO / $RECORD env, quoted. Any invalid input fails.
       - name: Validate inputs
         env:
           LIMIT: ${{ inputs.limit }}
           REPO: ${{ inputs.repo }}
+          RECORD: ${{ inputs.record }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$LIMIT" | grep -Eq '^[0-9]+$'; then
-            echo "::error::limit must be a non-negative integer (got: $LIMIT)"
+          if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || [ "$LIMIT" == 0 ]; then
+            echo "::error::limit must be a positive integer (got: $LIMIT)"
             exit 1
           fi
-          if [ -n "$REPO" ] && ! printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+          if ! [[ -z "$REPO" || "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
             echo "::error::repo must be empty or match owner/repo (got: $REPO)"
             exit 1
           fi
-          echo "inputs validated: limit=$LIMIT repo=${REPO:-<all>}"
+          if ! [[ "$RECORD" == true || "$RECORD" == false ]]; then
+            echo "::error::record must be true or false (got: $RECORD)"
+            exit 1
+          fi
+          echo "inputs validated: limit=$LIMIT repo=${REPO:-<all>} record=$RECORD"
 
       # FETCH (WITH secrets): selects consensus candidates carrying a suggested
       # patch, calls the model to generate a repro spec per finding, and
@@ -127,7 +153,9 @@ jobs:
             -f .github/repro-exec/Dockerfile .
 
       # EXEC — the security-critical step. Runs the model-generated repros inside
-      # the disposable `--network none`, non-root, cap-dropped container.
+      # ONE disposable `--network none`, non-root, cap-dropped container PER SPEC
+      # (#145 Part 3, Issue 1). The verdict is the container's EXIT CODE, captured
+      # into $RUNNER_TEMP/out/manifest.txt as "<index> <exitcode>".
       #
       # CRITICAL: this docker run passes NO secrets. The only -e vars are
       # non-secret markers/flags (ANTFLEET_REPRO_SANDBOX, ANTFLEET_REPRO_EXEC,
@@ -135,38 +163,73 @@ jobs:
       # fail-closed proof the exec env is secretless — plus the node image's own
       # HOSTNAME/NODE_VERSION/YARN_VERSION defaults are on that allowlist.
       #
-      # Each fetch-created bare mirror is bound at its OWN host path :ro, so both
-      # the spec's absolute `mirrorDir` and the teardown's isOwnedMirrorDir check
-      # (dirname === os.tmpdir(), which is /tmp inside the container) resolve.
-      # $PWD (the repo) is bound read-only at /work; verdicts are written to a
-      # writable /out mount. tsx is invoked via its resolved dist entrypoint
-      # (node .../tsx/dist/cli.mjs) — that follows a RELATIVE symlink into
-      # /work/node_modules/.pnpm and needs no network and no NODE_PATH, so it
-      # works offline (the .bin/tsx shell shim bakes host-absolute NODE_PATHs and
-      # would not resolve inside the mount).
-      - name: exec (run model repros — NO secrets)
+      # CRITICAL: --workdir /work/apps/web. tsx resolves the `@/*` tsconfig paths
+      # relative to the CWD; without this the container CWD is /work and the
+      # imports fail with ERR_MODULE_NOT_FOUND. Each fetch-created bare mirror is
+      # bound at its OWN host path :ro so both the spec's absolute `mirrorDir` and
+      # the teardown's isOwnedMirrorDir check (dirname === /tmp inside the
+      # container) resolve. $PWD (the repo) is bound read-only at /work; the
+      # per-spec evidence file is written to the writable /out mount. tsx is
+      # invoked via its resolved dist entrypoint (node .../tsx/dist/cli.mjs) — that
+      # follows a RELATIVE symlink into /work/node_modules/.pnpm and needs no
+      # network and no NODE_PATH, so it works offline.
+      #
+      # `set +e` around each docker run so a non-zero DECISION exit (20/30) does
+      # NOT abort the loop; `timeout` wraps each run so a stuck descendant can't
+      # stall the job.
+      - name: exec (run model repros per-spec — NO secrets)
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/out"
+          COUNT="$(jq 'length' apps/web/repro-specs.json)"
+          echo "exec: $COUNT spec(s) to run"
           VOLS=()
           for d in /tmp/antfleet-mirror-*; do
             [ -d "$d" ] && VOLS+=( -v "$d:$d:ro" )
           done
-          docker run --rm --network none \
-            --user "$(id -u):$(id -g)" \
-            --cap-drop ALL --security-opt no-new-privileges \
-            --pids-limit 512 --memory 4g --cpus 2 \
-            -e ANTFLEET_REPRO_SANDBOX=1 -e ANTFLEET_REPRO_EXEC=true -e CI=1 -e HOME=/tmp \
-            "${VOLS[@]}" \
-            -v "$PWD:/work:ro" -v "$RUNNER_TEMP/out:/out" \
-            "antfleet-repro-sandbox:${{ github.run_id }}" \
-            node /work/apps/web/node_modules/tsx/dist/cli.mjs \
-              /work/apps/web/scripts/repro-verify-batch.ts \
-              --phase exec --in /work/apps/web/repro-specs.json --out /out/repro-verdicts.json
+          i=0
+          while [ "$i" -lt "$COUNT" ]; do
+            # `${VOLS[@]+"${VOLS[@]}"}` expands to nothing when VOLS is empty and to
+            # the quoted elements otherwise — safe under `set -u` on every bash
+            # version (a bare "${VOLS[@]}" on an empty array errors on bash < 4.4).
+            set +e
+            timeout 900 docker run --rm --network none \
+              --workdir /work/apps/web \
+              --user "$(id -u):$(id -g)" \
+              --cap-drop ALL --security-opt no-new-privileges \
+              --pids-limit 512 --memory 4g --cpus 2 \
+              -e ANTFLEET_REPRO_SANDBOX=1 -e ANTFLEET_REPRO_EXEC=true -e CI=1 -e HOME=/tmp \
+              ${VOLS[@]+"${VOLS[@]}"} \
+              -v "$PWD:/work:ro" -v "$RUNNER_TEMP/out:/out" \
+              "antfleet-repro-sandbox:${{ github.run_id }}" \
+              node /work/apps/web/node_modules/tsx/dist/cli.mjs \
+                /work/apps/web/scripts/repro-verify-batch.ts \
+                --phase verify-one --in /work/apps/web/repro-specs.json \
+                --index "$i" --out "/out/evidence-$i.json"
+            code=$?
+            set -e
+            echo "$i $code" >> "$RUNNER_TEMP/out/manifest.txt"
+            echo "spec[$i] container exit=$code"
+            i=$((i + 1))
+          done
+          echo "manifest:"
+          cat "$RUNNER_TEMP/out/manifest.txt" || true
+
+      # ASSEMBLE (no secrets): host-side, TRUSTED. Derives each verdict from the
+      # container EXIT CODE in the manifest; the per-spec evidence files supply only
+      # decision-independent context. Writes repro-verdicts.json.
+      - name: assemble (exit codes -> verdicts)
+        run: |
+          set -euo pipefail
+          pnpm --dir apps/web exec tsx scripts/repro-verify-batch.ts \
+            --phase assemble \
+            --manifest "$RUNNER_TEMP/out/manifest.txt" \
+            --evidence-dir "$RUNNER_TEMP/out" \
+            --out "$RUNNER_TEMP/out/repro-verdicts.json"
 
       # RECORD (WITH the DB secret, WRITE-gated + idempotent). Only runs when the
-      # operator explicitly asked to persist. Reads the verdicts the container
-      # produced; executes no model code.
+      # operator explicitly asked to persist. Reads the assembled verdicts;
+      # executes no model code.
       - name: record (persist verdicts)
         if: ${{ inputs.record == 'true' }}
         env:
@@ -176,12 +239,15 @@ jobs:
           pnpm --dir apps/web exec tsx scripts/repro-verify-batch.ts \
             --phase record --in "$RUNNER_TEMP/out/repro-verdicts.json" --record
 
+      # Always upload the specs, the exit-code manifest, and the assembled
+      # verdicts so a dispatched run is auditable even on failure.
       - name: upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: repro-exec-verify-${{ github.run_id }}
           path: |
             apps/web/repro-specs.json
+            ${{ runner.temp }}/out/manifest.txt
             ${{ runner.temp }}/out/repro-verdicts.json
           if-no-files-found: warn

@@ -1,0 +1,24 @@
+# Build-context excludes for the ONLY image in this repo: the contained
+# repro-execution sandbox (.github/repro-exec/Dockerfile, #145 part 3/3).
+#
+# That Dockerfile bakes NO app code — it only does `FROM ... && apt-get` and the
+# repo is bind-mounted read-only at /work at RUNTIME. So this file's job is to keep
+# the build CONTEXT sent to the daemon small and clean: never ship the git history,
+# the huge node_modules tree, or the fetch-phase's generated specs (which are
+# derived from DB findings) into the docker build context.
+#
+# `docker build ... .` uses the repo root as the context, so this root
+# .dockerignore is where the classic builder looks. There is exactly one Dockerfile
+# in the repo, so these excludes affect only that sandbox build.
+.git
+**/node_modules
+
+# The fetch phase writes apps/web/repro-specs.json (derived from DB findings +
+# model-generated repros). The sandbox image must never carry it — it is provided
+# at runtime via the read-only /work mount, and it must not leak into an image
+# layer.
+apps/web/repro-specs.json
+
+# Never bake local env / secrets files into the build context.
+**/.env
+**/.env.*

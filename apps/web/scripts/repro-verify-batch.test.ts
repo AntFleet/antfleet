@@ -7,8 +7,13 @@ import {
   computeSpecDigest,
   runFetchPhase,
   runExecPhase,
+  runVerifyOnePhase,
+  runAssemblePhase,
   runRecordPhase,
   summariseVerdicts,
+  decisionExitCodeForVerdict,
+  verdictFromExitCode,
+  parseManifest,
   parseArgs,
   parseSpecs,
   parseVerdicts,
@@ -1083,6 +1088,373 @@ describe("runExecPhase", () => {
       log: () => {},
     });
     expect(removed).toEqual(["/tmp/antfleet-mirror-x.git"]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #145 Part 3, Issue 1 — the exit-code provenance chain: decisionExitCodeForVerdict
+// (verdict → code), verdictFromExitCode (code → verdict), parseManifest, and the
+// verify-one + assemble phases (the DECISION is the container exit code, NEVER the
+// payload-writable evidence file).
+// ────────────────────────────────────────────────────────────────────────
+
+describe("decisionExitCodeForVerdict / verdictFromExitCode (Issue 1 mapping)", () => {
+  it("maps verdict → decision exit code (verified 0, regressed 20, inconclusive 30)", () => {
+    expect(decisionExitCodeForVerdict("verified")).toBe(0);
+    expect(decisionExitCodeForVerdict("regressed")).toBe(20);
+    expect(decisionExitCodeForVerdict("inconclusive")).toBe(30);
+  });
+
+  it("maps exit code → verdict (0 verified, 20 regressed, 30 inconclusive)", () => {
+    expect(verdictFromExitCode(0)).toEqual({ verdict: "verified", note: null });
+    expect(verdictFromExitCode(20)).toEqual({ verdict: "regressed", note: null });
+    expect(verdictFromExitCode(30)).toEqual({ verdict: "inconclusive", note: null });
+  });
+
+  it("maps ANY other exit code (137 SIGKILL, 1 crash, 255) → inconclusive with a note", () => {
+    for (const code of [1, 2, 137, 139, 255]) {
+      const out = verdictFromExitCode(code);
+      expect(out.verdict).toBe("inconclusive");
+      expect(out.note).toBe(`container exited ${code}`);
+    }
+  });
+
+  it("round-trips: every verdict's decision code maps back to the same verdict", () => {
+    for (const v of ["verified", "regressed", "inconclusive"] as const) {
+      expect(verdictFromExitCode(decisionExitCodeForVerdict(v)).verdict).toBe(v);
+    }
+  });
+});
+
+describe("parseManifest", () => {
+  it('parses "<index> <exitcode>" lines and skips blanks', () => {
+    expect(parseManifest("0 0\n1 20\n\n2 30\n")).toEqual([
+      { index: 0, exitCode: 0 },
+      { index: 1, exitCode: 20 },
+      { index: 2, exitCode: 30 },
+    ]);
+  });
+
+  it("rejects a line that is not two integers", () => {
+    expect(() => parseManifest("0 verified")).toThrow(/two non-negative integers/);
+    expect(() => parseManifest("abc 0")).toThrow(/two non-negative integers/);
+    expect(() => parseManifest("0")).toThrow(/<index> <exitcode>/);
+    expect(() => parseManifest("0 1 2")).toThrow(/<index> <exitcode>/);
+  });
+});
+
+// verify-one runs the model repro, so it needs the same secretless + sandbox env
+// posture as runExecPhase. Swap in a clean allowlisted env with the marker set.
+describe("runVerifyOnePhase (Issue 1 — per-spec decision exit code)", () => {
+  let saved: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    saved = process.env;
+    process.env = {
+      PATH: saved["PATH"] ?? "/usr/bin",
+      HOME: saved["HOME"] ?? "/tmp",
+      CI: "true",
+      NODE_ENV: "test",
+      ANTFLEET_REPRO_SANDBOX: "1",
+    };
+  });
+  afterEach(() => {
+    process.env = saved;
+  });
+
+  it("returns 0 for a verified spec and writes the rich evidence record", async () => {
+    let written: VerdictRecord | null = null;
+    const code = await runVerifyOnePhase({
+      inPath: "x",
+      index: 0,
+      outPath: "evidence-0.json",
+      loadSpecs: async () => [mkSpec({ findingId: "a-0" })],
+      runVerifier: async () => mkOutcome({ verdict: "verified" }),
+      writeEvidence: async (rec) => {
+        written = rec;
+      },
+      log: () => {},
+    });
+    expect(code).toBe(0);
+    expect(written).not.toBeNull();
+    // Evidence is the enriched shapeVerdictRecord output.
+    expect(written!.verdict).toBe("verified");
+    expect(written!.findingId).toBe("a-0");
+    expect(written!.reproPostExitCode).toBe(2);
+    expect(written!.specDigest).toBe("deadbeefdeadbeef");
+  });
+
+  it("returns 20 for a regressed spec and 30 for an inconclusive spec", async () => {
+    const regressed = await runVerifyOnePhase({
+      inPath: "x",
+      index: 0,
+      outPath: "e.json",
+      loadSpecs: async () => [mkSpec()],
+      runVerifier: async () => mkOutcome({ verdict: "regressed" }),
+      writeEvidence: async () => {},
+      log: () => {},
+    });
+    expect(regressed).toBe(20);
+    const inconclusive = await runVerifyOnePhase({
+      inPath: "x",
+      index: 0,
+      outPath: "e.json",
+      loadSpecs: async () => [mkSpec()],
+      runVerifier: async () =>
+        mkOutcome({ verdict: "inconclusive", inconclusiveReason: "no_repro" }),
+      writeEvidence: async () => {},
+      log: () => {},
+    });
+    expect(inconclusive).toBe(30);
+  });
+
+  it("turns a verifier throw into a 30 (inconclusive) with an enriched exception evidence record", async () => {
+    let written: VerdictRecord | null = null;
+    const code = await runVerifyOnePhase({
+      inPath: "x",
+      index: 0,
+      outPath: "e.json",
+      loadSpecs: async () => [mkSpec({ findingId: "boom-0" })],
+      runVerifier: async () => {
+        throw new Error("spawn EACCES");
+      },
+      writeEvidence: async (rec) => {
+        written = rec;
+      },
+      log: () => {},
+    });
+    expect(code).toBe(30);
+    expect(written!.verdict).toBe("inconclusive");
+    expect(written!.inconclusiveReason).toBe("exception");
+    expect(written!.notes).toMatch(/spawn EACCES/);
+    expect(written!.sha).toBe("abc1234");
+  });
+
+  it("runs ONLY spec[index] (per-spec entrypoint)", async () => {
+    const seen: string[] = [];
+    const code = await runVerifyOnePhase({
+      inPath: "x",
+      index: 1,
+      outPath: "e.json",
+      loadSpecs: async () => [
+        mkSpec({ findingId: "a-0" }),
+        mkSpec({ findingId: "b-1" }),
+        mkSpec({ findingId: "c-2" }),
+      ],
+      runVerifier: async (spec) => {
+        seen.push(spec.findingId);
+        return mkOutcome({ verdict: "verified" });
+      },
+      writeEvidence: async () => {},
+      log: () => {},
+    });
+    expect(code).toBe(0);
+    expect(seen).toEqual(["b-1"]); // only index 1
+  });
+
+  it("fails CLOSED when a secret is present (before running anything)", async () => {
+    process.env["DATABASE_URL"] = "postgres://leaked";
+    const runVerifier = vi.fn(async () => mkOutcome());
+    await expect(
+      runVerifyOnePhase({
+        inPath: "x",
+        index: 0,
+        outPath: "e.json",
+        loadSpecs: async () => [mkSpec()],
+        runVerifier,
+        writeEvidence: async () => {},
+        log: () => {},
+      }),
+    ).rejects.toThrow(/DATABASE_URL/);
+    expect(runVerifier).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES to run when the ANTFLEET_REPRO_SANDBOX marker is absent", async () => {
+    delete process.env["ANTFLEET_REPRO_SANDBOX"];
+    const runVerifier = vi.fn(async () => mkOutcome());
+    await expect(
+      runVerifyOnePhase({
+        inPath: "x",
+        index: 0,
+        outPath: "e.json",
+        loadSpecs: async () => [mkSpec()],
+        runVerifier,
+        writeEvidence: async () => {},
+        log: () => {},
+      }),
+    ).rejects.toThrow(/ANTFLEET_REPRO_SANDBOX is not set/);
+    expect(runVerifier).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-integer / out-of-range --index", async () => {
+    await expect(
+      runVerifyOnePhase({
+        inPath: "x",
+        index: Number.NaN,
+        outPath: "e.json",
+        loadSpecs: async () => [mkSpec()],
+        runVerifier: async () => mkOutcome(),
+        writeEvidence: async () => {},
+        log: () => {},
+      }),
+    ).rejects.toThrow(/integer --index/);
+    await expect(
+      runVerifyOnePhase({
+        inPath: "x",
+        index: 5,
+        outPath: "e.json",
+        loadSpecs: async () => [mkSpec()],
+        runVerifier: async () => mkOutcome(),
+        writeEvidence: async () => {},
+        log: () => {},
+      }),
+    ).rejects.toThrow(/out of range/);
+  });
+});
+
+describe("runAssemblePhase (Issue 1 — verdict from EXIT CODE, evidence is context)", () => {
+  // A well-formed evidence record for a given finding, defaulting to a "verified"
+  // self-report — the assemble phase must OVERRIDE this from the exit code. The
+  // overrides tweak the underlying OUTCOME (fed through shapeVerdictRecord), so
+  // they are Partial<PatchVerifyOutcome>.
+  const evidenceFor = (
+    findingId: string,
+    overrides: Partial<PatchVerifyOutcome> = {},
+  ): VerdictRecord =>
+    shapeVerdictRecord(mkSpec({ findingId }), mkOutcome({ verdict: "verified", ...overrides }));
+
+  it("assembles verdicts from the manifest exit codes (0→verified, 20→regressed, 30→inconclusive)", async () => {
+    const evidence: Record<number, VerdictRecord> = {
+      0: evidenceFor("a-0"),
+      1: evidenceFor("b-1"),
+      2: evidenceFor("c-2"),
+    };
+    let out: VerdictRecord[] = [];
+    await runAssemblePhase({
+      manifestPath: "m.txt",
+      evidenceDir: "/out",
+      outPath: "v.json",
+      loadManifest: async () => "0 0\n1 20\n2 30\n",
+      loadEvidence: async (i) => evidence[i] ?? null,
+      writeVerdicts: async (recs) => {
+        out = recs;
+      },
+      log: () => {},
+    });
+    expect(out.map((r) => r.verdict)).toEqual(["verified", "regressed", "inconclusive"]);
+    // The rich CONTEXT fields came from the evidence file…
+    expect(out[0]?.findingId).toBe("a-0");
+    expect(out[1]?.reproPostExitCode).toBe(2);
+  });
+
+  it("OVERRIDES a forged evidence file claiming verdict:'verified' when the exit code is 30", async () => {
+    // The evidence file is payload-writable — it LIES that the spec verified, but
+    // the container exited 30 (inconclusive). The decision MUST follow the exit
+    // code, not the file.
+    const forged = evidenceFor("x-0", { verdict: "verified" });
+    expect(forged.verdict).toBe("verified"); // the file self-reports verified
+    let out: VerdictRecord[] = [];
+    await runAssemblePhase({
+      manifestPath: "m.txt",
+      evidenceDir: "/out",
+      outPath: "v.json",
+      loadManifest: async () => "0 30\n",
+      loadEvidence: async () => forged,
+      writeVerdicts: async (recs) => {
+        out = recs;
+      },
+      log: () => {},
+    });
+    expect(out).toHaveLength(1);
+    // Exit code wins: inconclusive, NOT the forged verified.
+    expect(out[0]?.verdict).toBe("inconclusive");
+    expect(out[0]?.findingId).toBe("x-0"); // context still preserved
+  });
+
+  it("maps an unexpected exit code (137) to inconclusive and folds a note", async () => {
+    let out: VerdictRecord[] = [];
+    await runAssemblePhase({
+      manifestPath: "m.txt",
+      evidenceDir: "/out",
+      outPath: "v.json",
+      loadManifest: async () => "0 137\n",
+      loadEvidence: async () => evidenceFor("k-0", { verdict: "verified" }),
+      writeVerdicts: async (recs) => {
+        out = recs;
+      },
+      log: () => {},
+    });
+    expect(out[0]?.verdict).toBe("inconclusive");
+    expect(out[0]?.notes).toMatch(/container exited 137/);
+  });
+
+  it("degrades to a minimal exit-code record when the evidence file is absent", async () => {
+    let out: VerdictRecord[] = [];
+    await runAssemblePhase({
+      manifestPath: "m.txt",
+      evidenceDir: "/out",
+      outPath: "v.json",
+      loadManifest: async () => "3 0\n",
+      loadEvidence: async () => null, // container never wrote it (OOM etc.)
+      writeVerdicts: async (recs) => {
+        out = recs;
+      },
+      log: () => {},
+    });
+    expect(out).toHaveLength(1);
+    // Exit code 0 still yields verified even with no evidence file.
+    expect(out[0]?.verdict).toBe("verified");
+    expect(out[0]?.notes).toMatch(/no evidence file for index 3/);
+  });
+
+  it("rejects a garbage-typed evidence file loudly (strict field validation)", async () => {
+    await expect(
+      runAssemblePhase({
+        manifestPath: "m.txt",
+        evidenceDir: "/out",
+        outPath: "v.json",
+        loadManifest: async () => "0 0\n",
+        // evidence with a wrong-typed exit code field — must be rejected.
+        loadEvidence: async () => ({ ...evidenceFor("z-0"), reproPreExitCode: "zero" }),
+        writeVerdicts: async () => {},
+        log: () => {},
+      }),
+    ).rejects.toThrow(/evidence\[0\]\.reproPreExitCode/);
+  });
+
+  it("produces records parseVerdicts-shaped enough for the record phase (no verified-proof clash offline)", async () => {
+    // An OFFLINE verified evidence file (detector 'none', testExitCode null) whose
+    // container exited 0 assembles to verified. That assembled record is NOT
+    // re-checked against parseVerdicts' ONLINE proof invariant — it flows straight
+    // to record. Assert the assembled record carries the offline-shaped fields.
+    const offlineVerified = shapeVerdictRecord(
+      mkSpec({ findingId: "off-0" }),
+      mkOutcome({
+        verdict: "verified",
+        detector: "none",
+        testCmd: null,
+        testExitCode: null,
+        testMs: null,
+        reproPreExitCode: 0,
+        reproPostExitCode: 2,
+        notes: "PROVED (offline)",
+      }),
+    );
+    let out: VerdictRecord[] = [];
+    await runAssemblePhase({
+      manifestPath: "m.txt",
+      evidenceDir: "/out",
+      outPath: "v.json",
+      loadManifest: async () => "0 0\n",
+      loadEvidence: async () => offlineVerified,
+      writeVerdicts: async (recs) => {
+        out = recs;
+      },
+      log: () => {},
+    });
+    expect(out[0]?.verdict).toBe("verified");
+    expect(out[0]?.detector).toBe("none");
+    expect(out[0]?.testExitCode).toBeNull();
+    expect(out[0]?.inconclusiveReason).toBeNull();
   });
 });
 
