@@ -71,7 +71,7 @@ import {
   type SettlementResult,
 } from "@/lib/x402/facilitator";
 import { loadX402Config } from "@/lib/x402/env";
-import { X402_MAX_TIMEOUT_SECONDS } from "@/lib/x402/env";
+import { readX402MaxTimeoutSeconds } from "@/lib/x402/env";
 import {
   X402_SETTLED_FAILURE_MODES,
   x402FailureMessage,
@@ -1312,7 +1312,7 @@ class WallClockTimeoutError extends Error {
 }
 
 async function withX402WallClockTimeout<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const timeoutSeconds = readX402TimeoutSeconds();
+  const timeoutSeconds = readX402MaxTimeoutSeconds();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timeoutError: WallClockTimeoutError | undefined;
@@ -1335,13 +1335,6 @@ async function withX402WallClockTimeout<T>(start: (signal: AbortSignal) => Promi
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-function readX402TimeoutSeconds(): number {
-  const raw = process.env["X402_MAX_TIMEOUT_SECONDS"];
-  if (raw === undefined || raw.trim() === "") return X402_MAX_TIMEOUT_SECONDS;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : X402_MAX_TIMEOUT_SECONDS;
 }
 
 async function resolveInstallationId(installationRowId: string): Promise<number> {

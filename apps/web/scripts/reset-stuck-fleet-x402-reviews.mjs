@@ -27,6 +27,26 @@ if (!databaseUrl?.includes("ep-crimson-hall") && apply) {
 const pool = new Pool({ connectionString: databaseUrl });
 
 for (const [owner, repo, sha] of TARGETS) {
+  const jobs = await pool.query(
+    `
+    SELECT job_id, status, created_at
+    FROM review_jobs
+    WHERE lower(repo_owner) = lower($1)
+      AND lower(repo_name) = lower($2)
+      AND lower(sha) = lower($3)
+      AND pr_number = 0
+    ORDER BY created_at DESC
+  `,
+    [owner, repo, sha],
+  );
+  console.log(`${owner}/${repo}: ${jobs.rowCount} review_job(s)`);
+  for (const job of jobs.rows) {
+    console.log(`  job ${job.job_id} status=${job.status}`);
+    if (!apply) continue;
+    await pool.query(`DELETE FROM review_jobs WHERE job_id = $1`, [job.job_id]);
+    console.log(`  deleted job ${job.job_id}`);
+  }
+
   const r = await pool.query(
     `
     SELECT review_id, processing_status, created_at
@@ -41,11 +61,11 @@ for (const [owner, repo, sha] of TARGETS) {
   );
   const row = r.rows[0];
   if (!row) {
-    console.log(`skip ${owner}/${repo}: no review row`);
+    console.log(`  no review row`);
     continue;
   }
   console.log(
-    `${owner}/${repo}: review=${String(row.review_id).slice(0, 8)} status=${row.processing_status}`,
+    `  review=${String(row.review_id).slice(0, 8)} status=${row.processing_status}`,
   );
   if (!apply) continue;
   await pool.query(`DELETE FROM reviews WHERE review_id = $1`, [row.review_id]);
@@ -53,7 +73,7 @@ for (const [owner, repo, sha] of TARGETS) {
 }
 
 if (!apply) {
-  console.log("\nDry run only. Re-run with --apply to delete stuck pending reviews.");
+  console.log("\nDry run only. Re-run with --apply to delete stuck jobs and reviews.");
 }
 
 await pool.end();

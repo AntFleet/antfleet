@@ -3,7 +3,7 @@ import type { ReviewJobRow } from "@/lib/review-job-queries";
 import {
   X402_AUTHORIZATION_MAX_SECONDS,
   X402_FUTURE_SKEW_SECONDS,
-  X402_MAX_TIMEOUT_SECONDS,
+  readX402MaxTimeoutSeconds,
   type X402Config,
 } from "./env";
 
@@ -78,7 +78,7 @@ export function buildPaymentRequired(
         asset: config.usdcAsset,
         amount: opts.amountBaseUnits ?? config.priceBaseUnits,
         payTo: config.treasury,
-        maxTimeoutSeconds: X402_MAX_TIMEOUT_SECONDS,
+        maxTimeoutSeconds: readX402MaxTimeoutSeconds(),
         extra: eip3009DomainExtra(config.network),
       },
     ],
@@ -239,7 +239,7 @@ export function freeReviewCallerWallet(args: { sessionId: string | null }): stri
 }
 
 export function makeFreeAuthorizationState(resource: string, now: Date): X402AuthorizationState {
-  const validBefore = new Date(now.getTime() + X402_MAX_TIMEOUT_SECONDS * 1000);
+  const validBefore = new Date(now.getTime() + readX402MaxTimeoutSeconds() * 1000);
   return {
     kind: "x402_authorization",
     paymentPayload: { kind: "free_trial", resource },
