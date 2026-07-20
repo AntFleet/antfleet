@@ -120,6 +120,14 @@ export function isFreeX402ReviewPrice(config: Pick<X402Config, "priceBaseUnits">
   return config.priceBaseUnits === "0";
 }
 
+/** Runtime wall-clock / authorization window for x402 jobs (default 600s). */
+export function readX402MaxTimeoutSeconds(env: EnvMap = process.env): number {
+  const raw = env["X402_MAX_TIMEOUT_SECONDS"];
+  if (raw === undefined || raw.trim() === "") return X402_MAX_TIMEOUT_SECONDS;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : X402_MAX_TIMEOUT_SECONDS;
+}
+
 function requireEnv(env: EnvMap, name: string): string {
   const value = env[name];
   if (value === undefined || value.trim() === "") {

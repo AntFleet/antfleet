@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   loadX402Config,
+  readX402MaxTimeoutSeconds,
   X402_SEPOLIA_FACILITATOR,
   X402_SEPOLIA_NETWORK,
   X402_SEPOLIA_USDC,
@@ -38,5 +39,11 @@ describe("loadX402Config", () => {
         X402_MAX_TIMEOUT_SECONDS: "0",
       }),
     ).toThrow(/X402_MAX_TIMEOUT_SECONDS/);
+  });
+
+  it("reads X402_MAX_TIMEOUT_SECONDS from env at runtime", () => {
+    expect(readX402MaxTimeoutSeconds({})).toBe(600);
+    expect(readX402MaxTimeoutSeconds({ X402_MAX_TIMEOUT_SECONDS: "1800" })).toBe(1800);
+    expect(readX402MaxTimeoutSeconds({ X402_MAX_TIMEOUT_SECONDS: "bad" })).toBe(600);
   });
 });
