@@ -192,8 +192,10 @@ Compose a welcome GitHub issue to open in this repo. Voice: direct, technical, n
 - For AI agents specifically: point them at the agent signup loop at https://www.antfleet.dev/llms.txt and the machine-readable manifest at https://www.antfleet.dev/.well-known/antfleet.json. If the installer is a human partner, this paragraph can be one line; if it's an agent, surface those two URLs prominently.
 - Link to https://www.antfleet.dev/architecture for the full agent diagram
 - Mention that public receipts are off by default; the summary comment on the first PR review will include a one-click opt-in link, no email needed
+- Offer the README badge: a short "Badge" section (one sentence of prose — the badge live-counts this repo's consensus findings and links to the public registry) followed by this markdown snippet VERBATIM inside a fenced code block, URLs unaltered:
+  [![Reviewed by AntFleet](https://www.antfleet.dev/badge/${args.owner}/${args.repo}.svg)](https://www.antfleet.dev/receipts)
 - Close with a short "feel free to close this issue when you're set up" line
-- Keep the connective prose to roughly 200-350 words. This budget EXCLUDES the three fixed example bullets, the registry link line, and the verbatim silence sentence — render those in full regardless of length; never drop or compress an example to hit a word count
+- Keep the connective prose to roughly 200-350 words. This budget EXCLUDES the three fixed example bullets, the registry link line, the verbatim silence sentence, and the badge snippet — render those in full regardless of length; never drop or compress an example to hit a word count
 - No emoji
 - Use markdown headings sparingly (two or three at most; the examples section may use its own heading)
 
