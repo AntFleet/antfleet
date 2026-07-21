@@ -91,9 +91,7 @@ describe("writePostDraft DB sink wiring", () => {
 
   it("prefers an explicit source over slug inference", async () => {
     await writePostDraft({ slug: "weekly-2026-w30", title: "T", body: "B", source: "manual" });
-    expect(insertPostDraftRow).toHaveBeenCalledWith(
-      expect.objectContaining({ source: "manual" }),
-    );
+    expect(insertPostDraftRow).toHaveBeenCalledWith(expect.objectContaining({ source: "manual" }));
   });
 
   it("infers source from known slug prefixes and defaults to manual", async () => {
