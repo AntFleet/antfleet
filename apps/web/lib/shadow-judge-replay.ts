@@ -7,10 +7,11 @@
 //   - corroborated-tier precision against held-out human labels
 // in two variants:
 //   - 'full'    : prod-identical prompt (finding prose + code excerpt)
-//   - 'blinded' : finding prose withheld — the judge sees location, category,
-//                 severity, and the code excerpt only. Controls for
-//                 judge-prompt contamination (GLM being talked into a verdict
-//                 by the flagging model's own prose).
+//   - 'blinded' : everything model-authored withheld (prose AND claimed
+//                 category/severity) — the judge sees the file location and
+//                 code excerpt only. Controls for judge-prompt contamination
+//                 (GLM being talked into a verdict by the flagging model's
+//                 own words).
 //
 // Zero new review spend: candidates come from reviews.agreement_decision /
 // reviews.provider_responses JSONB already in the DB. Only GLM judge calls
