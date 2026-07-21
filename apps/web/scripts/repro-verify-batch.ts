@@ -301,6 +301,59 @@ export function computeSpecDigest(input: {
   return createHash("sha256").update(material).digest("hex").slice(0, 16);
 }
 
+// Witnessability provenance (2b decision, condition 3). The public Actions
+// run-log URL proves a third party CAN inspect the execution, but a URL is not
+// integrity — a receipt must also pin WHAT ran and produced the verdict. We
+// capture the run coordinates + the workflow-file commit SHA from the Actions
+// environment; the verdict digest below binds the recorded verdict to its
+// content. Returns null off Actions (local dry-runs), so the record phase stays
+// runnable without a workflow context.
+export type RunProvenance = {
+  runId: string;
+  runAttempt: string;
+  runUrl: string;
+  workflowSha: string;
+  workflowRef: string;
+} | null;
+
+export function readRunProvenance(
+  env: Record<string, string | undefined> = process.env,
+): RunProvenance {
+  const runId = env["GITHUB_RUN_ID"];
+  if (runId === undefined || runId.length === 0) return null;
+  const server = env["GITHUB_SERVER_URL"] ?? "https://github.com";
+  const repo = env["GITHUB_REPOSITORY"] ?? "";
+  const attempt = env["GITHUB_RUN_ATTEMPT"] ?? "1";
+  return {
+    runId,
+    runAttempt: attempt,
+    runUrl:
+      repo.length > 0 ? `${server}/${repo}/actions/runs/${runId}/attempts/${attempt}` : server,
+    // GITHUB_WORKFLOW_SHA pins the workflow-file commit; fall back to the
+    // checkout SHA. This is the "workflow-file SHA" the decision requires.
+    workflowSha: env["GITHUB_WORKFLOW_SHA"] ?? env["GITHUB_SHA"] ?? "",
+    workflowRef: env["GITHUB_WORKFLOW_REF"] ?? "",
+  };
+}
+
+// Content digest binding the recorded verdict to exactly what was decided.
+// A witness can recompute this from the evidence and compare — the "verdict
+// digest" of condition 3.
+export function computeVerdictDigest(v: VerdictRecord): string {
+  const material = JSON.stringify({
+    reviewId: v.reviewId,
+    findingId: v.findingId,
+    verdict: v.verdict,
+    sha: v.sha,
+    reproCmd: v.reproCmd,
+    reproPreExitCode: v.reproPreExitCode,
+    reproPostExitCode: v.reproPostExitCode,
+    testExitCode: v.testExitCode,
+    specDigest: v.specDigest,
+  });
+  return createHash("sha256").update(material).digest("hex").slice(0, 16);
+}
+
 // Project a verifier outcome onto the flat, ENRICHED record the record phase
 // persists. Pure + exported so the unit tests can assert the mapping without
 // spawning. reproPre/PostExitCode + timings are OPTIONAL on PatchVerifyOutcome
@@ -778,15 +831,23 @@ export type RecordPhaseOptions = {
   gateOutcomeExists?: (reviewId: string, findingId: string, stage: string) => Promise<boolean>;
   // Injectable verdict source, for tests. Production reads inPath.
   loadVerdicts?: () => Promise<VerdictRecord[]>;
+  // Witnessability provenance embedded into each row's evidence. Production
+  // omits it and reads the Actions env via readRunProvenance(); tests inject.
+  // Explicit `null` records "no provenance" (a local run).
+  provenance?: RunProvenance;
   log?: (msg: string) => void;
 };
 
 export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> {
   const log = opts.log ?? ((m: string) => console.log(m));
+  const provenance = opts.provenance !== undefined ? opts.provenance : readRunProvenance();
   const verdicts = opts.loadVerdicts
     ? await opts.loadVerdicts()
     : parseVerdicts(await readFile(opts.inPath, "utf8"));
   log(`[record] loaded ${verdicts.length} verdict(s) from ${opts.inPath}`);
+  if (provenance !== null) {
+    log(`[record] witnessability: run ${provenance.runUrl} (workflow ${provenance.workflowSha})`);
+  }
 
   const exists = opts.gateOutcomeExists ?? (await realGateExists());
 
@@ -833,8 +894,10 @@ export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> 
       findingId: v.findingId,
       verdict: v.verdict,
       // Persist the full enriched record as evidence so the row is
-      // self-describing (sha, repro/test details, exit codes, timings, digest).
-      evidence: v,
+      // self-describing (sha, repro/test details, exit codes, timings, digest),
+      // plus witnessability provenance (run URL + workflow SHA) and a verdict
+      // digest binding the row to what actually ran (2b decision, condition 3).
+      evidence: { ...v, provenance, verdictDigest: computeVerdictDigest(v) },
     });
     // FIX 6a: only count a row the DB ACTUALLY inserted. ON CONFLICT DO NOTHING
     // returns false for a row a concurrent run already wrote between our
