@@ -30,8 +30,15 @@ function makeDeps(overrides: Partial<PollOutgoingDeps> = {}): PollOutgoingDeps {
     markAbsorbed: vi.fn().mockResolvedValue(undefined),
     detectAbsorbed: vi.fn().mockResolvedValue({ absorbed: false }),
     stampPolled: vi.fn().mockResolvedValue(undefined),
+    markUnreachable: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
+}
+
+// Mimics the shape of @octokit/request-error's RequestError: an Error carrying
+// a numeric `status` property. isUpstreamGone keys on status === 404.
+function httpError(status: number, message: string): Error {
+  return Object.assign(new Error(message), { status });
 }
 
 const OPEN_STATE: UpstreamPrState = {
@@ -65,6 +72,7 @@ describe("pollOutgoingPrs", () => {
       closed: 0,
       absorbed: 0,
       unchanged: 0,
+      unreachable: 0,
       errors: 0,
     });
     expect(deps.getUpstreamPrState).not.toHaveBeenCalled();
@@ -184,6 +192,90 @@ describe("pollOutgoingPrs", () => {
     expect(result.attempted).toBe(2);
     expect(result.merged).toBe(1);
     expect(result.errors).toBe(1);
+    expect(markMerged).toHaveBeenCalledTimes(1);
+  });
+
+  it("retires a PR whose upstream 404s — markUnreachable, not a plain error", async () => {
+    // Upstream repo/owner deleted (e.g. levyonchain/Berry-Juicer-Public: the
+    // account was removed). A 404 is terminal, not transient — retire the row
+    // from the poll rotation so it stops burning an API call every tick, but
+    // keep it as evidence of the review.
+    const pr = makePr();
+    const markUnreachable = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      loadOpenPrs: vi.fn().mockResolvedValue([pr]),
+      getUpstreamPrState: vi.fn().mockRejectedValue(httpError(404, "Not Found")),
+      markUnreachable,
+    });
+    const result = await pollOutgoingPrs(deps, NOW);
+    expect(result.unreachable).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(markUnreachable).toHaveBeenCalledWith({ id: pr.id, polledAt: NOW });
+  });
+
+  it("treats non-404 HTTP failures (401/403/5xx) as retryable errors, not unreachable", async () => {
+    // Bad/insufficient token (401/403) or a transient GitHub outage (5xx) must
+    // NOT retire the row — the upstream still exists and should be re-polled.
+    const forbidden = makePr({ id: "forbidden", upstreamPrNumber: 1 });
+    const serverErr = makePr({ id: "server-err", upstreamPrNumber: 2 });
+    const markUnreachable = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      loadOpenPrs: vi.fn().mockResolvedValue([forbidden, serverErr]),
+      getUpstreamPrState: vi
+        .fn()
+        .mockRejectedValueOnce(httpError(403, "Forbidden"))
+        .mockRejectedValueOnce(httpError(502, "Bad Gateway")),
+      markUnreachable,
+    });
+    const result = await pollOutgoingPrs(deps, NOW);
+    expect(result.errors).toBe(2);
+    expect(result.unreachable).toBe(0);
+    expect(markUnreachable).not.toHaveBeenCalled();
+  });
+
+  it("counts an error (not a crash) when markUnreachable itself rejects — loop continues", async () => {
+    // markUnreachable is awaited inside the catch block, outside the outer try.
+    // A DB failure on the retire write must NOT abort the tick: it should be
+    // counted as an error and the remaining PRs still processed.
+    const gone = makePr({ id: "gone", upstreamPrNumber: 1 });
+    const live = makePr({ id: "live", upstreamPrNumber: 2 });
+    const markMerged = vi.fn().mockResolvedValue(undefined);
+    const markUnreachable = vi.fn().mockRejectedValue(new Error("db write failed"));
+    const deps = makeDeps({
+      loadOpenPrs: vi.fn().mockResolvedValue([gone, live]),
+      getUpstreamPrState: vi
+        .fn()
+        .mockRejectedValueOnce(httpError(404, "Not Found"))
+        .mockResolvedValueOnce(MERGED_STATE),
+      markMerged,
+      markUnreachable,
+    });
+    const result = await pollOutgoingPrs(deps, NOW);
+    expect(result.unreachable).toBe(0);
+    expect(result.errors).toBe(1);
+    expect(result.merged).toBe(1);
+    expect(markMerged).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps looping after a 404 — one gone upstream does not block the rest", async () => {
+    const gone = makePr({ id: "gone", upstreamPrNumber: 1 });
+    const live = makePr({ id: "live", upstreamPrNumber: 2 });
+    const markMerged = vi.fn().mockResolvedValue(undefined);
+    const markUnreachable = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      loadOpenPrs: vi.fn().mockResolvedValue([gone, live]),
+      getUpstreamPrState: vi
+        .fn()
+        .mockRejectedValueOnce(httpError(404, "Not Found"))
+        .mockResolvedValueOnce(MERGED_STATE),
+      markMerged,
+      markUnreachable,
+    });
+    const result = await pollOutgoingPrs(deps, NOW);
+    expect(result.attempted).toBe(2);
+    expect(result.unreachable).toBe(1);
+    expect(result.merged).toBe(1);
+    expect(markUnreachable).toHaveBeenCalledTimes(1);
     expect(markMerged).toHaveBeenCalledTimes(1);
   });
 

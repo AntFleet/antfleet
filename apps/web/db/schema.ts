@@ -350,15 +350,17 @@ export const outgoingPrs = pgTable(
     // bench corpus.
     branchOnFork: text("branch_on_fork").notNull(),
     openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
-    // open | merged | closed | closed_absorbed.
+    // open | merged | closed | closed_absorbed | unreachable.
     // "closed" = closed-without-merge (declined), not surfaced publicly.
     // "merged" and "closed_absorbed" are receipt-eligible states.
+    // "unreachable" = upstream repo/owner deleted (GitHub 404); row retired
+    // from the poll rotation but retained as evidence, never surfaced.
     status: text("status").notNull().default("open"),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
     mergeSha: text("merge_sha"),
     lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
     // Absorbed-inline closure detection (migration 0026).
-    // closureMethod: merged | absorbed_inline | declined | stale_timeout
+    // closureMethod: merged | absorbed_inline | declined | stale_timeout | unreachable
     closureMethod: text("closure_method"),
     // Upstream commit SHA that applied the fix (merge SHA for merged, or
     // the independent commit for absorbed_inline).
