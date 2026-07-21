@@ -53,6 +53,8 @@ import {
   type OnboardingEvent,
   type RepoThreatModel,
   type RoastSubmission,
+  postDrafts,
+  type PostDraft,
   scorecardSnapshots,
   sarifIngestTokenUse,
 } from "./schema";
@@ -5375,4 +5377,38 @@ export async function loadPublicSarifFindingsForRepo(args: {
               bundleStatus: row.bundleStatus!,
             },
     }));
+}
+
+// --- Operator post-draft queue (migration 0054) ------------------------------
+// Drafts land via lib/post-draft-store.ts; the operator drains them through
+// scripts/post-queue.ts or /api/admin/post-drafts. Nothing here auto-posts.
+
+export const POST_DRAFT_STATUSES = ["draft", "posted", "dismissed"] as const;
+export type PostDraftStatus = (typeof POST_DRAFT_STATUSES)[number];
+
+export async function loadPostDraftQueue(
+  status: PostDraftStatus,
+  limit = 100,
+): Promise<PostDraft[]> {
+  return db
+    .select()
+    .from(postDrafts)
+    .where(eq(postDrafts.status, status))
+    .orderBy(desc(postDrafts.createdAt))
+    .limit(limit);
+}
+
+// Flip a pending draft to posted/dismissed. Returns false when the id is
+// unknown or the draft was already resolved — the operator should re-list
+// rather than assume success (same shape as retractFinding).
+export async function resolvePostDraft(
+  id: string,
+  action: "posted" | "dismissed",
+): Promise<boolean> {
+  const rows = await db
+    .update(postDrafts)
+    .set({ status: action, resolvedAt: new Date() })
+    .where(and(eq(postDrafts.id, id), eq(postDrafts.status, "draft")))
+    .returning({ id: postDrafts.id });
+  return rows.length > 0;
 }

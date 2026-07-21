@@ -875,6 +875,36 @@ export const scorecardSnapshots = pgTable("scorecard_snapshots", {
   payload: jsonb("payload").notNull(),
 });
 
+// Operator post-draft queue (migration 0054). lib/post-drafts.ts lands every
+// event-driven draft here; on Vercel the old file sink (ANTFLEET_DRAFTS_DIR)
+// is unavailable, so this table is the production sink. Drafts never
+// auto-post — the operator drains the queue via scripts/post-queue.ts or
+// /api/admin/post-drafts and tweets through an x.com intent link.
+export const postDrafts = pgTable(
+  "post_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    // 'roast' | 'factory' | 'weekly' | 'outgoing_pr' | 'manual'.
+    source: text("source").notNull().default("manual"),
+    // 'draft' | 'posted' | 'dismissed'.
+    status: text("status").notNull().default("draft"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [
+    // At most one *pending* draft per slug — an event re-firing while its
+    // draft awaits the operator must not spam the queue. Resolved rows
+    // (posted/dismissed) keep full history.
+    uniqueIndex("post_drafts_pending_slug_uniq")
+      .on(t.slug)
+      .where(sql`${t.status} = 'draft'`),
+    index("post_drafts_status_created_idx").on(t.status, t.createdAt),
+  ],
+);
+
 // Daybreak-inspired side table for the reachability gate + patch verifier.
 // One INSERT per stage invocation; never UPDATEd, so there's no contention
 // with the recordPatchDecisions UPDATE path on finding_status. Adding new
@@ -1225,4 +1255,6 @@ export type NewReviewGateOutcome = typeof reviewGateOutcomes.$inferInsert;
 export type FindingDisclosure = typeof findingDisclosure.$inferSelect;
 export type NewFindingDisclosure = typeof findingDisclosure.$inferInsert;
 export type FindingDisclosureLog = typeof findingDisclosureLog.$inferSelect;
+export type PostDraft = typeof postDrafts.$inferSelect;
+export type NewPostDraft = typeof postDrafts.$inferInsert;
 export type NewFindingDisclosureLog = typeof findingDisclosureLog.$inferInsert;
