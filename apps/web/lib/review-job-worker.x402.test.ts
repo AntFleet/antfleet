@@ -83,10 +83,10 @@ const TREASURY = "0x000000000000000000000000000000000000dEaD";
 const envMocks = vi.hoisted(() => ({
   loadX402Config: vi.fn(),
 }));
-vi.mock("@/lib/x402/env", () => ({
-  X402_MAX_TIMEOUT_SECONDS: 600,
-  loadX402Config: envMocks.loadX402Config,
-}));
+vi.mock("@/lib/x402/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/x402/env")>();
+  return { ...actual, loadX402Config: envMocks.loadX402Config };
+});
 vi.mock("@/lib/x402/facilitator", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/x402/facilitator")>();
   return {

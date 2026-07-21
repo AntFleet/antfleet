@@ -130,10 +130,13 @@ vi.mock("@/lib/paywall/refund", () => ({
   isRefundableFailureMode: () => false,
   safeFailureMessage: (mode: string) => `safe:${mode}`,
 }));
-vi.mock("@/lib/x402/env", () => ({
-  X402_MAX_TIMEOUT_SECONDS: 600,
-  loadX402Config: () => ({ treasury: "0x000000000000000000000000000000000000dEaD" }),
-}));
+vi.mock("@/lib/x402/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/x402/env")>();
+  return {
+    ...actual,
+    loadX402Config: () => ({ treasury: "0x000000000000000000000000000000000000dEaD" }),
+  };
+});
 vi.mock("@/lib/x402/facilitator", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/x402/facilitator")>();
   return {

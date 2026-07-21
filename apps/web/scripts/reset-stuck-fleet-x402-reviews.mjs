@@ -64,9 +64,7 @@ for (const [owner, repo, sha] of TARGETS) {
     console.log(`  no review row`);
     continue;
   }
-  console.log(
-    `  review=${String(row.review_id).slice(0, 8)} status=${row.processing_status}`,
-  );
+  console.log(`  review=${String(row.review_id).slice(0, 8)} status=${row.processing_status}`);
   if (!apply) continue;
   await pool.query(`DELETE FROM reviews WHERE review_id = $1`, [row.review_id]);
   console.log(`  deleted review ${row.review_id}`);
