@@ -905,6 +905,50 @@ export const postDrafts = pgTable(
   ],
 );
 
+// GLM 5.2 shadow-replay dogfood (migration 0055, decision memo 2026-07-21).
+// Replays stored Opus/GPT-5 disagreement events through the production
+// runAdjudication path, several runs per event per variant, to measure judge
+// precision + rerun stability BEFORE the two_of_three tier is promoted.
+// Nothing here feeds production finding_status.
+export const shadowJudgeRuns = pgTable(
+  "shadow_judge_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reviewId: uuid("review_id").notNull(),
+    // sha256(review_id|provider|title|path) — stable per disagreement event.
+    findingKey: text("finding_key").notNull(),
+    flaggingProvider: text("flagging_provider").notNull(),
+    // 'full' (prod-identical prompt) | 'blinded' (finding prose withheld).
+    variant: text("variant").notNull(),
+    runIndex: integer("run_index").notNull(),
+    verdict: text("verdict").notNull(),
+    corroborated: boolean("corroborated").notNull(),
+    reason: text("reason").notNull(),
+    judgeModel: text("judge_model").notNull(),
+    harnessVersion: text("harness_version").notNull(),
+    // Determinism pin: the exact candidate Finding judged, snapshotted.
+    findingSnapshot: jsonb("finding_snapshot").notNull(),
+    excerptPresent: boolean("excerpt_present").notNull(),
+    ms: integer("ms").notNull(),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("shadow_judge_runs_cell_uniq").on(t.findingKey, t.variant, t.runIndex),
+    index("shadow_judge_runs_review_idx").on(t.reviewId),
+  ],
+);
+
+// Held-out human ground truth, one label per disagreement event — assigned
+// independently of judge output (never self-graded in the moment).
+export const shadowJudgeLabels = pgTable("shadow_judge_labels", {
+  findingKey: text("finding_key").primaryKey(),
+  // 'real' | 'not_real'
+  label: text("label").notNull(),
+  notes: text("notes"),
+  labeledAt: timestamp("labeled_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Daybreak-inspired side table for the reachability gate + patch verifier.
 // One INSERT per stage invocation; never UPDATEd, so there's no contention
 // with the recordPatchDecisions UPDATE path on finding_status. Adding new
@@ -1257,4 +1301,8 @@ export type NewFindingDisclosure = typeof findingDisclosure.$inferInsert;
 export type FindingDisclosureLog = typeof findingDisclosureLog.$inferSelect;
 export type PostDraft = typeof postDrafts.$inferSelect;
 export type NewPostDraft = typeof postDrafts.$inferInsert;
+export type ShadowJudgeRun = typeof shadowJudgeRuns.$inferSelect;
+export type NewShadowJudgeRun = typeof shadowJudgeRuns.$inferInsert;
+export type ShadowJudgeLabel = typeof shadowJudgeLabels.$inferSelect;
+export type NewShadowJudgeLabel = typeof shadowJudgeLabels.$inferInsert;
 export type NewFindingDisclosureLog = typeof findingDisclosureLog.$inferInsert;
