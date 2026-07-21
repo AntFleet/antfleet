@@ -138,7 +138,7 @@ export async function handleResolvePostDraft(
   }
 }
 
-function deps(): PostDraftsDeps {
+function envDeps(): PostDraftsDeps {
   return {
     secret: process.env["OPERATOR_SECRET"],
     list: loadPostDraftQueue,
@@ -147,9 +147,9 @@ function deps(): PostDraftsDeps {
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  return handleListPostDrafts(req, deps());
+  return handleListPostDrafts(req, envDeps());
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  return handleResolvePostDraft(req, deps());
+  return handleResolvePostDraft(req, envDeps());
 }
