@@ -297,7 +297,11 @@ export function realPollDeps(): PollOutgoingDeps {
           await writePostDraft({
             slug: `outgoing-pr-merged-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
             title: "Outgoing PR merged",
-            body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} merged at ${mergeSha} on ${mergedAt.toISOString()}.`,
+            body: [
+              "antfleet's fix landed upstream",
+              `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} merged in ${mergeSha.slice(0, 7)}`,
+              `github.com/${row.upstreamOwner}/${row.upstreamRepo}/pull/${row.upstreamPrNumber}`,
+            ].join("\n"),
           });
         } catch (err) {
           logWarn("outgoing_prs.post_draft_failed", {
@@ -328,7 +332,12 @@ export function realPollDeps(): PollOutgoingDeps {
           await writePostDraft({
             slug: `outgoing-pr-closed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
             title: "Outgoing PR closed",
-            body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} closed without merge at ${polledAt.toISOString()}.`,
+            // Rarely postable (a declined fix) — drafted for the record; the
+            // operator queue is where it gets dismissed.
+            body: [
+              `upstream passed on antfleet's fix — ${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} closed without merge`,
+              `github.com/${row.upstreamOwner}/${row.upstreamRepo}/pull/${row.upstreamPrNumber}`,
+            ].join("\n"),
           });
         } catch (err) {
           logWarn("outgoing_prs.post_draft_failed", {
@@ -362,7 +371,11 @@ export function realPollDeps(): PollOutgoingDeps {
           await writePostDraft({
             slug: `outgoing-pr-absorbed-${row.upstreamOwner}-${row.upstreamRepo}-${row.upstreamPrNumber}`,
             title: "Outgoing PR absorbed inline",
-            body: `${row.upstreamOwner}/${row.upstreamRepo}#${row.upstreamPrNumber} fix absorbed via upstream commit ${closureSha.slice(0, 7)} (confidence: ${closureConfidence.toFixed(2)}).`,
+            body: [
+              "antfleet's fix shipped upstream — absorbed inline rather than merged",
+              `${row.upstreamOwner}/${row.upstreamRepo} commit ${closureSha.slice(0, 7)} (match confidence ${closureConfidence.toFixed(2)})`,
+              `github.com/${row.upstreamOwner}/${row.upstreamRepo}/pull/${row.upstreamPrNumber}`,
+            ].join("\n"),
           });
         } catch (err) {
           logWarn("outgoing_prs.post_draft_failed", {
