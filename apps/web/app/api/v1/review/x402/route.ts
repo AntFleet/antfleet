@@ -42,7 +42,10 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+// Fleet-commit reviews fetch GitHub snapshots then run inference in after().
+// 30s hard-killed every job at markJobRunning with 0 files reviewed; scan x402
+// uses 300s — match that budget here (Pro plan ceiling).
+export const maxDuration = 300;
 
 const X402_EXPOSE_HEADERS = `${PAYMENT_REQUIRED_HEADER}, ${PAYMENT_RESPONSE_HEADER}`;
 

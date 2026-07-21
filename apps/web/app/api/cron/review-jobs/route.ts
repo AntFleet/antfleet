@@ -3,7 +3,7 @@
 // Runs every minute. Three sweeps:
 //   1. Orphan pickup: status='queued' older than 60s — waitUntil() didn't fire.
 //      Re-triggers the worker.
-//   2. Stuck timeout: status='running' with started_at older than 600s (10 min).
+//   2. Stuck timeout: status='running' older than X402_MAX_TIMEOUT_SECONDS + 120s.
 //      Marks failed (failure_mode='timeout') and triggers refund.
 //   3. Expired cleanup: expires_at < now(). Purges result JSON to save storage;
 //      metadata kept for audit.
@@ -26,12 +26,13 @@ import {
 import { processReviewJob, terminalizeAcpJobFailure } from "@/lib/review-job-worker";
 import { refundJobChannelDebit } from "@/lib/paywall/refund";
 import { x402FailureMessage, x402FailureResultPayload } from "@/lib/x402/review-job-result";
+import { readX402MaxTimeoutSeconds } from "@/lib/x402/env";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const ORPHAN_THRESHOLD_MS = 60 * 1000;
-const STUCK_THRESHOLD_MS = 600 * 1000;
+const STUCK_THRESHOLD_MS = (readX402MaxTimeoutSeconds() + 120) * 1000;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const auth = requireCronAuth(req, {
@@ -75,7 +76,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       });
     }
 
-    // 2. Stuck timeout: running jobs older than 600s
+    // 2. Stuck timeout: running jobs older than the x402 wall-clock budget
     const stuckThreshold = new Date(now.getTime() - STUCK_THRESHOLD_MS);
     const stuck = await findStuckRunningJobs(db, stuckThreshold);
     for (const job of stuck) {
@@ -136,7 +137,7 @@ export async function timeoutStuckReviewJob(job: ReviewJobRow, now: Date): Promi
       job,
       jobId: job.jobId,
       failureMode: "timeout",
-      publicMessage: "review exceeded 10-minute timeout",
+      publicMessage: "review exceeded x402 timeout",
       rawMessage: "review_jobs cron timed out a stuck ACP job",
     });
     return;
