@@ -71,6 +71,10 @@ export type PollOutgoingDeps = {
   }) => Promise<void>;
   detectAbsorbed: (pr: OpenOutgoingPr) => Promise<AbsorbedInlineResult>;
   stampPolled: (args: { id: string; polledAt: Date }) => Promise<void>;
+  // Terminal state for a PR whose upstream repo/owner has vanished (GitHub
+  // 404). The row is preserved as evidence — never deleted — but taken out
+  // of the open-poll rotation so it stops burning an API call every tick.
+  markUnreachable: (args: { id: string; polledAt: Date }) => Promise<void>;
 };
 
 export type PollOutgoingResult = {
@@ -79,8 +83,23 @@ export type PollOutgoingResult = {
   closed: number;
   absorbed: number;
   unchanged: number;
+  // Upstream repo/owner gone (404) — row retired from the poll rotation.
+  unreachable: number;
   errors: number;
 };
+
+// GitHub returns 404 when the upstream repo or owner no longer exists (deleted
+// account, deleted/renamed repo) — distinct from 401/403 (bad/insufficient
+// token) and 5xx (transient). Only 404 means "the resource is genuinely gone";
+// everything else is retried next tick as a normal error.
+function isUpstreamGone(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    (err as { status?: unknown }).status === 404
+  );
+}
 
 export async function pollOutgoingPrs(
   deps: PollOutgoingDeps,
@@ -91,6 +110,7 @@ export async function pollOutgoingPrs(
   let closed = 0;
   let absorbed = 0;
   let unchanged = 0;
+  let unreachable = 0;
   let errors = 0;
   for (const pr of open) {
     try {
@@ -157,6 +177,34 @@ export async function pollOutgoingPrs(
         unchanged += 1;
       }
     } catch (err) {
+      if (isUpstreamGone(err)) {
+        // Upstream repo/owner deleted (or privatized). Retire the row from the
+        // poll rotation so it stops 404-ing every tick, but keep it — a
+        // merged-then-deleted or open-then-deleted PR is still evidence of the
+        // AntFleet review. The write is guarded (open-only) inside the dep and
+        // reversible by an operator if the upstream reappears.
+        //
+        // markUnreachable is awaited here inside the catch, so its own failure
+        // is NOT covered by the outer try. Wrap it: a DB hiccup on one row must
+        // not abort the tick and skip the remaining PRs — mirror the try-block
+        // transitions, which count an error and move on.
+        try {
+          await deps.markUnreachable({ id: pr.id, polledAt: now });
+          unreachable += 1;
+          logWarn("outgoing_prs.upstream_gone", {
+            id: pr.id,
+            upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+          });
+        } catch (markErr) {
+          errors += 1;
+          logWarn("outgoing_prs.mark_unreachable_failed", {
+            id: pr.id,
+            upstream: `${pr.upstreamOwner}/${pr.upstreamRepo}#${pr.upstreamPrNumber}`,
+            message: markErr instanceof Error ? markErr.message : String(markErr),
+          });
+        }
+        continue;
+      }
       const message = err instanceof Error ? err.message : String(err);
       logWarn("outgoing_prs.poll_failed", {
         id: pr.id,
@@ -166,7 +214,7 @@ export async function pollOutgoingPrs(
       errors += 1;
     }
   }
-  return { attempted: open.length, merged, closed, absorbed, unchanged, errors };
+  return { attempted: open.length, merged, closed, absorbed, unchanged, unreachable, errors };
 }
 
 // ─── Real-deps wiring (used by cron sweep) ─────────────────────────────────
@@ -330,6 +378,28 @@ export function realPollDeps(): PollOutgoingDeps {
     },
     stampPolled: async ({ id, polledAt }) => {
       await db.update(outgoingPrs).set({ lastPolledAt: polledAt }).where(eq(outgoingPrs.id, id));
+    },
+    markUnreachable: async ({ id, polledAt }) => {
+      // status='unreachable' drops the row from loadOpenPrs (which filters
+      // status='open'), so it stops re-polling. The row and all its provenance
+      // columns are retained — this is a retirement, not a deletion. Not a
+      // receipt-eligible status, so /receipts never surfaces it. Reversible:
+      // if the upstream reappears, an operator can reset status='open'.
+      //
+      // Compare-and-set on status='open': a 404 is not deletion-proof (a repo
+      // can be privatized, or a manual/concurrent sweep may have already
+      // recorded a merge), so only retire a row that is STILL open. This makes
+      // it impossible to clobber a merged/closed_absorbed receipt with an
+      // unreachable retirement.
+      await db
+        .update(outgoingPrs)
+        .set({
+          status: "unreachable",
+          lastPolledAt: polledAt,
+          closureMethod: "unreachable",
+          closureDetectedAt: polledAt,
+        })
+        .where(and(eq(outgoingPrs.id, id), eq(outgoingPrs.status, "open")));
     },
   };
 }
