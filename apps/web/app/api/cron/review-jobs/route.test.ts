@@ -145,7 +145,7 @@ describe("review jobs cron timeout terminalization", () => {
       job: acpJob,
       jobId: "job-acp",
       failureMode: "timeout",
-      publicMessage: "review exceeded 10-minute timeout",
+      publicMessage: "review exceeded x402 timeout",
       rawMessage: "review_jobs cron timed out a stuck ACP job",
     });
   });
