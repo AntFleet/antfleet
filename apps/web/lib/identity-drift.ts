@@ -157,7 +157,11 @@ async function recordDriftSpikeFinding(
   await writePostDraft({
     slug: findingId,
     title: "Identity drift approaching declared threshold",
-    body: `${agent.name} drift is ${driftScore.toFixed(3)} against its declared ${threshold.toFixed(3)} threshold.`,
+    body: [
+      `${agent.name} identity drift at ${driftScore.toFixed(3)} — declared threshold ${threshold.toFixed(3)}`,
+      "the genesis file is the receipt →",
+      `antfleet.dev/agents/${agent.address}`,
+    ].join("\n"),
   });
 }
 

@@ -76,7 +76,8 @@ export async function writePostDraft(
   const iso = now.toISOString().replace(/[:.]/g, "-");
   const filename = `${iso}-${safeSlug(input.slug) || "post"}.md`;
   const filePath = path.join(dir, filename);
-  const markdown = `TODO(voice)\n\n# ${input.title}\n\n${input.body.trim()}\n`;
+  // Bodies are post-ready (voice pass 2026-07); no TODO header needed.
+  const markdown = `# ${input.title}\n\n${input.body.trim()}\n`;
   try {
     await mkdir(dir, { recursive: true });
     await writeFile(filePath, markdown, "utf8");
@@ -105,11 +106,18 @@ export async function writeRoastPostDraft(
   input: RoastPostDraftInput,
   now = new Date(),
 ): Promise<string | null> {
+  // The body IS the tweet — it must carry the repo name itself; the title
+  // never leaves the operator queue.
   const sevLine =
     input.topSeverity !== null
       ? `${input.findingsCount} findings · top severity: ${input.topSeverity}`
       : `${input.findingsCount} findings`;
-  const lines = [sevLine, input.topFindingTitle ?? "", input.pageUrl];
+  const lines = [
+    `antfleet roasted ${input.repoFullName}`,
+    sevLine,
+    input.topFindingTitle ?? "",
+    input.pageUrl,
+  ];
   if (input.submitterHandle !== null && input.submitterHandle.trim().length > 0) {
     const handle = input.submitterHandle.replace(/^@+/, "");
     lines.push(`submitted by @${handle}`);
@@ -162,6 +170,7 @@ export async function writeFactoryDetectedDraft(
     nameLine,
     `deployer: ${input.deployerAddress}`,
     "antfleet is looking for the repo →",
+    `antfleet.dev/agents/${input.tokenAddress}`,
   ].join("\n");
   return writePostDraft(
     {
@@ -185,6 +194,7 @@ export async function writeFactoryRepoFoundDraft(
   const body = [
     `repo found for ${display}: github.com/${input.repoFullName}`,
     "antfleet is benchmarking inside the deposit window →",
+    `antfleet.dev/agents/${input.tokenAddress}`,
   ].join("\n");
   return writePostDraft(
     {
@@ -283,7 +293,7 @@ export async function writeWeeklyFeatureDraft(
   );
 }
 
-function truncateOneLine(value: string, maxChars: number): string {
+export function truncateOneLine(value: string, maxChars: number): string {
   const stripped = value.replace(/\s+/g, " ").trim();
   return stripped.length <= maxChars ? stripped : `${stripped.slice(0, maxChars - 1).trimEnd()}…`;
 }

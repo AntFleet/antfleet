@@ -63,7 +63,7 @@ import {
   embargoSafePublicReceiptCondition,
   reviewDerivedPublicReceiptCondition,
 } from "./public-receipt";
-import { writePostDraft } from "@/lib/post-drafts";
+import { truncateOneLine, writePostDraft } from "@/lib/post-drafts";
 import { isDisclosureGateEnabled, isCyberTierEnabled } from "@/lib/daybreak-gates-env";
 import {
   nonCyberTierRepoCondition,
@@ -3802,7 +3802,11 @@ export async function upsertAgentFinding(input: NewAgentFinding): Promise<void> 
     await writePostDraft({
       slug: input.findingId,
       title: input.title,
-      body: `New ${input.severity} agent finding for ${input.agentName}: ${input.summary}`,
+      body: [
+        `new ${input.severity} finding for ${input.agentName}`,
+        truncateOneLine(input.summary, 160),
+        `antfleet.dev/agents/${input.agentTokenAddress}`,
+      ].join("\n"),
     });
   }
 }
