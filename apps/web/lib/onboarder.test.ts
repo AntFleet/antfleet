@@ -43,6 +43,18 @@ describe("welcomePrompt", () => {
     expect(out).not.toContain("antfleet.dev/anatomy/bitterbot");
   });
 
+  it("includes the repo-specific README badge snippet", () => {
+    const out = welcomePrompt({
+      owner: "SomeOrg",
+      repo: "some-repo",
+      meta: { description: null, language: null, topics: [] },
+    });
+    expect(out).toContain(
+      "[![Reviewed by AntFleet](https://www.antfleet.dev/badge/SomeOrg/some-repo.svg)](https://www.antfleet.dev/receipts)",
+    );
+    expect(out).toContain("VERBATIM inside a fenced code block");
+  });
+
   it("explains that silence is the correct outcome for most PRs", () => {
     const out = welcomePrompt({
       owner: "AntFleet",
