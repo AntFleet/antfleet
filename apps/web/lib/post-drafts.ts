@@ -2,10 +2,16 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { logDebug, logWarn, messageOf } from "./log";
 
+export type PostDraftSource = "roast" | "factory" | "weekly" | "outgoing_pr" | "manual";
+
 export type PostDraftInput = {
   slug: string;
   title: string;
   body: string;
+  // Which pipeline produced the draft. Optional so the direct callers
+  // (identity-drift, outgoing-prs, queries.ts) keep compiling unchanged;
+  // when omitted it is inferred from the slug prefix, else 'manual'.
+  source?: PostDraftSource;
 };
 
 function safeSlug(slug: string): string {
@@ -14,6 +20,34 @@ function safeSlug(slug: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
+}
+
+function resolveSource(input: PostDraftInput, sanitizedSlug: string): PostDraftSource {
+  if (input.source !== undefined) return input.source;
+  if (sanitizedSlug.startsWith("roast-")) return "roast";
+  if (sanitizedSlug.startsWith("factory-")) return "factory";
+  if (sanitizedSlug.startsWith("weekly-")) return "weekly";
+  if (sanitizedSlug.startsWith("outgoing-pr-")) return "outgoing_pr";
+  return "manual";
+}
+
+// DB sink — best-effort like the file sink below; a failed insert must never
+// surface to the pipeline caller. Lazy import keeps db/index (which throws
+// at load without DATABASE_URL) out of this module's static dependency graph.
+async function persistDraftRow(input: PostDraftInput): Promise<boolean> {
+  try {
+    const { insertPostDraftRow } = await import("./post-draft-store");
+    const slug = safeSlug(input.slug) || "post";
+    return await insertPostDraftRow({
+      slug,
+      title: input.title,
+      body: input.body.trim(),
+      source: resolveSource(input, slug),
+    });
+  } catch (err) {
+    logWarn("post_draft.db_write_failed", { slug: input.slug, message: messageOf(err) });
+    return false;
+  }
 }
 
 // Operator-facing post drafts land under ANTFLEET_DRAFTS_DIR when set.
@@ -29,6 +63,11 @@ export async function writePostDraft(
   input: PostDraftInput,
   now = new Date(),
 ): Promise<string | null> {
+  // DB sink first (the production path). The return value keeps reporting
+  // the FILE sink only — existing callers log the path or null and must not
+  // change behavior because a DB row also landed.
+  await persistDraftRow(input);
+
   const dir = process.env["ANTFLEET_DRAFTS_DIR"];
   if (dir === undefined || dir.length === 0) {
     logDebug("post_draft.skipped", { reason: "ANTFLEET_DRAFTS_DIR_unset", slug: input.slug });
