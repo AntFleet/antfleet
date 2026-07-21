@@ -52,9 +52,12 @@ export type ReviewRowForSampling = {
 };
 
 export function candidateKey(reviewId: string, provider: string, finding: Finding): string {
-  const path = finding.evidence[0]?.path ?? "";
+  const ev = finding.evidence[0];
+  // Line range participates in the key so two same-titled findings from one
+  // provider at different locations in the same file stay distinct events.
+  const location = ev === undefined ? "" : `${ev.path}:${ev.startLine ?? ""}-${ev.endLine ?? ""}`;
   return createHash("sha256")
-    .update(`${reviewId}|${provider}|${finding.title}|${path}`)
+    .update(`${reviewId}|${provider}|${finding.title}|${location}`)
     .digest("hex")
     .slice(0, 32);
 }
@@ -133,7 +136,11 @@ function sampleFromProviderResponses(row: ReviewRowForSampling): ShadowCandidate
   const out: ShadowCandidate[] = [];
   for (const { provider, findings } of byProvider) {
     if (isGlmProvider(provider)) continue;
-    const others = byProvider.filter((p) => p.provider !== provider);
+    // Solo means "no counterpart among the FRONTIER reviewers". An auxiliary
+    // provider (e.g. a GLM shadow run) overlapping the finding must not
+    // disqualify it — mirror the anthropic/openai pairing the /disagreements
+    // page uses.
+    const others = byProvider.filter((p) => p.provider !== provider && !isGlmProvider(p.provider));
     for (const finding of findings) {
       if (finding.evidence.length === 0) continue;
       const hasCounterpart = others.some((other) =>
@@ -188,11 +195,17 @@ export function sampleShadowCandidates(
   return out;
 }
 
-// Blinded variant: withhold every piece of flagging-model prose so the judge
-// works from the code window alone. Structure (and therefore the production
-// prompt scaffold, fencing, and JSON contract) is unchanged — only the DATA
-// content differs.
+// Blinded variant: withhold EVERYTHING the flagging model authored — prose
+// (title/reasoning/recommendation) AND its claimed classification
+// (category/severity), which also leak the claimed defect shape. The judge
+// works from the file location and code window alone ("source-window-only",
+// decision memo). Structure (and therefore the production prompt scaffold,
+// fencing, and JSON contract) is unchanged — only the DATA content differs.
+// The classification placeholders are cast through the Finding enums; the
+// prompt only ever interpolates them as strings, and the per-run snapshot
+// records exactly what the judge saw.
 export const BLINDED_PLACEHOLDER = "(withheld — judge from the code excerpt alone)";
+export const BLINDED_CLASSIFICATION = "(withheld)";
 
 export function redactFindingForBlindedJudge(finding: Finding): Finding {
   return {
@@ -200,6 +213,8 @@ export function redactFindingForBlindedJudge(finding: Finding): Finding {
     title: BLINDED_PLACEHOLDER,
     reasoning: BLINDED_PLACEHOLDER,
     recommendation: BLINDED_PLACEHOLDER,
+    category: BLINDED_CLASSIFICATION as Finding["category"],
+    severity: BLINDED_CLASSIFICATION as Finding["severity"],
   };
 }
 

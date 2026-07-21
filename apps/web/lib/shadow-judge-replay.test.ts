@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Finding } from "./review-types";
 import {
+  BLINDED_CLASSIFICATION,
   BLINDED_PLACEHOLDER,
   candidateKey,
   computeShadowReport,
@@ -97,6 +98,40 @@ describe("sampleShadowCandidates", () => {
     expect(out[0]!.finding.title).toBe("solo one");
   });
 
+  it("keys same-titled findings at different locations as distinct events", () => {
+    const atTop = finding({
+      evidence: [{ path: "src/allow.ts", startLine: 10, endLine: 14, symbol: null, quote: null }],
+    } as Partial<Finding>);
+    const atBottom = finding({
+      evidence: [{ path: "src/allow.ts", startLine: 90, endLine: 94, symbol: null, quote: null }],
+    } as Partial<Finding>);
+    expect(candidateKey(REVIEW_ID, "anthropic", atTop)).not.toBe(
+      candidateKey(REVIEW_ID, "anthropic", atBottom),
+    );
+    const rows = [
+      tierRow([
+        { provider: "anthropic", finding: atTop },
+        { provider: "anthropic", finding: atBottom },
+      ]),
+    ];
+    expect(sampleShadowCandidates(rows)).toHaveLength(2);
+  });
+
+  it("does not let an auxiliary GLM overlap disqualify a frontier solo finding", () => {
+    const solo = finding();
+    const glmOverlap = finding({ title: "glm saw it too" } as Partial<Finding>);
+    const rows = [
+      minedRow([
+        { name: "anthropic", findings: [solo] },
+        { name: "openai", findings: [] },
+        { name: "zhipu-glm-5.2", findings: [glmOverlap] },
+      ]),
+    ];
+    const out = sampleShadowCandidates(rows);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.flaggingProvider).toBe("anthropic");
+  });
+
   it("dedups by finding key and respects the limit", () => {
     const f = finding();
     const rows = [
@@ -113,13 +148,15 @@ describe("sampleShadowCandidates", () => {
 });
 
 describe("redactFindingForBlindedJudge", () => {
-  it("withholds prose but keeps the code window and classification", () => {
+  it("withholds all model-authored content — prose AND claimed classification", () => {
     const blinded = redactFindingForBlindedJudge(finding());
     expect(blinded.title).toBe(BLINDED_PLACEHOLDER);
     expect(blinded.reasoning).toBe(BLINDED_PLACEHOLDER);
     expect(blinded.recommendation).toBe(BLINDED_PLACEHOLDER);
-    expect(blinded.severity).toBe("high");
-    expect(blinded.category).toBe("bug");
+    expect(blinded.severity).toBe(BLINDED_CLASSIFICATION);
+    expect(blinded.category).toBe(BLINDED_CLASSIFICATION);
+    // Only the source window survives: location + code excerpt.
+    expect(blinded.evidence[0]!.path).toBe("src/allow.ts");
     expect(blinded.evidence[0]!.quote).toBe("if (x)");
   });
 });
