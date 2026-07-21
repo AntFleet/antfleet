@@ -29,6 +29,23 @@ export function isThirdModelAdjudicationEnabled(): boolean {
 }
 
 /**
+ * Blinded-judge mode for the corroborated tier (env
+ * ANTFLEET_THIRD_MODEL_BLINDED, default OFF). When on, the judge is fed the
+ * code window only — never the flagging model's prose or claimed
+ * classification. The 2026-07-21 dogfood found prose-fed judging is an echo
+ * (~26/40 confirms with prose vs ~3/40 blinded), so a promoted tier must be
+ * blinded. Global (env-only) rather than per-install: it changes HOW the
+ * judge reasons, not WHICH installs opt in — that stays on the adjudication
+ * flag. Fully inert while the adjudication flag itself is OFF.
+ */
+export function isThirdModelBlindedEnabled(): boolean {
+  const raw = process.env["ANTFLEET_THIRD_MODEL_BLINDED"];
+  if (raw === undefined) return false;
+  const normalized = raw.toLowerCase().trim();
+  return normalized === "true" || normalized === "1";
+}
+
+/**
  * Resolves the effective enabled state for a specific install. Reads the
  * per-install override; falls back to the env flag when null.
  *

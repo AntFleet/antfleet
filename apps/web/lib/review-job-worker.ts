@@ -18,7 +18,10 @@ import {
 } from "@/db/queries";
 import { initializeDisclosureForFindings } from "@/lib/disclosure";
 import { isSingleModelTierEnabledForInstall } from "@/lib/single-model-tier-env";
-import { isThirdModelAdjudicationEnabledForInstall } from "@/lib/third-model-adjudication-env";
+import {
+  isThirdModelAdjudicationEnabledForInstall,
+  isThirdModelBlindedEnabled,
+} from "@/lib/third-model-adjudication-env";
 import { applyThirdModelAdjudication } from "@/lib/third-model-adjudication";
 import { getRepoCyberTier } from "@/lib/cyber-tier";
 import { applyReachabilityGate } from "@/lib/reachability-gate";
@@ -483,6 +486,7 @@ async function runX402JobPipeline(job: ReviewJobRow): Promise<unknown> {
         recordSingleModelFindingStatuses,
         isSingleModelTierEnabledForInstall,
         isThirdModelAdjudicationEnabledForInstall,
+        isThirdModelBlindedEnabled,
         applyThirdModelAdjudication,
         loadRepoThreatModel,
         upsertRepoThreatModel,
@@ -608,6 +612,7 @@ async function runAcpJobPipeline(job: ReviewJobRow): Promise<AcpReviewDeliverabl
         recordSingleModelFindingStatuses,
         isSingleModelTierEnabledForInstall,
         isThirdModelAdjudicationEnabledForInstall,
+        isThirdModelBlindedEnabled,
         applyThirdModelAdjudication,
         loadRepoThreatModel,
         upsertRepoThreatModel,

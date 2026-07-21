@@ -137,6 +137,7 @@ function mkDeps(overrides: Partial<WorkerDeps> = {}): WorkerDeps {
     // Build B — 3rd-model adjudication: default OFF so existing tests never
     // trigger a GLM call and byte-identical to pre-Build-B behavior.
     isThirdModelAdjudicationEnabledForInstall: vi.fn().mockResolvedValue(false),
+    isThirdModelBlindedEnabled: vi.fn().mockReturnValue(false),
     applyThirdModelAdjudication: vi.fn().mockResolvedValue({ rows: [], corroboratedCount: 0 }),
     recordPatchDecisions: vi.fn().mockResolvedValue(undefined),
     setReviewPatchCost: vi.fn().mockResolvedValue(undefined),
