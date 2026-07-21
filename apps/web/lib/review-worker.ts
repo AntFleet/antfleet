@@ -21,7 +21,10 @@ import {
   isSingleModelTierEnabledForInstall as realIsSingleModelTierEnabledForInstall,
   isSingleModelTierRenderEnabled as realIsSingleModelTierRenderEnabled,
 } from "./single-model-tier-env";
-import { isThirdModelAdjudicationEnabledForInstall as realIsThirdModelAdjudicationEnabledForInstall } from "./third-model-adjudication-env";
+import {
+  isThirdModelAdjudicationEnabledForInstall as realIsThirdModelAdjudicationEnabledForInstall,
+  isThirdModelBlindedEnabled as realIsThirdModelBlindedEnabled,
+} from "./third-model-adjudication-env";
 import {
   applyThirdModelAdjudication as realApplyThirdModelAdjudication,
   ADJUDICATION_COST_USD,
@@ -146,6 +149,7 @@ export type WorkerDeps = {
   isSingleModelTierRenderEnabled: typeof realIsSingleModelTierRenderEnabled;
   // Build B — 3rd-model adjudication of the shadow tier into two_of_three.
   isThirdModelAdjudicationEnabledForInstall: typeof realIsThirdModelAdjudicationEnabledForInstall;
+  isThirdModelBlindedEnabled: typeof realIsThirdModelBlindedEnabled;
   applyThirdModelAdjudication: typeof realApplyThirdModelAdjudication;
   recordPatchDecisions: typeof realRecordPatchDecisions;
   setReviewPatchCost: typeof realSetReviewPatchCost;
@@ -198,6 +202,7 @@ export function realWorkerDeps(): WorkerDeps {
     isSingleModelTierEnabledForInstall: realIsSingleModelTierEnabledForInstall,
     isSingleModelTierRenderEnabled: realIsSingleModelTierRenderEnabled,
     isThirdModelAdjudicationEnabledForInstall: realIsThirdModelAdjudicationEnabledForInstall,
+    isThirdModelBlindedEnabled: realIsThirdModelBlindedEnabled,
     applyThirdModelAdjudication: realApplyThirdModelAdjudication,
     recordPatchDecisions: realRecordPatchDecisions,
     setReviewPatchCost: realSetReviewPatchCost,
@@ -507,6 +512,7 @@ export type ReviewKernelDeps = {
   // Kernel-side (rail-agnostic measurement); gated per-install so it stays
   // inert until a canary override / the env flag flips it on.
   isThirdModelAdjudicationEnabledForInstall: typeof realIsThirdModelAdjudicationEnabledForInstall;
+  isThirdModelBlindedEnabled: typeof realIsThirdModelBlindedEnabled;
   applyThirdModelAdjudication: typeof realApplyThirdModelAdjudication;
   loadRepoThreatModel: typeof realLoadRepoThreatModel;
   upsertRepoThreatModel: typeof realUpsertRepoThreatModel;
@@ -1044,6 +1050,10 @@ export async function runReviewKernel(
   // Fail-open: any error → all corroborated stay false, the review proceeds.
   // The applier owns its own 60s wall-clock cap + AbortController.
   let adjudicationRows: AdjudicationResultRow[] = [];
+  // Whether the adjudication that actually ran used the blinded prompt —
+  // recorded in the audit trail so prod shadow analysis can separate blinded
+  // from prose-fed graduations. false when no adjudication ran.
+  let blindedAdjudication = false;
   // The real ReviewBundle always supplies a singleModelTier array ([] default);
   // normalize defensively so an over-early/partial bundle shape (e.g. a
   // cost-cap bail before the tier is populated) can never throw here — this
@@ -1060,8 +1070,12 @@ export async function runReviewKernel(
         deps.isSingleModelTierEnabledForInstall(installationId, repo),
       ]);
       if (adjudicationEnabled && tierEnabled) {
+        // Blinded mode is env-global (not per-install): it changes HOW the
+        // judge reasons, not WHICH installs run it. Read synchronously here.
+        blindedAdjudication = deps.isThirdModelBlindedEnabled();
         const applied = await deps.applyThirdModelAdjudication({
           singleModelTier: shadowTier,
+          blinded: blindedAdjudication,
           ...(signal !== undefined ? { signal } : {}),
         });
         adjudicationRows = applied.rows;
@@ -1069,6 +1083,7 @@ export async function runReviewKernel(
           reviewId,
           adjudicated: applied.rows.length,
           corroborated: applied.corroboratedCount,
+          blinded: blindedAdjudication,
           costUsd: applied.rows.length * ADJUDICATION_COST_USD,
         });
       }
@@ -1110,6 +1125,7 @@ export async function runReviewKernel(
           corroborated: adj.corroborated,
           thirdModel: adj.thirdModel,
           reason: adj.reason,
+          blinded: blindedAdjudication,
         },
       };
     }),
@@ -2088,6 +2104,7 @@ async function processClaimedRow(
       recordSingleModelFindingStatuses: deps.recordSingleModelFindingStatuses,
       isSingleModelTierEnabledForInstall: deps.isSingleModelTierEnabledForInstall,
       isThirdModelAdjudicationEnabledForInstall: deps.isThirdModelAdjudicationEnabledForInstall,
+      isThirdModelBlindedEnabled: deps.isThirdModelBlindedEnabled,
       applyThirdModelAdjudication: deps.applyThirdModelAdjudication,
       loadRepoThreatModel: deps.loadRepoThreatModel,
       upsertRepoThreatModel: deps.upsertRepoThreatModel,

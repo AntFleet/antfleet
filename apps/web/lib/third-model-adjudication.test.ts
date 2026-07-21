@@ -153,6 +153,47 @@ describe("runAdjudication (confirm/reject)", () => {
     expect(capturedUser).toContain("untrusted-");
     expect(capturedUser).toContain("SQLi in query builder");
   });
+
+  it("blinded mode withholds prose + classification, keeps the code window", async () => {
+    let blindedUser = "";
+    await runAdjudication({
+      finding: mkFinding({
+        title: "SQLi in query builder",
+        reasoning: "user input flows unescaped into the SQL string",
+        recommendation: "use a parameterized query",
+        category: "security",
+        severity: "high",
+      }),
+      flaggingProvider: "anthropic",
+      blinded: true,
+      callModel: async (_s, u) => {
+        blindedUser = u;
+        return JSON.stringify({ verdict: "confirm", reason: "ok" });
+      },
+    });
+    // Everything the flagging model authored is withheld…
+    expect(blindedUser).not.toContain("SQLi in query builder");
+    expect(blindedUser).not.toContain("unescaped into the SQL");
+    expect(blindedUser).not.toContain("parameterized query");
+    expect(blindedUser).not.toContain("security");
+    expect(blindedUser).not.toMatch(/severity \(claimed\): high/);
+    // …but the source window survives: file location + code excerpt.
+    expect(blindedUser).toContain("src/Vault.sol");
+    expect(blindedUser).toContain("token.transfer(to, amount);");
+  });
+
+  it("non-blinded (default) still feeds the finding prose", async () => {
+    let user = "";
+    await runAdjudication({
+      finding: mkFinding({ title: "SQLi in query builder" }),
+      flaggingProvider: "anthropic",
+      callModel: async (_s, u) => {
+        user = u;
+        return JSON.stringify({ verdict: "confirm", reason: "ok" });
+      },
+    });
+    expect(user).toContain("SQLi in query builder");
+  });
 });
 
 describe("applyThirdModelAdjudication", () => {
@@ -192,6 +233,25 @@ describe("applyThirdModelAdjudication", () => {
     expect(res.rows).toEqual([]);
     expect(res.corroboratedCount).toBe(0);
     expect(runOne).not.toHaveBeenCalled();
+  });
+
+  it("threads blinded flag to every per-finding call", async () => {
+    const tier = [
+      { finding: mkFinding({ title: "A" }), provider: "anthropic" },
+      { finding: mkFinding({ title: "B" }), provider: "openai" },
+    ];
+    const runOne = vi.fn().mockResolvedValue(mkOutcome("reject", false));
+    await applyThirdModelAdjudication({ singleModelTier: tier, blinded: true, runOne });
+    for (const call of runOne.mock.calls) {
+      expect(call[0].blinded).toBe(true);
+    }
+  });
+
+  it("defaults blinded to false when unset", async () => {
+    const tier = [{ finding: mkFinding(), provider: "anthropic" }];
+    const runOne = vi.fn().mockResolvedValue(mkOutcome("reject", false));
+    await applyThirdModelAdjudication({ singleModelTier: tier, runOne });
+    expect(runOne.mock.calls[0][0].blinded).toBe(false);
   });
 
   it("60s cap — a hung adjudication batch fails open (all corroborated=false)", async () => {

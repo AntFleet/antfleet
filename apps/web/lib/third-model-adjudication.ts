@@ -82,10 +82,36 @@ function providerFamily(provider: string): string {
   return p;
 }
 
+// Blinded judging (2026-07-21 dogfood result). Prose-fed judging is an echo:
+// with the flagging model's title/reasoning/recommendation in view GLM
+// corroborated ~26/40 events, but judging from the code window ALONE only
+// ~3/40 — and every one of the verified blinded confirms was a real bug. So
+// the corroborated tier's independent-verification value lives entirely in
+// the blinded path. When blinded, we withhold everything the flagging model
+// authored — prose AND its claimed category/severity, which also leak the
+// defect shape — leaving the judge the file location + code excerpt only.
+export const BLINDED_PLACEHOLDER = "(withheld — judge from the code excerpt alone)";
+export const BLINDED_CLASSIFICATION = "(withheld)";
+
+export function redactFindingForBlindedJudge(finding: Finding): Finding {
+  return {
+    ...finding,
+    title: BLINDED_PLACEHOLDER,
+    reasoning: BLINDED_PLACEHOLDER,
+    recommendation: BLINDED_PLACEHOLDER,
+    category: BLINDED_CLASSIFICATION as Finding["category"],
+    severity: BLINDED_CLASSIFICATION as Finding["severity"],
+  };
+}
+
 export type RunAdjudicationArgs = {
   finding: Finding;
   // The provider that flagged the shadow finding (Win2 carries this).
   flaggingProvider: string;
+  // Blinded mode: redact the flagging model's prose + classification before
+  // building the prompt so the judge verifies from the code window alone.
+  // Default (undefined/false) is the legacy prose-fed prompt.
+  blinded?: boolean;
   signal?: AbortSignal | null;
   // Test seam — overrides the GLM call. Production callers leave this unset
   // and the helper invokes callZhipu from process.env.
@@ -112,7 +138,9 @@ export async function runAdjudication(args: RunAdjudicationArgs): Promise<Adjudi
   }
 
   try {
-    const { system, user } = buildAdjudicationPrompt(args.finding);
+    const finding =
+      args.blinded === true ? redactFindingForBlindedJudge(args.finding) : args.finding;
+    const { system, user } = buildAdjudicationPrompt(finding);
     const call =
       args.callModel ??
       (async (sys, usr, sig) => {
@@ -250,6 +278,8 @@ export type ShadowFindingForAdjudication = {
 
 export type ApplyAdjudicationArgs = {
   singleModelTier: readonly ShadowFindingForAdjudication[];
+  // Blinded mode threads down to every per-finding runAdjudication call.
+  blinded?: boolean;
   signal?: AbortSignal | null;
   // Test seam — substituted for runAdjudication.
   runOne?: (args: RunAdjudicationArgs) => Promise<AdjudicationOutcome>;
@@ -301,6 +331,7 @@ export async function applyThirdModelAdjudication(
       const outcome = await runner({
         finding: s.finding,
         flaggingProvider: s.provider,
+        blinded: args.blinded === true,
         signal: gateController.signal,
       });
       return {

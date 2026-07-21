@@ -27,6 +27,7 @@ vi.mock("@/db", () => {
 import {
   isThirdModelAdjudicationEnabled,
   isThirdModelAdjudicationEnabledForInstall,
+  isThirdModelBlindedEnabled,
 } from "./third-model-adjudication-env";
 
 describe("isThirdModelAdjudicationEnabled (env)", () => {
@@ -55,6 +56,36 @@ describe("isThirdModelAdjudicationEnabled (env)", () => {
     for (const v of ["false", "no", "", "0", "yes", "on"]) {
       process.env["ANTFLEET_THIRD_MODEL_ADJUDICATION"] = v;
       expect(isThirdModelAdjudicationEnabled()).toBe(false);
+    }
+  });
+});
+
+describe("isThirdModelBlindedEnabled (env)", () => {
+  let original: string | undefined;
+  beforeEach(() => {
+    original = process.env["ANTFLEET_THIRD_MODEL_BLINDED"];
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env["ANTFLEET_THIRD_MODEL_BLINDED"];
+    else process.env["ANTFLEET_THIRD_MODEL_BLINDED"] = original;
+  });
+
+  it("defaults OFF when unset", () => {
+    delete process.env["ANTFLEET_THIRD_MODEL_BLINDED"];
+    expect(isThirdModelBlindedEnabled()).toBe(false);
+  });
+
+  it("is ON for 'true' / '1' / case-insensitive+trim", () => {
+    for (const v of ["true", "1", "TRUE", "  true\n"]) {
+      process.env["ANTFLEET_THIRD_MODEL_BLINDED"] = v;
+      expect(isThirdModelBlindedEnabled()).toBe(true);
+    }
+  });
+
+  it("is OFF for anything else", () => {
+    for (const v of ["false", "no", "", "0", "yes", "on"]) {
+      process.env["ANTFLEET_THIRD_MODEL_BLINDED"] = v;
+      expect(isThirdModelBlindedEnabled()).toBe(false);
     }
   });
 });

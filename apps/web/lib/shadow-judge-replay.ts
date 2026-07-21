@@ -20,12 +20,20 @@
 
 import { createHash } from "node:crypto";
 import {
+  BLINDED_CLASSIFICATION,
+  BLINDED_PLACEHOLDER,
+  redactFindingForBlindedJudge,
   runAdjudication,
   type AdjudicationOutcome,
   type RunAdjudicationArgs,
 } from "./third-model-adjudication";
 import { evidenceOverlaps } from "./disagreements";
 import type { Finding } from "./review-types";
+
+// Re-export so the shadow harness and its tests keep a stable import surface;
+// the production adjudication module now owns the blinded redaction (single
+// source of truth — the dogfood must judge exactly as production would).
+export { BLINDED_CLASSIFICATION, BLINDED_PLACEHOLDER, redactFindingForBlindedJudge };
 
 export const HARNESS_VERSION = "glm-shadow-replay-v1";
 
@@ -194,29 +202,6 @@ export function sampleShadowCandidates(
     }
   }
   return out;
-}
-
-// Blinded variant: withhold EVERYTHING the flagging model authored — prose
-// (title/reasoning/recommendation) AND its claimed classification
-// (category/severity), which also leak the claimed defect shape. The judge
-// works from the file location and code window alone ("source-window-only",
-// decision memo). Structure (and therefore the production prompt scaffold,
-// fencing, and JSON contract) is unchanged — only the DATA content differs.
-// The classification placeholders are cast through the Finding enums; the
-// prompt only ever interpolates them as strings, and the per-run snapshot
-// records exactly what the judge saw.
-export const BLINDED_PLACEHOLDER = "(withheld — judge from the code excerpt alone)";
-export const BLINDED_CLASSIFICATION = "(withheld)";
-
-export function redactFindingForBlindedJudge(finding: Finding): Finding {
-  return {
-    ...finding,
-    title: BLINDED_PLACEHOLDER,
-    reasoning: BLINDED_PLACEHOLDER,
-    recommendation: BLINDED_PLACEHOLDER,
-    category: BLINDED_CLASSIFICATION as Finding["category"],
-    severity: BLINDED_CLASSIFICATION as Finding["severity"],
-  };
 }
 
 export type ShadowRunRow = {
