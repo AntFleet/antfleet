@@ -132,6 +132,31 @@ describe("runPatchVerifier", () => {
     expect(out.notes).toMatch(/git apply failed/);
   });
 
+  it("passes --unidiff-zero to git apply (adapter emits zero-context hunks)", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && gitVerb(args) === "apply") {
+        // Stock `git apply` rejects a zero-context hunk unless it touches
+        // beginning/end of file; without the flag, mid-file patches from the
+        // adapter fail here and get misclassified as `regressed`.
+        expect(args).toContain("--unidiff-zero");
+        return ok();
+      }
+      return ok();
+    });
+    await runPatchVerifier({
+      repoUrl: "https://github.com/o/r.git",
+      sha: "abc1234",
+      patch: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -3,1 +3,1 @@\n-old\n+new\n",
+      finding: mkFinding(),
+      io: mkIo({ exec }),
+    });
+    const applyCalls = exec.mock.calls.filter(
+      ([a]) => a.command === "git" && gitVerb(a.args) === "apply",
+    );
+    expect(applyCalls).toHaveLength(1);
+    expect(applyCalls[0]?.[0].args).toContain("--unidiff-zero");
+  });
+
   it("returns inconclusive when fetch of the reviewed SHA fails", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
       if (command === "git") {

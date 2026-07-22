@@ -355,9 +355,11 @@ export async function runPatchVerifier(args: RunPatchVerifierArgs): Promise<Patc
     // against the reviewed SHA after we did our best to fix the
     // envelope.
     const patchFile = await args.io.writeTempFile(normalisedPatch);
+    // --unidiff-zero: the patch adapter emits zero-context hunks, which stock
+    // `git apply` rejects unless they touch the beginning/end of the file.
     const applied = await args.io.exec({
       command: "git",
-      args: ["-C", worktree, "apply", "--index", "--", patchFile],
+      args: ["-C", worktree, "apply", "--index", "--unidiff-zero", "--", patchFile],
       cwd: worktree,
       timeoutMs,
       env: sandboxEnv,

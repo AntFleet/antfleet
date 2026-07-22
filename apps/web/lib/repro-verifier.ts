@@ -349,9 +349,11 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     // `patch_apply_failed`: we proved the bug but could not evaluate this
     // patch, which is not a regression of the patch's own behavior.
     const patchFile = await args.io.writeTempFile(args.patch);
+    // --unidiff-zero: the patch adapter emits zero-context hunks, which stock
+    // `git apply` rejects unless they touch the beginning/end of the file.
     const applied = await args.io.exec({
       command: "git",
-      args: ["-C", worktree, "apply", "--index", "--", patchFile],
+      args: ["-C", worktree, "apply", "--index", "--unidiff-zero", "--", patchFile],
       cwd: worktree,
       timeoutMs,
       env: sandboxEnv,

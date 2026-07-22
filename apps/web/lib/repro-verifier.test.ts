@@ -375,6 +375,28 @@ describe("runReproVerifier", () => {
     expect(pytestCall).toBe(1); // never ran post-patch
   });
 
+  it("passes --unidiff-zero to git apply (adapter emits zero-context hunks)", async () => {
+    // Root cause of the bench-potatopad patch_apply_failed pair (run
+    // 29899755318): stock `git apply` rejects a mid-file zero-context hunk,
+    // and the adapter only emits zero-context hunks.
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pytest") return ok("bug reproduced");
+      return ok();
+    });
+    await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec }),
+    });
+    const applyCalls = exec.mock.calls.filter(
+      ([a]) => a.command === "git" && gitVerb(a.args) === "apply",
+    );
+    expect(applyCalls).toHaveLength(1);
+    expect(applyCalls[0]?.[0].args).toContain("--unidiff-zero");
+  });
+
   it("returns no_repo_url when the online url is null (after the flag + cmd gates)", async () => {
     const out = await runReproVerifier({
       ...BASE_ARGS,
