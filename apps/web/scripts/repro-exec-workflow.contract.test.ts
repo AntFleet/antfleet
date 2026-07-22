@@ -70,8 +70,17 @@ describe("repro-exec-verify workflow security contract", () => {
   describe("exec job — carries no credentials, least privilege", () => {
     const exec = jobBlock("exec");
 
-    it("has zero privileges", () => {
-      expect(exec).toMatch(/permissions:\s*\{\}/);
+    it("grants contents:read and nothing more (private-repo checkout needs it)", () => {
+      // First live run: permissions:{} left checkout unauthenticated against
+      // the private repo ("repository not found"). contents:read is the floor;
+      // anything beyond it (write perms, id-token, packages, …) is a regression.
+      const perms = exec.match(/permissions:\n((?: {6}[a-z-]+: [a-z-]+\n)+)/);
+      expect(perms, "exec must declare a block-style permissions map").not.toBeNull();
+      const entries = (perms as RegExpMatchArray)[1]
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+      expect(entries).toEqual(["contents: read"]);
     });
 
     it("references NO secrets", () => {

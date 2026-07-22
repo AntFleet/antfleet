@@ -7,7 +7,8 @@
 #   fetch  (HAS secrets)  — DB + Anthropic + GitHub; authors repro specs and
 #                            pre-materializes bare git mirrors. Runs NO hostile
 #                            code. Uploads specs + mirrors.
-#   exec   (NO secrets)   — permissions:{}, no secrets, checkout without stored
+#   exec   (NO secrets)   — contents:read only (private repo — checkout needs
+#                            it), no secrets, checkout without stored
 #                            credentials. The trusted ORCHESTRATOR runs on the
 #                            runner; every untrusted command it issues (clone,
 #                            repro cmd, test suite) runs in its OWN
@@ -119,9 +120,13 @@ jobs:
   exec:
     needs: fetch
     runs-on: ubuntu-latest
-    # ZERO privileges and ZERO secrets. The trusted orchestrator runs here; the
-    # hostile code runs only inside per-command --network none containers.
-    permissions: {}
+    # ZERO secrets and the minimum privilege that lets a private repo be
+    # checked out (contents:read; the ephemeral token is used transiently by
+    # checkout and never persisted — see persist-credentials below). The
+    # trusted orchestrator runs here; the hostile code runs only inside
+    # per-command --network none containers.
+    permissions:
+      contents: read
     env:
       # Marks this as the CI exec job (guards --phase exec against bare-host
       # runs). NOT a secret — the isolation is the per-command container.
