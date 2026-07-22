@@ -218,6 +218,7 @@ const INCONCLUSIVE_REASON_VALUES = new Set<string>([
   "unsafe_repro_write",
   "patch_apply_failed",
   "abnormal_exit",
+  "deps_unavailable",
 ]);
 
 // ────────────────────────────────────────────────────────────────────────

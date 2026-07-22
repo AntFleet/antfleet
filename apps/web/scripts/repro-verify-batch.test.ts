@@ -1342,6 +1342,18 @@ describe("parseVerdicts", () => {
     expect(recs[0]?.verdict).toBe("verified");
   });
 
+  it("accepts the deps_unavailable inconclusive reason (guards union drift — codex #163)", () => {
+    const rec = {
+      ...good,
+      verdict: "inconclusive",
+      inconclusiveReason: "deps_unavailable",
+      testExitCode: null,
+      reproPostExitCode: null,
+    };
+    const recs = parseVerdicts(JSON.stringify([rec]));
+    expect(recs[0]?.inconclusiveReason).toBe("deps_unavailable");
+  });
+
   it("rejects a non-array file", () => {
     expect(() => parseVerdicts(JSON.stringify({ nope: true }))).toThrow(
       /did not contain a JSON array/,

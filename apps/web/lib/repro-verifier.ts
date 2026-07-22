@@ -390,6 +390,26 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
+    // The exec sandbox runs the suite with no network (`--network none`), so a
+    // suite whose dependencies were never vendored/committed CANNOT run: the
+    // runner exits non-zero on "command/module not found", which the regressed
+    // branch below would misread as "the patch broke the tests". Probe the
+    // deterministic preconditions first and fail closed to inconclusive —
+    // a missing-deps failure is infrastructure, not evidence about the patch.
+    const missingDeps = await probeOfflineDeps(args.io, worktree, detector.kind);
+    if (missingDeps !== null) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: `suite deps unavailable offline — ${missingDeps}; cannot run tests, cannot decide`,
+        ms: args.io.now() - t0,
+        kind: "deps_unavailable",
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+
     // Remove the written repro BEFORE the suite so the runner cannot auto-collect
     // it (pytest discovers `*_test.py`, etc.). The repro is DESIGNED to fail
     // post-patch; letting the suite execute it would flip a correct patch to a
@@ -617,6 +637,118 @@ async function runReproStep(
     timeoutMs,
     env,
   });
+}
+
+// Hard cap on a manifest the probe will read. No legitimate go.mod /
+// requirements.txt / pyproject.toml approaches this; a hostile worktree can
+// commit a symlink to /dev/zero or a multi-GB file, and an unbounded read
+// would run on the TRUSTED orchestrator (codex review #163, HIGH).
+const MANIFEST_MAX_BYTES = 262_144; // 256 KiB
+
+// Symlink-refusing, size-capped manifest read. Returns null when the file is
+// a symlink, oversized, or unreadable — the caller treats null as "cannot
+// know" → deps unavailable → inconclusive (downgrade-only, fail closed).
+// The isSymlink/statSize seams are optional on PatchVerifierIo (hermetic
+// tests omit them); production wiring binds both, so the guards are always
+// live where hostile content is.
+async function safeReadManifest(io: PatchVerifierIo, path: string): Promise<string | null> {
+  try {
+    if (io.isSymlink !== undefined && (await io.isSymlink(path))) return null;
+    if (io.statSize !== undefined && (await io.statSize(path)) > MANIFEST_MAX_BYTES) return null;
+    return await io.readFile(path);
+  } catch {
+    return null;
+  }
+}
+
+// exists + (when the seam is bound) lstat-isDirectory. A hostile repo can
+// commit a FILE named node_modules; bare exists() would pass it and the suite
+// would then fail command-not-found → false regressed. lstat also refuses a
+// symlink-to-directory.
+async function isRealDir(io: PatchVerifierIo, path: string): Promise<boolean> {
+  if (!(await io.exists(path))) return false;
+  if (io.isDirectory !== undefined) {
+    try {
+      return await io.isDirectory(path);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Strip full-line and trailing `#` comments from manifest text. Naive about
+// `#` inside quoted strings, which no real dep spec contains — and every
+// misjudgment here only downgrades a verdict to inconclusive, never mints one.
+function stripHashComments(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const i = line.indexOf("#");
+      return i === -1 ? line : line.slice(0, i);
+    })
+    .join("\n");
+}
+
+// Deterministic pre-flight for the offline (`--network none`) suite run: can
+// the detected runner's dependencies exist in this worktree at all? Returns a
+// human-readable reason when they cannot (→ inconclusive `deps_unavailable`),
+// or null when the suite is worth attempting. Worktree content is untrusted;
+// every branch here only DOWNGRADES a would-be `regressed` to inconclusive —
+// it can never mint a `verified` (that still requires the suite to run and
+// pass) — so a hostile repo gains nothing by gaming the probe.
+export async function probeOfflineDeps(
+  io: PatchVerifierIo,
+  worktree: string,
+  kind: RunnerKind,
+): Promise<string | null> {
+  const p = (rel: string) => `${worktree}/${rel}`;
+  if (kind === "pnpm" || kind === "npm") {
+    // A lockfile got the runner detected, but the suite invokes binaries from
+    // node_modules/.bin — absent an install (impossible offline), it cannot
+    // run. Accepted narrowing: a `"test": "node --test"` stdlib-only suite
+    // needs no node_modules and is skipped too — that is an inconclusive we
+    // can live with, not a wrong regressed.
+    return (await isRealDir(io, p("node_modules"))) ? null : "node_modules is not present";
+  }
+  if (kind === "go") {
+    // The exec image ships no go toolchain yet (.github/repro-exec.Dockerfile
+    // documents it as a follow-up), so ANY go suite dies command-not-found —
+    // the exact false-regressed this probe exists to prevent (codex review
+    // #163, HIGH). Unconditional until go lands in the image; then restore
+    // the vendor-tree / require-free-go.mod check.
+    return "go toolchain is not in the exec image (Dockerfile follow-up)";
+  }
+  if (kind === "pytest") {
+    // The exec image ships pytest but no project site-packages. Declared deps
+    // therefore cannot import; only a stdlib-only project can run offline.
+    if (await io.exists(p("requirements.txt"))) {
+      const reqs = await safeReadManifest(io, p("requirements.txt"));
+      if (reqs === null) return "requirements.txt is unreadable or unsafe";
+      const hasDep = stripHashComments(reqs)
+        .split("\n")
+        .some((l) => l.trim().length > 0);
+      if (hasDep) return "requirements.txt declares dependencies";
+    }
+    if (await io.exists(p("pyproject.toml"))) {
+      const py = await safeReadManifest(io, p("pyproject.toml"));
+      if (py === null) return "pyproject.toml is unreadable or unsafe";
+      // Scope to the [project] table (PEP 621) — a dependencies key in
+      // [tool.*] tables is metadata, not an install requirement. The key may
+      // be bare or quoted. Comment-only array bodies count as empty.
+      const project = /(?:^|\n)\[project\]\s*\n([\s\S]*?)(?=\n\[|$)/.exec(py);
+      if (project !== null) {
+        const deps = /(?:^|\n)\s*(?:"dependencies"|dependencies)\s*=\s*\[([\s\S]*?)\]/.exec(
+          project[1] ?? "",
+        );
+        if (deps !== null && stripHashComments(deps[1] ?? "").trim().length > 0) {
+          return "pyproject.toml declares dependencies";
+        }
+      }
+    }
+    return null;
+  }
+  return null;
 }
 
 // Shape gate for an OFFLINE clone source (localMirrorDir). The path is TRUSTED

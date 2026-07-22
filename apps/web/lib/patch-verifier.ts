@@ -69,6 +69,7 @@ export type InconclusiveReason =
   | "repro_not_reproducing" // repro did NOT exit 0 pre-patch → bug unproven
   | "repro_timeout" // repro cmd exceeded the wall-clock cap
   | "unsafe_repro_write" // repro file path failed a symlink / clobber / .git / size check
+  | "deps_unavailable" // runner detected but its deps cannot exist offline (no node_modules / vendor / installed pip deps)
   | "patch_apply_failed" // git apply of the patch failed under the repro path
   | "abnormal_exit"; // a repro/test step returned NO exit code (signal / OOM /
 // spawn failure) that did NOT time out — infra uncertainty, never a `verified`
@@ -141,6 +142,12 @@ export type PatchVerifierIo = {
   // (resolvePath does not deref symlinks). Tests can omit; prod wiring
   // sets it to lstat-based detection.
   isSymlink?: (path: string) => Promise<boolean>;
+  // Optional — lstat-based "is a real directory" (a symlink-to-dir returns
+  // false). Used by probeOfflineDeps to require node_modules/vendor to be
+  // actual directories: a hostile repo committing a FILE named node_modules
+  // would otherwise pass the exists() probe and manufacture a suite failure.
+  // Tests can omit; prod wiring binds lstat.
+  isDirectory?: (path: string) => Promise<boolean>;
   exec: (args: ExecArgs) => Promise<ExecResult>;
   // Used for the patch payload — written to a temp file and fed to
   // `git apply --index <file>` so the patch text is never exposed via the
@@ -811,6 +818,10 @@ export function realPatchVerifierIo(): PatchVerifierIo {
     // returning true on any link means the verifier refuses without
     // dereferencing anything.
     isSymlink: async (path) => (await lstat(path)).isSymbolicLink(),
+    // lstat (not stat): a symlink pointing at a directory is NOT a real
+    // directory for the offline-deps probe — refusing to deref keeps hostile
+    // symlinks from steering the probe outside the worktree.
+    isDirectory: async (path) => (await lstat(path)).isDirectory(),
     writeTempFile: async (contents) => {
       const dir = await mkdtemp(join(tmpdir(), "antfleet-pv-patch-"));
       const target = join(dir, `patch-${randomUUID()}.diff`);
