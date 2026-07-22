@@ -445,20 +445,22 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
-    // If we PREFETCHED deps (pre-patch) AND this patch changes the dep manifest,
-    // the installed tree no longer matches the post-patch code: a dependency the
-    // patch adds is absent, so the post-repro could exit non-zero via
-    // MODULE_NOT_FOUND and be misread as `verified` (codex re-audit #164). Bail
-    // to `deps_unavailable` rather than re-installing post-patch (which would
-    // reintroduce the pre/post differential contamination). Committed-deps runs
-    // (depPrefetched=false) are unaffected — the deps are present either way.
-    if (depPrefetched && patchTouchesDepManifest(args.patch)) {
+    // If this is a JS runner AND the patch changes a dep manifest, the node_modules
+    // present at this point (whether network-prefetched OR committed at the SHA)
+    // was resolved from the PRE-patch manifest: a dependency the patch adds is
+    // absent, so the post-repro could exit non-zero via MODULE_NOT_FOUND and be
+    // misread as `verified` (codex re-audit #164). Bail to `deps_unavailable`
+    // regardless of how the deps appeared — re-installing post-patch would
+    // reintroduce the pre/post differential contamination we install-before-repro
+    // to avoid. `depPrefetched` is recorded for provenance either way.
+    const jsRunner = detector.kind === "pnpm" || detector.kind === "npm";
+    if (jsRunner && patchTouchesDepManifest(args.patch)) {
       return reproInconclusive({
         worktreePath: worktree,
         detector: detector.kind,
         notes:
-          "patch changes package.json / lockfile but deps were network-prefetched " +
-          "pre-patch — cannot trust the installed tree post-patch; not verifiable offline",
+          "patch changes a dependency manifest (package.json / lockfile / workspace) " +
+          "but node_modules was resolved pre-patch — cannot trust it post-patch; not verifiable offline",
         ms: args.io.now() - t0,
         kind: "deps_unavailable",
         reproCmd,
@@ -809,15 +811,33 @@ export function installCommandFor(kind: RunnerKind): { command: string; args: st
   return null;
 }
 
-// A patch that changes package.json / a lockfile invalidates a PRE-patch dep
-// install for the POST-patch runs: a newly-added dependency is absent, so the
-// post-repro can exit non-zero via MODULE_NOT_FOUND and be misread as "bug
-// fixed" (codex re-audit #164). We install once, pre-patch, to keep the pre/post
-// differential clean — so when the patch touches the dep manifest we cannot
-// trust that install downstream and bail to `deps_unavailable`.
-const DEP_MANIFEST_HEADER = /^\+\+\+ .*(?:package\.json|pnpm-lock\.yaml|package-lock\.json)\s*$/m;
+// A patch that changes any JS dependency-resolution input invalidates a
+// PRE-patch node_modules for the POST-patch runs: a newly-added dependency is
+// absent, so the post-repro can exit non-zero via MODULE_NOT_FOUND and be
+// misread as "bug fixed" (codex re-audit #164). When one is touched we bail to
+// `deps_unavailable`.
+//
+// The full set of install inputs — not just package.json/lockfile: a
+// pnpm-workspace.yaml change (overrides / catalogs / packageExtensions) alters
+// resolution too, and npm-shrinkwrap is a lockfile.
+const DEP_MANIFEST_NAMES = [
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+];
+// Scan git diff PATH-metadata lines only (so a source file that merely mentions
+// "package.json" in its CONTENT can't trip it), covering additions, edits,
+// deletions (`--- a/… ` / `+++ /dev/null`), and renames (`rename from|to …`,
+// `diff --git a/… b/…`). The basename must sit at a path boundary (`/` or space).
+const DEP_MANIFEST_LINE = new RegExp(
+  `^(?:diff --git |rename (?:from|to) |\\+\\+\\+ |--- ).*[ /](?:${DEP_MANIFEST_NAMES.map((n) =>
+    n.replace(/\./g, "\\."),
+  ).join("|")})(?:\\s|$)`,
+);
 export function patchTouchesDepManifest(patch: string): boolean {
-  return DEP_MANIFEST_HEADER.test(patch);
+  return patch.split("\n").some((line) => DEP_MANIFEST_LINE.test(line));
 }
 
 // Populate node_modules via the network-enabled install seam, then re-probe.

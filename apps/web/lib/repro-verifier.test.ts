@@ -1026,11 +1026,22 @@ describe("patchTouchesDepManifest", () => {
     expect(patchTouchesDepManifest(lock)).toBe(true);
     const npmLock = "+++ b/packages/app/package-lock.json\n";
     expect(patchTouchesDepManifest(npmLock)).toBe(true);
+    // Deletion: the manifest is on the --- side, +++ is /dev/null.
+    const del = "diff --git a/package.json b/package.json\n--- a/package.json\n+++ /dev/null\n";
+    expect(patchTouchesDepManifest(del)).toBe(true);
+    // Rename metadata (no content +++ header for the manifest name).
+    const rename = "rename from package.json\nrename to packages/x/package.json\n";
+    expect(patchTouchesDepManifest(rename)).toBe(true);
+    // Workspace + shrinkwrap are dep-resolution inputs too.
+    expect(patchTouchesDepManifest("+++ b/pnpm-workspace.yaml\n")).toBe(true);
+    expect(patchTouchesDepManifest("+++ b/npm-shrinkwrap.json\n")).toBe(true);
     const srcOnly =
       "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
     expect(patchTouchesDepManifest(srcOnly)).toBe(false);
-    // A source file whose NAME merely contains package.json-ish text but isn't
-    // the manifest header should not trip it (matches the +++ header only).
+    // A source file whose NAME merely contains package.json-ish text but isn't a
+    // diff PATH-metadata line must not trip it.
     expect(patchTouchesDepManifest("+const packageJson = readFile('x')\n")).toBe(false);
+    // A file named like a manifest but with a different extension → no match.
+    expect(patchTouchesDepManifest("+++ b/src/package.json.ts\n")).toBe(false);
   });
 });

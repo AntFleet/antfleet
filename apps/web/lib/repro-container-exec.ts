@@ -162,22 +162,35 @@ function defaultSpawnDocker(
         // running with its rw worktree mount (codex audit #164). Sequencing the
         // CLI kill after `rm -f` closes avoids that race; on error we still
         // SIGKILL the CLI so we never hang.
-        const killClient = () => child.kill("SIGKILL");
-        // Force-remove; if it fails (nonzero close or spawn error), retry ONCE
-        // before giving up — a single failed `rm -f` must not silently leave a
-        // networked container alive for later specs (codex re-audit #164). Only
-        // after the retry resolves do we SIGKILL the client.
+        let clientKilled = false;
+        const killClient = () => {
+          if (clientKilled) return; // never SIGKILL twice
+          clientKilled = true;
+          child.kill("SIGKILL");
+        };
+        // Force-remove the container; if it fails (nonzero close or spawn error),
+        // retry ONCE — a single failed `rm -f` must not silently leave a
+        // networked container alive for later specs (codex re-audit #164). A
+        // spawn error emits BOTH 'error' and 'close', so a per-attempt
+        // once-settler prevents a double retry. A hard 5s cap per attempt means a
+        // hung `docker rm -f` cannot hang the promise — we SIGKILL the client and
+        // let the daemon finish the removal.
         const removeOnce = (attempt: number): void => {
           const remover = spawn(dockerPath, ["rm", "-f", containerName], { stdio: "ignore" });
-          const next = (code: number | null) => {
-            if (code !== 0 && attempt === 0) {
+          let settled = false;
+          const settle = (ok: boolean) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(cap);
+            if (!ok && attempt === 0) {
               removeOnce(1);
               return;
             }
             killClient();
           };
-          remover.on("close", next);
-          remover.on("error", () => next(1));
+          const cap = setTimeout(() => settle(false), 5_000);
+          remover.on("close", (code) => settle(code === 0));
+          remover.on("error", () => settle(false));
         };
         removeOnce(0);
       }, timeoutMs);
