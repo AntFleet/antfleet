@@ -26,9 +26,12 @@ const ZERO_CONTEXT_PATCH = [
 
 let repo: string;
 
-function git(args: string[], opts: { allowFail?: boolean } = {}): { code: number; err: string } {
+function git(
+  args: string[],
+  opts: { allowFail?: boolean } = {},
+): { code: number; out: string; err: string } {
   try {
-    execFileSync("git", ["-C", repo, ...args], {
+    const out = execFileSync("git", ["-C", repo, ...args], {
       env: {
         ...process.env,
         GIT_CONFIG_NOSYSTEM: "1",
@@ -39,12 +42,12 @@ function git(args: string[], opts: { allowFail?: boolean } = {}): { code: number
         GIT_COMMITTER_EMAIL: "t@t",
       },
       stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { code: 0, err: "" };
+    }).toString();
+    return { code: 0, out, err: "" };
   } catch (e) {
     if (!opts.allowFail) throw e;
     const err = e as { status?: number; stderr?: Buffer };
-    return { code: err.status ?? -1, err: err.stderr?.toString() ?? "" };
+    return { code: err.status ?? -1, out: "", err: err.stderr?.toString() ?? "" };
   }
 }
 
@@ -78,8 +81,8 @@ describe("git apply on adapter-shaped zero-context hunks", () => {
     });
     expect(res.code).toBe(0);
     // The staged content reflects the patched line — apply really landed.
-    const staged = execFileSync("git", ["-C", repo, "show", ":app.txt"]).toString();
-    expect(staged).toContain("line three patched");
+    const staged = git(["show", ":app.txt"]);
+    expect(staged.out).toContain("line three patched");
     // Reset index + worktree so test order never leaks state.
     git(["reset", "-q", "--hard"]);
   });
