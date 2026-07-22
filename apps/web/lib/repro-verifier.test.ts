@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { runReproVerifier, type ReproVerifierIo } from "./repro-verifier";
+import { probeOfflineDeps, runReproVerifier, type ReproVerifierIo } from "./repro-verifier";
 import type { ExecArgs, ExecResult } from "./patch-verifier";
 import type { Finding } from "./review-types";
 import type { ReproTestSuggestion } from "@antfleet/cli/types";
@@ -139,7 +139,9 @@ describe("runReproVerifier", () => {
       if (command === "pytest") return fail("bug did not fire", 1); // pre-patch repro fails
       return ok();
     });
-    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repro: mkRepro(),
@@ -169,7 +171,9 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repro: mkRepro(),
@@ -192,7 +196,9 @@ describe("runReproVerifier", () => {
       if (command === "pytest") return ok("still reproduces"); // exit 0 both pre AND post
       return ok();
     });
-    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repro: mkRepro(),
@@ -216,7 +222,9 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repro: mkRepro(),
@@ -454,6 +462,34 @@ describe("runReproVerifier", () => {
     expect(writeFileNoClobber).not.toHaveBeenCalled();
   });
 
+  it("returns deps_unavailable (never regressed) when a JS runner is detected but node_modules is absent", async () => {
+    const suiteSpawns: string[] = [];
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm") {
+        // The offline sandbox has no node_modules: a real suite spawn would die
+        // "command not found" — which must never be read as `regressed`.
+        suiteSpawns.push(command);
+        return fail("vitest: not found", 127);
+      }
+      return ok();
+    });
+    // Lockfile present (runner detected), node_modules NOT present.
+    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro({ file: null, cmd: "curl http://localhost:8080/x" }),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("regressed");
+    expect(out.inconclusiveReason).toBe("deps_unavailable");
+    expect(out.detector).toBe("pnpm");
+    expect(out.reproPreExitCode).toBe(0);
+    expect(suiteSpawns).toEqual([]); // probe fails closed BEFORE spawning the suite
+  });
+
   it("returns abnormal_exit (never verified) when the post-patch repro exits null without timing out", async () => {
     let pytestCall = 0;
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
@@ -469,7 +505,9 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repro: mkRepro(),
@@ -495,7 +533,9 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repro: mkRepro(),
@@ -522,7 +562,9 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const io = mkIo({ exec, exists });
     io.removeDir = vi.fn(async (p: string) => {
       removed.push(p);
@@ -584,7 +626,10 @@ describe("runReproVerifier", () => {
       return ok();
     });
     // exists=true for the mirror dir AND the pnpm lockfile; symlink=false.
-    const exists = vi.fn(async (p: string) => p === MIRROR || p.endsWith("pnpm-lock.yaml"));
+    const exists = vi.fn(
+      async (p: string) =>
+        p === MIRROR || p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repoSource: { kind: "offline", mirrorDir: MIRROR },
@@ -646,5 +691,60 @@ describe("runReproVerifier", () => {
     expect(symlinked.notes).toMatch(/missing or a symlink/);
     // The reject path must NOT spawn git — the mirror check gates the clone.
     expect(exec).not.toHaveBeenCalled();
+  });
+});
+
+describe("probeOfflineDeps", () => {
+  const W = "/tmp/wt";
+  function io(files: Record<string, string>): Parameters<typeof probeOfflineDeps>[0] {
+    return {
+      ...({} as Parameters<typeof probeOfflineDeps>[0]),
+      exists: async (p: string) => p in files,
+      readFile: async (p: string) => {
+        const c = files[p];
+        if (c === undefined) throw new Error("ENOENT");
+        return c;
+      },
+    } as Parameters<typeof probeOfflineDeps>[0];
+  }
+
+  it("pnpm/npm: unavailable without node_modules, available with it", async () => {
+    expect(await probeOfflineDeps(io({}), W, "pnpm")).toMatch(/node_modules/);
+    expect(await probeOfflineDeps(io({}), W, "npm")).toMatch(/node_modules/);
+    const withDeps = io({ [`${W}/node_modules`]: "" });
+    expect(await probeOfflineDeps(withDeps, W, "pnpm")).toBeNull();
+    expect(await probeOfflineDeps(withDeps, W, "npm")).toBeNull();
+  });
+
+  it("go: vendor/ tree or a require-free go.mod is runnable; requires without vendor is not", async () => {
+    expect(await probeOfflineDeps(io({ [`${W}/vendor`]: "" }), W, "go")).toBeNull();
+    const stdlibOnly = io({ [`${W}/go.mod`]: "module x\n\ngo 1.22\n" });
+    expect(await probeOfflineDeps(stdlibOnly, W, "go")).toBeNull();
+    const withReqs = io({
+      [`${W}/go.mod`]: "module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n)\n",
+    });
+    expect(await probeOfflineDeps(withReqs, W, "go")).toMatch(/vendor/);
+    // Fail closed (inconclusive, not a crash) when go.mod cannot be read.
+    expect(await probeOfflineDeps(io({}), W, "go")).toMatch(/unreadable/);
+  });
+
+  it("pytest: declared deps are unavailable offline; stdlib-only projects run", async () => {
+    const withReqs = io({ [`${W}/requirements.txt`]: "requests==2.32.0\n" });
+    expect(await probeOfflineDeps(withReqs, W, "pytest")).toMatch(/requirements/);
+    const commentsOnly = io({ [`${W}/requirements.txt`]: "# none\n\n" });
+    expect(await probeOfflineDeps(commentsOnly, W, "pytest")).toBeNull();
+    const pyprojDeps = io({
+      [`${W}/pyproject.toml`]: '[project]\nname = "x"\ndependencies = [\n  "requests",\n]\n',
+    });
+    expect(await probeOfflineDeps(pyprojDeps, W, "pytest")).toMatch(/pyproject/);
+    const pyprojEmpty = io({
+      [`${W}/pyproject.toml`]: '[project]\nname = "x"\ndependencies = []\n',
+    });
+    expect(await probeOfflineDeps(pyprojEmpty, W, "pytest")).toBeNull();
+    expect(await probeOfflineDeps(io({}), W, "pytest")).toBeNull();
+  });
+
+  it("never gates a runner kind it does not understand", async () => {
+    expect(await probeOfflineDeps(io({}), W, "none")).toBeNull();
   });
 });

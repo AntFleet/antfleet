@@ -390,6 +390,26 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
+    // The exec sandbox runs the suite with no network (`--network none`), so a
+    // suite whose dependencies were never vendored/committed CANNOT run: the
+    // runner exits non-zero on "command/module not found", which the regressed
+    // branch below would misread as "the patch broke the tests". Probe the
+    // deterministic preconditions first and fail closed to inconclusive —
+    // a missing-deps failure is infrastructure, not evidence about the patch.
+    const missingDeps = await probeOfflineDeps(args.io, worktree, detector.kind);
+    if (missingDeps !== null) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: `suite deps unavailable offline — ${missingDeps}; cannot run tests, cannot decide`,
+        ms: args.io.now() - t0,
+        kind: "deps_unavailable",
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+
     // Remove the written repro BEFORE the suite so the runner cannot auto-collect
     // it (pytest discovers `*_test.py`, etc.). The repro is DESIGNED to fail
     // post-patch; letting the suite execute it would flip a correct patch to a
@@ -617,6 +637,61 @@ async function runReproStep(
     timeoutMs,
     env,
   });
+}
+
+// Deterministic pre-flight for the offline (`--network none`) suite run: can
+// the detected runner's dependencies exist in this worktree at all? Returns a
+// human-readable reason when they cannot (→ inconclusive `deps_unavailable`),
+// or null when the suite is worth attempting. Worktree content is untrusted;
+// every branch here only DOWNGRADES a would-be `regressed` to inconclusive —
+// it can never mint a `verified` (that still requires the suite to run and
+// pass) — so a hostile repo gains nothing by gaming the probe.
+export async function probeOfflineDeps(
+  io: PatchVerifierIo,
+  worktree: string,
+  kind: RunnerKind,
+): Promise<string | null> {
+  const p = (rel: string) => `${worktree}/${rel}`;
+  if (kind === "pnpm" || kind === "npm") {
+    // A lockfile got the runner detected, but the suite invokes binaries from
+    // node_modules/.bin — absent an install (impossible offline), it cannot run.
+    return (await io.exists(p("node_modules"))) ? null : "node_modules is not present";
+  }
+  if (kind === "go") {
+    // `go test` resolves module deps from the network unless a vendor/ tree
+    // shipped. A go.mod with zero `require` lines is stdlib-only and fine.
+    if (await io.exists(p("vendor"))) return null;
+    try {
+      const gomod = await io.readFile(p("go.mod"));
+      return /^\s*require[\s(]/m.test(gomod) ? "go.mod has requires and no vendor/ tree" : null;
+    } catch {
+      return "go.mod unreadable";
+    }
+  }
+  if (kind === "pytest") {
+    // The exec image ships pytest but no project site-packages. Declared deps
+    // therefore cannot import; only a stdlib-only project can run offline.
+    try {
+      if (await io.exists(p("requirements.txt"))) {
+        const reqs = await io.readFile(p("requirements.txt"));
+        const hasDep = reqs.split("\n").some((l) => {
+          const s = l.trim();
+          return s.length > 0 && !s.startsWith("#");
+        });
+        if (hasDep) return "requirements.txt declares dependencies";
+      }
+      if (await io.exists(p("pyproject.toml"))) {
+        const py = await io.readFile(p("pyproject.toml"));
+        if (/^\s*dependencies\s*=\s*\[\s*[^\]\s]/m.test(py)) {
+          return "pyproject.toml declares dependencies";
+        }
+      }
+      return null;
+    } catch {
+      return "python manifest unreadable";
+    }
+  }
+  return null;
 }
 
 // Shape gate for an OFFLINE clone source (localMirrorDir). The path is TRUSTED

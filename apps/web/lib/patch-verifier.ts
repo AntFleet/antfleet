@@ -69,6 +69,7 @@ export type InconclusiveReason =
   | "repro_not_reproducing" // repro did NOT exit 0 pre-patch → bug unproven
   | "repro_timeout" // repro cmd exceeded the wall-clock cap
   | "unsafe_repro_write" // repro file path failed a symlink / clobber / .git / size check
+  | "deps_unavailable" // runner detected but its deps cannot exist offline (no node_modules / vendor / installed pip deps)
   | "patch_apply_failed" // git apply of the patch failed under the repro path
   | "abnormal_exit"; // a repro/test step returned NO exit code (signal / OOM /
 // spawn failure) that did NOT time out — infra uncertainty, never a `verified`
