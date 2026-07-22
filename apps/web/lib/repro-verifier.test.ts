@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   installCommandFor,
-  patchTouchesDepManifest,
+  pathIsDepManifest,
   probeOfflineDeps,
   runReproVerifier,
   type ReproVerifierIo,
@@ -610,6 +610,10 @@ describe("runReproVerifier", () => {
     let installed = false;
     const ranSuite = { v: false };
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      // The guard lists staged paths after apply; report package.json (NUL-sep).
+      if (command === "git" && args.includes("diff") && args.includes("--cached")) {
+        return ok("package.json\0");
+      }
       if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
       if (command === "pnpm" && args[0] === "test") {
         ranSuite.v = true;
@@ -629,9 +633,7 @@ describe("runReproVerifier", () => {
     });
     const out = await runReproVerifier({
       ...BASE_ARGS,
-      // Patch adds a dependency: the pre-patch install can't be trusted post-patch.
-      patch:
-        'diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-{}\n+{"dependencies":{"left-pad":"1"}}\n',
+      patch: "diff --git a/package.json b/package.json\n@@ -1 +1 @@\n-{}\n+{}\n",
       repro: mkRepro(),
       finding: mkFinding(),
       io: { ...mkIo({ exec, exists }), execInstall },
@@ -639,7 +641,7 @@ describe("runReproVerifier", () => {
     expect(out.verdict).toBe("inconclusive");
     expect(out.verdict).not.toBe("verified");
     expect(out.inconclusiveReason).toBe("deps_unavailable");
-    expect(out.notes).toMatch(/package\.json/);
+    expect(out.notes).toMatch(/dependency manifest/);
     expect(ranSuite.v).toBe(false); // bailed before running the suite
   });
 
@@ -1016,32 +1018,21 @@ describe("installCommandFor", () => {
   });
 });
 
-describe("patchTouchesDepManifest", () => {
-  it("detects package.json / lockfile changes in a unified diff, ignores source-only patches", () => {
-    const addsDep =
-      'diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-{}\n+{"dependencies":{"x":"1"}}\n';
-    expect(patchTouchesDepManifest(addsDep)).toBe(true);
-    const lock =
-      "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1 +1 @@\n-a\n+b\n";
-    expect(patchTouchesDepManifest(lock)).toBe(true);
-    const npmLock = "+++ b/packages/app/package-lock.json\n";
-    expect(patchTouchesDepManifest(npmLock)).toBe(true);
-    // Deletion: the manifest is on the --- side, +++ is /dev/null.
-    const del = "diff --git a/package.json b/package.json\n--- a/package.json\n+++ /dev/null\n";
-    expect(patchTouchesDepManifest(del)).toBe(true);
-    // Rename metadata (no content +++ header for the manifest name).
-    const rename = "rename from package.json\nrename to packages/x/package.json\n";
-    expect(patchTouchesDepManifest(rename)).toBe(true);
-    // Workspace + shrinkwrap are dep-resolution inputs too.
-    expect(patchTouchesDepManifest("+++ b/pnpm-workspace.yaml\n")).toBe(true);
-    expect(patchTouchesDepManifest("+++ b/npm-shrinkwrap.json\n")).toBe(true);
-    const srcOnly =
-      "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
-    expect(patchTouchesDepManifest(srcOnly)).toBe(false);
-    // A source file whose NAME merely contains package.json-ish text but isn't a
-    // diff PATH-metadata line must not trip it.
-    expect(patchTouchesDepManifest("+const packageJson = readFile('x')\n")).toBe(false);
-    // A file named like a manifest but with a different extension → no match.
-    expect(patchTouchesDepManifest("+++ b/src/package.json.ts\n")).toBe(false);
+describe("pathIsDepManifest", () => {
+  it("matches manifest/lockfile/workspace basenames exactly (raw unquoted paths)", () => {
+    expect(pathIsDepManifest("package.json")).toBe(true);
+    expect(pathIsDepManifest("packages/app/package.json")).toBe(true);
+    expect(pathIsDepManifest("pnpm-lock.yaml")).toBe(true);
+    expect(pathIsDepManifest("packages/app/package-lock.json")).toBe(true);
+    expect(pathIsDepManifest("npm-shrinkwrap.json")).toBe(true);
+    expect(pathIsDepManifest("pnpm-workspace.yaml")).toBe(true);
+    // Raw (git -z) path with unicode — no C-quoting, exact basename still matches.
+    expect(pathIsDepManifest("packages/dé/package.json")).toBe(true);
+    // Not a manifest.
+    expect(pathIsDepManifest("src/x.ts")).toBe(false);
+    // A different extension or a trailing-suffix name must NOT match (the old
+    // regex false-matched "package.json notes.ts").
+    expect(pathIsDepManifest("src/package.json.ts")).toBe(false);
+    expect(pathIsDepManifest("src/package.json notes.ts")).toBe(false);
   });
 });

@@ -177,6 +177,9 @@ function defaultSpawnDocker(
         // let the daemon finish the removal.
         const removeOnce = (attempt: number): void => {
           const remover = spawn(dockerPath, ["rm", "-f", containerName], { stdio: "ignore" });
+          // Detach: a slow/hung removal must never pin the Node process (it
+          // proceeds daemon-side regardless of whether we keep waiting).
+          remover.unref();
           let settled = false;
           const settle = (ok: boolean) => {
             if (settled) return;
@@ -188,7 +191,13 @@ function defaultSpawnDocker(
             }
             killClient();
           };
-          const cap = setTimeout(() => settle(false), 5_000);
+          // Hard cap per attempt: a hung `docker rm -f` cannot hang the promise.
+          // Kill the (detached) remover before settling so it can't linger.
+          const cap = setTimeout(() => {
+            remover.kill("SIGKILL");
+            settle(false);
+          }, 5_000);
+          cap.unref();
           remover.on("close", (code) => settle(code === 0));
           remover.on("error", () => settle(false));
         };

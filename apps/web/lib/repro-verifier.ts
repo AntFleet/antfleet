@@ -454,7 +454,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     // reintroduce the pre/post differential contamination we install-before-repro
     // to avoid. `depPrefetched` is recorded for provenance either way.
     const jsRunner = detector.kind === "pnpm" || detector.kind === "npm";
-    if (jsRunner && patchTouchesDepManifest(args.patch)) {
+    if (jsRunner && (await patchStagedADepManifest(args.io, worktree, timeoutMs, sandboxEnv))) {
       return reproInconclusive({
         worktreePath: worktree,
         detector: detector.kind,
@@ -820,24 +820,50 @@ export function installCommandFor(kind: RunnerKind): { command: string; args: st
 // The full set of install inputs — not just package.json/lockfile: a
 // pnpm-workspace.yaml change (overrides / catalogs / packageExtensions) alters
 // resolution too, and npm-shrinkwrap is a lockfile.
-const DEP_MANIFEST_NAMES = [
+// The full set of install inputs — not just package.json/lockfile: a
+// pnpm-workspace.yaml change (overrides / catalogs / packageExtensions) alters
+// resolution too, and npm-shrinkwrap is a lockfile.
+const DEP_MANIFEST_NAMES = new Set([
   "package.json",
   "package-lock.json",
   "npm-shrinkwrap.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
-];
-// Scan git diff PATH-metadata lines only (so a source file that merely mentions
-// "package.json" in its CONTENT can't trip it), covering additions, edits,
-// deletions (`--- a/… ` / `+++ /dev/null`), and renames (`rename from|to …`,
-// `diff --git a/… b/…`). The basename must sit at a path boundary (`/` or space).
-const DEP_MANIFEST_LINE = new RegExp(
-  `^(?:diff --git |rename (?:from|to) |\\+\\+\\+ |--- ).*[ /](?:${DEP_MANIFEST_NAMES.map((n) =>
-    n.replace(/\./g, "\\."),
-  ).join("|")})(?:\\s|$)`,
-);
-export function patchTouchesDepManifest(patch: string): boolean {
-  return patch.split("\n").some((line) => DEP_MANIFEST_LINE.test(line));
+]);
+
+// EXACT basename check on a repo-relative path. Preferred over parsing diff text
+// (codex re-audit #164): the diff format C-quotes non-ASCII paths and can carry
+// spaces, so a regex over `+++ ` headers both MISSED quoted manifest paths and
+// FALSE-matched a source file literally named "package.json notes.ts". A path
+// from `git diff --name-only -z` is raw + unquoted, so an exact basename compare
+// is unambiguous.
+export function pathIsDepManifest(path: string): boolean {
+  const slash = path.lastIndexOf("/");
+  return DEP_MANIFEST_NAMES.has(slash === -1 ? path : path.slice(slash + 1));
+}
+
+// List the paths the applied patch STAGED (post `git apply --index`) and test
+// each basename. Fails CLOSED: if the paths can't be listed we return true
+// (→ deps_unavailable) rather than risk a false verified. `-z` gives raw
+// NUL-separated paths (no C-quoting), so pathIsDepManifest is exact.
+async function patchStagedADepManifest(
+  io: PatchVerifierIo,
+  worktree: string,
+  timeoutMs: number,
+  env: Record<string, string>,
+): Promise<boolean> {
+  const r = await io.exec({
+    command: "git",
+    args: ["-C", worktree, "diff", "--cached", "--name-only", "-z"],
+    cwd: worktree,
+    timeoutMs,
+    env,
+  });
+  if (r.exitCode !== 0) return true; // cannot rule out a manifest change → fail closed
+  return r.stdout
+    .split("\0")
+    .filter((p) => p.length > 0)
+    .some(pathIsDepManifest);
 }
 
 // Populate node_modules via the network-enabled install seam, then re-probe.
