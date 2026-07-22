@@ -7,8 +7,12 @@
 # FROM below (kept in sync with REPRO_EXEC_IMAGE's base in repro-verify-batch.ts
 # and the workflow's contract test). git ships in the bookworm node image.
 #
-# The image is only ever run with `--network none` (no secrets, non-root user),
-# so it holds tooling, never credentials. go is a documented follow-up.
+# Every verdict-affecting command runs with `--network none` (no secrets,
+# non-root user). The one exception is the opt-in dep-prefetch install, which
+# runs with `--network bridge` but `--ignore-scripts` (no attacker code on the
+# network), no secrets, resource caps, and only the worktree mounted — see
+# lib/repro-container-exec.ts. The image holds tooling, never credentials. go is
+# a documented follow-up.
 FROM node:26-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271
 
 RUN npm install -g pnpm@11.1.2 \

@@ -108,6 +108,12 @@ export type PatchVerifyOutcome = {
   reproPostExitCode?: number | null;
   reproPreMs?: number | null;
   reproPostMs?: number | null;
+  // Provenance (repro-exec, dep-prefetch): true when the deps for the test suite
+  // were fetched over the network in a prefetch container rather than being
+  // committed/offline. A `verified` with this set involved a network step, so
+  // the receipt records it (the suite + repro still ran offline). undefined on
+  // the fully-offline path and for runPatchVerifier.
+  depPrefetched?: boolean;
 };
 
 export type ExecResult = {

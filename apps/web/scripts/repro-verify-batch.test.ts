@@ -247,7 +247,18 @@ describe("shapeVerdictRecord", () => {
       modelId: "claude-opus-test",
       specDigest: "deadbeefdeadbeef",
       notes: "PROVED: repro exited 0 pre-patch and non-zero post-patch",
+      depPrefetched: false,
     });
+  });
+
+  it("carries depPrefetched through to the record and binds it into the digest", () => {
+    const offline = shapeVerdictRecord(mkSpec(), mkOutcome());
+    const prefetched = shapeVerdictRecord(mkSpec(), mkOutcome({ depPrefetched: true }));
+    expect(offline.depPrefetched).toBe(false);
+    expect(prefetched.depPrefetched).toBe(true);
+    // Provenance is bound into the digest: same proof, different provisioning →
+    // different hash, so a prefetched verdict cannot masquerade as offline.
+    expect(computeVerdictDigest(offline)).not.toBe(computeVerdictDigest(prefetched));
   });
 
   it("maps an inconclusive outcome (carrying its reason + timings) to the record shape", () => {
@@ -1334,6 +1345,7 @@ describe("parseVerdicts", () => {
     modelId: "m",
     specDigest: "d",
     notes: "ok",
+    depPrefetched: false,
   };
 
   it("accepts a well-formed verdicts array", () => {

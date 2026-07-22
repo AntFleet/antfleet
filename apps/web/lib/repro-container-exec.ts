@@ -61,10 +61,19 @@ export type ContainerExecOptions = {
   // registry. It is a HARD RULE that this is NEVER true for a verdict-affecting
   // command (repro pre/post, test suite): those stay offline so their result
   // cannot be steered over the network. Safe for install because the exec job
-  // carries no secrets (nothing to exfiltrate) and the install container is
-  // torn down (`--rm`, own net/PID namespace) before the offline suite
-  // container starts, so no daemon it spawns can survive to serve the suite.
+  // carries no secrets (nothing to exfiltrate), the install runs with
+  // --ignore-scripts (no attacker code executes on the network), and the
+  // container is torn down (`--rm`, own net/PID namespace) before the offline
+  // suite container starts, so no daemon it spawns can survive to serve the suite.
   allowNetwork?: boolean;
+  // Resource caps (codex audit #164). Set on the networked install container to
+  // bound the egress-window abuse surface (mining / fork-bomb / disk). Passed
+  // verbatim to `--memory` / `--cpus` / `--pids-limit`. Omitted → docker default
+  // (unbounded); the offline verdict-affecting containers leave these unset so a
+  // legitimately heavy suite is not OOM/PID-killed into a false `regressed`.
+  memory?: string;
+  cpus?: string;
+  pidsLimit?: number;
   // Test seam. Production omits it and the module spawns the real docker CLI.
   spawnDocker?: (dockerArgs: string[], timeoutMs: number) => Promise<SpawnDockerResult>;
 };
@@ -108,6 +117,15 @@ export function buildDockerArgs(
   if (opts.user !== undefined && opts.user.length > 0) {
     args.push("--user", opts.user);
   }
+  if (opts.memory !== undefined && opts.memory.length > 0) {
+    args.push("--memory", opts.memory);
+  }
+  if (opts.cpus !== undefined && opts.cpus.length > 0) {
+    args.push("--cpus", opts.cpus);
+  }
+  if (opts.pidsLimit !== undefined) {
+    args.push("--pids-limit", String(opts.pidsLimit));
+  }
   for (const [k, v] of Object.entries(a.env)) {
     args.push("-e", `${k}=${v}`);
   }
@@ -120,10 +138,10 @@ export function buildDockerArgs(
   return args;
 }
 
-// Spawn `docker run …`. On timeout, `docker kill <name>` tears the container
-// (and every process in it) down, then the CLI is SIGKILLed. Never rejects —
-// an infra/spawn failure resolves to exitCode:null (the verifier treats a null
-// exit as inconclusive, never `verified`).
+// Spawn `docker run …`. On timeout, `docker rm -f <name>` force-stops AND
+// removes the container (and every process in it), then the CLI is SIGKILLed.
+// Never rejects — an infra/spawn failure resolves to exitCode:null (the verifier
+// treats a null exit as inconclusive, never `verified`).
 function defaultSpawnDocker(
   dockerPath: string,
   containerName: string,
@@ -136,16 +154,18 @@ function defaultSpawnDocker(
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        // Kill the CONTAINER (destroys its PID namespace → every process,
-        // daemonized grandchildren included), THEN SIGKILL the CLI. Sequencing
-        // the CLI kill after `docker kill` closes avoids a race where the CLI
-        // dies while a detached container keeps running with its rw worktree
-        // mount. If `docker kill` itself errors, still SIGKILL the CLI so we
-        // never hang.
-        const killer = spawn(dockerPath, ["kill", containerName], { stdio: "ignore" });
+        // Force-REMOVE the container (stops + deletes it, destroying its PID
+        // namespace → every process, daemonized grandchildren included), THEN
+        // SIGKILL the CLI. `docker rm -f` is stronger than `docker kill`: it does
+        // not rely on `--rm` running on the client, so even if the CLI raced or
+        // `kill` would have failed, a detached/networked container cannot keep
+        // running with its rw worktree mount (codex audit #164). Sequencing the
+        // CLI kill after `rm -f` closes avoids that race; on error we still
+        // SIGKILL the CLI so we never hang.
+        const remover = spawn(dockerPath, ["rm", "-f", containerName], { stdio: "ignore" });
         const finish = () => child.kill("SIGKILL");
-        killer.on("close", finish);
-        killer.on("error", finish);
+        remover.on("close", finish);
+        remover.on("error", finish);
       }, timeoutMs);
       child.stdout?.on("data", (c: Buffer) => {
         stdout += c.toString("utf8");

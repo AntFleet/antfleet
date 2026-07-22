@@ -14,6 +14,9 @@
 //      does NOT exit 0 we could not prove the bug → inconclusive, NEVER
 //      verified.
 //   4. git apply the patch.
+//      (Runner detection + the offline-deps probe/install actually happen just
+//      BEFORE step 3, so both repro observations share the same dependency
+//      state — see the dep-prefetch note below.)
 //   5. Run the auto-detected test suite. A post-patch test failure → regressed.
 //   6. Run repro.cmd POST-patch. REQUIRE exit non-zero (== bug fixed). If it
 //      still exits 0 the patch did not close the bug → regressed. If it exits
@@ -54,6 +57,16 @@
 // a `verified` proves "exit 0 pre → non-zero post under the test suite", not a
 // cryptographic guarantee the patch is the cause. It is a strictly stronger
 // signal than the assume-reproduction PoC path, contained to a suggestion tag.
+//
+// DEP-PREFETCH (opt-in, ANTFLEET_REPRO_DEP_PREFETCH, default OFF): a JS suite
+// with no committed node_modules cannot run offline. When enabled, the deps are
+// installed ONCE — before the pre-repro observation — in a network-enabled,
+// SECRET-FREE, --ignore-scripts, resource-capped container mounted only the rw
+// worktree (see maybeInstallDeps + the batch's installExec). This is the ONE
+// exception to "everything runs --network none": it runs no attacker code
+// (scripts ignored), holds no secret, and its output (node_modules) is consumed
+// by the OFFLINE suite, so a `verified` still means "the offline suite passed"
+// — recorded via depPrefetched for honest provenance. Hardened per codex #164.
 //
 // runPatchVerifier is UNCHANGED and independent — its PoC path does not run
 // through here.
@@ -107,13 +120,12 @@ export type ReproVerifierIo = PatchVerifierIo & {
   // clobber or any other write error.
   writeFileNoClobber: (path: string, contents: string, mode: number) => Promise<void>;
   // OPTIONAL network-enabled exec, used ONLY for the dep-prefetch install
-  // (npm ci / pnpm install). When absent — hermetic tests, or the
-  // ANTFLEET_REPRO_DEP_PREFETCH flag OFF — a JS suite with missing offline deps
-  // stays `deps_unavailable` (the pre-prefetch behavior). The batch wires this
-  // to a `--network bridge`, SECRET-FREE container; its only output is
-  // node_modules in the rw worktree, consumed by the OFFLINE suite — it never
-  // touches the verdict. `exec` (offline) is still used for every
-  // verdict-affecting step.
+  // (npm ci / pnpm install --ignore-scripts). When absent — hermetic tests, or
+  // the ANTFLEET_REPRO_DEP_PREFETCH flag OFF — a JS suite with missing offline
+  // deps stays `deps_unavailable`. The batch wires this to a `--network bridge`,
+  // SECRET-FREE, resource-limited container mounted ONLY the rw worktree (no
+  // mirror / patch control dir). Its output is node_modules; every
+  // verdict-affecting step still runs through offline `exec`.
   execInstall?: (args: ExecArgs) => Promise<ExecResult>;
 };
 
@@ -308,6 +320,58 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
+    // Detect the runner and provision deps BEFORE any repro observation. Both the
+    // pre- and post-patch repro runs MUST see the SAME dependency state: if deps
+    // (and any install side-effects) appeared only between the observations, they
+    // — not the patch — could flip the post-repro and mint a false `verified`
+    // (codex audit #164, forge lane). Detection + dep-prefetch therefore run here,
+    // on the clean pre-patch tree, so the ONLY thing that differs between the two
+    // observations is the patch itself.
+    const detector = await detectRunner(args.io, worktree);
+    if (detector.kind === "none") {
+      // A `verified` proof asserts the patch did not break the build, so a runner
+      // is REQUIRED. (Audit 2026-07-11: `verified` was reachable with kind none.)
+      return reproInconclusive({
+        worktreePath: worktree,
+        notes:
+          "no test runner detected — cannot confirm non-regression; " +
+          "a repro differential alone is not a verified proof",
+        ms: args.io.now() - t0,
+        kind: "no_runner",
+        reproCmd,
+      });
+    }
+
+    // The suite + repro run offline (`--network none`), so a suite whose deps were
+    // never committed cannot run: the runner exits non-zero on command/module not
+    // found, which the regressed branch below would misread as "the patch broke
+    // the tests". Probe; if deps are missing, try the dep-prefetch install
+    // (network, secret-free, --ignore-scripts) — BEFORE the pre-repro so both
+    // observations share the installed state. A failed/absent install stays the
+    // honest `deps_unavailable`; it can never mint a verdict.
+    let depPrefetched = false;
+    const missingDeps = await probeOfflineDeps(args.io, worktree, detector.kind);
+    if (missingDeps !== null) {
+      const prefetch = await maybeInstallDeps(
+        args.io,
+        worktree,
+        detector.kind,
+        timeoutMs,
+        sandboxEnv,
+      );
+      if (!prefetch.ok) {
+        return reproInconclusive({
+          worktreePath: worktree,
+          detector: detector.kind,
+          notes: `suite deps unavailable offline — ${missingDeps}${prefetch.notes}; cannot run tests, cannot decide`,
+          ms: args.io.now() - t0,
+          kind: "deps_unavailable",
+          reproCmd,
+        });
+      }
+      depPrefetched = true;
+    }
+
     // Write the generated repro file SAFELY, if one was provided. A bare-curl
     // repro carries file=null and needs no write. Capture the resolved absolute
     // path so we can remove it before the test suite (so the runner cannot
@@ -381,61 +445,9 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
-    // Post-patch test suite. A `verified` proof asserts the patch did not break
-    // the build, so a runner is REQUIRED: with none detected we cannot confirm
-    // non-regression and must NOT reach verified on the repro differential
-    // alone. Return inconclusive `no_runner`, matching runPatchVerifier. (Audit
-    // 2026-07-11: `verified` was reachable with detector.kind === "none".)
-    const detector = await detectRunner(args.io, worktree);
-    if (detector.kind === "none") {
-      return reproInconclusive({
-        worktreePath: worktree,
-        notes:
-          "no test runner detected post-patch — cannot confirm non-regression; " +
-          "a repro differential alone is not a verified proof",
-        ms: args.io.now() - t0,
-        kind: "no_runner",
-        reproCmd,
-        reproPreExitCode: preStep.exitCode,
-        reproPreMs: preStep.ms,
-      });
-    }
-
-    // The suite + repro run with no network (`--network none`), so a suite whose
-    // dependencies were never vendored/committed CANNOT run: the runner exits
-    // non-zero on "command/module not found", which the regressed branch below
-    // would misread as "the patch broke the tests". Probe first, fail closed to
-    // inconclusive — a missing-deps failure is infrastructure, not evidence.
-    const missingDeps = await probeOfflineDeps(args.io, worktree, detector.kind);
-    if (missingDeps !== null) {
-      // Dep-prefetch: if the batch wired a network-enabled install seam, run ONE
-      // secret-free `npm ci` / `pnpm install` (in its OWN networked container)
-      // to populate node_modules, then re-probe. Everything after this — suite,
-      // post-repro — still runs OFFLINE, so a `verified` remains "the offline
-      // suite passed". A failed/absent install just keeps the honest
-      // `deps_unavailable`; it can never mint a verdict.
-      const prefetch = await maybeInstallDeps(
-        args.io,
-        worktree,
-        detector.kind,
-        timeoutMs,
-        sandboxEnv,
-      );
-      if (!prefetch.ok) {
-        return reproInconclusive({
-          worktreePath: worktree,
-          detector: detector.kind,
-          notes: `suite deps unavailable offline — ${missingDeps}${prefetch.notes}; cannot run tests, cannot decide`,
-          ms: args.io.now() - t0,
-          kind: "deps_unavailable",
-          reproCmd,
-          reproPreExitCode: preStep.exitCode,
-          reproPreMs: preStep.ms,
-        });
-      }
-      // deps now present offline → fall through to the offline suite.
-    }
-
+    // Post-patch test suite. The runner + deps were resolved BEFORE the pre-repro
+    // (see above), so both observations share the same dependency state and only
+    // the patch differs between them.
     // Remove the written repro BEFORE the suite so the runner cannot auto-collect
     // it (pytest discovers `*_test.py`, etc.). The repro is DESIGNED to fail
     // post-patch; letting the suite execute it would flip a correct patch to a
@@ -488,6 +500,26 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
     const testExitCode: number = testStep.exitCode;
+    // Exit 127 (command not found) / 126 (not executable) from the runner means
+    // the test binary or a toolchain dep is ABSENT — an incomplete dep tree, not
+    // a patch regression. This is the residual the shape-only re-probe can't see
+    // (e.g. `.npmrc omit=dev` → node_modules exists but the test framework is
+    // missing). Fail closed to `deps_unavailable`, never `regressed` (codex #164).
+    if (testExitCode === 127 || testExitCode === 126) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes: `test runner not executable (exit ${testExitCode}) — deps incomplete offline, cannot decide: ${truncate(testStep.stderr)}`,
+        ms: args.io.now() - t0,
+        kind: "deps_unavailable",
+        testCmd,
+        testExitCode,
+        testMs,
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
     if (testExitCode !== 0) {
       return {
         verdict: "regressed",
@@ -503,6 +535,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         worktreePath: worktree,
         error: null,
         inconclusiveReason: null,
+        depPrefetched,
         reproCmd,
         reproPreExitCode: preStep.exitCode,
         reproPostExitCode: null,
@@ -607,10 +640,11 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       pocExitCode: null,
       pocMs: null,
       ms: args.io.now() - t0,
-      notes: `PROVED: repro exited 0 pre-patch (bug reproduced) and exit ${postStep.exitCode} post-patch (bug fixed); test suite passed`,
+      notes: `PROVED: repro exited 0 pre-patch (bug reproduced) and exit ${postStep.exitCode} post-patch (bug fixed); test suite passed${depPrefetched ? " (deps network-prefetched)" : ""}`,
       worktreePath: worktree,
       error: null,
       inconclusiveReason: null,
+      depPrefetched,
       reproCmd,
       reproPreExitCode: preStep.exitCode,
       reproPostExitCode: postStep.exitCode,
@@ -716,28 +750,50 @@ function stripHashComments(text: string): string {
     .join("\n");
 }
 
-// The install command per JS runner. `--frozen-lockfile` / `ci` pin to the
-// repo's OWN committed lockfile (no lockfile mutation, reproducible), and the
-// dep tree the install resolves is the reviewed repo's own supply chain — the
-// same code its test suite would run anyway. Only pnpm/npm are prefetchable in
-// this build: go has no toolchain in the image, and pip installs are deferred.
+// The install command per JS runner. Hardened per the codex audit (#164):
+//   --ignore-scripts   the install runs WITH network, so disabling lifecycle
+//                      scripts means NO attacker-authored code executes during
+//                      the networked step — only npm/pnpm resolving+extracting
+//                      the repo's own lockfile. This is the containment lever
+//                      that makes bridge networking acceptable. TRADE-OFF: a
+//                      suite needing a native/postinstall-built dep (node-gyp,
+//                      esbuild's binary fetch) won't have it → the offline suite
+//                      exits 127 → `deps_unavailable` (honest). Pure-JS suites
+//                      (vitest/jest/tsx without native deps) are the v1 target.
+//   dev deps forced    test frameworks live in devDependencies; a committed
+//                      `.npmrc omit=dev` / `--prod` config would otherwise yield
+//                      a node_modules missing the runner → false regressed.
+// `--frozen-lockfile` / `ci` pin to the repo's OWN committed lockfile (no
+// mutation, reproducible). Only pnpm/npm are prefetchable here: go has no
+// toolchain in the image and pip is deferred.
 export function installCommandFor(kind: RunnerKind): { command: string; args: string[] } | null {
-  if (kind === "pnpm") return { command: "pnpm", args: ["install", "--frozen-lockfile"] };
-  if (kind === "npm") return { command: "npm", args: ["ci"] };
+  if (kind === "pnpm") {
+    return {
+      command: "pnpm",
+      args: ["install", "--frozen-lockfile", "--prod=false", "--ignore-scripts"],
+    };
+  }
+  if (kind === "npm") return { command: "npm", args: ["ci", "--include=dev", "--ignore-scripts"] };
   return null;
 }
 
 // Populate node_modules via the network-enabled install seam, then re-probe.
-// SECURITY: the install runs model-influenced lifecycle scripts (postinstall)
-// WITH network — but in a container with NO secrets (the exec job holds none),
-// so there is nothing to exfiltrate; the residual is a bounded egress window,
-// not credential loss. It runs in its OWN `--rm` container that is destroyed
-// before the offline suite container starts, so nothing it spawns survives to
-// serve the "offline" suite. It only writes node_modules into the rw worktree —
-// hostile node_modules is the same trust class as the already-hostile test code
-// and cannot forge a `verified` the suite couldn't already be coerced into. A
-// null seam (flag OFF / hermetic test) or any failure returns ok:false → the
-// caller keeps the honest `deps_unavailable`.
+// SECURITY (hardened per codex audit #164):
+//   - `--ignore-scripts` (in installCommandFor) means NO attacker-authored code
+//     runs during the networked step — only npm/pnpm resolving the repo's own
+//     lockfile. That is what makes bridge networking tolerable here.
+//   - the install container carries NO secrets (the exec job holds none) and is
+//     mounted ONLY the rw worktree — NOT the bare mirror or the patch control
+//     dir (the batch strips those from the networked container), so a hostile
+//     package cannot exfiltrate the unpublished patch or private source.
+//   - it runs in its OWN `--rm`, resource-limited container destroyed before the
+//     offline suite container starts, so nothing survives to serve the suite.
+//   - deps are installed BEFORE the pre-repro observation (see the caller), so
+//     both observations share the same state — the install cannot skew the
+//     pre/post differential. Its output is node_modules only; the suite + repro
+//     still run offline, so a `verified` remains "the offline suite passed".
+// A null seam (flag OFF / hermetic test) or any failure returns ok:false → the
+// caller keeps the honest `deps_unavailable`; the seam can never mint a verdict.
 async function maybeInstallDeps(
   io: ReproVerifierIo,
   worktree: string,
