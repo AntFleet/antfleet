@@ -41,6 +41,84 @@ line 10`;
     }
   });
 
+  it("passes through a context-ful diff whose stated counts include the context lines", () => {
+    // Regression: stated `-3,5 +3,5` counts INCLUDE the 4 context lines; a
+    // tally of only the `-`/`+` lines (1 each) would call this dirty and
+    // needlessly rebuild it, dropping the context that anchors the hunk.
+    const clean = `diff --git a/src/x.py b/src/x.py
+--- a/src/x.py
++++ b/src/x.py
+@@ -3,5 +3,5 @@
+ def get_prediction_contract(market: Dict) -> str:
+-    """Determine which prediction contract to use based on the market's token."""
++    """new comment"""
+     if market.get("token", "").upper() == "AGBETS":
+         return PREDICTION_V2
+     return PREDICTION_V1
+`;
+    const out = normalizePatchForApply({
+      patch: clean,
+      evidencePath: "src/x.py",
+      fileContents: file,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.adapted).toBe(false);
+      expect(out.patch).toBe(clean);
+    }
+  });
+
+  it("passes through a context-ful pure-addition hunk (add side counts context)", () => {
+    // `-3,4 +3,5`: 4 context on the old side, same 4 context + 1 inserted
+    // line on the new side. Only the added line is a `+` change.
+    const clean = `diff --git a/src/x.py b/src/x.py
+--- a/src/x.py
++++ b/src/x.py
+@@ -3,4 +3,5 @@
+ def get_prediction_contract(market: Dict) -> str:
+     """Determine which prediction contract to use based on the market's token."""
+     if market.get("token", "").upper() == "AGBETS":
++        log("v2 path")
+        return PREDICTION_V2
+`;
+    const out = normalizePatchForApply({
+      patch: clean,
+      evidencePath: "src/x.py",
+      fileContents: file,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.adapted).toBe(false);
+      expect(out.patch).toBe(clean);
+    }
+  });
+
+  it("rebuilds a multi-hunk diff rather than trusting only the last hunk's counts", () => {
+    // Two hunks: the whole-patch tally can't validate the last hunk's stated
+    // counts, so this must NOT be treated as clean. renderUnifiedDiff only
+    // emits a single hunk, so the safe outcome is to rebuild.
+    const twoHunks = `diff --git a/src/x.py b/src/x.py
+--- a/src/x.py
++++ b/src/x.py
+@@ -2,2 +2,2 @@
+ line 2
+-def get_prediction_contract(market: Dict) -> str:
++def get_prediction_contract(m: Dict) -> str:
+@@ -6,1 +6,1 @@
+-        return PREDICTION_V2
++        return PREDICTION_V3
+`;
+    const out = normalizePatchForApply({
+      patch: twoHunks,
+      evidencePath: "src/x.py",
+      fileContents: file,
+    });
+    // Multi-hunk falls through to the rebuild path (adapted:true) or refuses;
+    // either way it is never a silent clean pass-through of the raw input.
+    const cleanPassThrough = out.ok && out.adapted === false;
+    expect(cleanPassThrough).toBe(false);
+  });
+
   it("rebuilds a patch with mismatched hunk counts using the file as anchor", () => {
     // Hunk header lies: claims old=7 new=11 but actual is 5 / 7.
     const broken = `--- a/src/x.py
