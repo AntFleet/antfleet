@@ -98,9 +98,18 @@ describe("repro-exec-verify workflow security contract", () => {
       }
     });
 
-    it("pre-pulls a digest-pinned exec image (matches the code constant)", () => {
-      expect(exec).toMatch(/node:[^\s@]+@sha256:[0-9a-f]{64}/);
+    it("builds the exec image from the version-controlled Dockerfile", () => {
+      expect(exec).toContain("docker build -t antfleet-repro-exec:local");
+      expect(exec).toContain(".github/repro-exec.Dockerfile");
     });
+  });
+
+  it("pins the exec image's base by digest in the Dockerfile", () => {
+    const dockerfile = readFileSync(
+      join(process.cwd(), "..", "..", ".github", "repro-exec.Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toMatch(/^FROM\s+\S+@sha256:[0-9a-f]{64}/m);
   });
 
   it("fetch and record jobs carry the DB secret; exec never does", () => {
@@ -109,8 +118,9 @@ describe("repro-exec-verify workflow security contract", () => {
     expect(jobBlock("exec")).not.toContain("secrets.DATABASE_URL");
   });
 
-  it("keeps the workflow image pin in sync with REPRO_EXEC_IMAGE in code", async () => {
+  it("builds the exact image tag the code runs (REPRO_EXEC_IMAGE)", async () => {
     const { REPRO_EXEC_IMAGE } = await import("./repro-verify-batch");
-    expect(rawSource).toContain(REPRO_EXEC_IMAGE);
+    expect(REPRO_EXEC_IMAGE).toBe("antfleet-repro-exec:local");
+    expect(rawSource).toContain(`docker build -t ${REPRO_EXEC_IMAGE}`);
   });
 });

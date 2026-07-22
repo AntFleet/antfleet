@@ -124,11 +124,16 @@ function defaultSpawnDocker(
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        // Kill the container itself, not just the CLI — a detached `docker run`
-        // child would otherwise leave the container (and its grandchildren)
-        // alive past the CLI's death.
-        spawn(dockerPath, ["kill", containerName], { stdio: "ignore" }).on("error", () => {});
-        child.kill("SIGKILL");
+        // Kill the CONTAINER (destroys its PID namespace → every process,
+        // daemonized grandchildren included), THEN SIGKILL the CLI. Sequencing
+        // the CLI kill after `docker kill` closes avoids a race where the CLI
+        // dies while a detached container keeps running with its rw worktree
+        // mount. If `docker kill` itself errors, still SIGKILL the CLI so we
+        // never hang.
+        const killer = spawn(dockerPath, ["kill", containerName], { stdio: "ignore" });
+        const finish = () => child.kill("SIGKILL");
+        killer.on("close", finish);
+        killer.on("error", finish);
       }, timeoutMs);
       child.stdout?.on("data", (c: Buffer) => {
         stdout += c.toString("utf8");

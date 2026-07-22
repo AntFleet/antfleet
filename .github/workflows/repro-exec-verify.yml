@@ -137,8 +137,9 @@ jobs:
       - name: Install deps (trusted orchestrator; network is denied only to repros)
         run: |
           set -euo pipefail
-          corepack enable
-          corepack prepare "pnpm@${{ env.PNPM_VERSION }}" --activate
+          # npm ships with node (no dependency on corepack, which node 26 no
+          # longer bundles); no third-party action on this job.
+          npm install -g "pnpm@${{ env.PNPM_VERSION }}"
           pnpm install --frozen-lockfile
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -146,8 +147,8 @@ jobs:
           path: ${{ github.workspace }}
       - name: Restore mirrors to /tmp
         run: tar xzf "$GITHUB_WORKSPACE/repro-mirrors.tgz" -C /
-      - name: Pre-pull the digest-pinned exec image
-        run: docker pull node:26-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271
+      - name: Build the repro-exec image (FROM digest-pinned; tag antfleet-repro-exec:local)
+        run: docker build -t antfleet-repro-exec:local - < .github/repro-exec.Dockerfile
       - name: Exec repros — orchestrator on runner, each command in --network none
         working-directory: apps/web
         run: |

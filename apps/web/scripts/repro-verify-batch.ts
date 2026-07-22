@@ -1466,11 +1466,12 @@ async function realCreateMirror(repoUrl: string, sha: string, prNumber: number):
   }
 }
 
-// Digest-pinned exec image. MUST match the pin in the workflow's contract and
-// carry git + the repro toolchain. --network none means a repro cannot fetch
-// deps; repros needing network degrade to a safe inconclusive/regressed.
-export const REPRO_EXEC_IMAGE =
-  "node:26-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271";
+// Exec image tag. Built locally in the workflow's exec job from
+// .github/repro-exec.Dockerfile (whose FROM is digest-pinned — that is the
+// supply-chain pin). Carries git + node + pnpm + python/pytest. --network none
+// means a repro cannot fetch deps; repros needing network degrade to a safe
+// inconclusive/regressed.
+export const REPRO_EXEC_IMAGE = "antfleet-repro-exec:local";
 
 async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyOutcome>> {
   const { runReproVerifier, realReproVerifierIo } = await import("@/lib/repro-verifier");
@@ -1489,23 +1490,48 @@ async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyO
   // return value, never a file any hostile container can reach. args.finding is
   // read for NO security decision (confirmed against the module), so the minimal
   // placeholder is safe.
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { randomUUID } = await import("node:crypto");
   return async (spec: ReproSpec) => {
     const baseIo = await realReproVerifierIo();
+    // The trusted patch is written to a per-spec control dir and mounted
+    // READ-ONLY into the containers, so `git apply` (run in a container) can
+    // read it while hostile in-container code cannot tamper with it. Writing
+    // it into the rw worktree instead would let pre-patch hostile code rewrite
+    // the fix before it's applied.
+    const controlDir = await mkdtemp(join(tmpdir(), "antfleet-ctl-"));
     const containerExec = makeContainerExec({
       image: REPRO_EXEC_IMAGE,
-      // The worktree (cwd) is mounted rw automatically; the bare mirror is the
-      // only extra mount, read-only.
-      extraMounts: [{ host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true }],
+      // The worktree (cwd) is mounted rw automatically; the mirror + the patch
+      // control dir are the read-only extra mounts.
+      extraMounts: [
+        { host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true },
+        { host: controlDir, container: controlDir, readOnly: true },
+      ],
       ...(user !== undefined ? { user } : {}),
     });
-    return runReproVerifier({
-      repoSource: { kind: "offline", mirrorDir: spec.mirrorDir },
-      sha: spec.sha,
-      patch: spec.patch,
-      repro: spec.repro,
-      finding: minimalFindingForVerify(),
-      io: { ...baseIo, exec: containerExec },
-    });
+    try {
+      return await runReproVerifier({
+        repoSource: { kind: "offline", mirrorDir: spec.mirrorDir },
+        sha: spec.sha,
+        patch: spec.patch,
+        repro: spec.repro,
+        finding: minimalFindingForVerify(),
+        io: {
+          ...baseIo,
+          exec: containerExec,
+          // Route the patch onto the ro-mounted control dir (the default writes
+          // to a runner-only sibling temp dir the container can't see).
+          writeTempFile: async (contents: string) => {
+            const target = join(controlDir, `patch-${randomUUID()}.diff`);
+            await writeFile(target, contents, "utf8");
+            return target;
+          },
+        },
+      });
+    } finally {
+      await rm(controlDir, { recursive: true, force: true }).catch(() => {});
+    }
   };
 }
 
