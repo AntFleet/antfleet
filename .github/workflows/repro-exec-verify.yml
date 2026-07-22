@@ -1,0 +1,197 @@
+# Repro-exec verify — Build 2b sandbox (decision memo 2026-07-21; #159 review).
+#
+# Executes MODEL-GENERATED repro tests to prove a bug reproduces on the reviewed
+# SHA and stops reproducing on the patch. Model-generated code (driving the
+# reviewed repo's own tooling) is HOSTILE. Three jobs, hard trust boundary:
+#
+#   fetch  (HAS secrets)  — DB + Anthropic + GitHub; authors repro specs and
+#                            pre-materializes bare git mirrors. Runs NO hostile
+#                            code. Uploads specs + mirrors.
+#   exec   (NO secrets)   — permissions:{}, no secrets, checkout without stored
+#                            credentials. The trusted ORCHESTRATOR runs on the
+#                            runner; every untrusted command it issues (clone,
+#                            repro cmd, test suite) runs in its OWN
+#                            `docker run --network none` container (see
+#                            lib/repro-container-exec.ts). The verdict is decided
+#                            on the runner from the containers' exit codes and is
+#                            never a file any hostile container can reach.
+#   record (HAS db secret)— writes one review_gate_outcomes row per verdict,
+#                            idempotent, with witnessability provenance.
+#
+# Why the redesign (vs #159's first cut): running the whole exec phase in one
+# container with a shared verdict file let hostile code overwrite the verdict
+# after the trusted writer closed it. Per-command containers + orchestrator-
+# outside removes that: a `--rm` container's PID namespace kills every process
+# (daemonized grandchildren included) when its one command exits.
+#
+# Invariants are asserted by scripts/repro-exec-workflow.contract.test.ts and
+# lib/repro-container-exec.test.ts. First live dispatch validates end-to-end
+# plumbing (mirror-path portability; exec image toolchain — JS/TS first, and a
+# repro needing network deps degrades to a safe inconclusive under --network none).
+
+name: Repro-exec verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max repro generation attempts (fetch phase)"
+        required: false
+        default: "5"
+      repo:
+        description: "Restrict to a single owner/repo (optional)"
+        required: false
+        default: ""
+      record:
+        description: "Write verdicts to the DB (false = dry-run)"
+        type: boolean
+        required: false
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: repro-exec-verify
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "26"
+  PNPM_VERSION: "11.1.2"
+  # Pin os.tmpdir() to /tmp on every job so the fetch-phase mirror path
+  # (dirname must equal tmpdir(), per isSafeLocalMirrorDir) survives the hop to
+  # the exec runner, where the tarball restores it to the same /tmp path.
+  TMPDIR: /tmp
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Fetch — author repro specs + pin mirrors
+        working-directory: apps/web
+        # inputs are passed via env and quoted in the script — NEVER interpolated
+        # with ${{ }} into the bash body (script-injection).
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.REPRO_FETCH_GITHUB_TOKEN }}
+          REPRO_LIMIT: ${{ inputs.limit }}
+          REPRO_REPO: ${{ inputs.repo }}
+        run: |
+          set -euo pipefail
+          args=(--phase fetch --limit "$REPRO_LIMIT" --out "$GITHUB_WORKSPACE/repro-specs.json")
+          if [ -n "$REPRO_REPO" ]; then
+            args+=(--repo "$REPRO_REPO")
+          fi
+          pnpm exec tsx scripts/repro-verify-batch.ts "${args[@]}"
+      - name: Bundle mirrors (preserve /tmp paths for the exec runner)
+        run: |
+          set -euo pipefail
+          if compgen -G "/tmp/antfleet-mirror-*" > /dev/null; then
+            # Expand the glob in / so tar records tmp/antfleet-mirror-* paths.
+            ( cd / && tar czf "$GITHUB_WORKSPACE/repro-mirrors.tgz" tmp/antfleet-mirror-* )
+          else
+            echo "no mirrors produced (no eligible candidates) — emitting empty tar"
+            tar czf "$GITHUB_WORKSPACE/repro-mirrors.tgz" -C / --files-from /dev/null
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repro-specs
+          path: |
+            repro-specs.json
+            repro-mirrors.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+  exec:
+    needs: fetch
+    runs-on: ubuntu-latest
+    # ZERO privileges and ZERO secrets. The trusted orchestrator runs here; the
+    # hostile code runs only inside per-command --network none containers.
+    permissions: {}
+    env:
+      # Marks this as the CI exec job (guards --phase exec against bare-host
+      # runs). NOT a secret — the isolation is the per-command container.
+      ANTFLEET_REPRO_SANDBOX: "1"
+    steps:
+      # First-party actions only in this job (no third-party action on the
+      # hostile-code path). pnpm comes from corepack (bundled with node).
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # Do NOT persist the Actions token in .git/config — nothing in this
+          # job should hold a credential.
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install deps (trusted orchestrator; network is denied only to repros)
+        run: |
+          set -euo pipefail
+          # npm ships with node (no dependency on corepack, which node 26 no
+          # longer bundles); no third-party action on this job.
+          npm install -g "pnpm@${{ env.PNPM_VERSION }}"
+          pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: repro-specs
+          path: ${{ github.workspace }}
+      - name: Restore mirrors to /tmp
+        run: tar xzf "$GITHUB_WORKSPACE/repro-mirrors.tgz" -C /
+      - name: Build the repro-exec image (FROM digest-pinned; tag antfleet-repro-exec:local)
+        run: docker build -t antfleet-repro-exec:local - < .github/repro-exec.Dockerfile
+      - name: Exec repros — orchestrator on runner, each command in --network none
+        working-directory: apps/web
+        run: |
+          set -euo pipefail
+          pnpm exec tsx scripts/repro-verify-batch.ts \
+            --phase exec \
+            --in "$GITHUB_WORKSPACE/repro-specs.json" \
+            --out "$GITHUB_WORKSPACE/repro-verdicts.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repro-verdicts
+          path: repro-verdicts.json
+          retention-days: 1
+          if-no-files-found: error
+
+  record:
+    needs: exec
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: repro-verdicts
+          path: ${{ github.workspace }}
+      - name: Record verdicts (idempotent; witnessability provenance from env)
+        working-directory: apps/web
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RECORD_FLAG: ${{ inputs.record }}
+        run: |
+          set -euo pipefail
+          args=(--phase record --in "$GITHUB_WORKSPACE/repro-verdicts.json")
+          if [ "$RECORD_FLAG" = "true" ]; then
+            args+=(--record)
+          fi
+          pnpm exec tsx scripts/repro-verify-batch.ts "${args[@]}"
