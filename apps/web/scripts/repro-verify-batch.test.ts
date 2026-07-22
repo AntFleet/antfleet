@@ -893,21 +893,26 @@ describe("runExecPhase", () => {
     expect(process.env["ANTFLEET_REPRO_EXEC"]).toBeUndefined();
   });
 
-  it("fails CLOSED before running anything when a secret is present", async () => {
-    process.env["DATABASE_URL"] = "postgres://leaked";
+  // Build 2b-2 redesign: the orchestrator runs on the TRUSTED runner, so its
+  // process.env legitimately carries runner metadata — an allowlist check on it
+  // no longer applies. A stray var in the orchestrator env must NOT abort the
+  // run (the exec job carries no secrets; the boundary is each --network none
+  // container, guarded by assertContainerEnvClean — see
+  // repro-container-exec.test.ts). This asserts the guard did NOT move up.
+  it("does NOT refuse on the orchestrator's own env — the boundary is the container", async () => {
+    process.env["SOME_RUNNER_VAR"] = "harmless";
     const runVerifier = vi.fn(async () => mkOutcome());
-    await expect(
-      runExecPhase({
-        inPath: "unused.json",
-        outPath: "unused.json",
-        loadSpecs: async () => [mkSpec()],
-        runVerifier,
-        writeVerdicts: async () => {},
-        removeMirror: async () => {},
-        log: () => {},
-      }),
-    ).rejects.toThrow(/DATABASE_URL/);
-    expect(runVerifier).not.toHaveBeenCalled();
+    const records = await runExecPhase({
+      inPath: "unused.json",
+      outPath: "unused.json",
+      loadSpecs: async () => [mkSpec()],
+      runVerifier,
+      writeVerdicts: async () => {},
+      removeMirror: async () => {},
+      log: () => {},
+    });
+    expect(runVerifier).toHaveBeenCalledOnce();
+    expect(records).toHaveLength(1);
   });
 
   it("turns a verifier throw into an enriched inconclusive record instead of aborting the batch", async () => {

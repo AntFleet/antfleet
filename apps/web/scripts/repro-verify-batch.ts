@@ -682,27 +682,25 @@ export type ExecPhaseOptions = {
 export async function runExecPhase(opts: ExecPhaseOptions): Promise<VerdictRecord[]> {
   const log = opts.log ?? ((m: string) => console.log(m));
 
-  // FAIL CLOSED before anything else: the exec environment may contain ONLY
-  // known-non-secret vars (allowlist-only). Proves the workflow's per-step
-  // secret separation held.
-  assertNoSecretsInEnv();
-
-  // HARD SANDBOX GUARD (FIX H + FIX 5): the exec phase executes model-generated
-  // code and is only safe inside Part-3's disposable `--network none` container.
-  // Refuse to run unless the trusted container step set the ANTFLEET_REPRO_SANDBOX
-  // marker — this stops anyone running the exec phase on a bare host. The guard
-  // reads process.env DIRECTLY and fails CLOSED: there is deliberately NO
-  // injectable override around a security guard (FIX 5 removed the test-only
-  // sandboxMarker seam), so a test cannot dodge the check — it sets/clears the
-  // REAL env var. The marker is set ONLY by that trusted step (documented on
-  // REPRO_SANDBOX_MARKER); it is NOT a security control by itself (a caller could
-  // export it), but it makes the "ran outside the sandbox" mistake fail closed.
+  // NOTE (Build 2b-2 redesign): the orchestrator now runs on the TRUSTED runner,
+  // not inside a container — so its own process.env legitimately carries the
+  // runner's (non-secret) CI metadata and an allowlist-only check on it no longer
+  // makes sense. The secret boundary moved DOWN to each command: makeContainerExec
+  // passes `--env-file /dev/null` + only the verifier's minimal env into every
+  // `--network none` container, and assertContainerEnvClean fails closed if a
+  // secret-shaped var ever reaches an untrusted command. The exec JOB itself
+  // carries no secrets (permissions:{}, persist-credentials:false in the workflow).
+  //
+  // HARD GUARD: this phase spins up docker containers to execute model-generated
+  // code. Refuse to run unless the workflow's exec job set ANTFLEET_REPRO_SANDBOX,
+  // so `--phase exec` cannot be run casually on a dev laptop. Reads process.env
+  // DIRECTLY and fails CLOSED — no injectable override around the guard.
   if (!isEnvValuePresent(process.env[REPRO_SANDBOX_MARKER])) {
     throw new Error(
       `[repro-verify-batch] REFUSING to run the exec phase: ${REPRO_SANDBOX_MARKER} is not set. ` +
-        `This phase executes model-generated code and MUST run inside the trusted disposable ` +
-        `container (Build 2b-2 Part 3, --network none), which sets that marker. Do NOT run it on a ` +
-        `bare host.`,
+        `This phase executes model-generated code in per-command --network none containers and is ` +
+        `meant to run in the workflow's exec job (which sets that marker + provides docker). Do NOT ` +
+        `run it on a bare host.`,
     );
   }
 
@@ -1468,22 +1466,47 @@ async function realCreateMirror(repoUrl: string, sha: string, prNumber: number):
   }
 }
 
+// Digest-pinned exec image. MUST match the pin in the workflow's contract and
+// carry git + the repro toolchain. --network none means a repro cannot fetch
+// deps; repros needing network degrade to a safe inconclusive/regressed.
+export const REPRO_EXEC_IMAGE =
+  "node:26-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271";
+
 async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyOutcome>> {
   const { runReproVerifier, realReproVerifierIo } = await import("@/lib/repro-verifier");
+  const { makeContainerExec } = await import("@/lib/repro-container-exec");
+  // Run each container as the runner user so files written into the mounted
+  // worktree are not left root-owned (which would break runner-side cleanup).
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const gid = typeof process.getgid === "function" ? process.getgid() : undefined;
+  const user = uid !== undefined && gid !== undefined ? `${uid}:${gid}` : undefined;
+
   // OFFLINE: clone from the pre-materialised mirror the fetch phase created —
-  // the exec sandbox needs NO network. runReproVerifier reads ZERO fields of
-  // args.finding for any security decision (confirmed against the module), so a
-  // minimal placeholder is safe here; the spec does not carry the reconstructed
-  // Finding across the secretless boundary.
-  return async (spec: ReproSpec) =>
-    runReproVerifier({
+  // the exec sandbox needs NO network. runReproVerifier (the orchestrator) runs
+  // HERE on the trusted runner and decides the verdict; every command it issues
+  // is routed through a per-command `--network none` container (the isolation
+  // boundary — see repro-container-exec.ts). The verdict is this function's
+  // return value, never a file any hostile container can reach. args.finding is
+  // read for NO security decision (confirmed against the module), so the minimal
+  // placeholder is safe.
+  return async (spec: ReproSpec) => {
+    const baseIo = await realReproVerifierIo();
+    const containerExec = makeContainerExec({
+      image: REPRO_EXEC_IMAGE,
+      // The worktree (cwd) is mounted rw automatically; the bare mirror is the
+      // only extra mount, read-only.
+      extraMounts: [{ host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true }],
+      ...(user !== undefined ? { user } : {}),
+    });
+    return runReproVerifier({
       repoSource: { kind: "offline", mirrorDir: spec.mirrorDir },
       sha: spec.sha,
       patch: spec.patch,
       repro: spec.repro,
       finding: minimalFindingForVerify(),
-      io: await realReproVerifierIo(),
+      io: { ...baseIo, exec: containerExec },
     });
+  };
 }
 
 // runReproVerifier requires a Finding on args but reads NONE of its fields for a
