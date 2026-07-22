@@ -301,6 +301,59 @@ export function computeSpecDigest(input: {
   return createHash("sha256").update(material).digest("hex").slice(0, 16);
 }
 
+// Witnessability provenance (2b decision, condition 3). The public Actions
+// run-log URL proves a third party CAN inspect the execution, but a URL is not
+// integrity — a receipt must also pin WHAT ran and produced the verdict. We
+// capture the run coordinates + the workflow-file commit SHA from the Actions
+// environment; the verdict digest below binds the recorded verdict to its
+// content. Returns null off Actions (local dry-runs), so the record phase stays
+// runnable without a workflow context.
+export type RunProvenance = {
+  runId: string;
+  runAttempt: string;
+  runUrl: string;
+  workflowSha: string;
+  workflowRef: string;
+} | null;
+
+export function readRunProvenance(
+  env: Record<string, string | undefined> = process.env,
+): RunProvenance {
+  const runId = env["GITHUB_RUN_ID"];
+  if (runId === undefined || runId.length === 0) return null;
+  const server = env["GITHUB_SERVER_URL"] ?? "https://github.com";
+  const repo = env["GITHUB_REPOSITORY"] ?? "";
+  const attempt = env["GITHUB_RUN_ATTEMPT"] ?? "1";
+  return {
+    runId,
+    runAttempt: attempt,
+    runUrl:
+      repo.length > 0 ? `${server}/${repo}/actions/runs/${runId}/attempts/${attempt}` : server,
+    // GITHUB_WORKFLOW_SHA pins the workflow-file commit; fall back to the
+    // checkout SHA. This is the "workflow-file SHA" the decision requires.
+    workflowSha: env["GITHUB_WORKFLOW_SHA"] ?? env["GITHUB_SHA"] ?? "",
+    workflowRef: env["GITHUB_WORKFLOW_REF"] ?? "",
+  };
+}
+
+// Content digest binding the recorded verdict to exactly what was decided.
+// A witness can recompute this from the evidence and compare — the "verdict
+// digest" of condition 3.
+export function computeVerdictDigest(v: VerdictRecord): string {
+  const material = JSON.stringify({
+    reviewId: v.reviewId,
+    findingId: v.findingId,
+    verdict: v.verdict,
+    sha: v.sha,
+    reproCmd: v.reproCmd,
+    reproPreExitCode: v.reproPreExitCode,
+    reproPostExitCode: v.reproPostExitCode,
+    testExitCode: v.testExitCode,
+    specDigest: v.specDigest,
+  });
+  return createHash("sha256").update(material).digest("hex").slice(0, 16);
+}
+
 // Project a verifier outcome onto the flat, ENRICHED record the record phase
 // persists. Pure + exported so the unit tests can assert the mapping without
 // spawning. reproPre/PostExitCode + timings are OPTIONAL on PatchVerifyOutcome
@@ -629,27 +682,25 @@ export type ExecPhaseOptions = {
 export async function runExecPhase(opts: ExecPhaseOptions): Promise<VerdictRecord[]> {
   const log = opts.log ?? ((m: string) => console.log(m));
 
-  // FAIL CLOSED before anything else: the exec environment may contain ONLY
-  // known-non-secret vars (allowlist-only). Proves the workflow's per-step
-  // secret separation held.
-  assertNoSecretsInEnv();
-
-  // HARD SANDBOX GUARD (FIX H + FIX 5): the exec phase executes model-generated
-  // code and is only safe inside Part-3's disposable `--network none` container.
-  // Refuse to run unless the trusted container step set the ANTFLEET_REPRO_SANDBOX
-  // marker — this stops anyone running the exec phase on a bare host. The guard
-  // reads process.env DIRECTLY and fails CLOSED: there is deliberately NO
-  // injectable override around a security guard (FIX 5 removed the test-only
-  // sandboxMarker seam), so a test cannot dodge the check — it sets/clears the
-  // REAL env var. The marker is set ONLY by that trusted step (documented on
-  // REPRO_SANDBOX_MARKER); it is NOT a security control by itself (a caller could
-  // export it), but it makes the "ran outside the sandbox" mistake fail closed.
+  // NOTE (Build 2b-2 redesign): the orchestrator now runs on the TRUSTED runner,
+  // not inside a container — so its own process.env legitimately carries the
+  // runner's (non-secret) CI metadata and an allowlist-only check on it no longer
+  // makes sense. The secret boundary moved DOWN to each command: makeContainerExec
+  // passes `--env-file /dev/null` + only the verifier's minimal env into every
+  // `--network none` container, and assertContainerEnvClean fails closed if a
+  // secret-shaped var ever reaches an untrusted command. The exec JOB itself
+  // carries no secrets (permissions:{}, persist-credentials:false in the workflow).
+  //
+  // HARD GUARD: this phase spins up docker containers to execute model-generated
+  // code. Refuse to run unless the workflow's exec job set ANTFLEET_REPRO_SANDBOX,
+  // so `--phase exec` cannot be run casually on a dev laptop. Reads process.env
+  // DIRECTLY and fails CLOSED — no injectable override around the guard.
   if (!isEnvValuePresent(process.env[REPRO_SANDBOX_MARKER])) {
     throw new Error(
       `[repro-verify-batch] REFUSING to run the exec phase: ${REPRO_SANDBOX_MARKER} is not set. ` +
-        `This phase executes model-generated code and MUST run inside the trusted disposable ` +
-        `container (Build 2b-2 Part 3, --network none), which sets that marker. Do NOT run it on a ` +
-        `bare host.`,
+        `This phase executes model-generated code in per-command --network none containers and is ` +
+        `meant to run in the workflow's exec job (which sets that marker + provides docker). Do NOT ` +
+        `run it on a bare host.`,
     );
   }
 
@@ -778,15 +829,23 @@ export type RecordPhaseOptions = {
   gateOutcomeExists?: (reviewId: string, findingId: string, stage: string) => Promise<boolean>;
   // Injectable verdict source, for tests. Production reads inPath.
   loadVerdicts?: () => Promise<VerdictRecord[]>;
+  // Witnessability provenance embedded into each row's evidence. Production
+  // omits it and reads the Actions env via readRunProvenance(); tests inject.
+  // Explicit `null` records "no provenance" (a local run).
+  provenance?: RunProvenance;
   log?: (msg: string) => void;
 };
 
 export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> {
   const log = opts.log ?? ((m: string) => console.log(m));
+  const provenance = opts.provenance !== undefined ? opts.provenance : readRunProvenance();
   const verdicts = opts.loadVerdicts
     ? await opts.loadVerdicts()
     : parseVerdicts(await readFile(opts.inPath, "utf8"));
   log(`[record] loaded ${verdicts.length} verdict(s) from ${opts.inPath}`);
+  if (provenance !== null) {
+    log(`[record] witnessability: run ${provenance.runUrl} (workflow ${provenance.workflowSha})`);
+  }
 
   const exists = opts.gateOutcomeExists ?? (await realGateExists());
 
@@ -833,8 +892,10 @@ export async function runRecordPhase(opts: RecordPhaseOptions): Promise<number> 
       findingId: v.findingId,
       verdict: v.verdict,
       // Persist the full enriched record as evidence so the row is
-      // self-describing (sha, repro/test details, exit codes, timings, digest).
-      evidence: v,
+      // self-describing (sha, repro/test details, exit codes, timings, digest),
+      // plus witnessability provenance (run URL + workflow SHA) and a verdict
+      // digest binding the row to what actually ran (2b decision, condition 3).
+      evidence: { ...v, provenance, verdictDigest: computeVerdictDigest(v) },
     });
     // FIX 6a: only count a row the DB ACTUALLY inserted. ON CONFLICT DO NOTHING
     // returns false for a row a concurrent run already wrote between our
@@ -1405,22 +1466,73 @@ async function realCreateMirror(repoUrl: string, sha: string, prNumber: number):
   }
 }
 
+// Exec image tag. Built locally in the workflow's exec job from
+// .github/repro-exec.Dockerfile (whose FROM is digest-pinned — that is the
+// supply-chain pin). Carries git + node + pnpm + python/pytest. --network none
+// means a repro cannot fetch deps; repros needing network degrade to a safe
+// inconclusive/regressed.
+export const REPRO_EXEC_IMAGE = "antfleet-repro-exec:local";
+
 async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyOutcome>> {
   const { runReproVerifier, realReproVerifierIo } = await import("@/lib/repro-verifier");
+  const { makeContainerExec } = await import("@/lib/repro-container-exec");
+  // Run each container as the runner user so files written into the mounted
+  // worktree are not left root-owned (which would break runner-side cleanup).
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const gid = typeof process.getgid === "function" ? process.getgid() : undefined;
+  const user = uid !== undefined && gid !== undefined ? `${uid}:${gid}` : undefined;
+
   // OFFLINE: clone from the pre-materialised mirror the fetch phase created —
-  // the exec sandbox needs NO network. runReproVerifier reads ZERO fields of
-  // args.finding for any security decision (confirmed against the module), so a
-  // minimal placeholder is safe here; the spec does not carry the reconstructed
-  // Finding across the secretless boundary.
-  return async (spec: ReproSpec) =>
-    runReproVerifier({
-      repoSource: { kind: "offline", mirrorDir: spec.mirrorDir },
-      sha: spec.sha,
-      patch: spec.patch,
-      repro: spec.repro,
-      finding: minimalFindingForVerify(),
-      io: await realReproVerifierIo(),
+  // the exec sandbox needs NO network. runReproVerifier (the orchestrator) runs
+  // HERE on the trusted runner and decides the verdict; every command it issues
+  // is routed through a per-command `--network none` container (the isolation
+  // boundary — see repro-container-exec.ts). The verdict is this function's
+  // return value, never a file any hostile container can reach. args.finding is
+  // read for NO security decision (confirmed against the module), so the minimal
+  // placeholder is safe.
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { randomUUID } = await import("node:crypto");
+  return async (spec: ReproSpec) => {
+    const baseIo = await realReproVerifierIo();
+    // The trusted patch is written to a per-spec control dir and mounted
+    // READ-ONLY into the containers, so `git apply` (run in a container) can
+    // read it while hostile in-container code cannot tamper with it. Writing
+    // it into the rw worktree instead would let pre-patch hostile code rewrite
+    // the fix before it's applied.
+    const controlDir = await mkdtemp(join(tmpdir(), "antfleet-ctl-"));
+    const containerExec = makeContainerExec({
+      image: REPRO_EXEC_IMAGE,
+      // The worktree (cwd) is mounted rw automatically; the mirror + the patch
+      // control dir are the read-only extra mounts.
+      extraMounts: [
+        { host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true },
+        { host: controlDir, container: controlDir, readOnly: true },
+      ],
+      ...(user !== undefined ? { user } : {}),
     });
+    try {
+      return await runReproVerifier({
+        repoSource: { kind: "offline", mirrorDir: spec.mirrorDir },
+        sha: spec.sha,
+        patch: spec.patch,
+        repro: spec.repro,
+        finding: minimalFindingForVerify(),
+        io: {
+          ...baseIo,
+          exec: containerExec,
+          // Route the patch onto the ro-mounted control dir (the default writes
+          // to a runner-only sibling temp dir the container can't see).
+          writeTempFile: async (contents: string) => {
+            const target = join(controlDir, `patch-${randomUUID()}.diff`);
+            await writeFile(target, contents, "utf8");
+            return target;
+          },
+        },
+      });
+    } finally {
+      await rm(controlDir, { recursive: true, force: true }).catch(() => {});
+    }
+  };
 }
 
 // runReproVerifier requires a Finding on args but reads NONE of its fields for a

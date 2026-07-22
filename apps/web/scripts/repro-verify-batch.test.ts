@@ -5,6 +5,8 @@ import {
   assertNoSecretsInEnv,
   shapeVerdictRecord,
   computeSpecDigest,
+  computeVerdictDigest,
+  readRunProvenance,
   runFetchPhase,
   runExecPhase,
   runRecordPhase,
@@ -891,21 +893,26 @@ describe("runExecPhase", () => {
     expect(process.env["ANTFLEET_REPRO_EXEC"]).toBeUndefined();
   });
 
-  it("fails CLOSED before running anything when a secret is present", async () => {
-    process.env["DATABASE_URL"] = "postgres://leaked";
+  // Build 2b-2 redesign: the orchestrator runs on the TRUSTED runner, so its
+  // process.env legitimately carries runner metadata — an allowlist check on it
+  // no longer applies. A stray var in the orchestrator env must NOT abort the
+  // run (the exec job carries no secrets; the boundary is each --network none
+  // container, guarded by assertContainerEnvClean — see
+  // repro-container-exec.test.ts). This asserts the guard did NOT move up.
+  it("does NOT refuse on the orchestrator's own env — the boundary is the container", async () => {
+    process.env["SOME_RUNNER_VAR"] = "harmless";
     const runVerifier = vi.fn(async () => mkOutcome());
-    await expect(
-      runExecPhase({
-        inPath: "unused.json",
-        outPath: "unused.json",
-        loadSpecs: async () => [mkSpec()],
-        runVerifier,
-        writeVerdicts: async () => {},
-        removeMirror: async () => {},
-        log: () => {},
-      }),
-    ).rejects.toThrow(/DATABASE_URL/);
-    expect(runVerifier).not.toHaveBeenCalled();
+    const records = await runExecPhase({
+      inPath: "unused.json",
+      outPath: "unused.json",
+      loadSpecs: async () => [mkSpec()],
+      runVerifier,
+      writeVerdicts: async () => {},
+      removeMirror: async () => {},
+      log: () => {},
+    });
+    expect(runVerifier).toHaveBeenCalledOnce();
+    expect(records).toHaveLength(1);
   });
 
   it("turns a verifier throw into an enriched inconclusive record instead of aborting the batch", async () => {
@@ -1478,6 +1485,56 @@ describe("parseVerdicts", () => {
 
 // ── record phase: dry-run must write NOTHING; --record must call the writer;
 // idempotency must skip already-recorded rows (FIX 6).
+describe("readRunProvenance (witnessability, 2b condition 3)", () => {
+  it("returns null off GitHub Actions (local run — no GITHUB_RUN_ID)", () => {
+    expect(readRunProvenance({})).toBe(null);
+    expect(readRunProvenance({ GITHUB_RUN_ID: "" })).toBe(null);
+  });
+
+  it("builds the run URL + workflow SHA from the Actions env", () => {
+    const p = readRunProvenance({
+      GITHUB_RUN_ID: "123",
+      GITHUB_RUN_ATTEMPT: "2",
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: "antfleet/antfleet",
+      GITHUB_WORKFLOW_SHA: "cafebabecafebabe",
+      GITHUB_WORKFLOW_REF:
+        "antfleet/antfleet/.github/workflows/repro-exec-verify.yml@refs/heads/main",
+    });
+    expect(p).toEqual({
+      runId: "123",
+      runAttempt: "2",
+      runUrl: "https://github.com/antfleet/antfleet/actions/runs/123/attempts/2",
+      workflowSha: "cafebabecafebabe",
+      workflowRef: "antfleet/antfleet/.github/workflows/repro-exec-verify.yml@refs/heads/main",
+    });
+  });
+
+  it("falls back to attempt 1 and GITHUB_SHA when the richer vars are absent", () => {
+    const p = readRunProvenance({
+      GITHUB_RUN_ID: "9",
+      GITHUB_REPOSITORY: "o/r",
+      GITHUB_SHA: "deadbeef",
+    });
+    expect(p?.runAttempt).toBe("1");
+    expect(p?.runUrl).toBe("https://github.com/o/r/actions/runs/9/attempts/1");
+    expect(p?.workflowSha).toBe("deadbeef");
+  });
+});
+
+describe("computeVerdictDigest", () => {
+  it("is stable for the same verdict and changes when the verdict changes", () => {
+    const v = shapeVerdictRecord(mkSpec({ reviewId: "rev-1", findingId: "a-0" }), mkOutcome());
+    const d1 = computeVerdictDigest(v);
+    expect(d1).toBe(computeVerdictDigest(v));
+    const regressed = shapeVerdictRecord(
+      mkSpec({ reviewId: "rev-1", findingId: "a-0" }),
+      mkOutcome({ verdict: "regressed" }),
+    );
+    expect(computeVerdictDigest(regressed)).not.toBe(d1);
+  });
+});
+
 describe("runRecordPhase", () => {
   const verdicts: VerdictRecord[] = [
     shapeVerdictRecord(mkSpec({ reviewId: "rev-1", findingId: "a-0" }), mkOutcome()),
@@ -1545,6 +1602,50 @@ describe("runRecordPhase", () => {
       detector: "pnpm",
       specDigest: "deadbeefdeadbeef",
     });
+  });
+
+  it("embeds provenance + verdict digest into the evidence (witnessability)", async () => {
+    let capturedEvidence: Record<string, unknown> = {};
+    const provenance = {
+      runId: "42",
+      runAttempt: "1",
+      runUrl: "https://github.com/antfleet/antfleet/actions/runs/42/attempts/1",
+      workflowSha: "abc123",
+      workflowRef: "ref",
+    };
+    await runRecordPhase({
+      inPath: "unused.json",
+      record: true,
+      loadVerdicts: async () => [verdicts[0] as VerdictRecord],
+      provenance,
+      writeGateOutcome: async (_reviewId, row) => {
+        capturedEvidence = row.evidence as Record<string, unknown>;
+        return true;
+      },
+      gateOutcomeExists: async () => false,
+      log: () => {},
+    });
+    expect(capturedEvidence["provenance"]).toEqual(provenance);
+    expect(capturedEvidence["verdictDigest"]).toBe(
+      computeVerdictDigest(verdicts[0] as VerdictRecord),
+    );
+  });
+
+  it("records null provenance for a local (non-Actions) run", async () => {
+    let capturedEvidence: Record<string, unknown> = {};
+    await runRecordPhase({
+      inPath: "unused.json",
+      record: true,
+      loadVerdicts: async () => [verdicts[0] as VerdictRecord],
+      provenance: null,
+      writeGateOutcome: async (_reviewId, row) => {
+        capturedEvidence = row.evidence as Record<string, unknown>;
+        return true;
+      },
+      gateOutcomeExists: async () => false,
+      log: () => {},
+    });
+    expect(capturedEvidence["provenance"]).toBe(null);
   });
 
   // FIX 6 — idempotency: an already-recorded (review, finding, stage) is skipped.
