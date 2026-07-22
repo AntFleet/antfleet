@@ -708,7 +708,7 @@ describe("probeOfflineDeps", () => {
     } as Parameters<typeof probeOfflineDeps>[0];
   }
 
-  it("pnpm/npm: unavailable without node_modules, available with it", async () => {
+  it("pnpm/npm: unavailable without node_modules, available with a real directory", async () => {
     expect(await probeOfflineDeps(io({}), W, "pnpm")).toMatch(/node_modules/);
     expect(await probeOfflineDeps(io({}), W, "npm")).toMatch(/node_modules/);
     const withDeps = io({ [`${W}/node_modules`]: "" });
@@ -716,16 +716,27 @@ describe("probeOfflineDeps", () => {
     expect(await probeOfflineDeps(withDeps, W, "npm")).toBeNull();
   });
 
-  it("go: vendor/ tree or a require-free go.mod is runnable; requires without vendor is not", async () => {
-    expect(await probeOfflineDeps(io({ [`${W}/vendor`]: "" }), W, "go")).toBeNull();
-    const stdlibOnly = io({ [`${W}/go.mod`]: "module x\n\ngo 1.22\n" });
-    expect(await probeOfflineDeps(stdlibOnly, W, "go")).toBeNull();
-    const withReqs = io({
-      [`${W}/go.mod`]: "module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n)\n",
-    });
-    expect(await probeOfflineDeps(withReqs, W, "go")).toMatch(/vendor/);
-    // Fail closed (inconclusive, not a crash) when go.mod cannot be read.
-    expect(await probeOfflineDeps(io({}), W, "go")).toMatch(/unreadable/);
+  it("pnpm/npm: a committed FILE named node_modules does not count (hostile false-regressed vector)", async () => {
+    const fileNotDir = {
+      ...io({ [`${W}/node_modules`]: "i am a file" }),
+      isDirectory: async () => false,
+    };
+    expect(await probeOfflineDeps(fileNotDir, W, "pnpm")).toMatch(/node_modules/);
+    const realDir = {
+      ...io({ [`${W}/node_modules`]: "" }),
+      isDirectory: async () => true,
+    };
+    expect(await probeOfflineDeps(realDir, W, "pnpm")).toBeNull();
+  });
+
+  it("go: always unavailable until the exec image ships a go toolchain", async () => {
+    // The image has no go — ANY go suite would die command-not-found → false
+    // regressed. Unconditional, no go.mod read (also removes that hostile-read
+    // surface). Restore the vendor/require checks when go lands in the image.
+    expect(await probeOfflineDeps(io({ [`${W}/vendor`]: "" }), W, "go")).toMatch(/toolchain/);
+    expect(await probeOfflineDeps(io({ [`${W}/go.mod`]: "module x\n" }), W, "go")).toMatch(
+      /toolchain/,
+    );
   });
 
   it("pytest: declared deps are unavailable offline; stdlib-only projects run", async () => {
@@ -742,6 +753,38 @@ describe("probeOfflineDeps", () => {
     });
     expect(await probeOfflineDeps(pyprojEmpty, W, "pytest")).toBeNull();
     expect(await probeOfflineDeps(io({}), W, "pytest")).toBeNull();
+  });
+
+  it("pytest: [project] scoping, quoted keys, and comment-only arrays (codex review #163)", async () => {
+    // dependencies under [tool.*] is metadata, not an install requirement.
+    const toolTable = io({
+      [`${W}/pyproject.toml`]: '[tool.example]\ndependencies = ["metadata-only"]\n',
+    });
+    expect(await probeOfflineDeps(toolTable, W, "pytest")).toBeNull();
+    // A comment inside an empty array body is still empty.
+    const commentedEmpty = io({
+      [`${W}/pyproject.toml`]: "[project]\ndependencies = [ # intentionally empty\n]\n",
+    });
+    expect(await probeOfflineDeps(commentedEmpty, W, "pytest")).toBeNull();
+    // TOML allows the key to be quoted.
+    const quotedKey = io({
+      [`${W}/pyproject.toml`]: '[project]\n"dependencies" = ["requests"]\n',
+    });
+    expect(await probeOfflineDeps(quotedKey, W, "pytest")).toMatch(/pyproject/);
+  });
+
+  it("pytest: symlinked or oversized manifests are refused, not read (hostile-read guard)", async () => {
+    const symlinked = {
+      ...io({ [`${W}/requirements.txt`]: "never read" }),
+      isSymlink: async () => true,
+    };
+    expect(await probeOfflineDeps(symlinked, W, "pytest")).toMatch(/unreadable or unsafe/);
+    const oversized = {
+      ...io({ [`${W}/pyproject.toml`]: "never read" }),
+      isSymlink: async () => false,
+      statSize: async () => 100_000_000,
+    };
+    expect(await probeOfflineDeps(oversized, W, "pytest")).toMatch(/unreadable or unsafe/);
   });
 
   it("never gates a runner kind it does not understand", async () => {

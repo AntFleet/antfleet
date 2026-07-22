@@ -639,6 +639,57 @@ async function runReproStep(
   });
 }
 
+// Hard cap on a manifest the probe will read. No legitimate go.mod /
+// requirements.txt / pyproject.toml approaches this; a hostile worktree can
+// commit a symlink to /dev/zero or a multi-GB file, and an unbounded read
+// would run on the TRUSTED orchestrator (codex review #163, HIGH).
+const MANIFEST_MAX_BYTES = 262_144; // 256 KiB
+
+// Symlink-refusing, size-capped manifest read. Returns null when the file is
+// a symlink, oversized, or unreadable — the caller treats null as "cannot
+// know" → deps unavailable → inconclusive (downgrade-only, fail closed).
+// The isSymlink/statSize seams are optional on PatchVerifierIo (hermetic
+// tests omit them); production wiring binds both, so the guards are always
+// live where hostile content is.
+async function safeReadManifest(io: PatchVerifierIo, path: string): Promise<string | null> {
+  try {
+    if (io.isSymlink !== undefined && (await io.isSymlink(path))) return null;
+    if (io.statSize !== undefined && (await io.statSize(path)) > MANIFEST_MAX_BYTES) return null;
+    return await io.readFile(path);
+  } catch {
+    return null;
+  }
+}
+
+// exists + (when the seam is bound) lstat-isDirectory. A hostile repo can
+// commit a FILE named node_modules; bare exists() would pass it and the suite
+// would then fail command-not-found → false regressed. lstat also refuses a
+// symlink-to-directory.
+async function isRealDir(io: PatchVerifierIo, path: string): Promise<boolean> {
+  if (!(await io.exists(path))) return false;
+  if (io.isDirectory !== undefined) {
+    try {
+      return await io.isDirectory(path);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Strip full-line and trailing `#` comments from manifest text. Naive about
+// `#` inside quoted strings, which no real dep spec contains — and every
+// misjudgment here only downgrades a verdict to inconclusive, never mints one.
+function stripHashComments(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const i = line.indexOf("#");
+      return i === -1 ? line : line.slice(0, i);
+    })
+    .join("\n");
+}
+
 // Deterministic pre-flight for the offline (`--network none`) suite run: can
 // the detected runner's dependencies exist in this worktree at all? Returns a
 // human-readable reason when they cannot (→ inconclusive `deps_unavailable`),
@@ -654,42 +705,48 @@ export async function probeOfflineDeps(
   const p = (rel: string) => `${worktree}/${rel}`;
   if (kind === "pnpm" || kind === "npm") {
     // A lockfile got the runner detected, but the suite invokes binaries from
-    // node_modules/.bin — absent an install (impossible offline), it cannot run.
-    return (await io.exists(p("node_modules"))) ? null : "node_modules is not present";
+    // node_modules/.bin — absent an install (impossible offline), it cannot
+    // run. Accepted narrowing: a `"test": "node --test"` stdlib-only suite
+    // needs no node_modules and is skipped too — that is an inconclusive we
+    // can live with, not a wrong regressed.
+    return (await isRealDir(io, p("node_modules"))) ? null : "node_modules is not present";
   }
   if (kind === "go") {
-    // `go test` resolves module deps from the network unless a vendor/ tree
-    // shipped. A go.mod with zero `require` lines is stdlib-only and fine.
-    if (await io.exists(p("vendor"))) return null;
-    try {
-      const gomod = await io.readFile(p("go.mod"));
-      return /^\s*require[\s(]/m.test(gomod) ? "go.mod has requires and no vendor/ tree" : null;
-    } catch {
-      return "go.mod unreadable";
-    }
+    // The exec image ships no go toolchain yet (.github/repro-exec.Dockerfile
+    // documents it as a follow-up), so ANY go suite dies command-not-found —
+    // the exact false-regressed this probe exists to prevent (codex review
+    // #163, HIGH). Unconditional until go lands in the image; then restore
+    // the vendor-tree / require-free-go.mod check.
+    return "go toolchain is not in the exec image (Dockerfile follow-up)";
   }
   if (kind === "pytest") {
     // The exec image ships pytest but no project site-packages. Declared deps
     // therefore cannot import; only a stdlib-only project can run offline.
-    try {
-      if (await io.exists(p("requirements.txt"))) {
-        const reqs = await io.readFile(p("requirements.txt"));
-        const hasDep = reqs.split("\n").some((l) => {
-          const s = l.trim();
-          return s.length > 0 && !s.startsWith("#");
-        });
-        if (hasDep) return "requirements.txt declares dependencies";
-      }
-      if (await io.exists(p("pyproject.toml"))) {
-        const py = await io.readFile(p("pyproject.toml"));
-        if (/^\s*dependencies\s*=\s*\[\s*[^\]\s]/m.test(py)) {
+    if (await io.exists(p("requirements.txt"))) {
+      const reqs = await safeReadManifest(io, p("requirements.txt"));
+      if (reqs === null) return "requirements.txt is unreadable or unsafe";
+      const hasDep = stripHashComments(reqs)
+        .split("\n")
+        .some((l) => l.trim().length > 0);
+      if (hasDep) return "requirements.txt declares dependencies";
+    }
+    if (await io.exists(p("pyproject.toml"))) {
+      const py = await safeReadManifest(io, p("pyproject.toml"));
+      if (py === null) return "pyproject.toml is unreadable or unsafe";
+      // Scope to the [project] table (PEP 621) — a dependencies key in
+      // [tool.*] tables is metadata, not an install requirement. The key may
+      // be bare or quoted. Comment-only array bodies count as empty.
+      const project = /(?:^|\n)\[project\]\s*\n([\s\S]*?)(?=\n\[|$)/.exec(py);
+      if (project !== null) {
+        const deps = /(?:^|\n)\s*(?:"dependencies"|dependencies)\s*=\s*\[([\s\S]*?)\]/.exec(
+          project[1] ?? "",
+        );
+        if (deps !== null && stripHashComments(deps[1] ?? "").trim().length > 0) {
           return "pyproject.toml declares dependencies";
         }
       }
-      return null;
-    } catch {
-      return "python manifest unreadable";
     }
+    return null;
   }
   return null;
 }
