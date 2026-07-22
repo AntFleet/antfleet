@@ -1477,6 +1477,12 @@ export const REPRO_EXEC_IMAGE = "antfleet-repro-exec:local";
 async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyOutcome>> {
   const { runReproVerifier, realReproVerifierIo } = await import("@/lib/repro-verifier");
   const { makeContainerExec } = await import("@/lib/repro-container-exec");
+  const { isReproDepPrefetchEnabled } = await import("@/lib/daybreak-gates-env");
+  // Policy lives here (batch = policy, verifier = mechanism): only when the
+  // flag is ON do we build the network-enabled install container and hand it to
+  // the verifier as `execInstall`. OFF → the seam is absent → JS suites with
+  // missing deps stay `deps_unavailable`, exactly as before.
+  const depPrefetch = isReproDepPrefetchEnabled();
   // Run each container as the runner user so files written into the mounted
   // worktree are not left root-owned (which would break runner-side cleanup).
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -1501,16 +1507,29 @@ async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyO
     // it into the rw worktree instead would let pre-patch hostile code rewrite
     // the fix before it's applied.
     const controlDir = await mkdtemp(join(tmpdir(), "antfleet-ctl-"));
+    // Both containers share the SAME mounts; they differ only in network. The
+    // mirror + patch control dir are read-only; the worktree (cwd) is rw.
+    const mounts = [
+      { host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true },
+      { host: controlDir, container: controlDir, readOnly: true },
+    ];
     const containerExec = makeContainerExec({
       image: REPRO_EXEC_IMAGE,
-      // The worktree (cwd) is mounted rw automatically; the mirror + the patch
-      // control dir are the read-only extra mounts.
-      extraMounts: [
-        { host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true },
-        { host: controlDir, container: controlDir, readOnly: true },
-      ],
+      extraMounts: mounts,
       ...(user !== undefined ? { user } : {}),
     });
+    // ONLY built when the flag is on. `allowNetwork: true` is the sole
+    // difference — same image, same mounts, same secret-free env. Used by the
+    // verifier exclusively for the dep-prefetch install; the suite + repro
+    // always go through the offline `containerExec` above.
+    const installExec = depPrefetch
+      ? makeContainerExec({
+          image: REPRO_EXEC_IMAGE,
+          extraMounts: mounts,
+          allowNetwork: true,
+          ...(user !== undefined ? { user } : {}),
+        })
+      : undefined;
     try {
       return await runReproVerifier({
         repoSource: { kind: "offline", mirrorDir: spec.mirrorDir },
@@ -1521,6 +1540,7 @@ async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyO
         io: {
           ...baseIo,
           exec: containerExec,
+          ...(installExec !== undefined ? { execInstall: installExec } : {}),
           // Route the patch onto the ro-mounted control dir (the default writes
           // to a runner-only sibling temp dir the container can't see).
           writeTempFile: async (contents: string) => {

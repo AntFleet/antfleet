@@ -60,6 +60,18 @@ describe("buildDockerArgs", () => {
     expect(a[a.indexOf("--name") + 1]).toBe("antfleet-repro-test");
   });
 
+  it("allowNetwork:true selects the bridge network ONLY for the install step", () => {
+    const online = buildDockerArgs(execArgs(), { ...opts, allowNetwork: true }, "n");
+    expect(online[online.indexOf("--network") + 1]).toBe("bridge");
+    // Still --rm, still cleared env: a networked install container is not a
+    // secret-carrying one.
+    expect(online).toContain("--rm");
+    expect(online[online.indexOf("--env-file") + 1]).toBe("/dev/null");
+    // Default and explicit-false both stay offline.
+    const off = buildDockerArgs(execArgs(), { ...opts, allowNetwork: false }, "n");
+    expect(off[off.indexOf("--network") + 1]).toBe("none");
+  });
+
   it("runs as the runner user and mounts the worktree rw + mirror ro", () => {
     const a = buildDockerArgs(execArgs(), opts, "n").join(" ");
     expect(a).toContain("--user 1001:1002");

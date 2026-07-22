@@ -56,6 +56,15 @@ export type ContainerExecOptions = {
   // "uid:gid" — run the container as the runner user so files written into the
   // mounted worktree are not left root-owned (breaks runner-side cleanup).
   user?: string;
+  // Give the container the default bridge network instead of `--network none`.
+  // Set ONLY for the dep-prefetch step (npm/pnpm install), which must reach the
+  // registry. It is a HARD RULE that this is NEVER true for a verdict-affecting
+  // command (repro pre/post, test suite): those stay offline so their result
+  // cannot be steered over the network. Safe for install because the exec job
+  // carries no secrets (nothing to exfiltrate) and the install container is
+  // torn down (`--rm`, own net/PID namespace) before the offline suite
+  // container starts, so no daemon it spawns can survive to serve the suite.
+  allowNetwork?: boolean;
   // Test seam. Production omits it and the module spawns the real docker CLI.
   spawnDocker?: (dockerArgs: string[], timeoutMs: number) => Promise<SpawnDockerResult>;
 };
@@ -85,8 +94,11 @@ export function buildDockerArgs(
   const args = [
     "run",
     "--rm",
+    // `none` for every verdict-affecting command; `bridge` ONLY for the
+    // dep-prefetch install (opts.allowNetwork). assertContainerEnvClean below
+    // still runs, so even the networked install container carries no secret.
     "--network",
-    "none",
+    opts.allowNetwork === true ? "bridge" : "none",
     "--name",
     containerName,
     // Clear all inherited env; only the explicit -e below enter the container.

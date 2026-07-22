@@ -72,6 +72,8 @@ import {
   runTestStep,
   splitCommand,
   truncate,
+  type ExecArgs,
+  type ExecResult,
   type PatchVerifierIo,
   type PatchVerifyOutcome,
   type RunnerKind,
@@ -104,6 +106,15 @@ export type ReproVerifierIo = PatchVerifierIo & {
   // file (no-clobber — implemented with the `wx` flag in prod). Throws on
   // clobber or any other write error.
   writeFileNoClobber: (path: string, contents: string, mode: number) => Promise<void>;
+  // OPTIONAL network-enabled exec, used ONLY for the dep-prefetch install
+  // (npm ci / pnpm install). When absent — hermetic tests, or the
+  // ANTFLEET_REPRO_DEP_PREFETCH flag OFF — a JS suite with missing offline deps
+  // stays `deps_unavailable` (the pre-prefetch behavior). The batch wires this
+  // to a `--network bridge`, SECRET-FREE container; its only output is
+  // node_modules in the rw worktree, consumed by the OFFLINE suite — it never
+  // touches the verdict. `exec` (offline) is still used for every
+  // verdict-affecting step.
+  execInstall?: (args: ExecArgs) => Promise<ExecResult>;
 };
 
 // Git clone SOURCE — a discriminated union over the two clone modes. Folded
@@ -390,24 +401,39 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
-    // The exec sandbox runs the suite with no network (`--network none`), so a
-    // suite whose dependencies were never vendored/committed CANNOT run: the
-    // runner exits non-zero on "command/module not found", which the regressed
-    // branch below would misread as "the patch broke the tests". Probe the
-    // deterministic preconditions first and fail closed to inconclusive —
-    // a missing-deps failure is infrastructure, not evidence about the patch.
+    // The suite + repro run with no network (`--network none`), so a suite whose
+    // dependencies were never vendored/committed CANNOT run: the runner exits
+    // non-zero on "command/module not found", which the regressed branch below
+    // would misread as "the patch broke the tests". Probe first, fail closed to
+    // inconclusive — a missing-deps failure is infrastructure, not evidence.
     const missingDeps = await probeOfflineDeps(args.io, worktree, detector.kind);
     if (missingDeps !== null) {
-      return reproInconclusive({
-        worktreePath: worktree,
-        detector: detector.kind,
-        notes: `suite deps unavailable offline — ${missingDeps}; cannot run tests, cannot decide`,
-        ms: args.io.now() - t0,
-        kind: "deps_unavailable",
-        reproCmd,
-        reproPreExitCode: preStep.exitCode,
-        reproPreMs: preStep.ms,
-      });
+      // Dep-prefetch: if the batch wired a network-enabled install seam, run ONE
+      // secret-free `npm ci` / `pnpm install` (in its OWN networked container)
+      // to populate node_modules, then re-probe. Everything after this — suite,
+      // post-repro — still runs OFFLINE, so a `verified` remains "the offline
+      // suite passed". A failed/absent install just keeps the honest
+      // `deps_unavailable`; it can never mint a verdict.
+      const prefetch = await maybeInstallDeps(
+        args.io,
+        worktree,
+        detector.kind,
+        timeoutMs,
+        sandboxEnv,
+      );
+      if (!prefetch.ok) {
+        return reproInconclusive({
+          worktreePath: worktree,
+          detector: detector.kind,
+          notes: `suite deps unavailable offline — ${missingDeps}${prefetch.notes}; cannot run tests, cannot decide`,
+          ms: args.io.now() - t0,
+          kind: "deps_unavailable",
+          reproCmd,
+          reproPreExitCode: preStep.exitCode,
+          reproPreMs: preStep.ms,
+        });
+      }
+      // deps now present offline → fall through to the offline suite.
     }
 
     // Remove the written repro BEFORE the suite so the runner cannot auto-collect
@@ -688,6 +714,64 @@ function stripHashComments(text: string): string {
       return i === -1 ? line : line.slice(0, i);
     })
     .join("\n");
+}
+
+// The install command per JS runner. `--frozen-lockfile` / `ci` pin to the
+// repo's OWN committed lockfile (no lockfile mutation, reproducible), and the
+// dep tree the install resolves is the reviewed repo's own supply chain — the
+// same code its test suite would run anyway. Only pnpm/npm are prefetchable in
+// this build: go has no toolchain in the image, and pip installs are deferred.
+export function installCommandFor(kind: RunnerKind): { command: string; args: string[] } | null {
+  if (kind === "pnpm") return { command: "pnpm", args: ["install", "--frozen-lockfile"] };
+  if (kind === "npm") return { command: "npm", args: ["ci"] };
+  return null;
+}
+
+// Populate node_modules via the network-enabled install seam, then re-probe.
+// SECURITY: the install runs model-influenced lifecycle scripts (postinstall)
+// WITH network — but in a container with NO secrets (the exec job holds none),
+// so there is nothing to exfiltrate; the residual is a bounded egress window,
+// not credential loss. It runs in its OWN `--rm` container that is destroyed
+// before the offline suite container starts, so nothing it spawns survives to
+// serve the "offline" suite. It only writes node_modules into the rw worktree —
+// hostile node_modules is the same trust class as the already-hostile test code
+// and cannot forge a `verified` the suite couldn't already be coerced into. A
+// null seam (flag OFF / hermetic test) or any failure returns ok:false → the
+// caller keeps the honest `deps_unavailable`.
+async function maybeInstallDeps(
+  io: ReproVerifierIo,
+  worktree: string,
+  kind: RunnerKind,
+  timeoutMs: number,
+  env: Record<string, string>,
+): Promise<{ ok: boolean; notes: string }> {
+  if (io.execInstall === undefined) return { ok: false, notes: " (dep-prefetch disabled)" };
+  const install = installCommandFor(kind);
+  if (install === null) return { ok: false, notes: " (no offline-safe install for this runner)" };
+
+  const r = await io.execInstall({
+    command: install.command,
+    args: install.args,
+    cwd: worktree,
+    timeoutMs,
+    env,
+  });
+  if (r.timedOut) return { ok: false, notes: ` (dep install timed out after ${timeoutMs}ms)` };
+  if (r.exitCode !== 0) {
+    return {
+      ok: false,
+      notes: ` (dep install failed exit ${r.exitCode ?? "null"}: ${truncate(r.stderr)})`,
+    };
+  }
+  // An install that reports success but produced no usable deps must NOT fall
+  // through to a suite run (which would then fail command-not-found → false
+  // regressed). Re-run the SAME deterministic probe: only a genuine
+  // node_modules directory lets us proceed.
+  const stillMissing = await probeOfflineDeps(io, worktree, kind);
+  if (stillMissing !== null) {
+    return { ok: false, notes: ` (deps still unavailable after install: ${stillMissing})` };
+  }
+  return { ok: true, notes: "" };
 }
 
 // Deterministic pre-flight for the offline (`--network none`) suite run: can

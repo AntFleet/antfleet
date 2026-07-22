@@ -40,6 +40,17 @@ export function isReproExecEnabled(): boolean {
   return readBoolEnv("ANTFLEET_REPRO_EXEC");
 }
 
+// Dep-prefetch for the repro-exec verifier. When ON, a JS suite whose deps are
+// missing offline gets ONE network-enabled, SECRET-FREE install container
+// (npm ci / pnpm install) before the OFFLINE suite + repro run, so pure-JS
+// benches can reach `verified` instead of `deps_unavailable`. Default OFF: it
+// grants network to a hostile container (no secrets to steal, but an egress
+// window), so it is a deliberate posture change gated separately from the base
+// exec flag. See lib/repro-verifier.ts maybeInstallDeps + the 2b decision memo.
+export function isReproDepPrefetchEnabled(): boolean {
+  return readBoolEnv("ANTFLEET_REPRO_DEP_PREFETCH");
+}
+
 export function isThreatModelEnabled(): boolean {
   return readBoolEnv("ANTFLEET_THREAT_MODEL");
 }
