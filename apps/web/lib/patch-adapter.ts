@@ -109,6 +109,7 @@ type ParsedDiff = {
 //     `+++ b/path` header)
 //   - whether a `diff --git` header was present
 //   - whether the @@ hunk-header counts match the actual - and + tallies
+//     (INCLUDING the context lines that both sides share)
 // We deliberately tolerate broken hunk headers; we'll rebuild them.
 function parseUnifiedDiff(text: string): ParsedDiff | null {
   const lines = text.split("\n");
@@ -119,6 +120,12 @@ function parseUnifiedDiff(text: string): ParsedDiff | null {
   let hunkStart: number | null = null;
   let statedOldCount: number | null = null;
   let statedNewCount: number | null = null;
+  // Context lines (leading space) appear on BOTH sides of a hunk, so the
+  // stated `-a,c`/`+b,d` counts include them. We tally them to validate the
+  // header, but never preserve them (the rebuild re-derives the anchor).
+  let contextCount = 0;
+  let hunkCount = 0;
+  let inHunk = false;
   let parseError: string | null = null;
 
   for (const line of lines) {
@@ -145,6 +152,8 @@ function parseUnifiedDiff(text: string): ParsedDiff | null {
       hunkStart = Number(m[1]);
       statedOldCount = m[2] !== undefined ? Number(m[2]) : 1;
       statedNewCount = m[4] !== undefined ? Number(m[4]) : 1;
+      hunkCount += 1;
+      inHunk = true;
       continue;
     }
     if (line.startsWith("-")) {
@@ -155,19 +164,34 @@ function parseUnifiedDiff(text: string): ParsedDiff | null {
       newLines.push(line.slice(1));
       continue;
     }
-    // Context line ` ...`. We don't preserve context — the rebuilt diff
-    // omits context lines and lets the anchor + - / + content carry the
-    // location signal. This is acceptable because we recompute the anchor
-    // against the file at HEAD; context lines are advisory in unified
-    // diff anyway.
+    // Context line ` ...` inside a hunk. We count it (the hunk header's
+    // stated counts include context) but do NOT preserve it — the rebuilt
+    // diff omits context and lets the anchor + - / + content carry the
+    // location signal, since we recompute the anchor against the file at
+    // HEAD. Only a leading-space line inside a hunk counts; `index` / `\ No
+    // newline` markers and any pre-hunk junk are ignored.
+    if (inHunk && line.startsWith(" ")) {
+      contextCount += 1;
+    }
   }
 
   if (path === null) return null;
 
-  const hunkCountsMatch =
-    statedOldCount === null
-      ? null
-      : statedOldCount === oldLines.length && statedNewCount === newLines.length;
+  // Stated counts include context, so compare each side as changed+context.
+  // Only a single-hunk diff can be validated this way: statedOldCount /
+  // statedNewCount hold the LAST hunk's numbers while the tallies span the
+  // whole patch, so a multi-hunk patch reports `false` and takes the rebuild
+  // path (which is what happened before this fix too).
+  let hunkCountsMatch: boolean | null;
+  if (statedOldCount === null) {
+    hunkCountsMatch = null;
+  } else if (hunkCount > 1) {
+    hunkCountsMatch = false;
+  } else {
+    hunkCountsMatch =
+      statedOldCount === oldLines.length + contextCount &&
+      statedNewCount === newLines.length + contextCount;
+  }
 
   return {
     path,
