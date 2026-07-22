@@ -186,6 +186,11 @@ function parseUnifiedDiff(text: string): ParsedDiff | null {
   if (statedOldCount === null) {
     hunkCountsMatch = null;
   } else if (hunkCount > 1) {
+    // Load-bearing: `inHunk` is never reset, so once past the last hunk any
+    // trailing space-prefixed junk leaks into `contextCount`. For a single
+    // hunk that only ever produces a false-dirty (safe rebuild); this guard
+    // is what keeps a multi-hunk patch from being validated against an
+    // inflated tally. Don't drop it without also resetting `inHunk`.
     hunkCountsMatch = false;
   } else {
     hunkCountsMatch =
