@@ -445,6 +445,28 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       });
     }
 
+    // If we PREFETCHED deps (pre-patch) AND this patch changes the dep manifest,
+    // the installed tree no longer matches the post-patch code: a dependency the
+    // patch adds is absent, so the post-repro could exit non-zero via
+    // MODULE_NOT_FOUND and be misread as `verified` (codex re-audit #164). Bail
+    // to `deps_unavailable` rather than re-installing post-patch (which would
+    // reintroduce the pre/post differential contamination). Committed-deps runs
+    // (depPrefetched=false) are unaffected — the deps are present either way.
+    if (depPrefetched && patchTouchesDepManifest(args.patch)) {
+      return reproInconclusive({
+        worktreePath: worktree,
+        detector: detector.kind,
+        notes:
+          "patch changes package.json / lockfile but deps were network-prefetched " +
+          "pre-patch — cannot trust the installed tree post-patch; not verifiable offline",
+        ms: args.io.now() - t0,
+        kind: "deps_unavailable",
+        reproCmd,
+        reproPreExitCode: preStep.exitCode,
+        reproPreMs: preStep.ms,
+      });
+    }
+
     // Post-patch test suite. The runner + deps were resolved BEFORE the pre-repro
     // (see above), so both observations share the same dependency state and only
     // the patch differs between them.
@@ -768,13 +790,34 @@ function stripHashComments(text: string): string {
 // toolchain in the image and pip is deferred.
 export function installCommandFor(kind: RunnerKind): { command: string; args: string[] } | null {
   if (kind === "pnpm") {
+    // --ignore-pnpmfile is REQUIRED alongside --ignore-scripts: pnpm documents
+    // that --ignore-scripts does NOT disable a repo's `.pnpmfile.cjs/.mjs`
+    // hooks, which execute arbitrary Node DURING install. Without it a hostile
+    // repo gets code-exec with bridge network (codex re-audit #164).
     return {
       command: "pnpm",
-      args: ["install", "--frozen-lockfile", "--prod=false", "--ignore-scripts"],
+      args: [
+        "install",
+        "--frozen-lockfile",
+        "--prod=false",
+        "--ignore-scripts",
+        "--ignore-pnpmfile",
+      ],
     };
   }
   if (kind === "npm") return { command: "npm", args: ["ci", "--include=dev", "--ignore-scripts"] };
   return null;
+}
+
+// A patch that changes package.json / a lockfile invalidates a PRE-patch dep
+// install for the POST-patch runs: a newly-added dependency is absent, so the
+// post-repro can exit non-zero via MODULE_NOT_FOUND and be misread as "bug
+// fixed" (codex re-audit #164). We install once, pre-patch, to keep the pre/post
+// differential clean — so when the patch touches the dep manifest we cannot
+// trust that install downstream and bail to `deps_unavailable`.
+const DEP_MANIFEST_HEADER = /^\+\+\+ .*(?:package\.json|pnpm-lock\.yaml|package-lock\.json)\s*$/m;
+export function patchTouchesDepManifest(patch: string): boolean {
+  return DEP_MANIFEST_HEADER.test(patch);
 }
 
 // Populate node_modules via the network-enabled install seam, then re-probe.

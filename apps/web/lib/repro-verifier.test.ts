@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   installCommandFor,
+  patchTouchesDepManifest,
   probeOfflineDeps,
   runReproVerifier,
   type ReproVerifierIo,
@@ -605,6 +606,43 @@ describe("runReproVerifier", () => {
     expect(out.depPrefetched).toBe(false);
   });
 
+  it("dep-prefetch: a patch that changes the dep manifest bails to deps_unavailable (never verified)", async () => {
+    let installed = false;
+    const ranSuite = { v: false };
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") {
+        ranSuite.v = true;
+        return ok("pass");
+      }
+      if (command === "pytest") return ok("reproduced");
+      return ok();
+    });
+    const execInstall = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => {
+      installed = true;
+      return ok();
+    });
+    const exists = vi.fn(async (p: string) => {
+      if (p.endsWith("pnpm-lock.yaml")) return true;
+      if (p.endsWith("node_modules")) return installed;
+      return false;
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      // Patch adds a dependency: the pre-patch install can't be trusted post-patch.
+      patch:
+        'diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-{}\n+{"dependencies":{"left-pad":"1"}}\n',
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: { ...mkIo({ exec, exists }), execInstall },
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("verified");
+    expect(out.inconclusiveReason).toBe("deps_unavailable");
+    expect(out.notes).toMatch(/package\.json/);
+    expect(ranSuite.v).toBe(false); // bailed before running the suite
+  });
+
   it("dep-prefetch: a FAILED install stays deps_unavailable and never spawns the suite", async () => {
     const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
       if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
@@ -955,16 +993,44 @@ describe("installCommandFor", () => {
     const pnpm = installCommandFor("pnpm");
     expect(pnpm).toEqual({
       command: "pnpm",
-      args: ["install", "--frozen-lockfile", "--prod=false", "--ignore-scripts"],
+      args: [
+        "install",
+        "--frozen-lockfile",
+        "--prod=false",
+        "--ignore-scripts",
+        "--ignore-pnpmfile",
+      ],
     });
     const npm = installCommandFor("npm");
     expect(npm).toEqual({ command: "npm", args: ["ci", "--include=dev", "--ignore-scripts"] });
-    // --ignore-scripts is the containment lever: assert it is never dropped.
+    // The containment levers must never be dropped: --ignore-scripts on both,
+    // and --ignore-pnpmfile on pnpm (--ignore-scripts alone leaves .pnpmfile
+    // hooks executing arbitrary Node during install — codex re-audit #164).
     expect(pnpm?.args).toContain("--ignore-scripts");
+    expect(pnpm?.args).toContain("--ignore-pnpmfile");
     expect(npm?.args).toContain("--ignore-scripts");
     // Not offline-installable in this build.
     expect(installCommandFor("go")).toBeNull();
     expect(installCommandFor("pytest")).toBeNull();
     expect(installCommandFor("none")).toBeNull();
+  });
+});
+
+describe("patchTouchesDepManifest", () => {
+  it("detects package.json / lockfile changes in a unified diff, ignores source-only patches", () => {
+    const addsDep =
+      'diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-{}\n+{"dependencies":{"x":"1"}}\n';
+    expect(patchTouchesDepManifest(addsDep)).toBe(true);
+    const lock =
+      "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1 +1 @@\n-a\n+b\n";
+    expect(patchTouchesDepManifest(lock)).toBe(true);
+    const npmLock = "+++ b/packages/app/package-lock.json\n";
+    expect(patchTouchesDepManifest(npmLock)).toBe(true);
+    const srcOnly =
+      "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
+    expect(patchTouchesDepManifest(srcOnly)).toBe(false);
+    // A source file whose NAME merely contains package.json-ish text but isn't
+    // the manifest header should not trip it (matches the +++ header only).
+    expect(patchTouchesDepManifest("+const packageJson = readFile('x')\n")).toBe(false);
   });
 });

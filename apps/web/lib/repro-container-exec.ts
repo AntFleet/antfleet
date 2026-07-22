@@ -162,10 +162,24 @@ function defaultSpawnDocker(
         // running with its rw worktree mount (codex audit #164). Sequencing the
         // CLI kill after `rm -f` closes avoids that race; on error we still
         // SIGKILL the CLI so we never hang.
-        const remover = spawn(dockerPath, ["rm", "-f", containerName], { stdio: "ignore" });
-        const finish = () => child.kill("SIGKILL");
-        remover.on("close", finish);
-        remover.on("error", finish);
+        const killClient = () => child.kill("SIGKILL");
+        // Force-remove; if it fails (nonzero close or spawn error), retry ONCE
+        // before giving up — a single failed `rm -f` must not silently leave a
+        // networked container alive for later specs (codex re-audit #164). Only
+        // after the retry resolves do we SIGKILL the client.
+        const removeOnce = (attempt: number): void => {
+          const remover = spawn(dockerPath, ["rm", "-f", containerName], { stdio: "ignore" });
+          const next = (code: number | null) => {
+            if (code !== 0 && attempt === 0) {
+              removeOnce(1);
+              return;
+            }
+            killClient();
+          };
+          remover.on("close", next);
+          remover.on("error", () => next(1));
+        };
+        removeOnce(0);
       }, timeoutMs);
       child.stdout?.on("data", (c: Buffer) => {
         stdout += c.toString("utf8");
