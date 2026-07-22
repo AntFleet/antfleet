@@ -854,7 +854,11 @@ async function patchStagedADepManifest(
 ): Promise<boolean> {
   const r = await io.exec({
     command: "git",
-    args: ["-C", worktree, "diff", "--cached", "--name-only", "-z"],
+    // --no-renames: a rename AWAY from a manifest (git mv package.json …) would
+    // otherwise surface only the NEW path under rename detection, hiding that the
+    // manifest was removed. Disabling it emits both the deletion + addition paths
+    // (codex re-audit #164).
+    args: ["-C", worktree, "diff", "--cached", "--name-only", "--no-renames", "-z"],
     cwd: worktree,
     timeoutMs,
     env,
