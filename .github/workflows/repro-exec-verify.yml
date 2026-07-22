@@ -77,6 +77,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Build the root @antfleet/cli dist — the batch script imports its
+      # providers at runtime (first live run failed on ERR_MODULE_NOT_FOUND).
+      - run: pnpm build
       - name: Fetch — author repro specs + pin mirrors
         working-directory: apps/web
         # inputs are passed via env and quoted in the script — NEVER interpolated
@@ -141,6 +144,7 @@ jobs:
           # longer bundles); no third-party action on this job.
           npm install -g "pnpm@${{ env.PNPM_VERSION }}"
           pnpm install --frozen-lockfile
+          pnpm build
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: repro-specs
@@ -179,6 +183,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: repro-verdicts
