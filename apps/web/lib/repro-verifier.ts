@@ -273,6 +273,10 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     // on the next call. Created here, removed in the same finally.
     homeDir = await args.io.mkWorktreeRoot();
     const sandboxEnv = minimalEnv(homeDir);
+    // Provenance: set true once a network dep-prefetch install SUCCEEDS. Hoisted
+    // here so EVERY terminal return past that point records it — a prefetched run
+    // must never be persisted/digested as offline (codex final sign-off #164).
+    let depPrefetched = false;
 
     // OFFLINE: the mirror dir must EXIST and NOT be a symlink before we clone
     // from it — a symlinked mirror could redirect the clone out of the intended
@@ -349,7 +353,6 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     // (network, secret-free, --ignore-scripts) — BEFORE the pre-repro so both
     // observations share the installed state. A failed/absent install stays the
     // honest `deps_unavailable`; it can never mint a verdict.
-    let depPrefetched = false;
     const missingDeps = await probeOfflineDeps(args.io, worktree, detector.kind);
     if (missingDeps !== null) {
       const prefetch = await maybeInstallDeps(
@@ -401,6 +404,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         notes: `repro killed after ${timeoutMs}ms pre-patch — cannot prove the bug`,
         ms: args.io.now() - t0,
         kind: "repro_timeout",
+        depPrefetched,
         reproCmd,
         reproPreMs: preStep.ms,
       });
@@ -413,6 +417,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         }) → bug not reproduced; not verified: ${truncate(preStep.stderr)}`,
         ms: args.io.now() - t0,
         kind: "repro_not_reproducing",
+        depPrefetched,
         reproCmd,
         reproPreExitCode: preStep.exitCode,
         reproPreMs: preStep.ms,
@@ -439,6 +444,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         notes: `git apply failed (exit ${applied.exitCode ?? "null"}): ${truncate(applied.stderr)}`,
         ms: args.io.now() - t0,
         kind: "patch_apply_failed",
+        depPrefetched,
         reproCmd,
         reproPreExitCode: preStep.exitCode,
         reproPreMs: preStep.ms,
@@ -463,6 +469,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
           "but node_modules was resolved pre-patch — cannot trust it post-patch; not verifiable offline",
         ms: args.io.now() - t0,
         kind: "deps_unavailable",
+        depPrefetched,
         reproCmd,
         reproPreExitCode: preStep.exitCode,
         reproPreMs: preStep.ms,
@@ -498,6 +505,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         notes: `tests killed after ${timeoutMs}ms — verifier cannot decide (testCmd=${detector.cmd})`,
         ms: args.io.now() - t0,
         kind: "test_timeout",
+        depPrefetched,
         testCmd,
         testMs,
         reproCmd,
@@ -516,6 +524,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         notes: "post-patch tests produced no exit code (abnormal termination) — cannot decide",
         ms: args.io.now() - t0,
         kind: "abnormal_exit",
+        depPrefetched,
         testCmd,
         testMs,
         reproCmd,
@@ -536,6 +545,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         notes: `test runner not executable (exit ${testExitCode}) — deps incomplete offline, cannot decide: ${truncate(testStep.stderr)}`,
         ms: args.io.now() - t0,
         kind: "deps_unavailable",
+        depPrefetched,
         testCmd,
         testExitCode,
         testMs,
@@ -580,6 +590,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
           notes: `could not re-materialise repro for the post-patch run: ${rewrite.notes}`,
           ms: args.io.now() - t0,
           kind: rewrite.kind,
+          depPrefetched,
           testCmd,
           testExitCode,
           testMs,
@@ -602,6 +613,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         notes: `repro killed after ${timeoutMs}ms post-patch — cannot confirm the fix`,
         ms: args.io.now() - t0,
         kind: "repro_timeout",
+        depPrefetched,
         testCmd,
         testExitCode,
         testMs,
@@ -626,6 +638,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
         worktreePath: worktree,
         error: null,
         inconclusiveReason: null,
+        depPrefetched,
         reproCmd,
         reproPreExitCode: preStep.exitCode,
         reproPostExitCode: postStep.exitCode,
@@ -645,6 +658,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
           "cannot confirm the fix; not verified",
         ms: args.io.now() - t0,
         kind: "abnormal_exit",
+        depPrefetched,
         testCmd,
         testExitCode,
         testMs,
@@ -1121,6 +1135,10 @@ function reproInconclusive(args: {
   reproPostExitCode?: number | null;
   reproPreMs?: number | null;
   reproPostMs?: number | null;
+  // Provenance: pass the flag on EVERY terminal path reachable after a
+  // successful network install, so a prefetched run is never recorded as offline
+  // (codex final sign-off #164). Omitted on pre-install paths → false.
+  depPrefetched?: boolean;
 }): PatchVerifyOutcome {
   return {
     verdict: "inconclusive",
@@ -1136,6 +1154,7 @@ function reproInconclusive(args: {
     worktreePath: args.worktreePath,
     error: args.error ?? null,
     inconclusiveReason: args.kind,
+    depPrefetched: args.depPrefetched ?? false,
     reproCmd: args.reproCmd ?? null,
     reproPreExitCode: args.reproPreExitCode ?? null,
     reproPostExitCode: args.reproPostExitCode ?? null,

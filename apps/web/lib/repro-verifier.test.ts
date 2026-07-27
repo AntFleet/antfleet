@@ -643,6 +643,41 @@ describe("runReproVerifier", () => {
     expect(out.inconclusiveReason).toBe("deps_unavailable");
     expect(out.notes).toMatch(/dependency manifest/);
     expect(ranSuite.v).toBe(false); // bailed before running the suite
+    // Provenance must survive a post-install bail: the install DID run.
+    expect(out.depPrefetched).toBe(true);
+  });
+
+  it("dep-prefetch: provenance (depPrefetched=true) is recorded on a NON-verified post-install path", async () => {
+    let installed = false;
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") return ok("pass");
+      if (command === "pytest") {
+        pytestCall += 1;
+        // pre: reproduces (0). post: STILL 0 → patch didn't close the bug → regressed.
+        return ok("still reproduces");
+      }
+      return ok();
+    });
+    const execInstall = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => {
+      installed = true;
+      return ok();
+    });
+    const exists = vi.fn(async (p: string) => {
+      if (p.endsWith("pnpm-lock.yaml")) return true;
+      if (p.endsWith("node_modules")) return installed;
+      return false;
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: { ...mkIo({ exec, exists }), execInstall },
+    });
+    expect(out.verdict).toBe("regressed"); // repro still exits 0 post-patch
+    expect(out.depPrefetched).toBe(true); // NOT recorded as an offline run
+    expect(pytestCall).toBe(2);
   });
 
   it("dep-prefetch: a FAILED install stays deps_unavailable and never spawns the suite", async () => {
