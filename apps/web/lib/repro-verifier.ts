@@ -266,6 +266,10 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
 
   let worktree: string | null = null;
   let homeDir: string | null = null;
+  // Provenance: set true once a network dep-prefetch install SUCCEEDS. Declared
+  // OUTSIDE the try so EVERY terminal return — including the outer catch — records
+  // it; a prefetched run must never be persisted/digested as offline (codex #164).
+  let depPrefetched = false;
   try {
     worktree = await args.io.mkWorktreeRoot();
     // Per-call HOME dir — see the runPatchVerifier comment: hardcoding HOME
@@ -273,10 +277,6 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
     // on the next call. Created here, removed in the same finally.
     homeDir = await args.io.mkWorktreeRoot();
     const sandboxEnv = minimalEnv(homeDir);
-    // Provenance: set true once a network dep-prefetch install SUCCEEDS. Hoisted
-    // here so EVERY terminal return past that point records it — a prefetched run
-    // must never be persisted/digested as offline (codex final sign-off #164).
-    let depPrefetched = false;
 
     // OFFLINE: the mirror dir must EXIST and NOT be a symlink before we clone
     // from it — a symlinked mirror could redirect the clone out of the intended
@@ -388,6 +388,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
           notes: write.notes,
           ms: args.io.now() - t0,
           kind: write.kind,
+          depPrefetched,
         });
       }
       writtenReproPath = write.absolutePath;
@@ -696,6 +697,7 @@ export async function runReproVerifier(args: RunReproVerifierArgs): Promise<Patc
       ms: args.io.now() - t0,
       error: err instanceof Error ? err.message : String(err),
       kind: "exception",
+      depPrefetched,
     });
   } finally {
     // Tear down BOTH the worktree and the per-call HOME dir — best effort,
