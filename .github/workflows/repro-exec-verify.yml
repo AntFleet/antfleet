@@ -16,6 +16,11 @@
 #                            lib/repro-container-exec.ts). The verdict is decided
 #                            on the runner from the containers' exit codes and is
 #                            never a file any hostile container can reach.
+#                            EXCEPTION (opt-in via dep_prefetch): the ONE JS dep
+#                            install runs in a `--network bridge` container —
+#                            still secret-free, torn down before the offline
+#                            suite runs, verdict-irrelevant. Everything that
+#                            decides the verdict stays --network none.
 #   record (HAS db secret)— writes one review_gate_outcomes row per verdict,
 #                            idempotent, with witnessability provenance.
 #
@@ -45,6 +50,11 @@ on:
         default: ""
       record:
         description: "Write verdicts to the DB (false = dry-run)"
+        type: boolean
+        required: false
+        default: false
+      dep_prefetch:
+        description: "Install JS deps in a network container so JS suites can reach verified"
         type: boolean
         required: false
         default: false
@@ -131,6 +141,11 @@ jobs:
       # Marks this as the CI exec job (guards --phase exec against bare-host
       # runs). NOT a secret — the isolation is the per-command container.
       ANTFLEET_REPRO_SANDBOX: "1"
+      # Dep-prefetch toggle. Passed via env: (NOT interpolated into a run body)
+      # so the boolean input cannot inject shell. Default false → JS suites with
+      # missing deps stay deps_unavailable; true → one secret-free network
+      # install container per spec before the offline suite. No secret either way.
+      ANTFLEET_REPRO_DEP_PREFETCH: ${{ inputs.dep_prefetch }}
     steps:
       # First-party actions only in this job (no third-party action on the
       # hostile-code path). pnpm comes from corepack (bundled with node).

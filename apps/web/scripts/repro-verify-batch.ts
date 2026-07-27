@@ -184,6 +184,11 @@ export type VerdictRecord = {
   modelId: string | null;
   specDigest: string;
   notes: string;
+  // Provenance (codex audit #164): true when the suite's deps were network-
+  // prefetched rather than committed/offline. A `verified` with this set
+  // involved a network install step (the suite + repro still ran offline), so
+  // the receipt records it rather than presenting it as a fully-offline proof.
+  depPrefetched: boolean;
 };
 
 // The three verdict strings a repro run can produce. Used by parseVerdicts's
@@ -351,6 +356,9 @@ export function computeVerdictDigest(v: VerdictRecord): string {
     reproPostExitCode: v.reproPostExitCode,
     testExitCode: v.testExitCode,
     specDigest: v.specDigest,
+    // Bind provenance into the digest so a prefetched verdict cannot be
+    // presented as an offline one without changing its hash.
+    depPrefetched: v.depPrefetched,
   });
   return createHash("sha256").update(material).digest("hex").slice(0, 16);
 }
@@ -378,6 +386,7 @@ export function shapeVerdictRecord(spec: ReproSpec, outcome: PatchVerifyOutcome)
     modelId: spec.repro.modelId,
     specDigest: spec.specDigest,
     notes: outcome.notes,
+    depPrefetched: outcome.depPrefetched ?? false,
   };
 }
 
@@ -754,6 +763,7 @@ export async function runExecPhase(opts: ExecPhaseOptions): Promise<VerdictRecor
             modelId: spec.repro.modelId,
             specDigest: spec.specDigest,
             notes: `runReproVerifier threw: ${err instanceof Error ? err.message : String(err)}`,
+            depPrefetched: false,
           });
           continue;
         }
@@ -1085,6 +1095,13 @@ export function parseVerdicts(json: string): VerdictRecord[] {
     }
     if (typeof r["notes"] !== "string") {
       throw new Error(`repro-verdicts[${i}].notes must be a string`);
+    }
+    // Provenance flag: normalize a missing value to false (forward-compat with a
+    // pre-#164 artifact), else require a boolean. Bound into computeVerdictDigest.
+    if (r["depPrefetched"] === undefined) {
+      r["depPrefetched"] = false;
+    } else if (typeof r["depPrefetched"] !== "boolean") {
+      throw new Error(`repro-verdicts[${i}].depPrefetched must be a boolean`);
     }
     // PROOF INVARIANT: a `verified` record must carry a genuine proof, or it is a
     // forgery and we reject the whole file. runReproVerifier only ever emits
@@ -1477,6 +1494,12 @@ export const REPRO_EXEC_IMAGE = "antfleet-repro-exec:local";
 async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyOutcome>> {
   const { runReproVerifier, realReproVerifierIo } = await import("@/lib/repro-verifier");
   const { makeContainerExec } = await import("@/lib/repro-container-exec");
+  const { isReproDepPrefetchEnabled } = await import("@/lib/daybreak-gates-env");
+  // Policy lives here (batch = policy, verifier = mechanism): only when the
+  // flag is ON do we build the network-enabled install container and hand it to
+  // the verifier as `execInstall`. OFF → the seam is absent → JS suites with
+  // missing deps stay `deps_unavailable`, exactly as before.
+  const depPrefetch = isReproDepPrefetchEnabled();
   // Run each container as the runner user so files written into the mounted
   // worktree are not left root-owned (which would break runner-side cleanup).
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -1501,16 +1524,40 @@ async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyO
     // it into the rw worktree instead would let pre-patch hostile code rewrite
     // the fix before it's applied.
     const controlDir = await mkdtemp(join(tmpdir(), "antfleet-ctl-"));
+    // Both containers share the SAME mounts; they differ only in network. The
+    // mirror + patch control dir are read-only; the worktree (cwd) is rw.
+    const mounts = [
+      { host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true },
+      { host: controlDir, container: controlDir, readOnly: true },
+    ];
     const containerExec = makeContainerExec({
       image: REPRO_EXEC_IMAGE,
-      // The worktree (cwd) is mounted rw automatically; the mirror + the patch
-      // control dir are the read-only extra mounts.
-      extraMounts: [
-        { host: spec.mirrorDir, container: spec.mirrorDir, readOnly: true },
-        { host: controlDir, container: controlDir, readOnly: true },
-      ],
+      extraMounts: mounts,
       ...(user !== undefined ? { user } : {}),
     });
+    // ONLY built when the flag is on. This container is networked, so it is
+    // deliberately the LEAST-privileged one (codex audit #164):
+    //   - NO extra mounts: it does NOT see the bare mirror (full private repo)
+    //     or the patch control dir (the unpublished fix). It gets only the rw
+    //     worktree it must write node_modules into. A hostile package therefore
+    //     has nothing sensitive to exfiltrate even with network.
+    //   - resource-capped to bound egress-window abuse (mining / fork-bomb /
+    //     disk). Generous enough for a real `npm ci`; the offline suite/repro
+    //     containers stay uncapped so a heavy suite is not killed into a false
+    //     regressed.
+    // The install itself runs --ignore-scripts (installCommandFor), so no
+    // attacker code executes during the networked step.
+    const installExec = depPrefetch
+      ? makeContainerExec({
+          image: REPRO_EXEC_IMAGE,
+          extraMounts: [],
+          allowNetwork: true,
+          memory: "2g",
+          cpus: "2",
+          pidsLimit: 512,
+          ...(user !== undefined ? { user } : {}),
+        })
+      : undefined;
     try {
       return await runReproVerifier({
         repoSource: { kind: "offline", mirrorDir: spec.mirrorDir },
@@ -1521,6 +1568,7 @@ async function realVerifier(): Promise<(spec: ReproSpec) => Promise<PatchVerifyO
         io: {
           ...baseIo,
           exec: containerExec,
+          ...(installExec !== undefined ? { execInstall: installExec } : {}),
           // Route the patch onto the ro-mounted control dir (the default writes
           // to a runner-only sibling temp dir the container can't see).
           writeTempFile: async (contents: string) => {

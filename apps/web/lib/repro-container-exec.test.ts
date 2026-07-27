@@ -60,6 +60,41 @@ describe("buildDockerArgs", () => {
     expect(a[a.indexOf("--name") + 1]).toBe("antfleet-repro-test");
   });
 
+  it("allowNetwork:true selects the bridge network ONLY for the install step", () => {
+    const online = buildDockerArgs(execArgs(), { ...opts, allowNetwork: true }, "n");
+    expect(online[online.indexOf("--network") + 1]).toBe("bridge");
+    // Still --rm, still cleared env: a networked install container is not a
+    // secret-carrying one.
+    expect(online).toContain("--rm");
+    expect(online[online.indexOf("--env-file") + 1]).toBe("/dev/null");
+    // Default and explicit-false both stay offline.
+    const off = buildDockerArgs(execArgs(), { ...opts, allowNetwork: false }, "n");
+    expect(off[off.indexOf("--network") + 1]).toBe("none");
+  });
+
+  it("applies resource caps when set (install container abuse bound) and omits them otherwise", () => {
+    const capped = buildDockerArgs(
+      execArgs(),
+      { ...opts, memory: "2g", cpus: "2", pidsLimit: 512 },
+      "n",
+    ).join(" ");
+    expect(capped).toContain("--memory 2g");
+    expect(capped).toContain("--cpus 2");
+    expect(capped).toContain("--pids-limit 512");
+    // The offline containers pass none → docker defaults (no false-regressed OOM).
+    const uncapped = buildDockerArgs(execArgs(), opts, "n").join(" ");
+    expect(uncapped).not.toContain("--memory");
+    expect(uncapped).not.toContain("--pids-limit");
+  });
+
+  it("the install container (allowNetwork, no extraMounts) mounts ONLY the worktree", () => {
+    // The networked container must not see the mirror or patch control dir.
+    const installOpts: ContainerExecOptions = { image: IMAGE, extraMounts: [], allowNetwork: true };
+    const a = buildDockerArgs(execArgs(), installOpts, "n");
+    const mounts = a.filter((_, i) => a[i - 1] === "-v");
+    expect(mounts).toEqual(["/tmp/antfleet-pv-1:/tmp/antfleet-pv-1"]); // worktree only
+  });
+
   it("runs as the runner user and mounts the worktree rw + mirror ro", () => {
     const a = buildDockerArgs(execArgs(), opts, "n").join(" ");
     expect(a).toContain("--user 1001:1002");

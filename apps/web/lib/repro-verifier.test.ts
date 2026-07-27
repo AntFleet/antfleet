@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { probeOfflineDeps, runReproVerifier, type ReproVerifierIo } from "./repro-verifier";
+import {
+  installCommandFor,
+  pathIsDepManifest,
+  probeOfflineDeps,
+  runReproVerifier,
+  type ReproVerifierIo,
+} from "./repro-verifier";
 import type { ExecArgs, ExecResult } from "./patch-verifier";
 import type { Finding } from "./review-types";
 import type { ReproTestSuggestion } from "@antfleet/cli/types";
@@ -42,7 +48,14 @@ function mkIo(
   return {
     mkWorktreeRoot: vi.fn(async () => `/tmp/antfleet-pv-mock-${seq++}`),
     removeDir: vi.fn(async () => {}),
-    exists: spec.exists ?? vi.fn(async () => false),
+    // Default = a runnable JS project: a pnpm runner is detected and its deps
+    // are present offline. Detection + dep-probe now run BEFORE the repro (so
+    // both observations share the same dep state), so a test that wants to reach
+    // the repro/apply/suite logic needs a detector + deps by default. Tests that
+    // specifically exercise "no runner" / "deps absent" pass their own `exists`.
+    exists:
+      spec.exists ??
+      vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules")),
     readFile: vi.fn(async () => ""),
     writeTempFile: vi.fn(async () => "/tmp/antfleet-pv-mock-patch.diff"),
     exec: spec.exec ?? vi.fn(async () => ok()),
@@ -443,22 +456,21 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    // exists all-false → detectRunner returns "none". A `verified` proof must
-    // confirm non-regression, so with no runner the verdict is inconclusive and
-    // the post-patch repro never runs. (Audit 2026-07-11: was false-verified.)
+    // exists all-false → detectRunner returns "none". Detection now happens
+    // BEFORE the repro, so with no runner we bail immediately: the repro never
+    // runs at all (a repro differential alone is not a verified proof).
     const writeFileNoClobber = vi.fn(async () => {});
     const out = await runReproVerifier({
       ...BASE_ARGS,
       repro: mkRepro({ file: null, cmd: "curl http://localhost:8080/x" }),
       finding: mkFinding(),
-      io: mkIo({ exec, writeFileNoClobber }),
+      io: mkIo({ exec, writeFileNoClobber, exists: async () => false }),
     });
     expect(out.verdict).toBe("inconclusive");
     expect(out.verdict).not.toBe("verified");
     expect(out.inconclusiveReason).toBe("no_runner");
-    expect(out.reproPreExitCode).toBe(0); // differential WAS observed pre-patch
     expect(out.detector).toBe("none");
-    expect(curlCall).toBe(1); // post-patch repro never ran
+    expect(curlCall).toBe(0); // no runner → the repro never ran
     expect(writeFileNoClobber).not.toHaveBeenCalled();
   });
 
@@ -474,7 +486,9 @@ describe("runReproVerifier", () => {
       }
       return ok();
     });
-    // Lockfile present (runner detected), node_modules NOT present.
+    // Lockfile present (runner detected), node_modules NOT present. Detection +
+    // probe run before the repro, so we bail at deps_unavailable before the repro
+    // or the suite ever runs.
     const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml"));
     const out = await runReproVerifier({
       ...BASE_ARGS,
@@ -486,8 +500,227 @@ describe("runReproVerifier", () => {
     expect(out.verdict).not.toBe("regressed");
     expect(out.inconclusiveReason).toBe("deps_unavailable");
     expect(out.detector).toBe("pnpm");
-    expect(out.reproPreExitCode).toBe(0);
     expect(suiteSpawns).toEqual([]); // probe fails closed BEFORE spawning the suite
+  });
+
+  it("dep-prefetch: installs missing JS deps in the network seam, then reaches verified via the OFFLINE suite", async () => {
+    let installed = false;
+    let pyCall = 0;
+    const offlineSteps: string[] = [];
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") {
+        offlineSteps.push("suite");
+        return ok("all pass");
+      }
+      if (command === "pytest") {
+        pyCall += 1;
+        offlineSteps.push("repro");
+        return pyCall === 1 ? ok("reproduced") : fail("AssertionError", 2);
+      }
+      return ok();
+    });
+    // The network install seam: succeeds and makes node_modules appear.
+    const execInstall = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(
+      async ({ command, args }) => {
+        expect(command).toBe("pnpm");
+        expect(args).toContain("install");
+        installed = true;
+        return ok("added 42 packages");
+      },
+    );
+    // pnpm-lock present (runner detected); node_modules absent UNTIL install runs.
+    const exists = vi.fn(async (p: string) => {
+      if (p.endsWith("pnpm-lock.yaml")) return true;
+      if (p.endsWith("node_modules")) return installed;
+      return false;
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: { ...mkIo({ exec, exists }), execInstall },
+    });
+    expect(out.verdict).toBe("verified");
+    expect(out.depPrefetched).toBe(true); // provenance: network install was used
+    expect(execInstall).toHaveBeenCalledTimes(1);
+    // Pre-repro, suite, post-repro all ran on the OFFLINE exec, in order.
+    expect(offlineSteps).toEqual(["repro", "suite", "repro"]);
+    // The install NEVER ran on the offline exec — only through the network seam.
+    const installedOnOfflineExec = exec.mock.calls.some(
+      ([a]) => a.command === "pnpm" && a.args[0] === "install",
+    );
+    expect(installedOnOfflineExec).toBe(false);
+  });
+
+  it("suite exit 127 (test runner not executable) is deps_unavailable, never regressed", async () => {
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") return fail("vitest: not found", 127);
+      if (command === "pytest") {
+        pytestCall += 1;
+        return ok("reproduced"); // pre-repro reproduces
+      }
+      return ok();
+    });
+    // node_modules present as a dir (probe passes) but the test binary is missing
+    // → the suite exits 127. Must NOT be classified as a patch regression.
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists }),
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("regressed");
+    expect(out.inconclusiveReason).toBe("deps_unavailable");
+    expect(out.notes).toMatch(/not executable/);
+  });
+
+  it("a fully-offline verified carries no depPrefetched flag", async () => {
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") return ok("pass");
+      if (command === "pytest") {
+        pytestCall += 1;
+        return pytestCall === 1 ? ok("reproduced") : fail("fixed", 2);
+      }
+      return ok();
+    });
+    // deps already present offline → no install seam invoked.
+    const exists = vi.fn(
+      async (p: string) => p.endsWith("pnpm-lock.yaml") || p.endsWith("node_modules"),
+    );
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: mkIo({ exec, exists }),
+    });
+    expect(out.verdict).toBe("verified");
+    expect(out.depPrefetched).toBe(false);
+  });
+
+  it("dep-prefetch: a patch that changes the dep manifest bails to deps_unavailable (never verified)", async () => {
+    let installed = false;
+    const ranSuite = { v: false };
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      // The guard lists staged paths after apply; report package.json (NUL-sep).
+      if (command === "git" && args.includes("diff") && args.includes("--cached")) {
+        return ok("package.json\0");
+      }
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") {
+        ranSuite.v = true;
+        return ok("pass");
+      }
+      if (command === "pytest") return ok("reproduced");
+      return ok();
+    });
+    const execInstall = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => {
+      installed = true;
+      return ok();
+    });
+    const exists = vi.fn(async (p: string) => {
+      if (p.endsWith("pnpm-lock.yaml")) return true;
+      if (p.endsWith("node_modules")) return installed;
+      return false;
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      patch: "diff --git a/package.json b/package.json\n@@ -1 +1 @@\n-{}\n+{}\n",
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: { ...mkIo({ exec, exists }), execInstall },
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.verdict).not.toBe("verified");
+    expect(out.inconclusiveReason).toBe("deps_unavailable");
+    expect(out.notes).toMatch(/dependency manifest/);
+    expect(ranSuite.v).toBe(false); // bailed before running the suite
+    // Provenance must survive a post-install bail: the install DID run.
+    expect(out.depPrefetched).toBe(true);
+  });
+
+  it("dep-prefetch: provenance (depPrefetched=true) is recorded on a NON-verified post-install path", async () => {
+    let installed = false;
+    let pytestCall = 0;
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      if (command === "pnpm" && args[0] === "test") return ok("pass");
+      if (command === "pytest") {
+        pytestCall += 1;
+        // pre: reproduces (0). post: STILL 0 → patch didn't close the bug → regressed.
+        return ok("still reproduces");
+      }
+      return ok();
+    });
+    const execInstall = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () => {
+      installed = true;
+      return ok();
+    });
+    const exists = vi.fn(async (p: string) => {
+      if (p.endsWith("pnpm-lock.yaml")) return true;
+      if (p.endsWith("node_modules")) return installed;
+      return false;
+    });
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro(),
+      finding: mkFinding(),
+      io: { ...mkIo({ exec, exists }), execInstall },
+    });
+    expect(out.verdict).toBe("regressed"); // repro still exits 0 post-patch
+    expect(out.depPrefetched).toBe(true); // NOT recorded as an offline run
+    expect(pytestCall).toBe(2);
+  });
+
+  it("dep-prefetch: a FAILED install stays deps_unavailable and never spawns the suite", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      return ok();
+    });
+    const execInstall = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () =>
+      fail("ENETUNREACH registry.npmjs.org", 1),
+    );
+    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml")); // node_modules never appears
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro({ file: null, cmd: "curl http://localhost:8080/x" }),
+      finding: mkFinding(),
+      io: { ...mkIo({ exec, exists }), execInstall },
+    });
+    expect(out.verdict).toBe("inconclusive");
+    expect(out.inconclusiveReason).toBe("deps_unavailable");
+    expect(out.notes).toMatch(/install failed/);
+    const ranSuite = exec.mock.calls.some(
+      (c) => c[0].command === "pnpm" && c[0].args[0] === "test",
+    );
+    expect(ranSuite).toBe(false);
+  });
+
+  it("dep-prefetch: an install that exits 0 but produces no node_modules stays deps_unavailable", async () => {
+    const exec = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async ({ command, args }) => {
+      if (command === "git" && GIT_SETUP_VERBS.has(gitVerb(args))) return ok();
+      return ok();
+    });
+    const execInstall = vi.fn<(args: ExecArgs) => Promise<ExecResult>>(async () =>
+      ok("up to date"),
+    );
+    const exists = vi.fn(async (p: string) => p.endsWith("pnpm-lock.yaml")); // node_modules still absent post-install
+    const out = await runReproVerifier({
+      ...BASE_ARGS,
+      repro: mkRepro({ file: null, cmd: "curl http://localhost:8080/x" }),
+      finding: mkFinding(),
+      io: { ...mkIo({ exec, exists }), execInstall },
+    });
+    expect(out.inconclusiveReason).toBe("deps_unavailable");
+    expect(out.notes).toMatch(/still unavailable after install/);
   });
 
   it("returns abnormal_exit (never verified) when the post-patch repro exits null without timing out", async () => {
@@ -789,5 +1022,52 @@ describe("probeOfflineDeps", () => {
 
   it("never gates a runner kind it does not understand", async () => {
     expect(await probeOfflineDeps(io({}), W, "none")).toBeNull();
+  });
+});
+
+describe("installCommandFor", () => {
+  it("pnpm/npm install with --ignore-scripts and forced dev deps; go/pytest null", () => {
+    const pnpm = installCommandFor("pnpm");
+    expect(pnpm).toEqual({
+      command: "pnpm",
+      args: [
+        "install",
+        "--frozen-lockfile",
+        "--prod=false",
+        "--ignore-scripts",
+        "--ignore-pnpmfile",
+      ],
+    });
+    const npm = installCommandFor("npm");
+    expect(npm).toEqual({ command: "npm", args: ["ci", "--include=dev", "--ignore-scripts"] });
+    // The containment levers must never be dropped: --ignore-scripts on both,
+    // and --ignore-pnpmfile on pnpm (--ignore-scripts alone leaves .pnpmfile
+    // hooks executing arbitrary Node during install — codex re-audit #164).
+    expect(pnpm?.args).toContain("--ignore-scripts");
+    expect(pnpm?.args).toContain("--ignore-pnpmfile");
+    expect(npm?.args).toContain("--ignore-scripts");
+    // Not offline-installable in this build.
+    expect(installCommandFor("go")).toBeNull();
+    expect(installCommandFor("pytest")).toBeNull();
+    expect(installCommandFor("none")).toBeNull();
+  });
+});
+
+describe("pathIsDepManifest", () => {
+  it("matches manifest/lockfile/workspace basenames exactly (raw unquoted paths)", () => {
+    expect(pathIsDepManifest("package.json")).toBe(true);
+    expect(pathIsDepManifest("packages/app/package.json")).toBe(true);
+    expect(pathIsDepManifest("pnpm-lock.yaml")).toBe(true);
+    expect(pathIsDepManifest("packages/app/package-lock.json")).toBe(true);
+    expect(pathIsDepManifest("npm-shrinkwrap.json")).toBe(true);
+    expect(pathIsDepManifest("pnpm-workspace.yaml")).toBe(true);
+    // Raw (git -z) path with unicode — no C-quoting, exact basename still matches.
+    expect(pathIsDepManifest("packages/dé/package.json")).toBe(true);
+    // Not a manifest.
+    expect(pathIsDepManifest("src/x.ts")).toBe(false);
+    // A different extension or a trailing-suffix name must NOT match (the old
+    // regex false-matched "package.json notes.ts").
+    expect(pathIsDepManifest("src/package.json.ts")).toBe(false);
+    expect(pathIsDepManifest("src/package.json notes.ts")).toBe(false);
   });
 });
