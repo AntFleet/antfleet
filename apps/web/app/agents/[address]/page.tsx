@@ -819,6 +819,9 @@ function FindingBlock({ finding, now }: { finding: AgentFinding; now: Date }) {
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Badge>{severityLabel(finding.severity)}</Badge>
         <Badge>{relative}</Badge>
+        {finding.verificationStatus !== null && (
+          <Badge>{`verification: ${finding.verificationStatus}${finding.verificationMethod !== null ? ` (${finding.verificationMethod})` : ""}`}</Badge>
+        )}
         {finding.upstreamPrUrl !== null && (
           <a
             href={finding.upstreamPrUrl}

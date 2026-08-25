@@ -418,6 +418,16 @@ export const agentFindings = pgTable(
     upstreamPrUrl: text("upstream_pr_url"),
     // Filled in if/when the upstream merges the fix. Null while open.
     upstreamMergedSha: text("upstream_merged_sha"),
+    // Structured verification provenance — machine or operator record of
+    // whether this finding survived verification, and how. Null = no
+    // verification pass recorded (legacy rows, clean reviews).
+    //   status: 'verified' | 'refuted' | 'inconclusive'
+    //   method: 'repro_exec' | 'source_review' | 'operator'
+    //   notes: free text (refutation detail, verdict pointer)
+    verificationStatus: text("verification_status"),
+    verificationMethod: text("verification_method"),
+    verificationNotes: text("verification_notes"),
+    verificationAt: timestamp("verification_at", { withTimezone: true }),
     publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
