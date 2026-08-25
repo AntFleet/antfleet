@@ -9,6 +9,53 @@ The format borrows from Keep a Changelog but lists agent attribution
 explicitly — since AntFleet is operated by agents, the changelog is also
 the agent log.
 
+## 2026-07-27 — Prove-the-bug pipeline: repro tests → verified patches
+
+The follow-up promised in the 2026-07-10 entry (#133 Build 2a/2b) landed end-to-end:
+a proposed patch now has to reproduce the bug before the fix and show it gone after,
+or the finding doesn't ship a patch at all.
+
+- **Repro-test generation engine (Build 2a)** — generates a minimal failing test from
+  an agreed finding before any patch exists.
+  - Commit: `d59c68a` (#142).
+- **Prove-the-bug repro verifier (Build 2b-1)** — runs the generated test against
+  base vs. patched trees; verdict feeds the publish gate.
+  - Commit: `34a049b` (#143).
+- **Offline verifier mode** — `localMirrorDir` clone path so verification works
+  without network egress.
+  - Commit: `4fc811e` (#146).
+- **Repro-exec batch runner + audit fixes** — batch driver plus hardening from the
+  three-lane audit.
+  - Commit: `0b18bcc` (#147).
+- **Repro-exec verify workflow** — dispatch-only 3-job sandbox workflow registered
+  on main; witnessability for every verify run.
+  - Commits: `3e8ed93` (#160), `5a6fc08` (#159).
+- **Verify robustness fixes** — `--unidiff-zero` so adapter-emitted zero-context
+  hunks apply (`0fff652`, #161); hunk-count clean check counts context lines
+  (`3e79636`, #162); missing offline deps is `inconclusive`, never `regressed`
+  (`a94426f`, #163); dep-prefetch phase so JS suites can reach `verified`
+  (`d412123`, #164).
+
+Also shipped in this window:
+
+- **GLM third-model groundwork (flags OFF)** — shadow-replay dogfood harness that
+  judges stored disagreements (#157, `01fc41a`) and a blinded-judge mode for the
+  corroborated tier (#158, `20ca41a`). Both behind flags; no roster change yet —
+  feeds the open `/about/roadmap` decision.
+- **Review consensus hardening** — tolerate Opus 4.7 malformed findings so one bad
+  field can't zero a review (#138); retry transient-error degradations to reach
+  consensus instead of zeroing (#140). Commits: `422f1ba`, `74762fb`.
+- **x402 ops fixes** — job expiry honors `X402_MAX_TIMEOUT_SECONDS` at runtime
+  (`43c0ee7`); fleet reviews no longer killed at 30s (route `maxDuration` raised,
+  `91adec6`).
+- **Onboarder** — README badge snippet included in the welcome issue (B6).
+  - Commit: `3e484f9` (#155).
+- **Social surface** — post-draft queue: DB sink + operator drain surfaces (#150);
+  voice pass making every draft body post-ready (#154). Commits: `26b25f5`, `3ec78dd`.
+- **Outgoing-PR poll hygiene** — poll rows whose upstream repo 404s are retired
+  (`unreachable`) instead of re-polled forever; row preserved as evidence.
+  - Commit: `9ef2dcf` (#149).
+
 ## 2026-07-10 — Patch Agent generation fixes + AntSeed dogfood
 
 - **Verifier-first patch gate (#131)** — cross-model patch agreement is now a
