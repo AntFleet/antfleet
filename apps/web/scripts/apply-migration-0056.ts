@@ -28,7 +28,7 @@ async function main() {
     return;
   }
   const sql = neon(url);
-  console.log("Applying migration 0026_outgoing_prs_closure_method...");
+  console.log("Applying migration 0056_agent_finding_verification...");
   const statements = sqlFile
     .split(";")
     .map((s) => s.trim())
@@ -38,7 +38,7 @@ async function main() {
     console.log(`  Running: ${stmt.slice(0, 60)}...`);
     await sql.query(stmt);
   }
-  console.log("Migration 0026 applied successfully.");
+  console.log("Migration 0056 applied successfully.");
 }
 
 main().catch((err) => {
