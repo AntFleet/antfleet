@@ -9,7 +9,7 @@
 --   * 'verified'   — repro-exec verdict reached (or equivalent machine proof)
 --   * 'refuted'    — finding did not survive verification (with notes why)
 --   * 'inconclusive' — pipeline ran but could not decide (e.g. no cargo in
---                      the exec image; missing offline deps)
+--                      the exec image → missing offline deps)
 -- All nullable: legacy rows and clean reviews carry no verification pass.
 ALTER TABLE agent_findings
   ADD COLUMN IF NOT EXISTS verification_status text,
