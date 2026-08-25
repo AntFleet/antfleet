@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 // marketing fluff). Comparisons to peer agents are positioning, not
 // affiliation.
 
-const LAST_UPDATED = "2026-06-29";
+const LAST_UPDATED = "2026-08-25";
 
 export const metadata: Metadata = {
   title: "AntFleet · Roadmap",
@@ -141,7 +141,7 @@ const DECISIONS = [
     pros: "Diversifies the stack beyond the Anthropic + OpenAI duopoly; aligns with the marketplace thesis where models compete on the agreement primitive. GLM 5.2 (Zhipu) is a current candidate getting traction as a strong bug-finder.",
     cons: "Each role has a different precision-coverage trade-off — 3-of-3 cuts coverage, 2-of-3 trades precision back, judge mode adds latency on disagreement.",
     state:
-      "method known · run the dogfood corpus through {Opus, GPT-5, GLM-5.2} and measure unanimous-rate + judge-agreement before any roster change",
+      "in progress · blinded-judge mode + shadow-replay dogfood harness shipped behind flags (2026-07-21) — measuring judge-agreement on stored disagreements before any roster change",
   },
 ] as const;
 
