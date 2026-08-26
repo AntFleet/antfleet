@@ -31,6 +31,14 @@ pnpm audit-solidity \
 
 # LIVE: one finder call via model-client (needs ANTHROPIC_API_KEY).
 pnpm audit-solidity --target ... --entry ... --rules ... --live --out report.json
+
+# Routing overrides (same transport, different endpoint — useful when metered
+# Anthropic credits are out; OpenRouter's Anthropic-compat route verified):
+SIDECAR_BASE_URL=https://openrouter.ai/api \
+SIDECAR_MODEL=anthropic/claude-sonnet-4.5 \
+SIDECAR_API_KEY=$OPENROUTER_API_KEY \
+pnpm audit-solidity ... --live
+# SIDECAR_DEBUG=1 logs stop_reason/block-types/token usage + raw input shape.
 ```
 
 Closure stats print to stderr; the prompt/report goes to stdout and `--out`.
@@ -44,3 +52,16 @@ Closure stats print to stderr; the prompt/report goes to stdout and `--out`.
 - Output is unverified candidate findings with self-reported rule factors. Read
   them like the redacted-cartel integrity catch taught us: never blindly trusted.
 - Value claim is conditional on cross-file bug classes. It does not generalize.
+
+## Live e2e status (2026-08-26)
+
+Verified end-to-end against the biconomy fixture via OpenRouter's
+Anthropic-compat route (~$0.20 total): closure → forced-tool-use call → lenient
+parse → scoring → report. Two transport defects were found and fixed BY this
+e2e: (1) whole-array `.catch([])` silently discarded all findings when any
+element failed parse — now per-finding salvage with loud failure when the
+findings key is absent entirely; (2) some routes return `findings` as a
+JSON-encoded string — normalized at the transport boundary. Result of the final
+run: 7 findings (3 PURSUE / 4 DROP), including known-real classes in the target
+(cross-chain sig replay, front-runnable init). This proves the PIPELINE, not
+novel-bug finding on unaudited code — that requires a fresh target and credits.

@@ -149,7 +149,37 @@ export const auditFindingSchema = z.object({
 });
 
 export const auditOutputSchema = z.object({
-  findings: z.array(auditFindingSchema).catch([]),
+  // PER-FINDING tolerance (#134 philosophy at the right granularity): one
+  // malformed finding degrades ITSELF instead of nuking siblings. Whole-array
+  // `.catch([])` was removed after the live e2e run: a 5k-output-token response
+  // scored as zero findings because ONE bad element voided the entire array
+  // silently. The catch-salvage keeps rejection VISIBLE as a droppable
+  // placeholder finding.
+  findings: z.array(
+    auditFindingSchema.catch((ctx) => {
+      const input = ctx.input;
+      const title =
+        typeof input === "object" &&
+        input !== null &&
+        typeof (input as { title?: unknown }).title === "string"
+          ? (input as { title: string }).title
+          : "(unparseable finding)";
+      return {
+        title,
+        category: "security",
+        severity: "low",
+        confidence: "low",
+        evidence: [],
+        reasoning: "finding failed lenient parse — salvaged placeholder; inspect raw output",
+        triggerRole: "unspecified",
+        preconditions: "unspecified",
+        unprivilegedReachable: false,
+        recoverableUnder1hr: false,
+        inScope: false,
+        duplicateOf: null,
+      };
+    }),
+  ),
   // `.catch` (not `.default`): the model sometimes returns `inspected` as a
   // string summary; a wrong TYPE must degrade to the empty default rather than
   // throw and nuke the whole finding-set (which would false-FAIL the gate).
