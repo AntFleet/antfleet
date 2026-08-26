@@ -23,8 +23,13 @@ import {
   loadRemappings,
 } from "../src/sidecar-solidity/closure.js";
 import { auditModelCall } from "../src/sidecar-solidity/model-client.js";
-import { runFinder, type RefuteCallback } from "../src/sidecar-solidity/run.js";
-import { refuteFinding } from "../src/sidecar-solidity/refuter.js";
+import {
+  runFinder,
+  type ConfirmCallback,
+  type RefuteCallback,
+} from "../src/sidecar-solidity/run.js";
+import { refuteFinding, refuterTransport } from "../src/sidecar-solidity/refuter.js";
+import { buildFocusedConfirmPrompt } from "../src/sidecar-solidity/prompt.js";
 
 loadDotenv({ path: resolve(process.cwd(), ".env.local"), quiet: true });
 
@@ -165,13 +170,39 @@ async function main(): Promise<void> {
     : undefined;
   const refuterCallback: RefuteCallback | undefined = cli.live
     ? async ({ finding }) => {
-        const r = await refuteFinding({
-          finding,
-          files: closure.blocks,
-          programRules,
-          priorFindings: [], // operator-supplied corpus hook; empty unless provided
-        });
+        const r = await refuteFinding(
+          {
+            finding,
+            files: closure.blocks,
+            programRules,
+            priorFindings: [], // operator-supplied corpus hook; empty unless provided
+          },
+          refuterTransport, // WITHOUT this, refuteFinding returns the dry-run KILLED stub
+        );
         return { verdict: r.verdict, reason: r.reason } as const;
+      }
+    : undefined;
+  // Stage-B focused confirm (CLOSURE_UPGRADE item 2.1): wiring this turns the
+  // finder two-stage — stage A sees only entries, stage B re-runs each candidate
+  // over exactly its named siblings. Without it runFinder falls back to the
+  // single whole-closure dump (which gets skimmed — the Monetrix lesson).
+  const confirmCallback: ConfirmCallback | undefined = cli.live
+    ? async ({ finding, focusedFiles, programRules: rules }) => {
+        const prompt = buildFocusedConfirmPrompt({
+          finding: {
+            title: finding.title,
+            severity: finding.severity,
+            confidence: finding.confidence,
+            reasoning: finding.reasoning,
+            evidence: finding.evidence,
+            triggerRole: finding.triggerRole,
+            preconditions: finding.preconditions,
+          },
+          files: focusedFiles,
+          programRules: rules,
+        });
+        const { payload, truncated } = await auditModelCall(prompt);
+        return { payload, truncated };
       }
     : undefined;
   const result = await runFinder(
@@ -188,6 +219,7 @@ async function main(): Promise<void> {
     },
     finderTransport,
     refuterCallback,
+    confirmCallback,
   );
 
   if (!cli.live) {

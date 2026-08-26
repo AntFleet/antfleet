@@ -88,6 +88,38 @@ describe("groundFinding — mechanical citation check (no model)", () => {
     ]);
     expect(groundFinding(finding, closure)).toEqual({ ok: true });
   });
+
+  it("grounds a correct quote cited at WRONG line numbers and re-anchors it (e2e regression)", () => {
+    // The blocker the live e2e exposed: LLMs quote real code but miscount lines,
+    // so a span-exact check false-DROPped 100% of real findings.
+    const finding = findingWith([
+      {
+        path: "contracts/Vault.sol",
+        startLine: 99, // wrong (and out of bounds) — the quote is authoritative
+        endLine: 99,
+        symbol: null,
+        quote: 'msg.sender.call{value: address(this).balance}("");',
+      },
+    ]);
+    expect(groundFinding(finding, closure)).toEqual({ ok: true });
+    // Re-anchored to the quote's true location (line 5 in the fixture).
+    expect(finding.evidence[0]?.startLine).toBe(5);
+  });
+
+  it("still DROPs a quote that appears nowhere in the file (fabrication defense)", () => {
+    const finding = findingWith([
+      {
+        path: "contracts/Vault.sol",
+        startLine: 5,
+        endLine: 5,
+        symbol: null,
+        quote: "selfdestruct(payable(attacker));",
+      },
+    ]);
+    const result = groundFinding(finding, closure);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("quote does not match");
+  });
 });
 
 // --- Promotion gate ------------------------------------------------------------

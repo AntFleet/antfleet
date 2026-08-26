@@ -49,10 +49,19 @@ function normalizeWhitespace(text: string): string {
 
 /**
  * Deterministic, free citation check. A finding whose citation does not resolve
- * is auto-DROPped with `evidence not locatable in closure`:
- *  - every evidence path must be a file in the closure (exact or unique-suffix);
- *  - every line range must fall within that file's REAL bounds;
- *  - a present quote must match the cited span (whitespace-normalized).
+ * is auto-DROPped with `evidence not locatable in closure`. Two regimes:
+ *
+ *  - **Quote present (the strong signal):** the quote is authoritative. LLMs
+ *    quote real source accurately but miscount line numbers badly (measured in
+ *    e2e: correct code cited at the wrong lines → 100% false-DROP under a
+ *    span-exact check). So a present quote is located ANYWHERE in the cited file
+ *    (whitespace-normalized). If found, the citation is grounded and its line
+ *    numbers are RE-ANCHORED to the quote's true position (report accuracy). A
+ *    quote that appears nowhere in the file is fabricated → DROP. Whether the
+ *    quoted code actually supports the claim is the refuter's job, not grounding's.
+ *  - **Quote absent (weak fallback):** all we can verify is that the cited line
+ *    range falls within the file's real bounds. A bare path or out-of-bounds
+ *    range → DROP.
  */
 export function groundFinding(
   finding: AuditFinding,
@@ -69,6 +78,21 @@ export function groundFinding(
         reason: `evidence not locatable in closure (path "${evidence.path}" is not in the assembled closure)`,
       };
     }
+    const hasQuote = evidence.quote !== null && evidence.quote.trim().length > 0;
+    if (hasQuote) {
+      const anchor = locateQuote(file.contents, evidence.quote as string);
+      if (anchor === null) {
+        return {
+          ok: false,
+          reason: `evidence not locatable in closure (quote does not match anything in ${evidence.path})`,
+        };
+      }
+      // Re-anchor to where the quote really is — the model's own line numbers are
+      // unreliable and the report must cite the true location.
+      evidence.startLine = anchor.startLine;
+      evidence.endLine = anchor.endLine;
+      continue;
+    }
     const lineCount = countLines(file.contents);
     const start = evidence.startLine;
     const end = evidence.endLine ?? start;
@@ -76,7 +100,7 @@ export function groundFinding(
       // Path-only citations are unverifiable positions — require lines too.
       return {
         ok: false,
-        reason: `evidence not locatable in closure ("${evidence.path}" cited without line numbers)`,
+        reason: `evidence not locatable in closure ("${evidence.path}" cited without line numbers or a quote)`,
       };
     }
     if (start < 1 || start > lineCount || end < start || end > lineCount) {
@@ -85,23 +109,53 @@ export function groundFinding(
         reason: `evidence not locatable in closure (${evidence.path}:${start}-${end} outside real bounds 1-${lineCount})`,
       };
     }
-    if (evidence.quote !== null && evidence.quote.trim().length > 0) {
-      const span = normalizeWhitespace(extractSpan(file.contents, start, end));
-      const quoted = normalizeWhitespace(evidence.quote);
-      if (!span.includes(quoted)) {
-        return {
-          ok: false,
-          reason: `evidence not locatable in closure (quote does not match ${evidence.path}:${start}-${end})`,
-        };
-      }
-    }
   }
   return { ok: true };
 }
 
-function extractSpan(contents: string, startLine: number, endLine: number): string {
-  const lines = contents.split(/\r?\n/u);
-  return lines.slice(startLine - 1, endLine).join("\n");
+/**
+ * Find a (possibly multi-line) quote in the file, tolerating whitespace
+ * differences and the model quoting a substring of each line. Returns the 1-based
+ * line span of the match, or null when the quote is nowhere in the file.
+ */
+function locateQuote(
+  contents: string,
+  quote: string,
+): { startLine: number; endLine: number } | null {
+  const fileLines = contents.split(/\r?\n/u);
+  const normFile = fileLines.map(normalizeWhitespace);
+  const quoteLines = quote
+    .split(/\r?\n/u)
+    .map(normalizeWhitespace)
+    .filter((l) => l.length > 0);
+  if (quoteLines.length === 0) {
+    return null;
+  }
+  // Consecutive line-by-line match: each file line must contain the corresponding
+  // quote line (handles leading-indent and trailing-comment differences).
+  for (let i = 0; i <= normFile.length - quoteLines.length; i++) {
+    let matched = true;
+    for (let j = 0; j < quoteLines.length; j++) {
+      const fileLine = normFile[i + j];
+      if (fileLine === undefined || !fileLine.includes(quoteLines[j] as string)) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return { startLine: i + 1, endLine: i + quoteLines.length };
+    }
+  }
+  // Fallback: the whole quote appears as one normalized run (e.g. the model
+  // reflowed line breaks). Anchor on the first quote line.
+  if (normFile.join(" ").includes(quoteLines.join(" "))) {
+    const first = quoteLines[0] as string;
+    const idx = normFile.findIndex((l) => l.includes(first));
+    if (idx >= 0) {
+      return { startLine: idx + 1, endLine: Math.min(idx + quoteLines.length, fileLines.length) };
+    }
+  }
+  return null;
 }
 
 function countLines(contents: string): number {
