@@ -70,7 +70,9 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "test": "vitest run",
-    "spike": "tsx scripts/spike.ts"
+    "spike": "tsx scripts/spike.ts",
+    "killtest": "tsx scripts/solidity-killtest.ts",
+    "audit-solidity": "tsx scripts/audit-solidity.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

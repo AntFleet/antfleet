@@ -46,3 +46,11 @@ audit/
 
 # ACP CLI event scratch (local round-trip smoke)
 apps/web/.acp/
+
+# §2 kill-test artifacts: labeled target codebases + run reports stay local.
+solidity-killtest/targets/
+solidity-killtest/results/
+
+# Session handoff prompts (operator-internal orchestration)
+src/sidecar-solidity/BUILD_PROMPT.md
+src/sidecar-solidity/SPEC_WRITING_PROMPT.md
