@@ -106,6 +106,22 @@ describe("groundFinding — mechanical citation check (no model)", () => {
     expect(finding.evidence[0]?.startLine).toBe(5);
   });
 
+  it("grounds a multi-line quote when the model altered ONE line (anchor on a real distinctive line)", () => {
+    // Full-tree e2e regression: opus quoted a real multi-line function but with a
+    // reflowed/added line, breaking whole-block match though the citation is real.
+    const finding = findingWith([
+      {
+        path: "contracts/Vault.sol",
+        startLine: 40,
+        endLine: 44,
+        symbol: null,
+        quote:
+          'function withdraw() external {\n    msg.sender.call{value: address(this).balance}("");\n    // NOTE: model-added line not in the source\n}',
+      },
+    ]);
+    expect(groundFinding(finding, closure)).toEqual({ ok: true });
+  });
+
   it("still DROPs a quote that appears nowhere in the file (fabrication defense)", () => {
     const finding = findingWith([
       {

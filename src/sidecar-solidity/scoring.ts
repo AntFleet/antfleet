@@ -146,11 +146,27 @@ function locateQuote(
       return { startLine: i + 1, endLine: i + quoteLines.length };
     }
   }
-  // Fallback: the whole quote appears as one normalized run (e.g. the model
-  // reflowed line breaks). Anchor on the first quote line.
+  // Fallback: the whole quote appears as one normalized run (model reflowed the
+  // line breaks). Anchor on the first quote line.
   if (normFile.join(" ").includes(quoteLines.join(" "))) {
     const first = quoteLines[0] as string;
     const idx = normFile.findIndex((l) => l.includes(first));
+    if (idx >= 0) {
+      return { startLine: idx + 1, endLine: Math.min(idx + quoteLines.length, fileLines.length) };
+    }
+  }
+  // Last resort: models routinely alter ONE line of a long multi-line quote
+  // (reflow, an added comment, a paraphrased body line), which breaks a whole-
+  // block match even though the citation is real. Anchor on the most distinctive
+  // single quote line that actually occurs in the file — one substantial real
+  // line is strong evidence the citation points at real code; whether the code
+  // supports the claim is the refuter's job, not grounding's. A quote with NO
+  // substantial line in the file is still fabrication → null.
+  const distinctive = quoteLines
+    .filter((l) => l.length >= 12)
+    .toSorted((a, b) => b.length - a.length);
+  for (const line of distinctive) {
+    const idx = normFile.findIndex((l) => l.includes(line));
     if (idx >= 0) {
       return { startLine: idx + 1, endLine: Math.min(idx + quoteLines.length, fileLines.length) };
     }
