@@ -1,33 +1,16 @@
 /**
  * §2 KILL-TEST RUNNER — Solidity full-contract audit premise test.
- * specs/SOLIDITY_AUDIT_MODE_SPEC.md
+ * specs/SOLIDITY_AUDIT_MODE_SPEC.md — REWORKED per REWORK_PROMPT items 4+5.
  *
- * This is a SIDECAR (§0): it reuses the provider registry and cost helpers but
- * does NOT touch review-worker / review-pipeline / chunk-repo-for-bench. The
- * PR-diff reviewer is not exercised or modified here beyond calling its
- * existing prompt builder + provider.review() as the BASELINE arm.
+ * C2: a target whose baseline or audit arm errored/was cost-skipped is
+ * EXCLUDED from the gate — a broken baseline must never manufacture a "miss".
+ * The audit arm uses the SAME bidirectional assembleClosure() that ships in the
+ * sidecar, so the gate validates what actually ships.
  *
- * Layout per labeled target:
- *
- *   solidity-killtest/targets/<name>/
- *     manifest.json        <- targetManifestSchema (known answer + program rules)
- *     contracts/**.sol     <- the codebase at the vulnerable commit
- *
- * Usage:
- *   pnpm killtest                          # all targets, anthropic only
- *   pnpm killtest --providers anthropic,openai
- *   pnpm killtest --targets-dir <dir> --ceiling 10
- *
- * For each target:
- *   ARM 1 (baseline) : pack files into ≤150KB slices (mirroring the PR chunker),
- *                      run buildSpikePrompt + provider.review() per slice.
- *   ARM 2 (new mode) : resolve the whole-contract import/inheritance closure,
- *                      run the fund-extraction objective + program rules via
- *                      one raw model call, parse leniently, score PURSUE/DROP.
- * Then evaluateTarget() + evaluateGate() and write a report.
- *
- * COST: hard ceiling across both arms of every target (default $10). Crossing
- * it aborts before the next unit; completed units are kept.
+ * SPEND SAFETY (item 5): DRY-RUN by default — without --live this prints the
+ * run plan and exits. --ceiling is validated (NaN no longer silently disables
+ * the cap) and cost is accumulated PER CALL with a ceiling re-check before each
+ * slice, not per target.
  */
 
 import { config as loadDotenv } from "dotenv";
@@ -38,24 +21,24 @@ import { providerByName } from "../src/provider.js";
 import { estimateCallCost, shouldAbortBeforeRun } from "../src/spike/cost.js";
 import { buildSpikePrompt, type PromptFile } from "../src/spike/build-prompt.js";
 import {
-  DEFAULT_MAX_SLICE_BYTES,
-  packSlices,
-  resolveContractClosure,
-  type ContextFile,
-} from "../src/sidecar-solidity/context.js";
-import { AUDIT_DEFAULT_MODEL, auditModelCall } from "../src/sidecar-solidity/model-client.js";
-import { buildFullContractAuditPrompt } from "../src/sidecar-solidity/prompt.js";
+  assembleClosure,
+  fsReadRepoFile,
+  listSolFiles,
+  loadRemappings,
+} from "../src/sidecar-solidity/closure.js";
+import { auditModelCall } from "../src/sidecar-solidity/model-client.js";
+import { buildFinderPrompt } from "../src/sidecar-solidity/prompt.js";
+import { lenientParseFindings } from "../src/sidecar-solidity/finding-schema.js";
 import {
-  auditOutputSchema,
   evaluateGate,
   evaluateTarget,
   targetManifestSchema,
   type GateDecision,
-  type KnownBug,
   type Severity,
   type TargetOutcome,
   type TargetManifest,
-} from "../src/sidecar-solidity/killtest.js";
+  type ArmRunStatus,
+} from "../src/sidecar-solidity/kill-gate.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_TARGETS_DIR = resolve(ROOT, "solidity-killtest/targets");
@@ -63,12 +46,11 @@ const RESULTS_DIR = resolve(ROOT, "solidity-killtest/results");
 
 loadDotenv({ path: resolve(ROOT, ".env.local"), quiet: true });
 
-const SOURCE_EXTENSIONS = [".sol"] as const;
-
 type CliArgs = {
   targetsDir: string;
   providers: string[];
   ceilingUsd: number;
+  live: boolean;
 };
 
 function parseArgs(argv: readonly string[]): CliArgs {
@@ -76,6 +58,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
     targetsDir: DEFAULT_TARGETS_DIR,
     providers: ["anthropic"],
     ceilingUsd: 10,
+    live: false,
   };
   let i = 0;
   while (i < argv.length) {
@@ -101,12 +84,22 @@ function parseArgs(argv: readonly string[]): CliArgs {
       continue;
     }
     if (arg === "--ceiling") {
-      args.ceilingUsd = Number.parseFloat(take());
+      // Item 5: NaN silently disabled the cap before. Validate hard.
+      const parsed = Number.parseFloat(take());
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error("--ceiling must be a finite number >= 0");
+      }
+      args.ceilingUsd = parsed;
       i += 2;
       continue;
     }
+    if (arg === "--live") {
+      args.live = true;
+      i += 1;
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
-      console.error("usage: killtest [--targets-dir DIR] [--providers a,b] [--ceiling USD]");
+      console.error("usage: killtest [--targets-dir DIR] [--providers a,b] [--ceiling USD] [--live]");
       process.exit(0);
     }
     throw new Error(`unknown argument: ${arg}`);
@@ -115,35 +108,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
 }
 
 async function listSourceFiles(root: string): Promise<string[]> {
-  const acc: string[] = [];
-  const skipDirs = new Set(["node_modules", "lib", "out", "cache", ".git", ".fleet"]);
-  const walk = async (dir: string): Promise<void> => {
-    const entries = await readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      // Skip dot-files and build dirs. The manifest must never reach the LLM.
-      if (entry.name.startsWith(".") || skipDirs.has(entry.name)) continue;
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
-        acc.push(full);
-      }
-    }
-  };
-  await walk(root);
-  return acc.toSorted();
-}
-
-async function readContextFiles(
-  targetRoot: string,
-  paths: readonly string[],
-): Promise<ContextFile[]> {
-  return Promise.all(
-    paths.map(async (p) => ({
-      path: relative(targetRoot, p),
-      contents: await readFile(p, "utf8"),
-    })),
-  );
+  return listSolFiles(root); // symlink-safe walker (item 6)
 }
 
 async function loadManifests(targetsDir: string): Promise<{ name: string; root: string }[]> {
@@ -151,136 +116,41 @@ async function loadManifests(targetsDir: string): Promise<{ name: string; root: 
   const out: { name: string; root: string }[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const manifestPath = join(targetsDir, entry.name, "manifest.json");
     try {
-      await readFile(manifestPath, "utf8");
+      await readFile(join(targetsDir, entry.name, "manifest.json"), "utf8");
       out.push({ name: entry.name, root: join(targetsDir, entry.name) });
     } catch {
-      // Directory without a manifest is not a target; ignore silently.
+      // Directory without a manifest is not a target; ignore.
     }
   }
-  return out;
-}
-
-async function runBaselineArm(args: {
-  providerName: string;
-  targetRoot: string;
-  files: ContextFile[];
-  sliceFindingsSink: BaselineFinding[];
-}): Promise<void> {
-  const provider = providerByName(args.providerName);
-  await provider.check(args.targetRoot);
-  const slices = packSlices(args.files, DEFAULT_MAX_SLICE_BYTES);
-  for (const slice of slices) {
-    const prompt = buildSpikePrompt({
-      projectName: "killtest-baseline",
-      projectRoot: args.targetRoot,
-      featureId: `slice-${slice.index}`,
-      featureTitle: `Slice ${slice.index} (${slice.files.length} file(s), ${slice.bytes} bytes)`,
-      files: slice.files satisfies PromptFile[],
-    });
-    const output = await provider.review(args.targetRoot, prompt, null);
-    for (const finding of output.findings) {
-      args.sliceFindingsSink.push(finding);
-    }
-  }
+  return out.toSorted((a, b) => (a.name < b.name ? -1 : 1));
 }
 
 type BaselineFinding = {
   title: string;
-  category: unknown;
   severity: Severity;
-  confidence: string;
   evidence: { path: string; startLine: number | null; endLine: number | null }[];
-  reasoning: string;
 };
-
-async function runAuditArm(args: {
-  targetRoot: string;
-  manifest: TargetManifest;
-  files: ContextFile[];
-}): Promise<{ findings: ReturnType<typeof auditOutputSchema.parse>["findings"]; model: string }> {
-  const availablePaths = args.files.map((f) => f.path);
-  // Union of closures over every declared entry contract = Mode-A context.
-  const closurePaths = new Set<string>();
-  const externals = new Set<string>();
-  for (const entry of args.manifest.entryContracts) {
-    if (!availablePaths.includes(entry)) {
-      throw new Error(`entry contract ${entry} not found in target tree`);
-    }
-    const closure = await resolveContractClosure(entry, availablePaths, async (rel) => {
-      const abs = join(args.targetRoot, rel);
-      return readFile(abs, "utf8");
-    });
-    for (const p of closure.included) closurePaths.add(p);
-    for (const e of closure.external) externals.add(e);
-  }
-  const contextFiles = args.files.filter((f) => closurePaths.has(f.path));
-  if (externals.size > 0) {
-    console.warn(
-      `[killtest] WARNING: unresolved external imports (closure incomplete): ${[...externals].join(", ")}`,
-    );
-  }
-  const prompt = buildFullContractAuditPrompt({
-    projectName: args.manifest.name,
-    entryContracts: args.manifest.entryContracts,
-    files: contextFiles,
-    programRules: args.manifest.programRules,
-  });
-  const raw = await auditModelCall(prompt, { model: AUDIT_DEFAULT_MODEL });
-  const parsed = auditOutputSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`audit output failed lenient parse: ${parsed.error.message}`);
-  }
-  return { findings: parsed.data.findings, model: AUDIT_DEFAULT_MODEL };
-}
-
-function fmtSeverity(s: Severity | null): string {
-  return s ?? "(not surfaced)";
-}
-
-function renderTargetReport(args: { manifest: TargetManifest; outcome: TargetOutcome }): string {
-  const lines: string[] = [];
-  lines.push(`# Kill-test target: ${args.manifest.name}`);
-  lines.push("");
-  lines.push(`- Source: ${args.manifest.source.repo} @ \`${args.manifest.source.commit}\``);
-  lines.push(`- Reference (known answer): ${args.manifest.source.referenceUrl}`);
-  lines.push(`- Entry contracts: ${args.manifest.entryContracts.join(", ")}`);
-  lines.push("");
-  lines.push("| bug | expected | slice arm | audit arm | counts toward gate |");
-  lines.push("| --- | --- | --- | --- | --- |");
-  for (const p of args.outcome.perBug) {
-    const bug: KnownBug | undefined = args.manifest.knownBugs.find((b) => b.id === p.bugId);
-    lines.push(
-      `| ${p.bugId} | ${bug?.expectedSeverity ?? "?"} | ${fmtSeverity(p.slice.observedSeverity)} | ${fmtSeverity(p.audit.observedSeverity)} | ${args.outcome.countsTowardGate ? "YES" : "no"} |`,
-    );
-  }
-  lines.push("");
-  lines.push("## Verdict factors on matching audit findings");
-  lines.push("");
-  for (const v of args.outcome.perBug.flatMap((p) => p.auditVerdicts)) {
-    lines.push(`- **${v.verdict}** — ${v.reason}`);
-  }
-  if (args.outcome.perBug.every((p) => p.auditVerdicts.length === 0)) {
-    lines.push("(none)");
-  }
-  lines.push("");
-  return lines.join("\n");
-}
 
 async function main(): Promise<void> {
   const cli = parseArgs(process.argv.slice(2));
   const manifests = await loadManifests(cli.targetsDir);
   if (manifests.length === 0) {
     console.error(
-      `[killtest] no labeled targets under ${cli.targetsDir} — add targets/<name>/manifest.json + contracts first (see solidity-killtest/README.md)`,
+      `[killtest] no labeled targets under ${cli.targetsDir} — add targets/<name>/manifest.json first`,
     );
     process.exit(1);
   }
-  if (manifests.length < 3) {
+
+  if (!cli.live) {
     console.error(
-      `[killtest] NOTE: ${manifests.length}/3 required targets present — the gate cannot pass yet; running anyway to record partial data`,
+      `[killtest] DRY-RUN (default): ${manifests.length} target(s) found, providers=${cli.providers.join(",")}, ceiling=$${cli.ceilingUsd.toFixed(2)}. NO model calls will be made.`,
     );
+    for (const t of manifests) {
+      console.error(`  would run: ${t.name} (baseline x${cli.providers.length} + audit x1)`);
+    }
+    console.error("[killtest] pass --live to execute against real APIs.");
+    process.exit(0);
   }
 
   await mkdir(RESULTS_DIR, { recursive: true });
@@ -289,96 +159,148 @@ async function main(): Promise<void> {
   const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
 
   for (const target of manifests) {
-    const manifestRaw = JSON.parse(
-      await readFile(join(target.root, "manifest.json"), "utf8"),
-    ) as unknown;
+    const manifestRaw = JSON.parse(await readFile(join(target.root, "manifest.json"), "utf8")) as unknown;
     const manifest = targetManifestSchema.parse(manifestRaw);
     const sourcePaths = await listSourceFiles(target.root);
-    const files = await readContextFiles(target.root, sourcePaths);
-    console.error(
-      `[killtest] ${target.name}: ${files.length} .sol file(s); baseline providers=${cli.providers.join(",")} audit-model=${AUDIT_DEFAULT_MODEL} (est. $${(cli.providers.reduce((sum, p) => sum + estimateCallCost(p), 0) + estimateCallCost("anthropic")).toFixed(2)})`,
-    );
+    const remappings = await loadRemappings(target.root);
 
-    const sliceFindings: BaselineFinding[] = [];
-    let auditFindings: Awaited<ReturnType<typeof runAuditArm>>["findings"] = [];
+    let sliceFindings: BaselineFinding[] = [];
+    let auditFindings: { title: string; severity: Severity; evidence: BaselineFinding["evidence"] }[] = [];
     let armErrors: string[] = [];
+    let baselineStatus: ArmRunStatus = "errored";
+    let auditStatus: ArmRunStatus = "errored";
 
+    const checkCeiling = (nextCallEstimate: number): boolean => {
+      const decision = shouldAbortBeforeRun(cumulativeCost, nextCallEstimate, cli.ceilingUsd);
+      if (decision.abort) {
+        armErrors.push(`cost ceiling hit before call (${decision.reason})`);
+        return false;
+      }
+      return true;
+    };
+
+    // ARM 1 — baseline (current finding phase): slices via production prompt.
     try {
-      const baselineEstimate = cli.providers.reduce((sum, p) => sum + estimateCallCost(p), 0);
-      const abort = shouldAbortBeforeRun(cumulativeCost, baselineEstimate, cli.ceilingUsd);
-      if (abort.abort) {
-        console.error(`[killtest] cost ceiling: skipping baseline arm (${abort.reason})`);
-        armErrors.push("baseline skipped: cost ceiling");
-      } else {
-        for (const providerName of cli.providers) {
-          await runBaselineArm({
-            providerName,
-            targetRoot: target.root,
-            files,
-            sliceFindingsSink: sliceFindings,
+      const provider = providerByName(cli.providers[0] ?? "anthropic");
+      await provider.check(target.root);
+      // Bidirectional closure drives slicing too: every assembled file gets
+      // packed into ≤150KB review units (mirrors the PR chunker).
+      const closure = await assembleClosure({
+        entries: manifest.entryContracts,
+        allPaths: sourcePaths,
+        readFile: fsReadRepoFile(target.root),
+        remappings,
+      });
+      const sliceInputs: PromptFile[][] = packIntoSlices(closure.blocks);
+      sliceFindings = [];
+      let ranAnySlice = false;
+      for (const slice of sliceInputs) {
+        if (!checkCeiling(estimateCallCost(provider.name))) break;
+        const prompt = buildSpikePrompt({
+          projectName: "killtest-baseline",
+          projectRoot: target.root,
+          featureId: `slice-${ranAnySlice ? sliceFindings.length : 0}`,
+          featureTitle: `Slice (${slice.length} file(s))`,
+          files: slice,
+        });
+        const output = await provider.review(target.root, prompt, null);
+        cumulativeCost += estimateCallCost(provider.name);
+        ranAnySlice = true;
+        for (const finding of output.findings) {
+          sliceFindings.push({
+            title: finding.title,
+            severity: finding.severity,
+            evidence: finding.evidence.map((e) => ({
+              path: e.path,
+              startLine: e.startLine,
+              endLine: e.endLine,
+            })),
           });
-          cumulativeCost += estimateCallCost(providerName);
         }
       }
+      baselineStatus = ranAnySlice ? "ran" : "skipped";
     } catch (err) {
       armErrors.push(`baseline arm error: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // ARM 2 — new mode via the SHIPPING bidirectional assembler (item 4).
     try {
-      const abort = shouldAbortBeforeRun(
-        cumulativeCost,
-        estimateCallCost("anthropic"),
-        cli.ceilingUsd,
-      );
-      if (abort.abort) {
-        console.error(`[killtest] cost ceiling: skipping audit arm (${abort.reason})`);
-        armErrors.push("audit skipped: cost ceiling");
-      } else {
-        const result = await runAuditArm({ targetRoot: target.root, manifest, files });
-        auditFindings = result.findings;
+      if (checkCeiling(estimateCallCost("anthropic"))) {
+        const closure = await assembleClosure({
+          entries: manifest.entryContracts,
+          allPaths: sourcePaths,
+          readFile: fsReadRepoFile(target.root),
+          remappings,
+        });
+        const contextNote =
+          closure.externalUnresolved.length > 0
+            ? `closure of available files; NOT available: ${closure.externalUnresolved.join(", ")}`
+            : undefined;
+        const prompt = buildFinderPrompt({
+          projectName: manifest.name,
+          entries: manifest.entryContracts,
+          files: closure.blocks,
+          programRules: manifest.programRules,
+          contextNote,
+        });
+        const handled = await auditModelCall(prompt);
         cumulativeCost += estimateCallCost("anthropic");
+        if (handled.truncated) {
+          armErrors.push("audit output truncated at max_tokens (incomplete)");
+        }
+        const raw = handled.payload as Record<string, unknown> | null;
+        const rawList =
+          raw !== null && typeof raw === "object" && Array.isArray(raw["findings"])
+            ? (raw["findings"] as unknown[])
+            : [];
+        const { findings } = lenientParseFindings(rawList);
+        auditFindings = findings.map((f) => ({
+          title: f.title,
+          severity: f.severity,
+          evidence: f.evidence.map((e) => ({ path: e.path, startLine: e.startLine, endLine: e.endLine })),
+        }));
+        auditStatus = "ran";
       }
     } catch (err) {
       armErrors.push(`audit arm error: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // Both arms feed the SAME matcher. Slice findings keep their native shape
-    // (they already satisfy the evidence/severity fields); audit findings are
-    // the leniently-parsed factor-bearing ones.
     const outcome = evaluateTarget({
       targetName: manifest.name,
-      sliceFindings: sliceFindings,
-      auditFindings: auditFindings.map((f) => ({ ...f, severity: f.severity as Severity })),
+      baselineStatus,
+      auditStatus,
+      sliceFindings,
+      auditFindings,
       bugs: manifest.knownBugs,
     });
     outcomes.push(outcome);
 
-    const report = renderTargetReport({ manifest, outcome });
     const reportPath = join(RESULTS_DIR, `${target.name}-${timestamp}.md`);
-    await writeFile(reportPath, report, "utf8");
+    await writeFile(reportPath, renderTargetReport(manifest, outcome), "utf8");
     if (armErrors.length > 0) {
       await writeFile(
         join(RESULTS_DIR, `${target.name}-${timestamp}.errors.txt`),
         armErrors.join("\n"),
         "utf8",
       );
-      console.error(`[killtest] ${target.name}: ARM ERRORS recorded in ${reportPath}.errors.txt`);
     }
     console.error(
-      `[killtest] ${target.name}: gate-relevant=${outcome.countsTowardGate} (slice=${outcome.sliceArm.caught ? outcome.sliceArm.observedSeverity : "missed"}, audit=${outcome.auditArm.caught ? outcome.auditArm.observedSeverity : "missed"}) → ${relative(ROOT, reportPath)}`,
+      `[killtest] ${target.name}: baseline=${baselineStatus} audit=${auditStatus} gate-relevant=${outcome.countsTowardGate}${outcome.excludedFromGate ? ` [EXCLUDED: ${outcome.exclusionReason}]` : ""} → ${relative(ROOT, reportPath)}`,
     );
   }
 
   const gate: GateDecision = evaluateGate(outcomes);
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     spec: "specs/SOLIDITY_AUDIT_MODE_SPEC.md §2",
     ranAt: new Date().toISOString(),
     estimatedCostUsd: Number(cumulativeCost.toFixed(3)),
     targets: outcomes.map((o) => ({
       name: o.targetName,
-      sliceMissedOrUnderRated: o.sliceMissedOrUnderRated,
-      auditSurfacedCorrectly: o.auditSurfacedCorrectly,
+      baselineStatus: o.baselineRan ? "ran" : "did-not-run",
+      auditStatus: o.auditRan ? "ran" : "did-not-run",
+      excludedFromGate: o.excludedFromGate,
+      exclusionReason: o.exclusionReason,
       countsTowardGate: o.countsTowardGate,
       perBug: o.perBug,
     })),
@@ -390,15 +312,66 @@ async function main(): Promise<void> {
   console.error("");
   console.error("=========================================");
   console.error(`§2 GATE: ${gate.pass ? "PASS" : "FAIL"}`);
-  console.error(`  passedTargets: ${gate.passedTargets}/${gate.totalTargets}`);
+  console.error(`  eligible targets (both arms ran): ${gate.eligibleTargets}/${gate.totalTargets}`);
+  console.error(`  passedTargets: ${gate.passedTargets}/${gate.eligibleTargets}`);
   console.error(`  reason: ${gate.reason}`);
   console.error(`  summary: ${relative(ROOT, summaryPath)}`);
   console.error("=========================================");
-  if (gate.pass) {
-    console.error("Premise holds — §3 sidecar implementation is authorized.");
-  } else {
-    console.error("Per spec §2: do NOT build §3. Record this result.");
+}
+
+/** ≤150KB slice packing mirroring chunk-repo-for-bench's PR chunks. */
+function packIntoSlices(files: readonly { path: string; contents: string }[]): PromptFile[][] {
+  const MAX = 150_000;
+  const sorted = [...files].toSorted((a, b) => (a.path < b.path ? -1 : 1));
+  const slices: PromptFile[][] = [];
+  let current: PromptFile[] = [];
+  let currentBytes = 0;
+  for (const file of sorted) {
+    const size = Buffer.byteLength(file.contents, "utf8");
+    if (size > MAX) {
+      if (current.length > 0) {
+        slices.push(current);
+        current = [];
+        currentBytes = 0;
+      }
+      slices.push([file]);
+      continue;
+    }
+    if (currentBytes + size > MAX) {
+      slices.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(file);
+    currentBytes += size;
   }
+  if (current.length > 0) {
+    slices.push(current);
+  }
+  return slices.filter((s) => s.length > 0);
+}
+
+function renderTargetReport(manifest: TargetManifest, outcome: TargetOutcome): string {
+  const lines: string[] = [];
+  lines.push(`# Kill-test target: ${manifest.name}`);
+  lines.push("");
+  lines.push(`- Source: ${manifest.source.repo} @ \`${manifest.source.commit}\``);
+  lines.push(`- Reference (known answer): ${manifest.source.referenceUrl}`);
+  lines.push(`- Arms: baseline=${outcome.baselineRan ? "ran" : "DID-NOT-RUN"} audit=${outcome.auditRan ? "ran" : "DID-NOT-RUN"}`);
+  lines.push(
+    `- Gate: ${outcome.excludedFromGate ? `EXCLUDED — ${outcome.exclusionReason}` : outcome.countsTowardGate ? "COUNTS" : "no delta"}`,
+  );
+  lines.push("");
+  lines.push("| bug | expected | slice arm | audit arm |");
+  lines.push("| --- | --- | --- | --- |");
+  for (const p of outcome.perBug) {
+    const known = manifest.knownBugs.find((b) => b.id === p.bugId);
+    lines.push(
+      `| ${p.bugId} | ${known?.expectedSeverity ?? "?"} | ${p.slice.observedSeverity ?? "(not surfaced)"} | ${p.audit.observedSeverity ?? "(not surfaced)"} |`,
+    );
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 void main().catch((err) => {

@@ -1,22 +1,30 @@
 /**
  * `pnpm audit-solidity` — whole-contract Solidity finder sidecar CLI.
- * specs/SOLIDITY_SIDECAR_SPEC.md §4
+ * specs/SOLIDITY_SIDECAR_SPEC.md §4 — POST-AUDIT REWORK.
  *
- * A → assembleClosure (bidirectional, budgeted) → B → neutral finder prompt
- * → C → scoreAuditFinding (unchanged reuse). DRY-RUN by default: assembles,
- * renders the prompt, prints closure stats — NO model call, no API key needed.
- * --live performs the single finder call via src/sidecar-solidity/model-client.
+ * A → bidirectional dependency-closure assembly → B → neutral finder prompt →
+ * C → mechanical citation-grounding + independent adversarial refuter pass.
+ * PURSUE requires BOTH grounding and refuter survival; model booleans are
+ * advisory metadata only.
  *
- * Sidecar discipline (§0): imports NOTHING from apps/web review-worker/
- * review-pipeline/chunking. Finding-phase only: no verification, no submission.
+ * DRY-RUN is the default: assembles, renders the prompt, grounds nothing to
+ * promote — NO model call, no API key. --live runs finder + refuter through the
+ * shared transport (model-client.ts). Finding-phase only: no verification, no
+ * submission.
  */
 
 import { config as loadDotenv } from "dotenv";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { assembleClosure, fsReadRepoFile, listSolFiles } from "../src/sidecar-solidity/closure.js";
+import {
+  assembleClosure,
+  fsReadRepoFile,
+  listSolFiles,
+  loadRemappings,
+} from "../src/sidecar-solidity/closure.js";
 import { auditModelCall } from "../src/sidecar-solidity/model-client.js";
-import { runFinder } from "../src/sidecar-solidity/run.js";
+import { runFinder, type RefuteCallback } from "../src/sidecar-solidity/run.js";
+import { refuteFinding } from "../src/sidecar-solidity/refuter.js";
 
 loadDotenv({ path: resolve(process.cwd(), ".env.local"), quiet: true });
 
@@ -35,7 +43,9 @@ function usage(): never {
                       [--entry ...] --rules <file.md> [--budget <bytes>]
                       [--out <report.json>] [--live]
 
-Default is DRY-RUN (no model call). --live requires ANTHROPIC_API_KEY.`);
+Default is DRY-RUN (no model call, findings never promoted).
+--live requires ANTHROPIC_API_KEY (or SIDECAR_* overrides) and runs BOTH the
+finder and the independent adversarial refuter.`);
   process.exit(2);
 }
 
@@ -71,13 +81,18 @@ function parseArgs(argv: readonly string[]): CliArgs {
         args.rulesPath = take();
         i += 2;
         break;
-      case "--budget":
-        args.budgetBytes = Number.parseInt(take(), 10);
-        if (!Number.isFinite(args.budgetBytes) || args.budgetBytes <= 0) {
+      case "--budget": {
+        const raw = take();
+        const parsed = Number.parseFloat(raw);
+        // Item 5: NaN silently disabled the cap before.
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          console.error(`invalid --budget value: ${raw}`);
           usage();
         }
+        args.budgetBytes = parsed;
         i += 2;
         break;
+      }
       case "--out":
         args.outPath = take();
         i += 2;
@@ -110,13 +125,15 @@ async function main(): Promise<void> {
   const root = resolve(cli.target);
   const programRules = await readFile(resolve(cli.rulesPath), "utf8");
 
-  // A — bidirectional dependency-closure context assembly
+  // A — bidirectional dependency-closure assembly (remappings loaded by caller)
   const allPaths = await listSolFiles(root);
+  const remappings = await loadRemappings(root);
   const closure = await assembleClosure({
     entries: cli.entries,
     allPaths,
     readFile: fsReadRepoFile(root),
     budgetBytes: cli.budgetBytes,
+    remappings,
   });
 
   const rolesFor = (p: string): string => closure.roles.get(p) ?? "?";
@@ -133,26 +150,48 @@ async function main(): Promise<void> {
   console.error(
     `  total: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}, truncated=${closure.truncated}${closure.entryOverflow ? " (ENTRY OVERFLOW — entries kept whole)" : ""}`,
   );
-  if (closure.entryOverflow) {
+  if (closure.externalUnresolved.length > 0) {
     console.warn(
-      `[audit-solidity] WARNING: entry set alone exceeds budget (${fmtBytes(closure.bytes)} > ${fmtBytes(cli.budgetBytes)}); entries kept whole per spec.`,
+      `[audit-solidity] WARNING: incomplete closure — ${closure.externalUnresolved.length} unresolved external(s); the prompt states this honestly.`,
     );
   }
 
-  // B + C — dry-run stops after the rendered prompt; --live executes and scores.
+  // B + C — dry-run renders only; --live runs finder AND refuter.
+  const finderTransport = cli.live
+    ? async (prompt: string) => {
+        const { payload, truncated } = await auditModelCall(prompt);
+        return { payload, truncated };
+      }
+    : undefined;
+  const refuterCallback: RefuteCallback | undefined = cli.live
+    ? async ({ finding }) => {
+        const r = await refuteFinding({
+          finding,
+          files: closure.blocks,
+          programRules,
+          priorFindings: [], // operator-supplied corpus hook; empty unless provided
+        });
+        return { verdict: r.verdict, reason: r.reason } as const;
+      }
+    : undefined;
   const result = await runFinder(
     {
       projectName: root.split("/").pop() ?? "target",
       entries: cli.entries,
       files: closure.blocks,
       programRules,
-      contextNote: `closure: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}${closure.truncated ? ", TRUNCATED (see report header)" : ""}`,
+      closureStats: {
+        truncated: closure.truncated,
+        evicted: closure.evicted,
+        externalUnresolved: closure.externalUnresolved,
+      },
     },
-    cli.live ? (prompt) => auditModelCall(prompt) : undefined,
+    finderTransport,
+    refuterCallback,
   );
 
   if (!cli.live) {
-    console.error("[audit-solidity] DRY-RUN: no model call performed. Prompt below.");
+    console.error("[audit-solidity] DRY-RUN: no model calls performed. Prompt below.");
     console.error("");
     process.stdout.write(`${result.prompt}\n`);
     if (cli.outPath !== null) {
@@ -162,30 +201,43 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (result.truncated) {
+    console.error(
+      "[audit-solidity] WARNING: model output was TRUNCATED (stop_reason=max_tokens). This run is INCOMPLETE.",
+    );
+  }
+  if (result.rejectedRaw.length > 0) {
+    console.error(
+      `[audit-solidity] NOTE: ${result.rejectedRaw.length} finding(s) failed lenient parse — raw preserved in report.`,
+    );
+  }
+
   const lines: string[] = [];
   lines.push(`# Solidity finder report — ${new Date().toISOString()}`);
   lines.push("");
-  lines.push(
-    `- Closure: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}, truncated=${closure.truncated}`,
-  );
+  lines.push(`- Closure: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}, truncated=${closure.truncated}${result.truncated ? "; MODEL OUTPUT TRUNCATED (INCOMPLETE)" : ""}`);
   lines.push(`- Entries: ${cli.entries.join(", ")}`);
   if (closure.evicted.length > 0) {
-    lines.push(`- Evicted over budget: ${closure.evicted.join(", ")}`);
+    lines.push(`- Evicted over budget (NOT audited): ${closure.evicted.join(", ")}`);
   }
   if (closure.externalUnresolved.length > 0) {
-    lines.push(
-      `- Unresolved externals (INCOMPLETE CLOSURE): ${closure.externalUnresolved.join(", ")}`,
-    );
+    lines.push(`- Unresolved externals (INCOMPLETE CLOSURE): ${closure.externalUnresolved.join(", ")}`);
   }
   lines.push(
     `- Findings: ${result.findings.length} (${result.pursueCount} PURSUE / ${result.droppedCount} DROP)`,
   );
+  if (result.rejectedRaw.length > 0) {
+    lines.push(`- Unparseable findings (raw preserved below): ${result.rejectedRaw.length}`);
+  }
   lines.push("");
   lines.push("## Scored findings");
   lines.push("");
   for (const s of result.scored) {
     lines.push(`### **${s.verdict}** — ${s.finding.title} [${s.finding.severity}]`);
     lines.push(`- reason: ${s.reason}`);
+    if (s.advisory !== "no adverse advisory factors") {
+      lines.push(`- advisory (model self-report, NOT a gate): ${s.advisory}`);
+    }
     lines.push(`- triggerRole: ${s.finding.triggerRole}`);
     lines.push(`- preconditions: ${s.finding.preconditions}`);
     for (const e of s.finding.evidence) {
@@ -194,25 +246,32 @@ async function main(): Promise<void> {
     lines.push(`- reasoning: ${s.finding.reasoning}`);
     lines.push("");
   }
-  const reportJson = JSON.stringify(
-    {
-      schemaVersion: 1,
-      closure: {
-        includedFiles: closure.blocks.map((b) => b.path),
-        evicted: closure.evicted,
-        externalUnresolved: closure.externalUnresolved,
-        bytes: closure.bytes,
-        truncated: closure.truncated,
-      },
-      ...result,
-    },
-    null,
-    2,
-  );
-
+  if (result.rejectedRaw.length > 0) {
+    lines.push("## Unparseable raw findings (preserved for inspection)");
+    for (const r of result.rejectedRaw) {
+      lines.push(`- index ${r.index}: ${JSON.stringify(r.raw)}`);
+    }
+    lines.push("");
+  }
   const mdReport = lines.join("\n");
   process.stdout.write(mdReport);
   if (cli.outPath !== null) {
+    const reportJson = JSON.stringify(
+      {
+        schemaVersion: 2,
+        closure: {
+          includedFiles: closure.blocks.map((b) => b.path),
+          evicted: closure.evicted,
+          externalUnresolved: closure.externalUnresolved,
+          bytes: closure.bytes,
+          truncated: closure.truncated,
+        },
+        modelTruncated: result.truncated,
+        ...result,
+      },
+      null,
+      2,
+    );
     await writeFile(cli.outPath, reportJson, "utf8");
     await writeFile(`${cli.outPath}.md`, mdReport, "utf8");
     console.error(`[audit-solidity] report written to ${cli.outPath}(+.md)`);
@@ -220,8 +279,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((err) => {
-  console.error(
-    `[audit-solidity] fatal: ${err instanceof Error ? (err.stack ?? err.message) : err}`,
-  );
+  console.error(`[audit-solidity] fatal: ${err instanceof Error ? (err.stack ?? err.message) : err}`);
   process.exit(1);
 });

@@ -1,16 +1,14 @@
-// Sidecar-local raw model client for the AUDIT arm of the §2 kill-test.
+// Sidecar-local raw model client — the ONLY model transport for this sidecar.
+// specs/SOLIDITY_SIDECAR_SPEC.md §0; reworked per REWORK_PROMPT.md.
 //
-// WHY THIS EXISTS (do not "simplify" it away): every registered Provider's
-// .review() hard-parses its response through reviewOutputSchema — the strict
-// PR-diff-review shape. The audit mode intentionally returns a DIFFERENT shape
-// (program-rule factors per finding), so routing it through provider.review()
-// would strip or reject exactly the fields the premise test measures.
+// WHY THIS EXISTS: registered providers' .review() hard-parse the strict PR-review
+// shape. The sidecar returns its own shapes (finder / refuter), so it gets its
+// own path on the SAME @anthropic-ai/sdk transport. Never route through
+// provider.review(); never add another HTTP client.
 //
-// Spec §0 explicitly allows the sidecar to reuse model clients while keeping
-// its own finding path; this module IS that separate path. It deliberately does
-// NOT import from src/providers so the PR-reviewer cannot regress and vice
-// versa. When/if §3 is authorized this graduates into the sidecar's real
-// transport; until then it stays a hand-prototype.
+// TRUNCATION SAFETY (REWORK_PROMPT item 5): stop_reason is inspected — a
+// max_tokens cut-off is reported as truncated:true and surfaced in reports,
+// never treated as a complete audit.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { FleetError } from "../errors.js";
@@ -21,14 +19,25 @@ const CLIENT_OPTS = { timeout: 240_000, maxRetries: 3 } as const;
 const MAX_TOKENS = 16384;
 export const AUDIT_DEFAULT_MODEL = "claude-opus-4-7";
 
-// Operational routing overrides (same @anthropic-ai/sdk transport — spec §0
-// keeps this the ONLY model client; these just point it at a compatible
-// endpoint, e.g. OpenRouter's /api/v1/messages, when metered Anthropic credits
-// are unavailable). Defaults: Anthropic direct + AUDIT_DEFAULT_MODEL.
+// Operational routing overrides (same SDK transport): point at a compatible
+// endpoint when metered Anthropic credits are unavailable (OpenRouter's
+// Anthropic-compat /api route verified). Never log key values.
 const BASE_URL = process.env["SIDECAR_BASE_URL"];
 const MODEL_OVERRIDE = process.env["SIDECAR_MODEL"];
 
-export const auditJsonToolSchema = {
+function requireApiKey(): string {
+  const key = process.env["SIDECAR_API_KEY"] ?? process.env["ANTHROPIC_API_KEY"];
+  if (key === undefined || key.length === 0) {
+    throw new FleetError(
+      "sidecar audit arm requires ANTHROPIC_API_KEY (or SIDECAR_API_KEY)",
+      4,
+      "provider-auth",
+    );
+  }
+  return key;
+}
+
+export const finderToolSchema = {
   type: "object",
   additionalProperties: false,
   required: ["findings", "inspected"],
@@ -38,20 +47,7 @@ export const auditJsonToolSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: [
-          "title",
-          "category",
-          "severity",
-          "confidence",
-          "evidence",
-          "reasoning",
-          "triggerRole",
-          "preconditions",
-          "unprivilegedReachable",
-          "recoverableUnder1hr",
-          "inScope",
-          "duplicateOf",
-        ],
+        required: ["title", "severity", "evidence", "reasoning"],
         properties: {
           title: { type: "string" },
           category: { enum: ["security", "bug", "data-loss"] },
@@ -75,10 +71,6 @@ export const auditJsonToolSchema = {
           reasoning: { type: "string" },
           triggerRole: { type: "string" },
           preconditions: { type: "string" },
-          unprivilegedReachable: { type: "boolean" },
-          recoverableUnder1hr: { type: "boolean" },
-          inScope: { type: "boolean" },
-          duplicateOf: { anyOf: [{ type: "string" }, { type: "null" }] },
         },
       },
     },
@@ -94,72 +86,76 @@ export const auditJsonToolSchema = {
   },
 } as const;
 
-function requireApiKey(): string {
-  const key = process.env["SIDECAR_API_KEY"] ?? process.env["ANTHROPIC_API_KEY"];
-  if (key === undefined || key.length === 0) {
-    throw new FleetError(
-      "sidecar audit arm requires ANTHROPIC_API_KEY (or SIDECAR_API_KEY)",
-      4,
-      "provider-auth",
-    );
-  }
-  return key;
-}
+export const refutationToolSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "reason"],
+  properties: {
+    verdict: { enum: ["KILLED", "SURVIVED"] },
+    reason: { type: "string" },
+  },
+} as const;
+
+/** Minimal structural slice of an Anthropic message — keeps handlers pure/testable. */
+export type RawToolResponse = {
+  stop_reason?: string | null;
+  content?: Array<{ type: string; input?: unknown }>;
+};
+
+export type HandledPayload = {
+  payload: unknown;
+  /** true when stop_reason === "max_tokens": the audit is INCOMPLETE. */
+  truncated: boolean;
+};
 
 /**
- * One raw forced-tool-use call. Returns the parsed-as-any tool input; callers
- * apply their own lenient zod schema (auditOutputSchema) downstream.
+ * Pure response handler: extract tool payload + truncation flag.
+ * Throws when no tool_use block exists (visible failure, never silent zeros).
  */
-export async function auditModelCall(
-  prompt: string,
-  options?: { model?: string; signal?: AbortSignal | null },
-): Promise<unknown> {
-  const client = new Anthropic({
-    apiKey: requireApiKey(),
-    ...CLIENT_OPTS,
-    ...(BASE_URL === null || BASE_URL === undefined ? {} : { baseURL: BASE_URL }),
-  });
-  const response = await client.messages.create(
-    {
-      model: options?.model ?? MODEL_OVERRIDE ?? AUDIT_DEFAULT_MODEL,
-      max_tokens: MAX_TOKENS,
-      tools: [
-        {
-          name: "submit_audit",
-          description: "Submit the structured full-contract fund-extraction audit.",
-          input_schema: auditJsonToolSchema as unknown as Anthropic.Messages.Tool["input_schema"],
-        },
-      ],
-      tool_choice: { type: "tool", name: "submit_audit" },
-      messages: [{ role: "user", content: prompt }],
-    },
-    { signal: options?.signal ?? undefined },
-  );
-  if (process.env["SIDECAR_DEBUG"] === "1") {
-    const u = response.usage;
+export function handleToolResponse(
+  response: RawToolResponse,
+  debug = false,
+): HandledPayload {
+  if (debug) {
     console.error(
-      `[model-client] model=${response.model} stop=${response.stop_reason} blocks=[${response.content.map((b) => b.type).join(",")}] in=${u?.input_tokens ?? "?"} out=${u?.output_tokens ?? "?"}`,
+      `[model-client] stop=${response.stop_reason ?? "?"} blocks=[${(response.content ?? []).map((b) => b.type).join(",")}]`,
     );
   }
-  for (const block of response.content) {
+  for (const block of response.content ?? []) {
     if (block.type === "tool_use") {
-      if (process.env["SIDECAR_DEBUG"] === "1") {
-        console.error(`[model-client] raw tool input keys: ${describeShape(block.input)}`);
-      }
-      return normalizeToolInput(unwrapNestedToolInput(block.input));
+      return {
+        payload: normalizeToolInput(unwrapNestedToolInput(block.input)),
+        truncated: response.stop_reason === "max_tokens",
+      };
     }
   }
-  throw new FleetError("sidecar audit arm got no tool call back", 8, "malformed-output");
+  throw new FleetError("sidecar model call got no tool call back", 8, "malformed-output");
 }
 
 /**
- * Some routes/models return `findings` as a JSON-ENCODED STRING instead of an
- * array (observed live via OpenRouter + claude-sonnet-4.5: `{findings:"[...]",
- * inspected:{...}}` — a 6.6k-output-token response that whole-array parsing
- * would have silently discarded). Normalize at the transport boundary: any
- * top-level string field whose value parses to a JSON array is decoded.
+ * Some routes/models wrap the tool payload in an extra single-key layer
+ * (`{input: {...}}`, `{submit_audit: {...}}`) — observed live. A valid payload
+ * always has 2+ top-level fields, so a single-object-key response is a wrapper.
  */
-function normalizeToolInput(raw: unknown): unknown {
+export function unwrapNestedToolInput(raw: unknown): unknown {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return raw;
+  }
+  const obj = raw as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1) {
+    return raw;
+  }
+  const inner = obj[keys[0] ?? ""];
+  if (inner === null || typeof inner !== "object" || Array.isArray(inner)) {
+    return raw;
+  }
+  console.error(`[model-client] NOTE: unwrapped single-key tool payload layer "${String(keys[0])}"`);
+  return inner;
+}
+
+/** Some routes return arrays JSON-encoded as strings (observed live). Decode. */
+export function normalizeToolInput(raw: unknown): unknown {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return raw;
   }
@@ -181,45 +177,80 @@ function normalizeToolInput(raw: unknown): unknown {
   return out;
 }
 
+async function callWithTool(args: {
+  prompt: string;
+  model?: string | undefined;
+  signal?: AbortSignal | null | undefined;
+  toolName: string;
+  toolDescription: string;
+  schema: object;
+}): Promise<HandledPayload> {
+  const apiKey = requireApiKey();
+  const client = new Anthropic({
+    apiKey,
+    ...CLIENT_OPTS,
+    ...(BASE_URL === null || BASE_URL === undefined ? {} : { baseURL: BASE_URL }),
+  });
+  const response = await client.messages.create(
+    {
+      model: args.model ?? MODEL_OVERRIDE ?? AUDIT_DEFAULT_MODEL,
+      max_tokens: MAX_TOKENS,
+      tools: [
+        {
+          name: args.toolName,
+          description: args.toolDescription,
+          input_schema: args.schema as Anthropic.Messages.Tool["input_schema"],
+        },
+      ],
+      tool_choice: { type: "tool", name: args.toolName },
+      messages: [{ role: "user", content: args.prompt }],
+    },
+    { signal: args.signal ?? undefined },
+  );
+  return handleToolResponse(response as RawToolResponse, process.env["SIDECAR_DEBUG"] === "1");
+}
+
+/** Finder call. Returns the parsed-as-any tool payload + truncation flag. */
+export function auditModelCall(
+  prompt: string,
+  options?: { model?: string; signal?: AbortSignal | null },
+): Promise<HandledPayload> {
+  return callWithTool({
+    prompt,
+    model: options?.model,
+    signal: options?.signal,
+    toolName: "submit_audit",
+    toolDescription: "Submit the structured full-contract fund-extraction audit.",
+    schema: finderToolSchema,
+  });
+}
+
+/** Independent adversarial refuter call (component C). Same spend controls. */
+export function refuteModelCall(
+  prompt: string,
+  options?: { model?: string; signal?: AbortSignal | null },
+): Promise<HandledPayload> {
+  return callWithTool({
+    prompt,
+    model: options?.model,
+    signal: options?.signal,
+    toolName: "submit_refutation",
+    toolDescription:
+      "Submit your verdict on whether the candidate finding survives adversarial review.",
+    schema: refutationToolSchema,
+  });
+}
+
 /** Debug-only structural summary (no full payload dump — keeps logs sane). */
-function describeShape(value: unknown): string {
+export function describeShape(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return `${typeof value}:${String(value).slice(0, 80)}`;
   }
   if (Array.isArray(value)) {
-    return `array(${value.length})[0]=${describeShape(value[0])}`;
+    return `array(${value.length})`;
   }
   const obj = value as Record<string, unknown>;
   return `object{${Object.keys(obj)
-    .map(
-      (k) =>
-        `${k}:${typeof obj[k]}${Array.isArray(obj[k]) ? `(${(obj[k] as unknown[]).length})` : ""}`,
-    )
+    .map((k) => `${k}:${typeof obj[k]}${Array.isArray(obj[k]) ? `(${(obj[k] as unknown[]).length})` : ""}`)
     .join(", ")}}`;
-}
-
-/**
- * Some models/route combos wrap the tool payload in an extra single-key layer
- * (`{input: {...}}`, `{submit_audit: {...}}`) — same failure mode as
- * anthropic.ts's unwrapNestedInput heuristic. A single top-level object key
- * whose value is an object is treated as a wrapper; our tool schema always has
- * 2+ top-level fields, so a valid payload can never look like this.
- */
-function unwrapNestedToolInput(raw: unknown): unknown {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return raw;
-  }
-  const obj = raw as Record<string, unknown>;
-  const keys = Object.keys(obj);
-  if (keys.length !== 1) {
-    return raw;
-  }
-  const inner = obj[keys[0] ?? ""];
-  if (inner === null || typeof inner !== "object" || Array.isArray(inner)) {
-    return raw;
-  }
-  console.error(
-    `[model-client] NOTE: unwrapped single-key tool payload layer "${String(keys[0])}"`,
-  );
-  return inner;
 }

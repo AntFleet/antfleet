@@ -11,7 +11,7 @@
 // order; entries always kept whole even over budget (flagged + warned); files
 // are never truncated mid-content so evidence line numbers survive.
 
-import { readFile as fsReadFile, readdir } from "node:fs/promises";
+import { readFile as fsReadFile, readdir, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 export const DEFAULT_BUDGET_BYTES = 400_000;
@@ -29,6 +29,13 @@ export type AssembleClosureArgs = {
   readFile: (repoRelativePath: string) => Promise<string>;
   /** Char (≈byte) budget for the assembled context. Default DEFAULT_BUDGET_BYTES. */
   budgetBytes?: number;
+  /**
+   * Operator-loaded remappings (prefix→target, longest-prefix applied first).
+   * Item 6 fix: remappings.txt / foundry.toml are NOT .sol files so they never
+   * appeared in `allPaths` — the CALLER now loads them and passes them here.
+   * See loadRemappings() for the fs helper.
+   */
+  remappings?: readonly (readonly [string, string])[];
 };
 
 export type ClosureResult = {
@@ -50,7 +57,8 @@ type Included = { path: string; role: ClosureFileRole; depth: number; bytes: num
  * Matches quoted Solidity import specifiers (plain, named `import {A} from`,
  * namespace `import * as X from`). Same shape as context.ts's matcher.
  */
-const SOL_IMPORT_SPECIFIER_REGEX = /import\s[^;]*?"([^"]+\.sol)"\s*;/gu;
+// Matches double- OR single-quoted specifiers (item 6: single quotes are rare but legal).
+const SOL_IMPORT_SPECIFIER_REGEX = /import\s[^;]*?["']([^"']+\.sol)["']\s*;/gu;
 
 /** Contract/interface/library declarations -> symbols defined by a file. */
 const SOL_DECLARATION_REGEX =
@@ -62,25 +70,66 @@ const SOL_DECLARATION_REGEX =
  *  - compound-word embedding: `SmartAccountFactory`, `SmartAccountCreated`
  *    (real factories/events routinely embed the base symbol without typing it)
  */
+/**
+ * Usage-position references to a symbol:
+ *  - word-bounded: `new X(`, `is X`, cast `X(`
+ *  - compound-word embedding: `SmartAccountFactory` (factories embed base names)
+ *  - interface-mediated: `IVault` references resolve against entry symbol `Vault`
+ *    and vice versa (strip/add the Solidity `I` prefix — item 6c).
+ */
+function symbolVariants(symbol: string): string[] {
+  const variants = new Set<string>([symbol]);
+  if (symbol.startsWith("I") && symbol.length > 1 && /[A-Z]/u.test(symbol[1] ?? "")) {
+    variants.add(symbol.slice(1));
+  } else {
+    variants.add(`I${symbol}`);
+  }
+  return [...variants];
+}
+
+/** Short/common symbols need a stronger signal than a bare name hit. */
+function isCommonName(symbol: string): boolean {
+  return symbol.length <= 4 || ["token", "math", "safe", "context", "ownable"].includes(symbol.toLowerCase());
+}
+
 function referencesSymbol(contents: string, symbol: string): boolean {
-  const escaped = symbol.replace(/\$/gu, "\\$");
-  return (
-    new RegExp(`[\\s.,(){};]${escaped}[\\s(.,;{})]`, "u").test(contents) ||
-    new RegExp(`\\b${escaped}(?=[A-Z_])`, "u").test(contents)
-  );
+  for (const variant of symbolVariants(symbol)) {
+    const escaped = variant.replace(/\$/gu, "\\$");
+    if (new RegExp(`[\\s.,(){};]${escaped}[\\s(.,;{})]`, "u").test(contents)) {
+      if (!isCommonName(variant)) {
+        return true;
+      }
+      // Common-name guard: require TWO usage hits (declaration + call site)
+      // before a bare common token counts as coupling.
+      const hits = contents.match(new RegExp(`[\\s.,(){};]${escaped}[\\s(.,;{})]`, "gu"));
+      if (hits !== null && hits.length >= 2) {
+        return true;
+      }
+    }
+    if (new RegExp(`\\b${escaped}(?=[A-Z_])`, "u").test(contents)) {
+      return true; // compound embedding is already a strong signal
+    }
+  }
+  return false;
 }
 
 const byteLen = (s: string): number => new TextEncoder().encode(s).length;
 
-/** Keep-priority rank for budget eviction ordering (spec §3-A): lower survives longer. */
+/**
+ * Keep-priority rank for budget eviction ordering — REWORKED (item 6c):
+ * the reverse/differentiator content is exactly what the diff-reviewer cannot
+ * see, so it must NOT be first out. Deep forward-transitive padding goes first:
+ *   0 entries | 1 shallow forward (direct deps, depth<=1) | 2 reverse hits
+ *   | 3 deep forward transitive (depth>1, pure padding).
+ */
 function keepRank(info: Included): number {
   if (info.role === "entry") {
     return 0;
   }
-  if (info.role === "reverse") {
-    return 2;
+  if (info.role === "forward") {
+    return info.depth <= 1 ? 1 : 3;
   }
-  return 1; // forward (depth used secondarily below)
+  return 2; // reverse differentiator
 }
 
 /** Basename-coupling: `SmartAccountFactory.sol` embeds entry symbol SmartAccount. */
@@ -208,22 +257,10 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
     }
   }
 
-  // Remappings are best-effort from conventional locations.
-  let remappings: readonly (readonly [string, string])[] = [];
-  for (const [name, parser] of [
-    ["remappings.txt", parseRemappingsTxt],
-    ["foundry.toml", parseFoundryTomlRemappings],
-  ] as const) {
-    if (!pathSet.has(name)) {
-      continue;
-    }
-    try {
-      const text = await args.readFile(name);
-      remappings = [...remappings, ...parser(text)];
-    } catch {
-      // Unreadable config: proceed without it; unresolved externals stay visible.
-    }
-  }
+  // Caller-loaded remappings only — config files aren't .sol so they never
+  // appeared in allPaths (item 6 fix). Use loadRemappings() from the CLI side.
+  let remappings: readonly (readonly [string, string])[] = args.remappings ?? [];
+  remappings = [...remappings].toSorted((a, b) => b[0].length - a[0].length);
 
   const cache = new Map<string, string>();
   const read = async (p: string): Promise<string> => {
@@ -337,7 +374,9 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
     if (r !== 0) {
       return r;
     }
-    if (keepRank(a) === 1) {
+    const ra = keepRank(a);
+    const rb = keepRank(b);
+    if ((ra === 1 || ra === 2) && ra === rb) {
       const d = a.depth - b.depth;
       if (d !== 0) {
         return d;
@@ -404,24 +443,55 @@ export async function listSolFiles(root: string): Promise<string[]> {
   // there; they are exactly what the closure needs. Only package-manager and
   // build-output noise is excluded.
   const skipDirs = new Set(["node_modules", "out", "cache", ".git", ".fleet"]);
+  const realRoot = await realpath(root);
   const walk = async (dir: string): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.startsWith(".") || skipDirs.has(entry.name)) {
         continue;
       }
+      if (entry.isSymbolicLink()) {
+        continue; // symlink escape guard (item 6): never follow links out of root
+      }
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(full);
       } else if (entry.name.endsWith(".sol")) {
-        acc.push(relative(root, full));
+        acc.push(relative(realRoot, full));
       }
     }
   };
-  await walk(root);
+  // Canonicalize root first (item 6): if `root` itself is a symlink, walk and
+  // report paths against its real target so containment checks agree.
+  await walk(realRoot);
   return acc.toSorted();
 }
 
+/** Reader that enforces the containment invariant at READ time, not just walk time. */
 export function fsReadRepoFile(root: string): (p: string) => Promise<string> {
-  return (p) => fsReadFile(join(root, p), "utf8");
+  return async (p) => {
+    const realRoot = await realpath(root);
+    const resolved = await realpath(join(realRoot, p));
+    if (!resolved.startsWith(`${realRoot}/`)) {
+      throw new Error(`path escapes target root (symlink?): ${p}`);
+    }
+    return fsReadFile(resolved, "utf8");
+  };
+}
+
+/** Load remappings from conventional locations (caller passes them into assembleClosure). */
+export async function loadRemappings(root: string): Promise<[string, string][]> {
+  const pairs: [string, string][] = [];
+  for (const [name, parser] of [
+    ["remappings.txt", parseRemappingsTxt],
+    ["foundry.toml", parseFoundryTomlRemappings],
+  ] as const) {
+    try {
+      const text = await fsReadFile(join(await realpath(root), name), "utf8");
+      pairs.push(...parser(text));
+    } catch {
+      // Missing/unreadable config is fine; unresolved externals stay visible.
+    }
+  }
+  return pairs.toSorted((a, b) => b[0].length - a[0].length);
 }

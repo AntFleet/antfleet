@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { assembleClosure, parseFoundryTomlRemappings, parseRemappingsTxt } from "./closure.js";
 
 /**
@@ -177,4 +178,95 @@ describe("integration vs real biconomy checkout (skipIf absent)", () => {
       expect(paths).toContain("contracts/smart-contract-wallet/SmartAccountFactory.sol");
     },
   );
+});
+
+describe("rework items — closure correctness", () => {
+  it("reverse-resolves interface-mediated coupling: file using IVault pulls in from Vault entry", async () => {
+    const tree = new Map<string, string>([
+      ["contracts/Vault.sol", "contract Vault { function totalAssets() external view returns (uint256) { return 1; } }\n"],
+      // Uses IVault — the I-prefixed variant of the entry symbol — never "Vault".
+      ["contracts/Strategy.sol", "contract Strategy {\n  function harvest(IVault vault) external { vault.totalAssets(); }\n}\ninterface IVault { function totalAssets() external view returns (uint256); }\n"],
+    ]);
+    const result = await assembleClosure({
+      entries: ["contracts/Vault.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    expect(result.blocks.map((b) => b.path)).toContain("contracts/Strategy.sol");
+  });
+
+  it("common short symbols require a stronger signal than a single name hit", async () => {
+    const tree = new Map<string, string>([
+      ["contracts/Math.sol", "contract Math {}\n"],
+      ["contracts/User.sol", "// mentions Token once\ncontract User {}\n"],
+    ]);
+    const result = await assembleClosure({
+      entries: ["contracts/Math.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    // Single passing mention of a common-ish symbol must NOT couple User in.
+    expect(result.blocks.map((b) => b.path)).not.toContain("contracts/User.sol");
+  });
+
+  it("explicit remappings parameter resolves bare specifiers (config files are not .sol)", async () => {
+    const tree = new Map<string, string>([
+      ["W.sol", 'import "@oz/token/ERC20.sol";\ncontract W {}'],
+      ["lib/openzeppelin-contracts/token/ERC20.sol", "contract ERC20 {}"],
+    ]);
+    const result = await assembleClosure({
+      entries: ["W.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+      remappings: [["@oz/", "lib/openzeppelin-contracts/"]],
+    });
+    expect(result.blocks.map((b) => b.path)).toContain("lib/openzeppelin-contracts/token/ERC20.sol");
+  });
+
+  it("deep forward-transitive nodes do not evict reverse differentiators first (item 6c)", async () => {
+    const filler = `contract Deep { /* ${"z".repeat(3000)} */ }\n`;
+    const tree = new Map<string, string>([
+      // Long symbol names so the common-short-symbol guard doesn't suppress coupling.
+      ["VaultMain.sol", 'import "./BaseA.sol";\nimport "./BaseB.sol";\ncontract VaultMain is BaseA, BaseB {}'],
+      ["BaseA.sol", "contract BaseA {}"],
+      ["BaseB.sol", 'import "./DeepFiller.sol";\ncontract BaseB is DeepFiller {}'],
+      ["DeepFiller.sol", filler],
+      ["Harvester.sol", "contract Harvester { function harvest(VaultMain v) external {} }\n"], // reverse hit
+    ]);
+    const result = await assembleClosure({
+      entries: ["VaultMain.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+      budgetBytes: 400,
+    });
+    const kept = result.blocks.map((b) => b.path);
+    expect(kept).toContain("VaultMain.sol"); // entry always kept
+    expect(kept).toContain("Harvester.sol"); // differentiator survives over deep transitive padding
+    expect(kept).not.toContain("DeepFiller.sol"); // deep padding evicted instead
+  });
+});
+
+describe("symlink escape guards (item 6)", () => {
+  it("listSolFiles skips symlinks; fsReadRepoFile rejects escapes", async () => {
+    const { mkdtemp, mkdir, symlink, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const root = await mkdtemp(join(tmpdir(), "sidecar-sym-"));
+    try {
+      await mkdir(join(root, "contracts"), { recursive: true });
+      await writeFile(join(root, "contracts", "Real.sol"), "contract Real {}\n");
+      // Symlinked .sol pointing OUTSIDE the target root must never be walked.
+      const outsideDir = await mkdtemp(join(tmpdir(), "sidecar-out-"));
+      await writeFile(join(outsideDir, "Secret.sol"), "contract Secret {}\n");
+      await symlink(join(outsideDir, "Secret.sol"), join(root, "contracts", "Leak.sol"));
+      const { listSolFiles: ls, fsReadRepoFile: reader } = await import("./closure.js");
+      const files = await ls(root);
+      expect(files).toEqual(["contracts/Real.sol"]);
+      // And the reader enforces containment independently of the walker:
+      await expect(reader(root)("contracts/Leak.sol")).rejects.toThrow(/escapes target root/);
+      await expect((await reader(root)("contracts/Real.sol"))).toContain("contract Real");
+    } finally {
+      const { rm } = await import("node:fs/promises");
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
