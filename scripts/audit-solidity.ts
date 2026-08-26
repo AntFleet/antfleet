@@ -162,9 +162,19 @@ async function main(): Promise<void> {
   }
 
   // B + C — dry-run renders only; --live runs finder AND refuter.
+  // SIDECAR_FINDER_MODEL (optional) routes the discovery calls (stage A + the
+  // focused stage-B confirm) to a stronger model — e.g. opus for finding while a
+  // cheaper model (SIDECAR_MODEL) runs the adversarial refuter.
+  const finderModel = process.env["SIDECAR_FINDER_MODEL"];
+  const finderOpts = finderModel === undefined ? undefined : { model: finderModel };
+  if (cli.live && finderModel !== undefined) {
+    console.error(
+      `[audit-solidity] finder calls (stage A + confirm) routed to model: ${finderModel}`,
+    );
+  }
   const finderTransport = cli.live
     ? async (prompt: string) => {
-        const { payload, truncated } = await auditModelCall(prompt);
+        const { payload, truncated } = await auditModelCall(prompt, finderOpts);
         return { payload, truncated };
       }
     : undefined;
@@ -201,7 +211,7 @@ async function main(): Promise<void> {
           files: focusedFiles,
           programRules: rules,
         });
-        const { payload, truncated } = await auditModelCall(prompt);
+        const { payload, truncated } = await auditModelCall(prompt, finderOpts);
         return { payload, truncated };
       }
     : undefined;

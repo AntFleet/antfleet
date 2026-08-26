@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { runFinder, type FinderHandled, type RefuteCallback } from "./run.js";
+import {
+  runFinder,
+  resolveNamedSiblings,
+  identifierCandidates,
+  type FinderHandled,
+  type RefuteCallback,
+} from "./run.js";
 import { FIXTURE_HINT_STRINGS } from "./closure.test.js";
 import { auditFindingSchema, type AuditFinding } from "./finding-schema.js";
 
@@ -301,6 +307,45 @@ contract Noise {
     );
     expect(result.focusedPrompts).toHaveLength(0);
     expect(result.crossFileDependencies).toHaveLength(0);
+  });
+});
+
+describe("resolveNamedSiblings — tolerant symbol resolution (e2e: compound dep strings)", () => {
+  const files = [
+    {
+      path: "contracts/SmartAccountFactory.sol",
+      contents: "pragma solidity ^0.8.0;\ncontract SmartAccountFactory {}\n",
+    },
+    { path: "contracts/Other.sol", contents: "contract Other {}\n" },
+  ];
+
+  it("resolves a compound dependency phrase to the declaring file (opus named it this way live)", () => {
+    const r = resolveNamedSiblings(
+      [{ symbol: "SmartAccountFactory / Proxy deployment path", reason: "salt derivation" }],
+      files,
+    );
+    expect(r.focused.map((f) => f.path)).toEqual(["contracts/SmartAccountFactory.sol"]);
+    expect(r.unresolved).toEqual([]);
+    expect(r.resolvedSymbols).toEqual(["SmartAccountFactory / Proxy deployment path"]);
+  });
+
+  it("leaves a genuinely-external dependency unresolved (not in the closure)", () => {
+    const r = resolveNamedSiblings([{ symbol: "IEntryPoint (external base)", reason: "x" }], files);
+    expect(r.focused).toEqual([]);
+    expect(r.unresolved).toEqual(["IEntryPoint (external base)"]);
+  });
+});
+
+describe("identifierCandidates", () => {
+  it("extracts PascalCase declaration names longest-first and drops prose", () => {
+    expect(identifierCandidates("SmartAccountFactory / Proxy deployment path")).toEqual([
+      "SmartAccountFactory",
+      "Proxy",
+    ]);
+    expect(identifierCandidates("Executor (base of ModuleManager)")).toEqual([
+      "ModuleManager",
+      "Executor",
+    ]);
   });
 });
 

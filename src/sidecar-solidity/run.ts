@@ -112,6 +112,28 @@ function blockDeclaresSymbol(contents: string, symbol: string): boolean {
   ).test(contents);
 }
 
+/**
+ * Models rarely return a bare symbol — real stage-A output names deps like
+ * "SmartAccountFactory / Proxy deployment path" or "Executor (base of
+ * ModuleManager)". Pull out the declaration-name candidates (PascalCase-ish
+ * identifiers), longest first so the most specific contract name wins over an
+ * incidental short token.
+ */
+export function identifierCandidates(symbol: string): string[] {
+  const tokens = symbol.match(/[A-Za-z_$][A-Za-z0-9_$]*/gu) ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tokens) {
+    // A Solidity declaration name starts uppercase; skip prose words / short noise.
+    if (!/^[A-Z]/u.test(t) || t.length < 3 || seen.has(t)) {
+      continue;
+    }
+    seen.add(t);
+    out.push(t);
+  }
+  return out.toSorted((a, b) => b.length - a.length);
+}
+
 function extractCrossFileDependencies(payload: HandledPayload): CrossFileDependency[] {
   const raw =
     payload.payload !== null &&
@@ -154,9 +176,18 @@ export function resolveNamedSiblings(
   const unresolved: string[] = [];
   const resolvedSymbols: string[] = [];
   for (const dep of deps) {
-    const hit = closureFiles.find(
-      (f) => !taken.has(f.path) && blockDeclaresSymbol(f.contents, dep.symbol),
-    );
+    // Try the bare symbol first, then each PascalCase identifier extracted from a
+    // prose-y dependency string ("SmartAccountFactory / Proxy deployment path").
+    const candidates = [dep.symbol, ...identifierCandidates(dep.symbol)];
+    let hit: { path: string; contents: string } | undefined;
+    for (const candidate of candidates) {
+      hit = closureFiles.find(
+        (f) => !taken.has(f.path) && blockDeclaresSymbol(f.contents, candidate),
+      );
+      if (hit !== undefined) {
+        break;
+      }
+    }
     if (hit === undefined) {
       unresolved.push(dep.symbol);
       continue;

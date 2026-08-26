@@ -312,12 +312,39 @@ funds held by the system or permanently freeze them.
 
 ${BUG_CLASS_CHECKLISTS}
 
-For each candidate finding, provide file + line-range evidence from the fenced
-entry files below. Then — critically — list in "crossFileDependencies" every
-external definition your reasoning DEPENDS ON whose source is not fenced here:
-a value returned by another contract, an interface-typed address's target, an
-inherited base you cannot see, a token behavior you assume. For each, say what
-seeing its source would confirm or refute. Do not guess at unseen code; name it.
+THIS IS PASS 1 OF A TWO-PASS AUDIT. You are NOT expected to reach final verdicts:
+a focused follow-up pass will fetch the sibling sources you request here and
+complete each candidate. You have TWO deliverables, equally important:
+
+(1) CANDIDATE FINDINGS — for each, file + line-range evidence from the fenced
+    entry files, with a short quote of the offending code.
+
+(2) CROSS-FILE DEPENDENCY REQUESTS — MANDATORY, not optional. The entry file
+    almost never contains the whole story: it inherits base contracts, calls
+    interfaces at stored addresses, consumes values returned by other contracts,
+    and assumes token/precompile behavior. For EVERY such dependency your
+    reasoning touches, you MUST add a "crossFileDependencies" entry naming the
+    exact symbol (contract / interface / library / base) whose SOURCE is not
+    fenced here, and what seeing it would settle. Include dependencies for
+    confident findings AND for anything you could not conclude BECAUSE the
+    deciding code is missing.
+
+    HARD RULE — self-check before you answer: if any finding's reasoning contains
+    a phrase like "not visible", "not in the fenced files", "inherited from",
+    "depends on the ... implementation", "assuming", or NAMES a contract /
+    interface / base that is not fenced above, then a matching
+    crossFileDependencies entry for that symbol is REQUIRED. A finding that
+    references unseen code with no corresponding dependency request is an
+    INCOMPLETE answer and will be treated as unfinished. When in doubt, request it
+    — the follow-up pass is cheap, and a missed request means a real bug in the
+    sibling never gets seen.
+
+    Example: the entry calls \`IOracle(oracle).price()\` and IOracle's
+    implementation is not fenced →
+    crossFileDependencies: [{"symbol":"IOracle","reason":"whether price() can be
+    stale/manipulated decides if the accounting under-reports backing"}].
+
+Do not guess at unseen code; NAME it as a dependency so it gets fetched.
 
 PROGRAM RULES (operator-supplied, trusted):
 ${args.programRules.trim()}

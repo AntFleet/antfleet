@@ -40,7 +40,11 @@ function requireApiKey(): string {
 export const finderToolSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["findings", "inspected"],
+  // crossFileDependencies is REQUIRED so forced-tool-use cannot silently drop it.
+  // Bug found in e2e: with additionalProperties:false and this key absent from the
+  // schema, the model physically could not emit cross-file dependency requests, so
+  // the two-stage finder's stage B never fired regardless of prompt or model.
+  required: ["findings", "inspected", "crossFileDependencies"],
   properties: {
     findings: {
       type: "array",
@@ -81,6 +85,18 @@ export const finderToolSchema = {
       properties: {
         files: { type: "array", items: { type: "string" } },
         notes: { type: "array", items: { type: "string" } },
+      },
+    },
+    crossFileDependencies: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["symbol", "reason"],
+        properties: {
+          symbol: { type: "string" },
+          reason: { type: "string" },
+        },
       },
     },
   },
