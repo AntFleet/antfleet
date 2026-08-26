@@ -70,6 +70,19 @@ function referencesSymbol(contents: string, symbol: string): boolean {
   );
 }
 
+const byteLen = (s: string): number => new TextEncoder().encode(s).length;
+
+/** Keep-priority rank for budget eviction ordering (spec §3-A): lower survives longer. */
+function keepRank(info: Included): number {
+  if (info.role === "entry") {
+    return 0;
+  }
+  if (info.role === "reverse") {
+    return 2;
+  }
+  return 1; // forward (depth used secondarily below)
+}
+
 /** Basename-coupling: `SmartAccountFactory.sol` embeds entry symbol SmartAccount. */
 function basenameEmbeds(path: string, symbol: string): boolean {
   const base = path.split("/").pop() ?? "";
@@ -223,8 +236,6 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
     return contents;
   };
 
-  const byteLen = (s: string): number => new TextEncoder().encode(s).length;
-
   // --- Forward BFS from entries ---
   const included = new Map<string, Included>();
   const external = new Set<string>();
@@ -321,21 +332,12 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
   // Files pulled in by reverse hits' forward imports keep role "forward".
 
   // --- Keep order + budget eviction ---
-  const rank = (info: Included): number => {
-    if (info.role === "entry") {
-      return 0;
-    }
-    if (info.role === "reverse") {
-      return 2;
-    }
-    return 1; // forward (depth used secondarily below)
-  };
   const keepOrdered = [...included.values()].toSorted((a, b) => {
-    const r = rank(a) - rank(b);
+    const r = keepRank(a) - keepRank(b);
     if (r !== 0) {
       return r;
     }
-    if (rank(a) === 1) {
+    if (keepRank(a) === 1) {
       const d = a.depth - b.depth;
       if (d !== 0) {
         return d;
