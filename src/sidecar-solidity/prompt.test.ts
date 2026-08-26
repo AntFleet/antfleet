@@ -13,8 +13,7 @@ const files = [
   { path: "lib/WadRay.sol", contents: "library WadRay {}" },
 ];
 
-const NEUTRAL_RULES =
-  "High severity: unprivileged fund extraction. Out of scope: UI, config.";
+const NEUTRAL_RULES = "High severity: unprivileged fund extraction. Out of scope: UI, config.";
 
 describe("buildFinderPrompt — neutral objective + injection fencing (C1)", () => {
   it("frames the task as a whole-codebase audit with the five enumeration domains", () => {
@@ -39,14 +38,12 @@ describe("buildFinderPrompt — neutral objective + injection fencing (C1)", () 
       nonce: "n0nce123",
     });
     expect(prompt).toContain('<file path="contracts/Vault.sol" nonce="n0nce123">');
-    expect(prompt).toContain("</file nonce=\"n0nce123\">");
+    expect(prompt).toContain('</file nonce="n0nce123">');
     expect(prompt).toContain('<file path="lib/WadRay.sol" nonce="n0nce123">');
   });
 
   it("neutralizes the nonce when it appears inside file contents (fence forgery)", () => {
-    const hostile = [
-      { path: "evil/Evil.sol", contents: "line1 n0nce123 line2" },
-    ];
+    const hostile = [{ path: "evil/Evil.sol", contents: "line1 n0nce123 line2" }];
     const fenced = fenceFile(hostile[0] as { path: string; contents: string }, "n0nce123");
     // Only the fence delimiters carry the full nonce; interior occurrence broken.
     expect(fenced.match(/n0nce123/gu)?.length).toBe(2);
@@ -137,7 +134,13 @@ describe("buildRefuterPrompt — independent adversary framing", () => {
     });
     expect(prompt).toContain("ADVERSARIAL REVIEWER");
     expect(prompt).toContain("only job is to KILL");
-    for (const ground of ["PRIVILEGED-GATED", "RECOVERABLE", "MIS-CITED", "OUT OF SCOPE", "DUPLICATE"]) {
+    for (const ground of [
+      "PRIVILEGED-GATED",
+      "RECOVERABLE",
+      "MIS-CITED",
+      "OUT OF SCOPE",
+      "DUPLICATE",
+    ]) {
       expect(prompt).toContain(ground);
     }
     expect(prompt).toContain("factory salt");

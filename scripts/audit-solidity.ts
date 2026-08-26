@@ -215,13 +215,17 @@ async function main(): Promise<void> {
   const lines: string[] = [];
   lines.push(`# Solidity finder report — ${new Date().toISOString()}`);
   lines.push("");
-  lines.push(`- Closure: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}, truncated=${closure.truncated}${result.truncated ? "; MODEL OUTPUT TRUNCATED (INCOMPLETE)" : ""}`);
+  lines.push(
+    `- Closure: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}, truncated=${closure.truncated}${result.truncated ? "; MODEL OUTPUT TRUNCATED (INCOMPLETE)" : ""}`,
+  );
   lines.push(`- Entries: ${cli.entries.join(", ")}`);
   if (closure.evicted.length > 0) {
     lines.push(`- Evicted over budget (NOT audited): ${closure.evicted.join(", ")}`);
   }
   if (closure.externalUnresolved.length > 0) {
-    lines.push(`- Unresolved externals (INCOMPLETE CLOSURE): ${closure.externalUnresolved.join(", ")}`);
+    lines.push(
+      `- Unresolved externals (INCOMPLETE CLOSURE): ${closure.externalUnresolved.join(", ")}`,
+    );
   }
   lines.push(
     `- Findings: ${result.findings.length} (${result.pursueCount} PURSUE / ${result.droppedCount} DROP)`,
@@ -279,6 +283,8 @@ async function main(): Promise<void> {
 }
 
 void main().catch((err) => {
-  console.error(`[audit-solidity] fatal: ${err instanceof Error ? (err.stack ?? err.message) : err}`);
+  console.error(
+    `[audit-solidity] fatal: ${err instanceof Error ? (err.stack ?? err.message) : err}`,
+  );
   process.exit(1);
 });

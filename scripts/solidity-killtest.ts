@@ -99,7 +99,9 @@ function parseArgs(argv: readonly string[]): CliArgs {
       continue;
     }
     if (arg === "--help" || arg === "-h") {
-      console.error("usage: killtest [--targets-dir DIR] [--providers a,b] [--ceiling USD] [--live]");
+      console.error(
+        "usage: killtest [--targets-dir DIR] [--providers a,b] [--ceiling USD] [--live]",
+      );
       process.exit(0);
     }
     throw new Error(`unknown argument: ${arg}`);
@@ -159,13 +161,19 @@ async function main(): Promise<void> {
   const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
 
   for (const target of manifests) {
-    const manifestRaw = JSON.parse(await readFile(join(target.root, "manifest.json"), "utf8")) as unknown;
+    const manifestRaw = JSON.parse(
+      await readFile(join(target.root, "manifest.json"), "utf8"),
+    ) as unknown;
     const manifest = targetManifestSchema.parse(manifestRaw);
     const sourcePaths = await listSourceFiles(target.root);
     const remappings = await loadRemappings(target.root);
 
     let sliceFindings: BaselineFinding[] = [];
-    let auditFindings: { title: string; severity: Severity; evidence: BaselineFinding["evidence"] }[] = [];
+    let auditFindings: {
+      title: string;
+      severity: Severity;
+      evidence: BaselineFinding["evidence"];
+    }[] = [];
     let armErrors: string[] = [];
     let baselineStatus: ArmRunStatus = "errored";
     let auditStatus: ArmRunStatus = "errored";
@@ -257,7 +265,11 @@ async function main(): Promise<void> {
         auditFindings = findings.map((f) => ({
           title: f.title,
           severity: f.severity,
-          evidence: f.evidence.map((e) => ({ path: e.path, startLine: e.startLine, endLine: e.endLine })),
+          evidence: f.evidence.map((e) => ({
+            path: e.path,
+            startLine: e.startLine,
+            endLine: e.endLine,
+          })),
         }));
         auditStatus = "ran";
       }
@@ -357,7 +369,9 @@ function renderTargetReport(manifest: TargetManifest, outcome: TargetOutcome): s
   lines.push("");
   lines.push(`- Source: ${manifest.source.repo} @ \`${manifest.source.commit}\``);
   lines.push(`- Reference (known answer): ${manifest.source.referenceUrl}`);
-  lines.push(`- Arms: baseline=${outcome.baselineRan ? "ran" : "DID-NOT-RUN"} audit=${outcome.auditRan ? "ran" : "DID-NOT-RUN"}`);
+  lines.push(
+    `- Arms: baseline=${outcome.baselineRan ? "ran" : "DID-NOT-RUN"} audit=${outcome.auditRan ? "ran" : "DID-NOT-RUN"}`,
+  );
   lines.push(
     `- Gate: ${outcome.excludedFromGate ? `EXCLUDED — ${outcome.exclusionReason}` : outcome.countsTowardGate ? "COUNTS" : "no delta"}`,
   );

@@ -157,7 +157,10 @@ export const REFUTATION_JSON_SHAPE = `{
  */
 export function buildRefuterPrompt(args: RefuterPromptArgs): string {
   const nonce = args.nonce ?? generateNonce();
-  const priorList = (args.priorFindings ?? []).length === 0 ? "(none supplied)" : (args.priorFindings ?? []).map((p) => `- ${p}`).join("\n");
+  const priorList =
+    (args.priorFindings ?? []).length === 0
+      ? "(none supplied)"
+      : (args.priorFindings ?? []).map((p) => `- ${p}`).join("\n");
   return `${DATA_NOT_INSTRUCTIONS_RULE}
 
 You are an ADVERSARIAL REVIEWER. Your only job is to KILL the candidate finding
@@ -183,17 +186,17 @@ ${priorList}
 
 CANDIDATE FINDING UNDER ATTACK (untrusted — verify every claim against the fenced files):
 ${JSON.stringify(
-    {
-      title: args.finding.title,
-      severity: args.finding.severity,
-      evidence: args.finding.evidence,
-      triggerRole: args.finding.triggerRole ?? "unspecified",
-      preconditions: args.finding.preconditions ?? "unspecified",
-      reasoning: args.finding.reasoning,
-    },
-    null,
-    2,
-  )}
+  {
+    title: args.finding.title,
+    severity: args.finding.severity,
+    evidence: args.finding.evidence,
+    triggerRole: args.finding.triggerRole ?? "unspecified",
+    preconditions: args.finding.preconditions ?? "unspecified",
+    reasoning: args.finding.reasoning,
+  },
+  null,
+  2,
+)}
 ${args.contextNote === undefined ? "" : `\nContext note: ${args.contextNote}\n`}
 Verify citations line-by-line against the fenced files. Return strict JSON only,
 no markdown fences.
@@ -216,9 +219,13 @@ export function describeClosureHonesty(stats: {
   evicted: readonly string[];
   externalUnresolved: readonly string[];
 }): string {
-  const parts = [`closure of available files: ${stats.fileCount} file(s), ${(stats.bytes / 1000).toFixed(1)}k chars`];
+  const parts = [
+    `closure of available files: ${stats.fileCount} file(s), ${(stats.bytes / 1000).toFixed(1)}k chars`,
+  ];
   if (stats.externalUnresolved.length > 0) {
-    parts.push(`these bases were NOT available and are NOT covered: ${stats.externalUnresolved.join(", ")}`);
+    parts.push(
+      `these bases were NOT available and are NOT covered: ${stats.externalUnresolved.join(", ")}`,
+    );
   }
   if (stats.truncated && stats.evicted.length > 0) {
     parts.push(`evicted over budget (not audited): ${stats.evicted.join(", ")}`);

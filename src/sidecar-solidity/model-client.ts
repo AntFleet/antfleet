@@ -112,10 +112,7 @@ export type HandledPayload = {
  * Pure response handler: extract tool payload + truncation flag.
  * Throws when no tool_use block exists (visible failure, never silent zeros).
  */
-export function handleToolResponse(
-  response: RawToolResponse,
-  debug = false,
-): HandledPayload {
+export function handleToolResponse(response: RawToolResponse, debug = false): HandledPayload {
   if (debug) {
     console.error(
       `[model-client] stop=${response.stop_reason ?? "?"} blocks=[${(response.content ?? []).map((b) => b.type).join(",")}]`,
@@ -150,7 +147,9 @@ export function unwrapNestedToolInput(raw: unknown): unknown {
   if (inner === null || typeof inner !== "object" || Array.isArray(inner)) {
     return raw;
   }
-  console.error(`[model-client] NOTE: unwrapped single-key tool payload layer "${String(keys[0])}"`);
+  console.error(
+    `[model-client] NOTE: unwrapped single-key tool payload layer "${String(keys[0])}"`,
+  );
   return inner;
 }
 
@@ -251,6 +250,9 @@ export function describeShape(value: unknown): string {
   }
   const obj = value as Record<string, unknown>;
   return `object{${Object.keys(obj)
-    .map((k) => `${k}:${typeof obj[k]}${Array.isArray(obj[k]) ? `(${(obj[k] as unknown[]).length})` : ""}`)
+    .map(
+      (k) =>
+        `${k}:${typeof obj[k]}${Array.isArray(obj[k]) ? `(${(obj[k] as unknown[]).length})` : ""}`,
+    )
     .join(", ")}}`;
 }

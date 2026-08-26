@@ -183,9 +183,15 @@ describe("integration vs real biconomy checkout (skipIf absent)", () => {
 describe("rework items — closure correctness", () => {
   it("reverse-resolves interface-mediated coupling: file using IVault pulls in from Vault entry", async () => {
     const tree = new Map<string, string>([
-      ["contracts/Vault.sol", "contract Vault { function totalAssets() external view returns (uint256) { return 1; } }\n"],
+      [
+        "contracts/Vault.sol",
+        "contract Vault { function totalAssets() external view returns (uint256) { return 1; } }\n",
+      ],
       // Uses IVault — the I-prefixed variant of the entry symbol — never "Vault".
-      ["contracts/Strategy.sol", "contract Strategy {\n  function harvest(IVault vault) external { vault.totalAssets(); }\n}\ninterface IVault { function totalAssets() external view returns (uint256); }\n"],
+      [
+        "contracts/Strategy.sol",
+        "contract Strategy {\n  function harvest(IVault vault) external { vault.totalAssets(); }\n}\ninterface IVault { function totalAssets() external view returns (uint256); }\n",
+      ],
     ]);
     const result = await assembleClosure({
       entries: ["contracts/Vault.sol"],
@@ -220,14 +226,19 @@ describe("rework items — closure correctness", () => {
       readFile: async (p) => tree.get(p) ?? "",
       remappings: [["@oz/", "lib/openzeppelin-contracts/"]],
     });
-    expect(result.blocks.map((b) => b.path)).toContain("lib/openzeppelin-contracts/token/ERC20.sol");
+    expect(result.blocks.map((b) => b.path)).toContain(
+      "lib/openzeppelin-contracts/token/ERC20.sol",
+    );
   });
 
   it("deep forward-transitive nodes do not evict reverse differentiators first (item 6c)", async () => {
     const filler = `contract Deep { /* ${"z".repeat(3000)} */ }\n`;
     const tree = new Map<string, string>([
       // Long symbol names so the common-short-symbol guard doesn't suppress coupling.
-      ["VaultMain.sol", 'import "./BaseA.sol";\nimport "./BaseB.sol";\ncontract VaultMain is BaseA, BaseB {}'],
+      [
+        "VaultMain.sol",
+        'import "./BaseA.sol";\nimport "./BaseB.sol";\ncontract VaultMain is BaseA, BaseB {}',
+      ],
       ["BaseA.sol", "contract BaseA {}"],
       ["BaseB.sol", 'import "./DeepFiller.sol";\ncontract BaseB is DeepFiller {}'],
       ["DeepFiller.sol", filler],
@@ -263,7 +274,7 @@ describe("symlink escape guards (item 6)", () => {
       expect(files).toEqual(["contracts/Real.sol"]);
       // And the reader enforces containment independently of the walker:
       await expect(reader(root)("contracts/Leak.sol")).rejects.toThrow(/escapes target root/);
-      await expect((await reader(root)("contracts/Real.sol"))).toContain("contract Real");
+      await expect(await reader(root)("contracts/Real.sol")).toContain("contract Real");
     } finally {
       const { rm } = await import("node:fs/promises");
       await rm(root, { recursive: true, force: true });

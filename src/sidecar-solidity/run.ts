@@ -78,7 +78,11 @@ export async function runFinder(
   callFinder?: ((prompt: string) => Promise<FinderHandled>) | undefined,
   refute?: RefuteCallback | undefined,
 ): Promise<FinderRunResult> {
-  const closureStats = input.closureStats ?? { truncated: false, evicted: [], externalUnresolved: [] };
+  const closureStats = input.closureStats ?? {
+    truncated: false,
+    evicted: [],
+    externalUnresolved: [],
+  };
   const contextNote = describeClosureHonesty({
     fileCount: input.files.length,
     bytes: input.files.reduce((sum, f) => sum + f.contents.length, 0),
@@ -134,7 +138,12 @@ export async function runFinder(
     let refutation: RefutationResult | null = null;
     if (grounding.ok && refute !== undefined) {
       // Spend refuter calls only on candidates that survived grounding.
-      refutation = await refute({ finding, files: input.files, programRules: input.programRules, contextNote });
+      refutation = await refute({
+        finding,
+        files: input.files,
+        programRules: input.programRules,
+        contextNote,
+      });
     }
     const decision = promote({ grounding, refutation });
     scored.push({

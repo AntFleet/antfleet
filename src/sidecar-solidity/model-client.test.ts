@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  handleToolResponse,
-  normalizeToolInput,
-  unwrapNestedToolInput,
-} from "./model-client.js";
+import { handleToolResponse, normalizeToolInput, unwrapNestedToolInput } from "./model-client.js";
 
 describe("handleToolResponse — truncation safety (item 5)", () => {
   it("marks truncated=true when stop_reason is max_tokens (never a complete audit)", () => {

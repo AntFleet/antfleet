@@ -89,7 +89,10 @@ function symbolVariants(symbol: string): string[] {
 
 /** Short/common symbols need a stronger signal than a bare name hit. */
 function isCommonName(symbol: string): boolean {
-  return symbol.length <= 4 || ["token", "math", "safe", "context", "ownable"].includes(symbol.toLowerCase());
+  return (
+    symbol.length <= 4 ||
+    ["token", "math", "safe", "context", "ownable"].includes(symbol.toLowerCase())
+  );
 }
 
 function referencesSymbol(contents: string, symbol: string): boolean {

@@ -39,7 +39,10 @@ describe("matchesBug — ported spike-runner semantics", () => {
 });
 
 describe("observedSeverityFor", () => {
-  const f = (severity: "critical" | "high" | "medium" | "low", path = "pkg/contracts/Vault.sol") => ({
+  const f = (
+    severity: "critical" | "high" | "medium" | "low",
+    path = "pkg/contracts/Vault.sol",
+  ) => ({
     severity,
     evidence: [ev(path, 45, 45)],
   });

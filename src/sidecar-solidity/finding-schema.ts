@@ -42,7 +42,7 @@ export function coerceScalarDrift(input: unknown): unknown {
   for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
     if (typeof value === "string") {
       const trimmed = value.trim().toLowerCase();
-      if ((key === "unprivilegedReachable" || key === "recoverableUnder1hr" || key === "inScope")) {
+      if (key === "unprivilegedReachable" || key === "recoverableUnder1hr" || key === "inScope") {
         out[key] = trimmed === "true";
         continue;
       }
@@ -143,10 +143,17 @@ export function lenientParseFindings(rawFindings: readonly unknown[]): LenientPa
       return;
     }
     const title =
-      typeof element === "object" && element !== null && typeof (element as { title?: unknown }).title === "string"
+      typeof element === "object" &&
+      element !== null &&
+      typeof (element as { title?: unknown }).title === "string"
         ? (element as { title: string }).title
         : PLACEHOLDER_TITLE;
-    findings.push(salvagePlaceholder(title, `finding failed lenient parse (${direct.error.issues[0]?.message ?? "unknown"}); inspect raw in report`));
+    findings.push(
+      salvagePlaceholder(
+        title,
+        `finding failed lenient parse (${direct.error.issues[0]?.message ?? "unknown"}); inspect raw in report`,
+      ),
+    );
     rejectedRaw.push({ index, reason: direct.error.message, raw: element });
   });
   return { findings, rejectedRaw };

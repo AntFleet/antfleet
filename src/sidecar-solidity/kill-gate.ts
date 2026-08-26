@@ -142,7 +142,9 @@ export function evaluateTarget(args: {
   });
   const auditSurfacedCorrectly = args.bugs.some((bug, i) => {
     const outcome = perBug[i];
-    return outcome !== undefined && severityAtLeast(outcome.audit.observedSeverity, bug.expectedSeverity);
+    return (
+      outcome !== undefined && severityAtLeast(outcome.audit.observedSeverity, bug.expectedSeverity)
+    );
   });
 
   const baselineRan = args.baselineStatus === "ran";
@@ -170,8 +172,7 @@ export function evaluateTarget(args: {
     },
     sliceMissedOrUnderRated,
     auditSurfacedCorrectly,
-    countsTowardGate:
-      !excludedFromGate && sliceMissedOrUnderRated && auditSurfacedCorrectly,
+    countsTowardGate: !excludedFromGate && sliceMissedOrUnderRated && auditSurfacedCorrectly,
     perBug,
   };
 }

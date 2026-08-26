@@ -1,17 +1,13 @@
 import { describe, it, expect } from "vitest";
-import {
-  advisorySummary,
-  groundFinding,
-  promote,
-  type GroundedFile,
-} from "./scoring.js";
+import { advisorySummary, groundFinding, promote, type GroundedFile } from "./scoring.js";
 import type { AuditFinding } from "./finding-schema.js";
 import { auditFindingSchema } from "./finding-schema.js";
 
 const closure: GroundedFile[] = [
   {
     path: "contracts/Vault.sol",
-    contents: "// SPDX\npragma solidity ^0.8.0;\ncontract Vault {\n    function withdraw() external {\n        msg.sender.call{value: address(this).balance}(\"\");\n    }\n}\n",
+    contents:
+      '// SPDX\npragma solidity ^0.8.0;\ncontract Vault {\n    function withdraw() external {\n        msg.sender.call{value: address(this).balance}("");\n    }\n}\n',
   },
 ];
 

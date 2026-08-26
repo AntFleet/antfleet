@@ -33,14 +33,18 @@ const groundedFinding: AuditFinding = auditFindingSchema.parse({
   title: "unprivileged drain via drain()",
   severity: "critical",
   confidence: "high",
-  evidence: [
-    { path: "contracts/Wallet.sol", startLine: 3, endLine: 4, symbol: null, quote: null },
-  ],
+  evidence: [{ path: "contracts/Wallet.sol", startLine: 3, endLine: 4, symbol: null, quote: null }],
   reasoning: "anyone calls drain and receives balance",
 });
 
-const refuteSurvives: RefuteCallback = async () => ({ verdict: "SURVIVED", reason: "every ground fails" });
-const refuteKills: RefuteCallback = async () => ({ verdict: "KILLED", reason: "actually privileged-gated" });
+const refuteSurvives: RefuteCallback = async () => ({
+  verdict: "SURVIVED",
+  reason: "every ground fails",
+});
+const refuteKills: RefuteCallback = async () => ({
+  verdict: "KILLED",
+  reason: "actually privileged-gated",
+});
 
 describe("runFinder — dry-run (no model call)", () => {
   it("omitting callers never invokes the transport; grounded findings cap at awaiting-refuter DROP", async () => {
@@ -59,7 +63,12 @@ describe("runFinder — promotion pipeline (live path, mocked models)", () => {
       async () => handled({ findings: [groundedFinding], inspected: {} }),
       async () => {
         refuterCalls += 1;
-        return refuteSurvives({ finding: groundedFinding, files: [], programRules: "", contextNote: "" });
+        return refuteSurvives({
+          finding: groundedFinding,
+          files: [],
+          programRules: "",
+          contextNote: "",
+        });
       },
     );
     expect(refuterCalls).toBe(1); // refuter ran on the grounded candidate
@@ -91,7 +100,12 @@ describe("runFinder — promotion pipeline (live path, mocked models)", () => {
       async () => handled({ findings: [fabricated], inspected: {} }),
       async () => {
         refuterCalls += 1;
-        return refuteSurvives({ finding: fabricated, files: [], programRules: "", contextNote: "" });
+        return refuteSurvives({
+          finding: fabricated,
+          files: [],
+          programRules: "",
+          contextNote: "",
+        });
       },
     );
     expect(refuterCalls).toBe(0); // no spend on garbage
@@ -110,9 +124,9 @@ describe("runFinder — promotion pipeline (live path, mocked models)", () => {
   });
 
   it("throws loudly when finder output has no findings array (no silent zeros)", async () => {
-    await expect(runFinder(baseInput, async () => handled({ nonsense: true }), refuteSurvives)).rejects.toThrow(
-      /no findings array/,
-    );
+    await expect(
+      runFinder(baseInput, async () => handled({ nonsense: true }), refuteSurvives),
+    ).rejects.toThrow(/no findings array/);
   });
 
   it("preserves raw rejected findings alongside salvaged placeholders", async () => {
