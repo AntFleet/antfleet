@@ -55,10 +55,23 @@ targets, better steering) or if closure-context noise degrades inline-bug recall
 Evidence standing behind this premise (recorded, not re-opened):
 `solidity-killtest/RESULT.md` — clean matched-objective re-run on Code4rena
 2023-01 Biconomy H-03: slice arm (entry file only) structurally MISSED the
-factory-salt bug; audit arm (entry + closure) CAUGHT it at CRITICAL,
-synthesizing across both files. On single-file targets (redacted-cartel,
-popcorn, stakehouse) closure added NO uplift. N=1 cross-file target: mechanism
-demonstrated, statistics not.
+factory-salt bug; audit arm (entry + closure) CAUGHT it at CRITICAL. On
+single-file targets closure added NO uplift. BUT Biconomy is a PRE-cutoff public
+contest — the catch is indistinguishable from memorized recall.
+
+**Premise status after the N=3 post-cutoff sweep (2026-08-27):** three genuinely
+post-training-cutoff cross-file targets (Monetrix M-01, Intuition M-02, Olas
+H-06) produced **0 clean slice-miss → closure-catch wins**: Monetrix both-missed
+(had the file, skimmed past it), Olas both-caught (slice found it alone), and
+Intuition was the lone flip but confounded (the deciding code lived in
+`VotingEscrow`, absent from both arms). So the STRONG premise ("closure finds
+cross-file bugs a slice structurally misses") is **not yet proven on fresh
+code**. What IS demonstrated is a weaker, real claim: closure raises confidence
+and completes the exploit chain on candidates the finder already suspects (Olas).
+The sweep drove the current design — real-edge closure (deciding file actually
+present), two-stage finder (present file actually read), and the kill-test
+harness now validating the discriminating-file split so the Intuition confound
+cannot recur. Ship on the demonstrated claim; the strong claim stays open.
 
 ## §2 Scope & non-goals
 
@@ -210,10 +223,11 @@ pnpm audit-solidity --target <dir> --entry <repo-relative .sol path>
 2. `git diff --stat` touches only `src/sidecar-solidity/**`,
    `scripts/audit-solidity.ts`, `package.json`, docs/spec files (§0).
 3. Dry-run works end-to-end with zero credentials on the Biconomy fixture.
-4. README in `src/sidecar-solidity/` states honestly: finds cross-file bugs the
-   diff reviewer structurally misses; finding-phase only (no verification, no
-   submission); conditional value on cross-file classes, no general uplift;
-   N=1 mechanism evidence.
+4. README in `src/sidecar-solidity/` states honestly: demonstrated value is
+   confidence-raising + exploit-chain completion on candidates the finder already
+   suspects (Olas H-06), NOT first-detection of what the diff reviewer misses —
+   the strong claim is unproven (0 clean wins in the N=3 post-cutoff sweep);
+   finding-phase only (no verification, no submission); no uplift on inline bugs.
 
 ## §6 Risks & honest limits
 

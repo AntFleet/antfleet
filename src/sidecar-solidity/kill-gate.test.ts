@@ -4,6 +4,7 @@ import {
   evaluateTarget,
   matchesBug,
   observedSeverityFor,
+  validateArmSplit,
   type KnownBug,
   type TargetOutcome,
 } from "./kill-gate.js";
@@ -142,6 +143,117 @@ describe("evaluateTarget — C2 arm-status exclusion", () => {
       auditSeverity: "high",
     });
     expect(outcome.countsTowardGate).toBe(false);
+  });
+});
+
+describe("validateArmSplit — CLOSURE_UPGRADE item 4", () => {
+  it("valid when the discriminating file is in audit and absent from slice", () => {
+    expect(
+      validateArmSplit({
+        discriminatingFiles: ["contracts/Oracle.sol"],
+        sliceArmFiles: ["contracts/Vault.sol"],
+        auditArmFiles: ["contracts/Vault.sol", "contracts/Oracle.sol"],
+      }).valid,
+    ).toBe(true);
+  });
+
+  it("invalid when the discriminating file is missing from the audit arm", () => {
+    const r = validateArmSplit({
+      discriminatingFiles: ["contracts/Oracle.sol"],
+      sliceArmFiles: ["contracts/Vault.sol"],
+      auditArmFiles: ["contracts/Vault.sol"],
+    });
+    expect(r.valid).toBe(false);
+    expect(r.reason).toContain("missing from audit arm");
+  });
+
+  it("invalid when the discriminating file leaked into the slice arm", () => {
+    const r = validateArmSplit({
+      discriminatingFiles: ["contracts/Oracle.sol"],
+      sliceArmFiles: ["contracts/Vault.sol", "contracts/Oracle.sol"],
+      auditArmFiles: ["contracts/Vault.sol", "contracts/Oracle.sol"],
+    });
+    expect(r.valid).toBe(false);
+    expect(r.reason).toContain("leaked into slice arm");
+  });
+});
+
+describe("evaluateTarget — discriminating-file split (CLOSURE_UPGRADE item 4)", () => {
+  const crossBug: KnownBug = {
+    id: "cross-1",
+    description: "backing over-report only visible with the oracle sibling",
+    file: "contracts/Vault.sol",
+    lineStart: 40,
+    lineEnd: 55,
+    expectedSeverity: "high",
+    discriminatingFiles: ["contracts/Oracle.sol"],
+  };
+  const auditCaught = [
+    { title: "t", severity: "high" as const, evidence: [ev("contracts/Vault.sol", 42, 55)] },
+  ];
+
+  it("counts when the split is valid, slice misses, audit catches", () => {
+    const outcome = evaluateTarget({
+      targetName: "t",
+      baselineStatus: "ran",
+      auditStatus: "ran",
+      sliceFindings: [],
+      auditFindings: auditCaught,
+      bugs: [crossBug],
+      sliceArmFiles: ["contracts/Vault.sol"],
+      auditArmFiles: ["contracts/Vault.sol", "contracts/Oracle.sol"],
+    });
+    expect(outcome.armsSplitValid).toBe(true);
+    expect(outcome.excludedFromGate).toBe(false);
+    expect(outcome.countsTowardGate).toBe(true);
+  });
+
+  it("EXCLUDES a target whose discriminating file never reached the audit arm", () => {
+    const outcome = evaluateTarget({
+      targetName: "t",
+      baselineStatus: "ran",
+      auditStatus: "ran",
+      sliceFindings: [],
+      auditFindings: auditCaught,
+      bugs: [crossBug],
+      sliceArmFiles: ["contracts/Vault.sol"],
+      auditArmFiles: ["contracts/Vault.sol"], // Oracle.sol missing
+    });
+    expect(outcome.armsSplitValid).toBe(false);
+    expect(outcome.excludedFromGate).toBe(true);
+    expect(outcome.exclusionReason).toContain("split invalid");
+    expect(outcome.countsTowardGate).toBe(false);
+  });
+
+  it("EXCLUDES a target whose discriminating file leaked into the slice arm", () => {
+    const outcome = evaluateTarget({
+      targetName: "t",
+      baselineStatus: "ran",
+      auditStatus: "ran",
+      sliceFindings: [],
+      auditFindings: auditCaught,
+      bugs: [crossBug],
+      sliceArmFiles: ["contracts/Vault.sol", "contracts/Oracle.sol"],
+      auditArmFiles: ["contracts/Vault.sol", "contracts/Oracle.sol"],
+    });
+    expect(outcome.excludedFromGate).toBe(true);
+    expect(outcome.countsTowardGate).toBe(false);
+  });
+
+  it("falls back to the legacy single `file` as the discriminating file when unset", () => {
+    // `bug` has no discriminatingFiles → its `file` (Vault.sol) is the split key.
+    const outcome = evaluateTarget({
+      targetName: "t",
+      baselineStatus: "ran",
+      auditStatus: "ran",
+      sliceFindings: [],
+      auditFindings: auditCaught,
+      bugs: [bug],
+      sliceArmFiles: ["contracts/Entry.sol"],
+      auditArmFiles: ["contracts/Entry.sol", "contracts/Vault.sol"],
+    });
+    expect(outcome.armsSplitValid).toBe(true);
+    expect(outcome.excludedFromGate).toBe(false);
   });
 });
 

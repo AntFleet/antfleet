@@ -58,7 +58,7 @@ describe("assembleClosure — bidirectional resolution", () => {
     expect(paths).toContain("contracts/WalletFactory.sol"); // REVERSE symbol reference
     expect(result.roles.get(ENTRY)).toBe("entry");
     expect(result.roles.get("contracts/WalletFactory.sol")).toBe("reverse");
-    expect(result.roles.get("contracts/Base.sol")).toBe("forward");
+    expect(result.roles.get("contracts/Base.sol")).toBe("inherited"); // imported AND an inheritance base
   });
 
   it("resolves remapped bare specifiers into lib/ via remappings.txt", async () => {
@@ -231,7 +231,7 @@ describe("rework items — closure correctness", () => {
     );
   });
 
-  it("deep forward-transitive nodes do not evict reverse differentiators first (item 6c)", async () => {
+  it("real edges beat lexical hits under budget: inherited bases survive, name-only reverse hits evict first (CLOSURE_UPGRADE 1.4)", async () => {
     const filler = `contract Deep { /* ${"z".repeat(3000)} */ }\n`;
     const tree = new Map<string, string>([
       // Long symbol names so the common-short-symbol guard doesn't suppress coupling.
@@ -242,7 +242,7 @@ describe("rework items — closure correctness", () => {
       ["BaseA.sol", "contract BaseA {}"],
       ["BaseB.sol", 'import "./DeepFiller.sol";\ncontract BaseB is DeepFiller {}'],
       ["DeepFiller.sol", filler],
-      ["Harvester.sol", "contract Harvester { function harvest(VaultMain v) external {} }\n"], // reverse hit
+      ["Harvester.sol", "contract Harvester { function harvest(VaultMain v) external {} }\n"], // name-heuristic reverse hit
     ]);
     const result = await assembleClosure({
       entries: ["VaultMain.sol"],
@@ -252,8 +252,12 @@ describe("rework items — closure correctness", () => {
     });
     const kept = result.blocks.map((b) => b.path);
     expect(kept).toContain("VaultMain.sol"); // entry always kept
-    expect(kept).toContain("Harvester.sol"); // differentiator survives over deep transitive padding
-    expect(kept).not.toContain("DeepFiller.sol"); // deep padding evicted instead
+    expect(kept).toContain("BaseA.sol"); // REAL edge (inheritance base): never optional
+    expect(kept).toContain("BaseB.sol"); // REAL edge
+    expect(kept).not.toContain("DeepFiller.sol"); // deep padding gone
+    expect(kept).not.toContain("Harvester.sol"); // LAST RESORT: a lexical hit must never
+    // consume budget ahead of real-edge files — it evicts FIRST.
+    expect(result.roles.get("Harvester.sol")).toBeUndefined(); // fully evicted
   });
 });
 
@@ -280,4 +284,211 @@ describe("symlink escape guards (item 6)", () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 15_000);
+});
+
+describe("CLOSURE_UPGRADE 1.1 — full inheritance-chain resolution", () => {
+  it("inlines the IMPLEMENTATION source of every inheritance base, not just an interface", async () => {
+    // Intuition pattern: the bug mechanism lived in VotingEscrow, an inherited
+    // BASE of the entry (contract TrustBonding is ... VotingEscrow).
+    const tree = new Map<string, string>([
+      [
+        "contracts/TrustBonding.sol",
+        'import "./IVotingEscrow.sol";\nimport "./VotingEscrow.sol";\ncontract TrustBonding is VotingEscrow {}',
+      ],
+      [
+        "contracts/IVotingEscrow.sol",
+        "interface IVotingEscrow { function locked(uint) external view returns (uint256); }",
+      ],
+      // The deciding logic lives in the base's implementation source.
+      [
+        "contracts/VotingEscrow.sol",
+        "contract VotingEscrow is IVotingEscrow {\n  mapping(uint => Lock) public locks;\n  function _checkpoint(uint id) internal { /* DECIDING MECHANISM */ }\n}",
+      ],
+    ]);
+    const result = await assembleClosure({
+      entries: ["contracts/TrustBonding.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    const paths = result.blocks.map((b) => b.path);
+    expect(paths).toContain("contracts/VotingEscrow.sol"); // base impl ALWAYS pulled
+    expect(result.roles.get("contracts/VotingEscrow.sol")).toBe("inherited");
+  });
+
+  it("prefers a non-interface declaration of a base symbol over a same-name interface", async () => {
+    const tree = new Map<string, string>([
+      ["E.sol", 'import "./IStaking.sol";\nimport "./Staking.sol";\ncontract E is Staking {}'],
+      ["IStaking.sol", "interface IStaking { function stake() external; }"],
+      ["Staking.sol", "contract Staking is IStaking { function stake() external {} }"],
+    ]);
+    const result = await assembleClosure({
+      entries: ["E.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    const roles = result.roles;
+    expect(roles.get("Staking.sol")).toBe("inherited");
+  });
+
+  it("cascades transitively: a base's own bases and imports are pulled too", async () => {
+    const tree = new Map<string, string>([
+      ["A.sol", 'import "./B.sol";\ncontract A is B, C {}'],
+      ["B.sol", 'contract B {}\nimport "./D.sol";\ncontract D2 is D {}'],
+      ["C.sol", 'import "./CBase.sol";\ncontract C is CBase {}'],
+      ["CBase.sol", "contract CBase { uint256 public DECIDING_VAR; }"],
+      ["D.sol", "contract D {}"],
+    ]);
+    const result = await assembleClosure({
+      entries: ["A.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    const paths = result.blocks.map((b) => b.path);
+    expect(paths).toContain("CBase.sol"); // reached ONLY through C's chain
+    expect(result.roles.get("CBase.sol")).toBe("inherited");
+  });
+});
+
+describe("CLOSURE_UPGRADE 1.2 — interface-typed refs resolve to concrete impls", () => {
+  it("pulls the sole in-repo implementer of an interface-typed state var (Intuition pattern)", async () => {
+    const tree = new Map<string, string>([
+      [
+        "contracts/TrustBonding.sol",
+        'import "./interfaces/ICoreEmissionsController.sol";\n' +
+          "contract TrustBonding {\n" +
+          "  ICoreEmissionsController public immutable satelliteEmissionsController;\n" +
+          "  function sync() external { satelliteEmissionsController.notifyLock(this); }\n" +
+          "}",
+      ],
+      [
+        "contracts/interfaces/ICoreEmissionsController.sol",
+        "interface ICoreEmissionsController { function notifyLock(address) external; }",
+      ],
+      // The buggy implementation — reachable ONLY through the interface-typed var.
+      [
+        "contracts/CoreEmissionsController.sol",
+        "contract CoreEmissionsController is ICoreEmissionsController {\n  function notifyLock(address) external { /* DECIDING MECHANISM */ }\n}",
+      ],
+      ["contracts/OtherContract.sol", "contract OtherContract {}"],
+    ]);
+    const result = await assembleClosure({
+      entries: ["contracts/TrustBonding.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    const paths = result.blocks.map((b) => b.path);
+    expect(paths).toContain("contracts/CoreEmissionsController.sol");
+    expect(result.roles.get("contracts/CoreEmissionsController.sol")).toBe("impl");
+    expect(result.implOf.get("contracts/CoreEmissionsController.sol")).toBe(
+      "ICoreEmissionsController",
+    );
+    expect(paths).not.toContain("contracts/OtherContract.sol"); // no dragnet over-include
+  });
+
+  it("surfaces UNRESOLVABLE interface→impl edges loudly instead of claiming completeness", async () => {
+    const tree = new Map<string, string>([
+      [
+        "W.sol",
+        "interface IExternalThing { function ping() external; }\ncontract W {\n  IExternalThing public immutable thing;\n  function go() external { thing.ping(); }\n}",
+      ],
+    ]);
+    const result = await assembleClosure({
+      entries: ["W.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    expect(result.unresolvedEdges.length).toBeGreaterThan(0);
+    expect(result.unresolvedEdges[0]).toContain("IExternalThing");
+  });
+
+  it("prefers an explicit `is <I>` implementer when several name matches exist", async () => {
+    const tree = new Map<string, string>([
+      [
+        "Entry.sol",
+        "interface IPriceFeed { function price() external view returns (uint256); }\ncontract Entry {\n  IPriceFeed public feed;\n  function p() external view returns (uint256) { return feed.price(); }\n}",
+      ],
+      // Explicit implementer via inheritance list wins over name coincidence.
+      [
+        "ChainlinkPriceFeed.sol",
+        "contract ChainlinkPriceFeed is IPriceFeed { function price() external view returns (uint256) { return 1; } }",
+      ],
+    ]);
+    const result = await assembleClosure({
+      entries: ["Entry.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    expect(result.blocks.map((b) => b.path)).toContain("ChainlinkPriceFeed.sol");
+  });
+});
+
+describe("CLOSURE_UPGRADE 1.3 — test/mock/PoC exclusion by default", () => {
+  const tree = new Map<string, string>([
+    ["W.sol", "contract W {}"],
+    // Monetrix answer-leak shapes:
+    ["test/SolvencyInvariant.t.sol", "contract SolvencyInvariantTest { /* THE ANSWER */ }"],
+    ["tests/WBehavior.t.sol", "contract WBehavior {}"],
+    ["mocks/MockToken.sol", "contract MockToken {}"],
+    ["script/Deploy.s.sol", "contract Deploy {}"],
+    ["fuzz/BugPoC.PoC.sol", "contract BugPoC {}"],
+  ] as [string, string][]);
+
+  const read = async (p: string): Promise<string> => tree.get(p) ?? "";
+
+  it("default: no test/mock/script/PoC path enters the closure even when reverse-coupled to entry symbols", async () => {
+    // The test file embeds the entry symbol W — the old dragnet would drag it in.
+    const leaky = new Map(tree);
+    leaky.set(
+      "test/SolvencyInvariant.t.sol",
+      "import '../W.sol';\ncontract SolvencyInvariantT { W w; }",
+    );
+    const result = await assembleClosure({
+      entries: ["W.sol"],
+      allPaths: [...leaky.keys()],
+      readFile: async (p) => leaky.get(p) ?? "",
+    });
+    const paths = result.blocks.map((b) => b.path);
+    for (const banned of [
+      "test/SolvencyInvariant.t.sol",
+      "tests/WBehavior.t.sol",
+      "mocks/MockToken.sol",
+      "script/Deploy.s.sol",
+      "fuzz/BugPoC.PoC.sol",
+    ]) {
+      expect(paths).not.toContain(banned);
+    }
+  });
+
+  it("--include-tests opts back in a REVERSE-COUPLED test file that the default policy excludes", async () => {
+    // The test file embeds the entry symbol W — the default policy treats it as a
+    // last-resort reverse hit and excludes it; --include-tests lets it in.
+    const coupled = new Map(tree);
+    coupled.set(
+      "test/SolvencyInvariant.t.sol",
+      "contract SolvencyInvariantT { W public a; W public b; }",
+    );
+    const noInc = await assembleClosure({
+      entries: ["W.sol"],
+      allPaths: [...coupled.keys()],
+      readFile: async (p) => coupled.get(p) ?? "",
+    });
+    expect(noInc.blocks.map((b) => b.path)).not.toContain("test/SolvencyInvariant.t.sol");
+    const withInc = await assembleClosure({
+      entries: ["W.sol"],
+      allPaths: [...coupled.keys()],
+      readFile: async (p) => coupled.get(p) ?? "",
+      includeTests: true,
+    });
+    expect(withInc.blocks.map((b) => b.path)).toContain("test/SolvencyInvariant.t.sol");
+  });
+
+  it("a test-dir ENTRY throws with a hint instead of silently resolving nothing", async () => {
+    await expect(
+      assembleClosure({
+        entries: ["mocks/MockToken.sol"],
+        allPaths: [...tree.keys()],
+        readFile: read,
+      }),
+    ).rejects.toThrow(/includeTests/);
+  });
 });

@@ -33,6 +33,7 @@ import {
   evaluateGate,
   evaluateTarget,
   targetManifestSchema,
+  validateArmSplit,
   type GateDecision,
   type Severity,
   type TargetOutcome,
@@ -149,7 +150,34 @@ async function main(): Promise<void> {
       `[killtest] DRY-RUN (default): ${manifests.length} target(s) found, providers=${cli.providers.join(",")}, ceiling=$${cli.ceilingUsd.toFixed(2)}. NO model calls will be made.`,
     );
     for (const t of manifests) {
-      console.error(`  would run: ${t.name} (baseline x${cli.providers.length} + audit x1)`);
+      try {
+        const manifest = targetManifestSchema.parse(
+          JSON.parse(await readFile(join(t.root, "manifest.json"), "utf8")),
+        );
+        const sourcePaths = await listSourceFiles(t.root);
+        const remappings = await loadRemappings(t.root);
+        const closure = await assembleClosure({
+          entries: manifest.entryContracts,
+          allPaths: sourcePaths,
+          readFile: fsReadRepoFile(t.root),
+          remappings,
+        });
+        const discriminatingFiles = manifest.knownBugs.flatMap(
+          (b) => b.discriminatingFiles ?? [b.file],
+        );
+        const sliceArmFiles = manifest.entryContracts.filter(
+          (e) => !discriminatingFiles.some((d) => e.endsWith(d) || d.endsWith(e)),
+        );
+        const auditArmFiles = closure.blocks.map((b) => b.path);
+        const split = validateArmSplit({ discriminatingFiles, sliceArmFiles, auditArmFiles });
+        console.error(
+          `  would run: ${t.name} (slice over ${sliceArmFiles.length} entry file(s), audit over ${auditArmFiles.length} closure file(s)) — arm split ${split.valid ? "VALID" : `INVALID → would be EXCLUDED: ${split.reason}`}`,
+        );
+      } catch (err) {
+        console.error(
+          `  ${t.name}: cannot plan — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
     console.error("[killtest] pass --live to execute against real APIs.");
     process.exit(0);
@@ -178,6 +206,17 @@ async function main(): Promise<void> {
     let baselineStatus: ArmRunStatus = "errored";
     let auditStatus: ArmRunStatus = "errored";
 
+    // CLOSURE_UPGRADE item 4: SLICE arm = entry files ONLY, minus any
+    // discriminating sibling; the deciding file must NOT be visible to the slice.
+    // AUDIT arm file list is captured from the shipping closure below.
+    const discriminatingFiles = manifest.knownBugs.flatMap(
+      (b) => b.discriminatingFiles ?? [b.file],
+    );
+    const sliceArmFiles = manifest.entryContracts.filter(
+      (e) => !discriminatingFiles.some((d) => e.endsWith(d) || d.endsWith(e)),
+    );
+    let auditArmFiles: string[] = [];
+
     const checkCeiling = (nextCallEstimate: number): boolean => {
       const decision = shouldAbortBeforeRun(cumulativeCost, nextCallEstimate, cli.ceilingUsd);
       if (decision.abort) {
@@ -191,15 +230,14 @@ async function main(): Promise<void> {
     try {
       const provider = providerByName(cli.providers[0] ?? "anthropic");
       await provider.check(target.root);
-      // Bidirectional closure drives slicing too: every assembled file gets
-      // packed into ≤150KB review units (mirrors the PR chunker).
-      const closure = await assembleClosure({
-        entries: manifest.entryContracts,
-        allPaths: sourcePaths,
-        readFile: fsReadRepoFile(target.root),
-        remappings,
-      });
-      const sliceInputs: PromptFile[][] = packIntoSlices(closure.blocks);
+      // Slice arm sees ONLY the entry files (minus the discriminating sibling),
+      // packed into ≤150KB review units — the single-file finding phase.
+      const read = fsReadRepoFile(target.root);
+      const sliceFiles: PromptFile[] = [];
+      for (const path of sliceArmFiles) {
+        sliceFiles.push({ path, contents: await read(path) });
+      }
+      const sliceInputs: PromptFile[][] = packIntoSlices(sliceFiles);
       sliceFindings = [];
       let ranAnySlice = false;
       for (const slice of sliceInputs) {
@@ -240,6 +278,7 @@ async function main(): Promise<void> {
           readFile: fsReadRepoFile(target.root),
           remappings,
         });
+        auditArmFiles = closure.blocks.map((b) => b.path);
         const contextNote =
           closure.externalUnresolved.length > 0
             ? `closure of available files; NOT available: ${closure.externalUnresolved.join(", ")}`
@@ -284,6 +323,8 @@ async function main(): Promise<void> {
       sliceFindings,
       auditFindings,
       bugs: manifest.knownBugs,
+      sliceArmFiles,
+      auditArmFiles,
     });
     outcomes.push(outcome);
 
@@ -311,6 +352,7 @@ async function main(): Promise<void> {
       name: o.targetName,
       baselineStatus: o.baselineRan ? "ran" : "did-not-run",
       auditStatus: o.auditRan ? "ran" : "did-not-run",
+      armsSplitValid: o.armsSplitValid,
       excludedFromGate: o.excludedFromGate,
       exclusionReason: o.exclusionReason,
       countsTowardGate: o.countsTowardGate,
@@ -370,7 +412,7 @@ function renderTargetReport(manifest: TargetManifest, outcome: TargetOutcome): s
   lines.push(`- Source: ${manifest.source.repo} @ \`${manifest.source.commit}\``);
   lines.push(`- Reference (known answer): ${manifest.source.referenceUrl}`);
   lines.push(
-    `- Arms: baseline=${outcome.baselineRan ? "ran" : "DID-NOT-RUN"} audit=${outcome.auditRan ? "ran" : "DID-NOT-RUN"}`,
+    `- Arms: baseline=${outcome.baselineRan ? "ran" : "DID-NOT-RUN"} audit=${outcome.auditRan ? "ran" : "DID-NOT-RUN"} arm-split=${outcome.armsSplitValid ? "valid" : "INVALID"}`,
   );
   lines.push(
     `- Gate: ${outcome.excludedFromGate ? `EXCLUDED — ${outcome.exclusionReason}` : outcome.countsTowardGate ? "COUNTS" : "no delta"}`,

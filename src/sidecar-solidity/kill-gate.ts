@@ -24,6 +24,14 @@ export const knownBugSchema = z.object({
   lineStart: z.number().int().positive(),
   lineEnd: z.number().int().positive(),
   expectedSeverity: z.enum(["critical", "high"]),
+  /**
+   * CLOSURE_UPGRADE item 4: the file(s) the bug's mechanism REQUIRES to be seen.
+   * The audit arm must contain all of these and the slice arm none — otherwise
+   * "closure helped" is unmeasurable (the Intuition confound, where the deciding
+   * file was in neither arm). Optional for back-compat: legacy manifests carry
+   * only `file`, which is used as the sole discriminating file when this is absent.
+   */
+  discriminatingFiles: z.array(z.string().min(1)).min(1).optional(),
 });
 
 export type KnownBug = z.infer<typeof knownBugSchema>;
@@ -86,6 +94,36 @@ export function observedSeverityFor(
   return best;
 }
 
+/** Suffix-tolerant membership: repo-relative paths vs. shorter labeled paths. */
+export function fileInList(file: string, list: readonly string[]): boolean {
+  return list.some((p) => p.endsWith(file) || file.endsWith(p));
+}
+
+/**
+ * CLOSURE_UPGRADE item 4: validate that the discriminating file(s) are in the
+ * audit arm and NOT in the slice arm. If they aren't, the target cannot measure
+ * whether closure helped, so it is INVALID for the gate (not scored).
+ */
+export function validateArmSplit(args: {
+  discriminatingFiles: readonly string[];
+  sliceArmFiles: readonly string[];
+  auditArmFiles: readonly string[];
+}): { valid: boolean; reason: string | null } {
+  const missingFromAudit = args.discriminatingFiles.filter(
+    (d) => !fileInList(d, args.auditArmFiles),
+  );
+  const leakedToSlice = args.discriminatingFiles.filter((d) => fileInList(d, args.sliceArmFiles));
+  if (missingFromAudit.length === 0 && leakedToSlice.length === 0) {
+    return { valid: true, reason: null };
+  }
+  return {
+    valid: false,
+    reason:
+      `discriminating-file split invalid — missing from audit arm: [${missingFromAudit.join(", ")}]; ` +
+      `leaked into slice arm: [${leakedToSlice.join(", ")}]`,
+  };
+}
+
 export type ArmOutcome = {
   caught: boolean;
   observedSeverity: Severity | null;
@@ -98,6 +136,8 @@ export type TargetOutcome = {
   /** C2: arms that did not successfully complete EXCLUDE the target from the gate. */
   baselineRan: boolean;
   auditRan: boolean;
+  /** CLOSURE_UPGRADE item 4: discriminating file(s) correctly split across arms. */
+  armsSplitValid: boolean;
   excludedFromGate: boolean;
   exclusionReason: string | null;
   sliceArm: ArmOutcome;
@@ -127,6 +167,14 @@ export function evaluateTarget(args: {
   sliceFindings: readonly (EvidenceBearing & { severity: Severity })[];
   auditFindings: readonly (EvidenceBearing & { severity: Severity })[];
   bugs: readonly KnownBug[];
+  /**
+   * CLOSURE_UPGRADE item 4: the actual file path lists each arm saw. When both
+   * are supplied, the discriminating-file split is validated and an invalid
+   * split EXCLUDES the target from the gate. Omitted → split validation skipped
+   * (armsSplitValid defaults true) for legacy/unit callers.
+   */
+  sliceArmFiles?: readonly string[] | undefined;
+  auditArmFiles?: readonly string[] | undefined;
 }): TargetOutcome {
   const perBug = args.bugs.map((bug) => ({
     bugId: bug.id,
@@ -149,17 +197,38 @@ export function evaluateTarget(args: {
 
   const baselineRan = args.baselineStatus === "ran";
   const auditRan = args.auditStatus === "ran";
+
+  // CLOSURE_UPGRADE item 4: validate the discriminating-file split when arm file
+  // lists are supplied. Legacy manifests carry only `file`; use it as the sole
+  // discriminating file then.
+  let armsSplitValid = true;
+  let splitReason: string | null = null;
+  if (args.sliceArmFiles !== undefined && args.auditArmFiles !== undefined) {
+    const discriminatingFiles = args.bugs.flatMap((b) => b.discriminatingFiles ?? [b.file]);
+    const split = validateArmSplit({
+      discriminatingFiles,
+      sliceArmFiles: args.sliceArmFiles,
+      auditArmFiles: args.auditArmFiles,
+    });
+    armsSplitValid = split.valid;
+    splitReason = split.reason;
+  }
+
   let excludedFromGate = false;
   let exclusionReason: string | null = null;
   if (!baselineRan || !auditRan) {
     excludedFromGate = true;
     exclusionReason = `baseline ${args.baselineStatus}, audit ${args.auditStatus} — target excluded from gate (C2: an incomplete arm must not count as a miss)`;
+  } else if (!armsSplitValid) {
+    excludedFromGate = true;
+    exclusionReason = splitReason;
   }
 
   return {
     targetName: args.targetName,
     baselineRan,
     auditRan,
+    armsSplitValid,
     excludedFromGate,
     exclusionReason,
     sliceArm: {

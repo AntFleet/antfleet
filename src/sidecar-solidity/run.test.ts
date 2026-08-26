@@ -196,6 +196,114 @@ describe("C1 — injected instruction in source does not change the contract", (
   });
 });
 
+describe("two-stage finder (CLOSURE_UPGRADE 2.1)", () => {
+  const HELPER_SOL = `pragma solidity ^0.8.0;
+contract Helper {
+    function computeBackers() external view returns (uint256) {
+        return 0;
+    }
+}
+`;
+  const NOISE_SOL = `pragma solidity ^0.8.0;
+contract Noise {
+    function unrelated() external {}
+}
+`;
+
+  it("stage A sees only entries; stage B focuses on exactly the named sibling; an unresolved dep is surfaced", async () => {
+    const files = [
+      { path: "contracts/Wallet.sol", contents: WALLET_SOL },
+      { path: "contracts/Helper.sol", contents: HELPER_SOL },
+      { path: "contracts/Noise.sol", contents: NOISE_SOL },
+    ];
+    const stageACandidate = {
+      title: "drain depends on Helper backing",
+      severity: "high",
+      confidence: "medium",
+      evidence: [
+        { path: "contracts/Wallet.sol", startLine: 3, endLine: 4, symbol: null, quote: null },
+      ],
+      reasoning: "drain() magnitude depends on Helper.computeBackers, unseen here",
+    };
+    let stageAPrompt = "";
+    let confirmFocusedPaths: string[] = [];
+    const result = await runFinder(
+      { ...baseInput, entries: ["contracts/Wallet.sol"], files },
+      async (prompt) => {
+        stageAPrompt = prompt;
+        return handled({
+          findings: [stageACandidate],
+          crossFileDependencies: [
+            { symbol: "Helper", reason: "need computeBackers source" },
+            { symbol: "Ghost", reason: "not present in the closure at all" },
+          ],
+        });
+      },
+      refuteSurvives,
+      async ({ focusedFiles }) => {
+        confirmFocusedPaths = focusedFiles.map((f) => f.path);
+        return handled({
+          findings: [
+            {
+              ...stageACandidate,
+              severity: "critical",
+              evidence: [
+                {
+                  path: "contracts/Helper.sol",
+                  startLine: 3,
+                  endLine: 4,
+                  symbol: null,
+                  quote: null,
+                },
+              ],
+            },
+          ],
+          verdict: "REVISED",
+        });
+      },
+    );
+
+    // Stage A prompt is the entry-ONLY slice prompt — no sibling source leaks in.
+    expect(stageAPrompt).toContain("You see ONLY");
+    expect(stageAPrompt).not.toContain("contract Helper");
+    expect(stageAPrompt).not.toContain("contract Noise");
+
+    // Stage B focused context = entry + the named sibling ONLY, never the un-named noise.
+    expect(confirmFocusedPaths).toContain("contracts/Helper.sol");
+    expect(confirmFocusedPaths).not.toContain("contracts/Noise.sol");
+    expect(result.focusedPrompts[0]).toContain("contracts/Helper.sol");
+    expect(result.focusedPrompts[0]).not.toContain("contracts/Noise.sol");
+
+    // Resolved vs unresolved dependencies are surfaced, not silently dropped.
+    expect(result.resolvedDependencies).toContain("Helper");
+    expect(result.resolvedDependencies).not.toContain("Ghost");
+    expect(result.crossFileDependencies.map((d) => d.symbol)).toContain("Ghost");
+
+    // The revised (completed-chain) finding replaced the half-seen original and was promoted.
+    expect(result.pursueCount).toBe(1);
+    expect(result.scored[0]?.finding.severity).toBe("critical");
+  });
+
+  it("stays single-pass (whole-closure dump) when no confirm lane is wired", async () => {
+    const files = [
+      { path: "contracts/Wallet.sol", contents: WALLET_SOL },
+      { path: "contracts/Helper.sol", contents: HELPER_SOL },
+    ];
+    const result = await runFinder(
+      { ...baseInput, entries: ["contracts/Wallet.sol"], files },
+      async (prompt) => {
+        // Single-pass: the whole closure (incl. the sibling) is in the one prompt.
+        expect(prompt).toContain("contract Helper");
+        return handled({ findings: [groundedFinding], inspected: {} });
+      },
+      refuteSurvives,
+      undefined, // no confirm → no two-stage
+    );
+    expect(result.focusedPrompts).toHaveLength(0);
+    expect(result.crossFileDependencies).toHaveLength(0);
+  });
+});
+
 describe("scalar-drift coercion through the pipeline (#6b)", () => {
   it("coerces string-typed numbers/booleans instead of discarding the finding", async () => {
     const drifted = {
