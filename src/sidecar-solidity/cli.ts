@@ -1,6 +1,7 @@
+#!/usr/bin/env node
 /**
- * `pnpm audit-solidity` — whole-contract Solidity finder sidecar CLI.
- * specs/SOLIDITY_SIDECAR_SPEC.md §4 — POST-AUDIT REWORK.
+ * `pnpm audit-solidity` / `antfleet-audit` — whole-contract Solidity finder
+ * sidecar CLI. specs/SOLIDITY_SIDECAR_SPEC.md §4 — POST-AUDIT REWORK.
  *
  * A → bidirectional dependency-closure assembly → B → neutral finder prompt →
  * C → mechanical citation-grounding + independent adversarial refuter pass.
@@ -14,24 +15,27 @@
  */
 
 import { config as loadDotenv } from "dotenv";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
-import {
-  assembleClosure,
-  fsReadRepoFile,
-  listSolFiles,
-  loadRemappings,
-} from "../src/sidecar-solidity/closure.js";
-import { auditModelCall } from "../src/sidecar-solidity/model-client.js";
-import {
-  runFinder,
-  type ConfirmCallback,
-  type RefuteCallback,
-} from "../src/sidecar-solidity/run.js";
-import { refuteFinding, refuterTransport } from "../src/sidecar-solidity/refuter.js";
-import { buildFocusedConfirmPrompt } from "../src/sidecar-solidity/prompt.js";
+import { assembleClosure, fsReadRepoFile, listSolFiles, loadRemappings } from "./closure.js";
+import { auditModelCall } from "./model-client.js";
+import { runFinder, type ConfirmCallback, type RefuteCallback } from "./run.js";
+import { refuteFinding, refuterTransport } from "./refuter.js";
+import { buildFocusedConfirmPrompt } from "./prompt.js";
 
-loadDotenv({ path: resolve(process.cwd(), ".env.local"), quiet: true });
+// Load config from any working directory: a global config (installed via the
+// `antfleet-audit` bin) first, then a repo-local override — neither overrides
+// vars already set in the environment.
+const globalEnvPath = resolve(homedir(), ".config/antfleet-audit/.env");
+if (existsSync(globalEnvPath)) {
+  loadDotenv({ path: globalEnvPath, quiet: true });
+}
+const localEnvPath = resolve(process.cwd(), ".env.local");
+if (existsSync(localEnvPath)) {
+  loadDotenv({ path: localEnvPath, quiet: true });
+}
 
 type CliArgs = {
   target: string;

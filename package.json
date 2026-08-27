@@ -4,6 +4,7 @@
   "description": "AntFleet — trust substrate for autonomous code",
   "license": "MIT",
   "bin": {
+    "antfleet-audit": "dist/sidecar-solidity/cli.js",
     "fleet": "dist/cli.js"
   },
   "files": [
@@ -72,7 +73,7 @@
     "test": "vitest run",
     "spike": "tsx scripts/spike.ts",
     "killtest": "tsx scripts/solidity-killtest.ts",
-    "audit-solidity": "tsx scripts/audit-solidity.ts"
+    "audit-solidity": "tsx src/sidecar-solidity/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

@@ -16,7 +16,7 @@ Non-negotiable:
   `apps/web/lib/review-worker*.ts`, `apps/web/lib/review-pipeline.ts` and its
   chunking helpers. None of them may be imported by, modified by, or regressed by
   this sidecar. Acceptance criterion: `git diff --stat` on the branch touches
-  only `src/sidecar-solidity/**`, `scripts/audit-solidity.ts`, `package.json`
+  only `src/sidecar-solidity/**`, `src/sidecar-solidity/cli.ts`, `package.json`
   (one script line), and docs. "No regression to the PR reviewer" is an
   acceptance criterion, not a preference.
 - **Reuse the finding contract already defined in
@@ -221,7 +221,7 @@ pnpm audit-solidity --target <dir> --entry <repo-relative .sol path>
      no calls; `--live` path parses, scores, and drops a privileged-only
      finding with its reason end-to-end.
 2. `git diff --stat` touches only `src/sidecar-solidity/**`,
-   `scripts/audit-solidity.ts`, `package.json`, docs/spec files (§0).
+   `src/sidecar-solidity/cli.ts`, `package.json`, docs/spec files (§0).
 3. Dry-run works end-to-end with zero credentials on the Biconomy fixture.
 4. README in `src/sidecar-solidity/` states honestly: demonstrated value is
    confidence-raising + exploit-chain completion on candidates the finder already

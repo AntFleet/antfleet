@@ -53,7 +53,7 @@ export type RunFinderInput = {
 export type FinderHandled = HandledPayload;
 
 /** Injected adversarial-refutation callback. Production composes this from
- * buildRefuterPrompt + refuteModelCall (see scripts/audit-solidity.ts); tests
+ * buildRefuterPrompt + refuteModelCall (see src/sidecar-solidity/cli.ts); tests
  * inject fakes. Receives everything needed to attack one finding. */
 export type RefuteCallback = (args: {
   finding: AuditFinding;
