@@ -45,20 +45,53 @@ pnpm audit-solidity \
   --entry contracts/Wallet.sol \
   --rules program-rules.md
 
-# LIVE: finder (gpt-5.6-sol) + independent refuter (gpt-5.5), via OpenRouter's
-# OpenAI-compatible endpoint. Needs OPENROUTER_API_KEY (or SIDECAR_API_KEY).
+# LIVE: finder (gpt-5.6-sol) + independent refuter (gpt-5.5). NO API KEY NEEDED
+# by default — see Transports below.
 pnpm audit-solidity --target ... --entry ... --rules ... --live --out report.json
 
-# Transport: OpenAI Chat Completions (json_object output) at
-# https://openrouter.ai/api/v1 by default — this reaches GPT models AND Claude.
-# Overrides (all optional):
-#   SIDECAR_FINDER_MODEL=<id>     # stage A + stage-B confirm (default openai/gpt-5.6-sol)
-#   SIDECAR_REFUTER_MODEL=<id>    # adversarial refuter        (default openai/gpt-5.5)
+# Model overrides (apply to BOTH transports):
+#   SIDECAR_FINDER_MODEL=<id>     # stage A + stage-B confirm (default gpt-5.6-sol)
+#   SIDECAR_REFUTER_MODEL=<id>    # adversarial refuter        (default gpt-5.5)
 #   SIDECAR_MODEL=<id>            # both roles at once
-#   SIDECAR_BASE_URL=<url>        # e.g. https://api.openai.com/v1 for native OpenAI
-#   SIDECAR_REASONING_EFFORT=high|medium|low   (default high)
-# SIDECAR_DEBUG=1 logs finish_reason + content length.
+# SIDECAR_DEBUG=1 logs finish_reason / output length.
 ```
+
+### Transports
+
+**DEFAULT — codex CLI over the ChatGPT subscription (no API key, no spend).**
+`--live` shells out to `codex exec -o <tmpfile> --skip-git-repo-check -s read-only
+-m <model>`, feeding the prompt over **stdin** (finder prompts reach ~200k chars,
+far past any argv limit) and reading the final assistant message back out of the
+temp file. Auth comes from `~/.codex` (`auth_mode: chatgpt`) — nothing is read
+from `OPENAI_API_KEY`. The per-role split is unchanged: finder `gpt-5.6-sol`,
+refuter `gpt-5.5`, both passed through `codex -m`, both overridable with the env
+vars above (an `openai/` vendor prefix is stripped for the codex id spelling).
+`SIDECAR_CODEX_BIN` overrides the binary path if `codex` is not on PATH.
+
+> **codex is slow** (subscription queueing + high reasoning effort on a large
+> prompt): budget many minutes per call, and a two-stage `--live` run makes
+> several. It is *free*, so the trade is time-for-money — **background live
+> sweeps** rather than waiting on them, and note the transport's 10-minute
+> per-call ceiling.
+
+**OPT-IN — OpenAI Chat Completions (json_object) via OpenRouter.** Select it
+with either `SIDECAR_TRANSPORT=http` **or** by setting `SIDECAR_BASE_URL`; this
+is the only path that costs money and the only one that needs a key.
+
+```sh
+SIDECAR_TRANSPORT=http OPENROUTER_API_KEY=... \
+  pnpm audit-solidity --target ... --entry ... --rules ... --live
+
+# HTTP-only extras:
+#   SIDECAR_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY  (required)
+#   SIDECAR_BASE_URL=<url>   # default https://openrouter.ai/api/v1
+#   SIDECAR_REASONING_EFFORT=high|medium|low   (default high)
+```
+
+Neither transport uses API-side schema enforcement — the prompt demands strict
+JSON and the downstream lenient parse absorbs the rest. The HTTP path reports a
+max-tokens cut-off as `truncated: true`; codex exposes no equivalent signal, so
+a cut-off there surfaces as a loud JSON parse failure instead.
 
 Closure stats print to stderr; the prompt/report goes to stdout and `--out`.
 
