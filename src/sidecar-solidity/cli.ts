@@ -62,8 +62,10 @@ function usage(): never {
 
 Default is DRY-RUN (no model call, findings never promoted).
 --live runs the finder (gpt-5.6-sol) + the independent adversarial refuter
-(gpt-5.5) via OpenRouter; set OPENROUTER_API_KEY (or SIDECAR_API_KEY). Override
-models with SIDECAR_FINDER_MODEL / SIDECAR_REFUTER_MODEL.`);
+(gpt-5.5) through the codex CLI on your ChatGPT subscription — no API key, but
+slow. Set SIDECAR_TRANSPORT=http (with OPENROUTER_API_KEY / SIDECAR_API_KEY) to
+use OpenRouter instead. Override models with SIDECAR_FINDER_MODEL /
+SIDECAR_REFUTER_MODEL.`);
   process.exit(2);
 }
 
