@@ -124,13 +124,20 @@ describe("EVIDENCE QUOTE RULES — verbatim-quote guidance reaches the finding-e
     severity: "high" as const,
     confidence: "high" as const,
     reasoning: "r",
-    evidence: [{ path: "contracts/Vault.sol", startLine: 1, endLine: 1, symbol: null, quote: null }],
+    evidence: [
+      { path: "contracts/Vault.sol", startLine: 1, endLine: 1, symbol: null, quote: null },
+    ],
     triggerRole: "any EOA",
     preconditions: "none",
   };
 
   it("finder, slice, and confirm prompts all carry the CHARACTER-FOR-CHARACTER quote rule", () => {
-    const common = { projectName: "x", entries: ["contracts/Vault.sol"], files, programRules: NEUTRAL_RULES };
+    const common = {
+      projectName: "x",
+      entries: ["contracts/Vault.sol"],
+      files,
+      programRules: NEUTRAL_RULES,
+    };
     for (const prompt of [
       buildFinderPrompt(common),
       buildSlicePrompt(common),
