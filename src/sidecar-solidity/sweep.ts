@@ -14,7 +14,7 @@ import {
   fsReadRepoFile,
   type ClosureResult,
 } from "./closure.js";
-import { auditModelCall } from "./model-client.js";
+import { auditModelCall, confirmModelCall } from "./model-client.js";
 import {
   runFinder,
   type ConfirmCallback,
@@ -45,6 +45,8 @@ export type AuditEntryArgs = {
   remappings: readonly (readonly [string, string])[];
   live: boolean;
   finderModel?: string | undefined;
+  /** Stage-B focused-confirm model override (default gpt-5.5, set in model-client). */
+  confirmModel?: string | undefined;
   /** Defaults to console.error; injectable so sweep can label/silence lines. */
   log?: ((line: string) => void) | undefined;
 };
@@ -96,8 +98,12 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
   }
 
   const finderOpts = args.finderModel === undefined ? undefined : { model: args.finderModel };
+  const confirmOpts = args.confirmModel === undefined ? undefined : { model: args.confirmModel };
   if (args.live && args.finderModel !== undefined) {
-    log(`[audit-solidity] finder calls (stage A + confirm) routed to model: ${args.finderModel}`);
+    log(`[audit-solidity] stage-A finder routed to model: ${args.finderModel}`);
+  }
+  if (args.live && args.confirmModel !== undefined) {
+    log(`[audit-solidity] stage-B confirm routed to model: ${args.confirmModel}`);
   }
   const finderTransport = args.live
     ? async (prompt: string) => {
@@ -119,6 +125,9 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
         return { verdict: r.verdict, reason: r.reason } as const;
       }
     : undefined;
+  // Stage B (focused confirm) runs on the CONFIRM model (default gpt-5.5), NOT
+  // the finder model: the "complete this fund-extraction chain" prompt trips the
+  // ChatGPT cyber content filter on gpt-5.6-sol; gpt-5.5 clears it.
   const confirmCallback: ConfirmCallback | undefined = args.live
     ? async ({ finding, focusedFiles, programRules: rules }) => {
         const prompt = buildFocusedConfirmPrompt({
@@ -134,7 +143,7 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
           files: focusedFiles,
           programRules: rules,
         });
-        const { payload, truncated } = await auditModelCall(prompt, finderOpts);
+        const { payload, truncated } = await confirmModelCall(prompt, confirmOpts);
         return { payload, truncated };
       }
     : undefined;

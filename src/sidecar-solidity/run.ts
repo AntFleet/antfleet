@@ -64,7 +64,7 @@ export type RefuteCallback = (args: {
 
 /**
  * Injected focused-confirm callback (stage B). Production composes this from
- * buildFocusedConfirmPrompt + auditModelCall; --live only. Receives the
+ * buildFocusedConfirmPrompt + confirmModelCall (gpt-5.5); --live only. Receives the
  * candidate and ONLY its focused context; returns refined findings for it.
  */
 export type ConfirmCallback = (args: {
