@@ -286,6 +286,44 @@ describe("symlink escape guards (item 6)", () => {
   }, 15_000);
 });
 
+describe("listSolFiles — node_modules deps are walked (remapped-dep resolution)", () => {
+  it("includes .sol under node_modules but still skips build-output and pnpm-store noise", async () => {
+    const { mkdtemp, mkdir, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const root = await mkdtemp(join(tmpdir(), "sidecar-nm-"));
+    try {
+      await mkdir(join(root, "src"), { recursive: true });
+      await writeFile(join(root, "src", "Vault.sol"), "contract Vault {}\n");
+      // A remapped dependency source (npm/Hardhat layout, e.g. OpenZeppelin).
+      await mkdir(join(root, "node_modules", "@openzeppelin", "contracts", "token"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(root, "node_modules", "@openzeppelin", "contracts", "token", "ERC20.sol"),
+        "contract ERC20 {}\n",
+      );
+      // Build output and the pnpm virtual store must stay excluded.
+      await mkdir(join(root, "out"), { recursive: true });
+      await writeFile(join(root, "out", "Artifact.sol"), "contract Artifact {}\n");
+      await mkdir(join(root, "node_modules", ".pnpm", "x", "node_modules"), { recursive: true });
+      await writeFile(
+        join(root, "node_modules", ".pnpm", "x", "node_modules", "Dup.sol"),
+        "contract Dup {}\n",
+      );
+      const { listSolFiles } = await import("./closure.js");
+      const files = await listSolFiles(root);
+      expect(files).toContain("src/Vault.sol");
+      expect(files).toContain("node_modules/@openzeppelin/contracts/token/ERC20.sol");
+      expect(files).not.toContain("out/Artifact.sol");
+      // `.pnpm` starts with a dot → excluded by the dotfile skip (no store dup).
+      expect(files.some((f) => f.includes(".pnpm"))).toBe(false);
+    } finally {
+      const { rm } = await import("node:fs/promises");
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
+
 describe("CLOSURE_UPGRADE 1.1 — full inheritance-chain resolution", () => {
   it("inlines the IMPLEMENTATION source of every inheritance base, not just an interface", async () => {
     // Intuition pattern: the bug mechanism lived in VotingEscrow, an inherited

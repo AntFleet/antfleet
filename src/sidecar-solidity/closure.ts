@@ -668,12 +668,21 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
 
 export async function listSolFiles(root: string): Promise<string[]> {
   const acc: string[] = [];
-  // NOTE: "lib" is deliberately NOT skipped — Foundry checks remapped deps out
-  // there; they are exactly what the closure needs. Only package-manager and
-  // build-output noise is excluded. Test dirs are NOT skipped here either:
-  // exclusion happens in assembleClosure (visiblePaths) so callers can opt in
-  // via --include-tests; the walker stays a dumb listing.
-  const skipDirs = new Set(["node_modules", "out", "cache", ".git", ".fleet"]);
+  // NOTE: neither "lib" NOR "node_modules" is skipped — they hold remapped
+  // dependency sources (Foundry checks deps out under lib/; npm/Hardhat-layout
+  // projects like Puffer put them under node_modules/, targeted by remappings.txt
+  // e.g. `@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/`). Those
+  // base contracts (ERC4626 share-math, OZ Address.sendValue, ECDSA, AccessManaged)
+  // are EXACTLY what the closure needs to resolve import edges and what the
+  // refuter reads to kill MIS-CITED findings; excluding them left every dep import
+  // an unresolved external and audited contracts against a half-seen closure.
+  // .sol files are naturally sparse under node_modules, so the walk stays cheap.
+  // The dotfile skip below already excludes pnpm's `.pnpm` store and `.bin`, and
+  // the symlink guard skips pnpm's symlinked dep farm (npm/pack flat installs, the
+  // layout used here, are real dirs and resolve fine). Only build-output noise is
+  // excluded. Test dirs are NOT skipped here either: exclusion happens in
+  // assembleClosure (visiblePaths) so callers can opt in via --include-tests.
+  const skipDirs = new Set(["out", "cache", ".git", ".fleet"]);
   const realRoot = await realpath(root);
   const walk = async (dir: string): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });

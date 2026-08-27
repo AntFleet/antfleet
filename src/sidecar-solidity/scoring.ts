@@ -124,6 +124,19 @@ function locateQuote(
 ): { startLine: number; endLine: number } | null {
   const fileLines = contents.split(/\r?\n/u);
   const normFile = fileLines.map(normalizeWhitespace);
+  // ELISION-AWARE PATH (e2e regression): the finder routinely renders evidence
+  // as `signature { frag ... frag }` — one quote string with literal `...`
+  // marking omitted code. `...` never appears in real Solidity source, so treat
+  // it as a fragment separator and require every SUBSTANTIAL fragment to occur,
+  // in order, in the file. Measured live on Puffer VaultV5: this style
+  // false-DROPped 3/3 findings whose fragments were all verbatim-present.
+  if (quote.includes("...")) {
+    const elided = locateElidedQuote(normFile, quote);
+    if (elided !== null) {
+      return elided;
+    }
+    // Fall through: the `...` may have been incidental, try the normal matchers.
+  }
   const quoteLines = quote
     .split(/\r?\n/u)
     .map(normalizeWhitespace)
@@ -172,6 +185,69 @@ function locateQuote(
     }
   }
   return null;
+}
+
+/**
+ * Match an elided quote (`frag ... frag ... frag`) against the file. Splits on
+ * `...`, keeps the substantial fragments, and requires them to appear IN ORDER
+ * as whitespace-normalized substrings of the file. Matching is done against the
+ * space-JOINED file (not per-line) because a single fragment routinely spans
+ * consecutive source lines — the model joins `sig {` and the next body line with
+ * a space, reserving `...` for the omitted middle. Anchors the reported span to
+ * the first..last matched fragment. Fabrication defense holds: any substantial
+ * fragment missing (or out of order) → null (DROP). A grab-bag of only-tiny
+ * fragments (none ≥12 chars) is too weak to anchor → null.
+ */
+function locateElidedQuote(
+  normFile: readonly string[],
+  quote: string,
+): { startLine: number; endLine: number } | null {
+  const fragments = quote
+    .split(/\.\.\.+/u)
+    .map(normalizeWhitespace)
+    .filter((f) => f.length >= 8);
+  if (fragments.length === 0 || !fragments.some((f) => f.length >= 12)) {
+    return null;
+  }
+  // Join the normalized file into one string, tracking each line's start offset
+  // so a char-index match can be mapped back to a 1-based line number.
+  const lineStart: number[] = [];
+  let offset = 0;
+  for (const line of normFile) {
+    lineStart.push(offset);
+    offset += line.length + 1; // +1 for the join separator
+  }
+  const joined = normFile.join(" ");
+  const lineOf = (charIdx: number): number => {
+    let lo = 0;
+    let hi = lineStart.length - 1;
+    let ans = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if ((lineStart[mid] as number) <= charIdx) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans;
+  };
+  let searchFrom = 0;
+  let firstIdx = -1;
+  let lastEndIdx = -1;
+  for (const frag of fragments) {
+    const idx = joined.indexOf(frag, searchFrom);
+    if (idx < 0) {
+      return null; // a substantial fragment is missing / out of order → not grounded
+    }
+    if (firstIdx < 0) {
+      firstIdx = idx;
+    }
+    lastEndIdx = idx + frag.length;
+    searchFrom = idx + frag.length; // in-order, non-overlapping
+  }
+  return { startLine: lineOf(firstIdx) + 1, endLine: lineOf(lastEndIdx - 1) + 1 };
 }
 
 function countLines(contents: string): number {

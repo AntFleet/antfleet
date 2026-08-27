@@ -122,6 +122,70 @@ describe("groundFinding — mechanical citation check (no model)", () => {
     expect(groundFinding(finding, closure)).toEqual({ ok: true });
   });
 
+  it("grounds an ELIDED quote (`frag ... frag`) whose fragments are all verbatim-present (Puffer VaultV5 regression)", () => {
+    // Live on Puffer VaultV5: the finder renders evidence as
+    // `function sig { body ... }` in ONE quote string with literal `...` for
+    // omitted code, which false-DROPped 3/3 findings whose fragments were real.
+    const elidedClosure: GroundedFile[] = [
+      {
+        path: "src/PufferVaultV5.sol",
+        contents:
+          "// SPDX\n" +
+          "contract PufferVaultV5 {\n" +
+          "    function initialize(address accessManager) public initializer {\n" +
+          "        __AccessManaged_init(accessManager);\n" +
+          "        __ERC4626_init(IERC20(address(0)));\n" +
+          "    }\n" +
+          "    function transferETH(address to, uint256 ethAmount) external restricted {\n" +
+          '        (bool success,) = to.call{ value: ethAmount }("");\n' +
+          "        require(success);\n" +
+          "    }\n" +
+          "}\n",
+      },
+    ];
+    const finding = auditFindingSchema.parse({
+      title: "uninitialized proxy takeover",
+      severity: "high",
+      evidence: [
+        {
+          path: "src/PufferVaultV5.sol",
+          startLine: 76,
+          endLine: 82,
+          symbol: null,
+          quote:
+            "function initialize(address accessManager) public initializer { __AccessManaged_init(accessManager); ... }",
+        },
+        {
+          path: "src/PufferVaultV5.sol",
+          startLine: 437,
+          endLine: 448,
+          symbol: null,
+          quote:
+            'function transferETH(address to, uint256 ethAmount) external restricted { ... (bool success,) = to.call{ value: ethAmount }("");',
+        },
+      ],
+      reasoning: "unprivileged init + transferETH drain",
+    });
+    expect(groundFinding(finding, elidedClosure)).toEqual({ ok: true });
+    // Re-anchored to the first fragment's true line (initialize is at line 3).
+    expect(finding.evidence[0]?.startLine).toBe(3);
+  });
+
+  it("still DROPs an elided quote when a substantial fragment is fabricated", () => {
+    const finding = findingWith([
+      {
+        path: "contracts/Vault.sol",
+        startLine: 4,
+        endLine: 5,
+        symbol: null,
+        quote: "function withdraw() external { ... selfdestruct(payable(attacker)); }",
+      },
+    ]);
+    const result = groundFinding(finding, closure);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("quote does not match");
+  });
+
   it("still DROPs a quote that appears nowhere in the file (fabrication defense)", () => {
     const finding = findingWith([
       {
