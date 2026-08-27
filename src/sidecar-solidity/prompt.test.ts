@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   buildFinderPrompt,
+  buildFocusedConfirmPrompt,
   buildRefuterPrompt,
+  buildSlicePrompt,
   describeClosureHonesty,
   fenceFile,
   generateNonce,
@@ -113,6 +115,42 @@ describe("buildFinderPrompt — neutral objective + injection fencing (C1)", () 
   it("generates a fresh nonce per call when omitted", () => {
     expect(generateNonce()).not.toBe(generateNonce());
     expect(generateNonce()).toMatch(/^[0-9a-f]{24}$/u);
+  });
+});
+
+describe("EVIDENCE QUOTE RULES — verbatim-quote guidance reaches the finding-emitting prompts", () => {
+  const finding = {
+    title: "t",
+    severity: "high" as const,
+    confidence: "high" as const,
+    reasoning: "r",
+    evidence: [
+      { path: "contracts/Vault.sol", startLine: 1, endLine: 1, symbol: null, quote: null },
+    ],
+    triggerRole: "any EOA",
+    preconditions: "none",
+  };
+
+  it("finder, slice, and confirm prompts all carry the CHARACTER-FOR-CHARACTER quote rule", () => {
+    const common = {
+      projectName: "x",
+      entries: ["contracts/Vault.sol"],
+      files,
+      programRules: NEUTRAL_RULES,
+    };
+    for (const prompt of [
+      buildFinderPrompt(common),
+      buildSlicePrompt(common),
+      buildFocusedConfirmPrompt({ finding, files, programRules: NEUTRAL_RULES }),
+    ]) {
+      expect(prompt).toContain("CHARACTER-FOR-CHARACTER");
+      expect(prompt).toContain('NEVER use "..."');
+    }
+  });
+
+  it("does NOT inject quote rules into the refuter prompt (it emits verdict+reason, not quotes)", () => {
+    const prompt = buildRefuterPrompt({ finding, files, programRules: NEUTRAL_RULES });
+    expect(prompt).not.toContain("CHARACTER-FOR-CHARACTER");
   });
 });
 

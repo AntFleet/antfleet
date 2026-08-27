@@ -78,6 +78,21 @@ export const AUDIT_JSON_SHAPE = `{
   "inspected": {"files":["string"],"notes":["string"]}
 }`;
 
+// Grounding survives only on verbatim quotes. Live on Puffer VaultV5 the finder
+// lost real HIGHs by rendering evidence as prose, or as space-/`...`-joined
+// non-adjacent statements, none of which locate in the file — so these rules are
+// stated explicitly and shared by the finder, slice, and confirm prompts.
+export const EVIDENCE_QUOTE_RULES = `EVIDENCE QUOTE RULES (a separate reviewer verifies every "quote" against the real
+file; a quote not found verbatim is DISCARDED and takes the whole finding with it):
+- Copy each "quote" CHARACTER-FOR-CHARACTER from ONE contiguous span of the cited
+  file. Do not summarize, paraphrase, or describe — prose belongs in "reasoning".
+- ONE location per evidence entry. If several lines matter, emit SEVERAL evidence
+  entries; never concatenate lines from different places into a single quote.
+- NEVER use "..."/"…" to elide, and never join non-adjacent statements. Prefer a
+  single distinctive offending line as the quote.
+- "path" is the file the quote is actually copied from — cite an inherited base's
+  code (e.g. ERC4626Upgradeable) with THAT base's path, not the entry contract's.`;
+
 /**
  * Upgrade item 2.2 — mechanical per-file checklists. These convert "the model
  * glanced at the file" into "the model checked the thing". Each entry is
@@ -155,6 +170,8 @@ Every finding will be independently re-examined by a separate adversarial
 reviewer and its citations verified against the real files before it is acted
 on. Do not fabricate locations; unverifiable findings are discarded. Return
 strict JSON only, no markdown fences.
+
+${EVIDENCE_QUOTE_RULES}
 
 JSON shape:
 ${AUDIT_JSON_SHAPE}
@@ -354,6 +371,8 @@ then be independently re-examined by a separate adversarial reviewer with its
 citations verified before anything is acted on. Return strict JSON only, no
 markdown fences.
 
+${EVIDENCE_QUOTE_RULES}
+
 JSON shape:
 ${AUDIT_JSON_SHAPE}
 
@@ -432,6 +451,8 @@ ${JSON.stringify(
 )}
 ${args.contextNote === undefined ? "" : `\nContext note: ${args.contextNote}\n`}
 Return strict JSON only, no markdown fences.
+
+${EVIDENCE_QUOTE_RULES}
 
 JSON shape:
 ${CONFIRM_JSON_SHAPE}
