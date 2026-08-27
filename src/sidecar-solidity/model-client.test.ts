@@ -6,6 +6,7 @@ import {
   confirmModelCall,
   handleChatResponse,
   handleCodexOutput,
+  isCyberRefusal,
   normalizeToolInput,
   toCodexModelId,
   useHttpTransport,
@@ -136,6 +137,22 @@ describe("per-role default models — stage B is split off the finder to clear t
 
   it("exposes a confirmModelCall distinct from the finder call", () => {
     expect(typeof confirmModelCall).toBe("function");
+  });
+});
+
+describe("isCyberRefusal — detect the ChatGPT cyber content-filter refusal for model fallback", () => {
+  it("matches the real codex refusal tail (fires on stage A AND stage B live on Puffer)", () => {
+    const tail =
+      "sidecar codex transport exited 1: te`, expected `description` or `hooks` at line 2 column 9\n" +
+      "ERROR: This content was flagged for possible cybersecurity risk. If this seems wrong, try " +
+      "rephrasing your request. To get authorized for security work, join the Trusted Access for " +
+      "Cyber program: https://chatgpt.com/cyber";
+    expect(isCyberRefusal(tail)).toBe(true);
+  });
+
+  it("does NOT match ordinary transport failures (timeout, parse error) — those never fall back", () => {
+    expect(isCyberRefusal("sidecar codex transport timed out after 900000ms")).toBe(false);
+    expect(isCyberRefusal("sidecar model output was not valid JSON")).toBe(false);
   });
 });
 
