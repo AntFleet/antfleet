@@ -42,6 +42,8 @@ export type RunFinderInput = {
   /** Closure blocks in keep-priority order (component A output). */
   files: readonly { path: string; contents: string }[];
   programRules: string;
+  /** Phase 0 DESCRIPTIVE system context (docs/NatSpec) for the finder. Recall-safe. */
+  systemContext?: string | undefined;
   closureStats?: {
     truncated: boolean;
     evicted: readonly string[];
@@ -249,6 +251,7 @@ export async function runFinder(
         files: stageAFiles,
         programRules: input.programRules,
         contextNote,
+        systemContext: input.systemContext,
       })
     : buildFinderPrompt({
         projectName: input.projectName,
@@ -256,6 +259,7 @@ export async function runFinder(
         files: input.files,
         programRules: input.programRules,
         contextNote,
+        systemContext: input.systemContext,
       });
 
   if (callFinder === undefined) {
@@ -323,6 +327,7 @@ export async function runFinder(
           },
           files: focusedFiles,
           programRules: input.programRules,
+          systemContext: input.systemContext,
         });
         focusedPrompts.push(confirmPrompt);
         const confirmHandled = await confirm({

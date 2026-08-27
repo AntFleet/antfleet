@@ -32,6 +32,67 @@ import {
   sanitizeEntryPath,
   type EntryPursueFindings,
 } from "./sweep.js";
+import {
+  buildContextPack,
+  EMPTY_CONTEXT_PACK,
+  isEmptyPack,
+  listAuditTexts,
+  listMarkdownDocs,
+  readTextFileSafe,
+  type ContextPack,
+} from "./context-pack.js";
+
+/** Phase 0 inputs shared by single-audit and sweep. */
+type ContextCliArgs = {
+  docsDir: string | null; // override root for doc discovery; null = auto from --target
+  auditsDir: string | null; // dir of operator-extracted audit .txt/.md
+  trustModelPath: string | null; // operator --trust-model file
+  noContext: boolean; // disable Phase 0 entirely
+};
+
+/**
+ * Assemble the Phase 0 context pack once per run. Auto-detects `docs/` + `README*`
+ * under the target root; `--audits` and `--trust-model` are opt-in. Returns the
+ * EMPTY pack when disabled or nothing is found, so the pipeline is unchanged.
+ */
+async function assembleCliContextPack(root: string, cx: ContextCliArgs): Promise<ContextPack> {
+  if (cx.noContext) {
+    return EMPTY_CONTEXT_PACK;
+  }
+  const docRoot = cx.docsDir === null ? root : resolve(cx.docsDir);
+  const docPaths = await listMarkdownDocs(docRoot);
+  const docs = await Promise.all(
+    docPaths.map(async (p) => ({ path: p, text: await readTextFileSafe(resolve(docRoot, p)) })),
+  );
+  const auditTexts =
+    cx.auditsDir === null
+      ? []
+      : await Promise.all(
+          (await listAuditTexts(resolve(cx.auditsDir))).map(async (p) => ({
+            name: p.split("/").pop() ?? p,
+            text: await readTextFileSafe(p),
+          })),
+        );
+  const trustModelText =
+    cx.trustModelPath === null ? undefined : await readTextFileSafe(resolve(cx.trustModelPath));
+  const pack = buildContextPack({
+    docs: docs.filter((d) => d.text.length > 0),
+    auditTexts: auditTexts.filter((a) => a.text.length > 0),
+    trustModelText,
+  });
+  if (!isEmptyPack(pack)) {
+    console.error(
+      `[audit-solidity] Phase 0: ${pack.sources.length} off-chain source(s) ingested (${pack.knownIssues.length} known-issue(s))`,
+    );
+  }
+  return pack;
+}
+const EMPTY_CONTEXT_CLI: ContextCliArgs = {
+  docsDir: null,
+  auditsDir: null,
+  trustModelPath: null,
+  noContext: false,
+};
 
 // Load config from any working directory: a global config (installed via the
 // `antfleet-audit` bin) first, then a repo-local override — neither overrides
@@ -52,6 +113,7 @@ type CliArgs = {
   budgetBytes: number;
   outPath: string | null;
   live: boolean;
+  context: ContextCliArgs;
 };
 
 function usage(): never {
@@ -59,7 +121,10 @@ function usage(): never {
   pnpm audit-solidity --target <dir> --entry <repo-relative .sol path>
                       [--entry ...] --rules <file.md> [--budget <bytes>]
                       [--out <report.json>] [--live]
+                      [--docs <dir>] [--audits <dir>] [--trust-model <file>] [--no-context]
 
+Phase 0 (off-chain context): docs/ + README* under --target are auto-ingested;
+--audits <dir of .txt/.md> and --trust-model <file> are opt-in; --no-context disables.
 Default is DRY-RUN (no model call, findings never promoted).
 --live runs stage-A finder (gpt-5.6-sol) + stage-B focused confirm (gpt-5.5) +
 the independent adversarial refuter (gpt-5.5) through the codex CLI on your
@@ -77,6 +142,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
     budgetBytes: 400_000,
     outPath: null,
     live: false,
+    context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
   while (i < argv.length) {
@@ -121,6 +187,22 @@ function parseArgs(argv: readonly string[]): CliArgs {
         args.live = true;
         i += 1;
         break;
+      case "--docs":
+        args.context.docsDir = take();
+        i += 2;
+        break;
+      case "--audits":
+        args.context.auditsDir = take();
+        i += 2;
+        break;
+      case "--trust-model":
+        args.context.trustModelPath = take();
+        i += 2;
+        break;
+      case "--no-context":
+        args.context.noContext = true;
+        i += 1;
+        break;
       case "--help":
       case "-h":
         usage();
@@ -152,6 +234,8 @@ async function main(): Promise<void> {
   // SIDECAR_CONFIRM_MODEL override the two discovery stages independently.
   const finderModel = process.env["SIDECAR_FINDER_MODEL"];
   const confirmModel = process.env["SIDECAR_CONFIRM_MODEL"];
+  // Phase 0 — assemble the off-chain context pack once (specs/…_PHASE0_SPEC.md).
+  const contextPack = await assembleCliContextPack(root, cli.context);
   const { closure, result } = await auditEntry({
     root,
     entries: cli.entries,
@@ -162,6 +246,7 @@ async function main(): Promise<void> {
     live: cli.live,
     finderModel,
     confirmModel,
+    contextPack,
   });
 
   if (!cli.live) {
@@ -209,6 +294,7 @@ type SweepCliArgs = {
   concurrency: number;
   budgetBytes: number;
   live: boolean;
+  context: ContextCliArgs;
 };
 
 function sweepUsage(): never {
@@ -220,6 +306,8 @@ function sweepUsage(): never {
 
 Audits MANY entry contracts over one target repo in one command. Combine
 --entry / --entries-from / --entries-glob freely; at least one is required.
+Phase 0 off-chain context: [--docs <dir>] [--audits <dir>] [--trust-model <file>]
+[--no-context] (docs/ + README* auto-ingested from --target; pack built once).
 Default is DRY-RUN (no model calls). --concurrency defaults to 2.`);
   process.exit(2);
 }
@@ -244,6 +332,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     concurrency: 2,
     budgetBytes: 400_000,
     live: false,
+    context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
   while (i < argv.length) {
@@ -299,6 +388,22 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
         args.live = true;
         i += 1;
         break;
+      case "--docs":
+        args.context.docsDir = take();
+        i += 2;
+        break;
+      case "--audits":
+        args.context.auditsDir = take();
+        i += 2;
+        break;
+      case "--trust-model":
+        args.context.trustModelPath = take();
+        i += 2;
+        break;
+      case "--no-context":
+        args.context.noContext = true;
+        i += 1;
+        break;
       case "--help":
       case "-h":
         sweepUsage();
@@ -342,6 +447,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     concurrency: args.concurrency,
     budgetBytes: args.budgetBytes,
     live: args.live,
+    context: args.context,
   };
 }
 
@@ -351,6 +457,8 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
   const programRules = await readFile(resolve(cli.rulesPath), "utf8");
   const allPaths = await listSolFiles(root);
   const remappings = await loadRemappings(root);
+  // Phase 0 — assemble the off-chain context pack ONCE; reused for every entry.
+  const contextPack = await assembleCliContextPack(root, cli.context);
 
   console.error(
     `[audit-sweep] ${cli.entries.length} entry(ies), concurrency=${cli.concurrency}, live=${cli.live}`,
@@ -371,6 +479,7 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
         live: cli.live,
         finderModel: process.env["SIDECAR_FINDER_MODEL"],
         confirmModel: process.env["SIDECAR_CONFIRM_MODEL"],
+        contextPack,
         log: (line) => console.error(`[${entry}] ${line}`),
       });
       return { entries: [entry], closure, result };

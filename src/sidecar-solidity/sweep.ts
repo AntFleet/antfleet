@@ -23,6 +23,12 @@ import {
 } from "./run.js";
 import { refuteFinding, refuterTransport } from "./refuter.js";
 import { buildFocusedConfirmPrompt } from "./prompt.js";
+import {
+  EMPTY_CONTEXT_PACK,
+  extractNatSpecTrustHints,
+  renderSystemBrief,
+  type ContextPack,
+} from "./context-pack.js";
 import type { ScoredFinding } from "./run.js";
 
 // --- Single-entry pipeline (task 1: factored out of cli.ts for reuse) -------
@@ -47,6 +53,8 @@ export type AuditEntryArgs = {
   finderModel?: string | undefined;
   /** Stage-B focused-confirm model override (default gpt-5.5, set in model-client). */
   confirmModel?: string | undefined;
+  /** Phase 0 off-chain context (docs/audits/trust-model), assembled once per repo. */
+  contextPack?: ContextPack | undefined;
   /** Defaults to console.error; injectable so sweep can label/silence lines. */
   log?: ((line: string) => void) | undefined;
 };
@@ -97,6 +105,16 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
     );
   }
 
+  // Phase 0: per-repo docs/audits pack + this entry's own NatSpec off-chain hints.
+  const pack = args.contextPack ?? EMPTY_CONTEXT_PACK;
+  const entryHints = extractNatSpecTrustHints(closure.blocks);
+  const systemContext = renderSystemBrief(pack, entryHints);
+  if (args.live && systemContext.length > 0) {
+    log(
+      `[audit-solidity] Phase 0 context active: ${pack.sources.length} doc/audit source(s), ${entryHints.length} NatSpec hint(s), ${pack.knownIssues.length} known-issue(s)`,
+    );
+  }
+
   const finderOpts = args.finderModel === undefined ? undefined : { model: args.finderModel };
   const confirmOpts = args.confirmModel === undefined ? undefined : { model: args.confirmModel };
   if (args.live && args.finderModel !== undefined) {
@@ -118,7 +136,8 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
             finding,
             files: closure.blocks,
             programRules: args.programRules,
-            priorFindings: [], // operator-supplied corpus hook; empty unless provided
+            priorFindings: pack.knownIssues, // Phase 0: repo audit findings → DUPLICATE corpus
+            contextPack: pack, // Phase 0: enables + grounds off-chain kill-grounds
           },
           refuterTransport, // WITHOUT this, refuteFinding returns the dry-run KILLED stub
         );
@@ -142,6 +161,7 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
           },
           files: focusedFiles,
           programRules: rules,
+          systemContext,
         });
         const { payload, truncated } = await confirmModelCall(prompt, confirmOpts);
         return { payload, truncated };
@@ -154,6 +174,7 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
       entries: args.entries,
       files: closure.blocks,
       programRules: args.programRules,
+      systemContext,
       closureStats: {
         truncated: closure.truncated,
         evicted: closure.evicted,
