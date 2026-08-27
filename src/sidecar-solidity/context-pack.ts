@@ -140,7 +140,7 @@ export function extractKnownIssues(
   const out: string[] = [];
   const seen = new Set<string>();
   const header =
-    /(\[(?:critical|high|medium|low|informational|info|qa)\][^\n]{0,160})|((?:finding|issue)\s*#?\d+[:.\-][^\n]{0,160})/giu;
+    /(\[(?:critical|high|medium|low|informational|info|qa)\][^\n]{0,160})|((?:finding|issue)\s*#?\d+[:.-][^\n]{0,160})/giu;
   for (const audit of auditTexts) {
     for (const m of audit.text.matchAll(header)) {
       const label = normalizeWhitespace(m[0] ?? "");

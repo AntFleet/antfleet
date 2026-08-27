@@ -104,32 +104,34 @@ describe("applyOffChainGuardrail — ungrounded off-chain kills flip to SURVIVED
   });
 });
 
+// Hoisted (lint: helpers capturing no scope live at module level).
+const fakeModelUngrounded = async (): Promise<unknown> => ({
+  verdict: "KILLED",
+  reason: "OFF-CHAIN-MITIGATED: a keeper fixes it",
+  offChainEvidence: { source: "docs", quote: "this exact sentence is nowhere in the docs" },
+});
+const fakeModelGrounded = async (): Promise<unknown> => ({
+  verdict: "KILLED",
+  reason: "OFF-CHAIN-MITIGATED",
+  offChainEvidence: {
+    source: "docs/PufferProtocol.md",
+    quote: "raveEvidence is checked for validity by the Guardians off-chain",
+  },
+});
+
 describe("refuteFinding — guardrail composes end-to-end", () => {
   it("flips a fabricated off-chain kill returned by the model", async () => {
-    const fakeModel = async (): Promise<unknown> => ({
-      verdict: "KILLED",
-      reason: "OFF-CHAIN-MITIGATED: a keeper fixes it",
-      offChainEvidence: { source: "docs", quote: "this exact sentence is nowhere in the docs" },
-    });
     const out = await refuteFinding(
       { finding, files: [], programRules: "", contextPack: pack },
-      fakeModel,
+      fakeModelUngrounded,
     );
     expect(out.verdict).toBe("SURVIVED");
   });
 
   it("honors a grounded off-chain kill", async () => {
-    const fakeModel = async (): Promise<unknown> => ({
-      verdict: "KILLED",
-      reason: "OFF-CHAIN-MITIGATED",
-      offChainEvidence: {
-        source: "docs/PufferProtocol.md",
-        quote: "raveEvidence is checked for validity by the Guardians off-chain",
-      },
-    });
     const out = await refuteFinding(
       { finding, files: [], programRules: "", contextPack: pack },
-      fakeModel,
+      fakeModelGrounded,
     );
     expect(out.verdict).toBe("KILLED");
   });
