@@ -49,8 +49,9 @@ function usage(): never {
                       [--out <report.json>] [--live]
 
 Default is DRY-RUN (no model call, findings never promoted).
---live requires ANTHROPIC_API_KEY (or SIDECAR_* overrides) and runs BOTH the
-finder and the independent adversarial refuter.`);
+--live runs the finder (gpt-5.6-sol) + the independent adversarial refuter
+(gpt-5.5) via OpenRouter; set OPENROUTER_API_KEY (or SIDECAR_API_KEY). Override
+models with SIDECAR_FINDER_MODEL / SIDECAR_REFUTER_MODEL.`);
   process.exit(2);
 }
 
@@ -162,9 +163,9 @@ async function main(): Promise<void> {
   }
 
   // B + C — dry-run renders only; --live runs finder AND refuter.
-  // SIDECAR_FINDER_MODEL (optional) routes the discovery calls (stage A + the
-  // focused stage-B confirm) to a stronger model — e.g. opus for finding while a
-  // cheaper model (SIDECAR_MODEL) runs the adversarial refuter.
+  // Model combo (model-client defaults): finder/stage-A/stage-B = gpt-5.6-sol,
+  // refuter = gpt-5.5. SIDECAR_FINDER_MODEL (optional) overrides just the
+  // discovery calls (stage A + focused stage-B confirm) here.
   const finderModel = process.env["SIDECAR_FINDER_MODEL"];
   const finderOpts = finderModel === undefined ? undefined : { model: finderModel };
   if (cli.live && finderModel !== undefined) {

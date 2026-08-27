@@ -45,16 +45,19 @@ pnpm audit-solidity \
   --entry contracts/Wallet.sol \
   --rules program-rules.md
 
-# LIVE: one finder call via model-client (needs ANTHROPIC_API_KEY).
+# LIVE: finder (gpt-5.6-sol) + independent refuter (gpt-5.5), via OpenRouter's
+# OpenAI-compatible endpoint. Needs OPENROUTER_API_KEY (or SIDECAR_API_KEY).
 pnpm audit-solidity --target ... --entry ... --rules ... --live --out report.json
 
-# Routing overrides (same transport, different endpoint — useful when metered
-# Anthropic credits are out; OpenRouter's Anthropic-compat route verified):
-SIDECAR_BASE_URL=https://openrouter.ai/api \
-SIDECAR_MODEL=anthropic/claude-sonnet-4.5 \
-SIDECAR_API_KEY=$OPENROUTER_API_KEY \
-pnpm audit-solidity ... --live
-# SIDECAR_DEBUG=1 logs stop_reason/block-types/token usage + raw input shape.
+# Transport: OpenAI Chat Completions (json_object output) at
+# https://openrouter.ai/api/v1 by default — this reaches GPT models AND Claude.
+# Overrides (all optional):
+#   SIDECAR_FINDER_MODEL=<id>     # stage A + stage-B confirm (default openai/gpt-5.6-sol)
+#   SIDECAR_REFUTER_MODEL=<id>    # adversarial refuter        (default openai/gpt-5.5)
+#   SIDECAR_MODEL=<id>            # both roles at once
+#   SIDECAR_BASE_URL=<url>        # e.g. https://api.openai.com/v1 for native OpenAI
+#   SIDECAR_REASONING_EFFORT=high|medium|low   (default high)
+# SIDECAR_DEBUG=1 logs finish_reason + content length.
 ```
 
 Closure stats print to stderr; the prompt/report goes to stdout and `--out`.
@@ -94,6 +97,11 @@ discriminating-file split per target so a future N can't repeat the Intuition
 confound.
 
 ## Live e2e status (2026-08-26)
+
+> Transport note: this run predates the transport rebuild. The sidecar now runs
+> on the **OpenAI Chat Completions API via OpenRouter** (finder gpt-5.6-sol,
+> refuter gpt-5.5, json_object output) — see Usage above. The Anthropic /
+> forced-tool-use details below are historical.
 
 Verified end-to-end against the biconomy fixture via OpenRouter's
 Anthropic-compat route (~$0.20 total): closure → forced-tool-use call → lenient
