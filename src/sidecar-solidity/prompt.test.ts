@@ -154,6 +154,90 @@ describe("EVIDENCE QUOTE RULES — verbatim-quote guidance reaches the finding-e
   });
 });
 
+describe("Phase 0 — systemContext (descriptive, recall-safe) reaches finder/slice/confirm", () => {
+  const finding = {
+    title: "t",
+    severity: "high" as const,
+    confidence: "high" as const,
+    reasoning: "r",
+    evidence: [
+      { path: "contracts/Vault.sol", startLine: 1, endLine: 1, symbol: null, quote: null },
+    ],
+  };
+  const systemContext = "Guardians validate the RAVE evidence off-chain by design.";
+
+  it("injects a recall-safe, fenced SYSTEM CONTEXT into all three finding prompts", () => {
+    const common = {
+      projectName: "x",
+      entries: ["contracts/Vault.sol"],
+      files,
+      programRules: NEUTRAL_RULES,
+      systemContext,
+      nonce: "nz",
+    };
+    for (const prompt of [
+      buildFinderPrompt(common),
+      buildSlicePrompt(common),
+      buildFocusedConfirmPrompt({
+        finding,
+        files,
+        programRules: NEUTRAL_RULES,
+        systemContext,
+        nonce: "nz",
+      }),
+    ]) {
+      expect(prompt).toContain("SYSTEM CONTEXT");
+      expect(prompt).toContain("report every on-chain issue you find");
+      expect(prompt).toContain("Guardians validate the RAVE evidence off-chain");
+      // Fenced as untrusted data.
+      expect(prompt).toContain('nonce="nz"');
+    }
+  });
+
+  it("omits the SYSTEM CONTEXT block entirely when no systemContext is supplied (unchanged path)", () => {
+    const prompt = buildFinderPrompt({
+      projectName: "x",
+      entries: [],
+      files,
+      programRules: NEUTRAL_RULES,
+    });
+    expect(prompt).not.toContain("SYSTEM CONTEXT");
+  });
+});
+
+describe("Phase 0 — refuter gains grounded off-chain kill-grounds only with a trust corpus", () => {
+  const finding = {
+    title: "underpriced bond",
+    severity: "medium",
+    reasoning: "length-only bond selection",
+    evidence: [{ path: "contracts/Vault.sol", startLine: 10, endLine: 12 }],
+  };
+
+  it("adds OFF-CHAIN-MITIGATED / DOCUMENTED grounds + offChainEvidence when trustModelContext is present", () => {
+    const prompt = buildRefuterPrompt({
+      finding,
+      files,
+      programRules: NEUTRAL_RULES,
+      trustModelContext: "Guardians validate the RAVE evidence off-chain by design.",
+      nonce: "rz",
+    });
+    expect(prompt).toContain("OFF-CHAIN-MITIGATED");
+    expect(prompt).toContain("DOCUMENTED / KNOWN");
+    expect(prompt).toContain("offChainEvidence");
+    expect(prompt).toContain("Guardians validate the RAVE evidence off-chain");
+    expect(prompt).toContain("kept for human review");
+  });
+
+  it("does NOT offer off-chain grounds or offChainEvidence without a trust corpus (backward compatible)", () => {
+    const prompt = buildRefuterPrompt({ finding, files, programRules: NEUTRAL_RULES, nonce: "rz" });
+    expect(prompt).not.toContain("OFF-CHAIN-MITIGATED");
+    expect(prompt).not.toContain("offChainEvidence");
+    // The five classic grounds remain.
+    expect(prompt).toContain("PRIVILEGED-GATED");
+    expect(prompt).toContain("DUPLICATE");
+  });
+});
+
 describe("buildRefuterPrompt — independent adversary framing", () => {
   const finding = {
     title: "unprivileged drain",
