@@ -16,14 +16,22 @@
 
 import { config as loadDotenv } from "dotenv";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
-import { assembleClosure, fsReadRepoFile, listSolFiles, loadRemappings } from "./closure.js";
-import { auditModelCall } from "./model-client.js";
-import { runFinder, type ConfirmCallback, type RefuteCallback } from "./run.js";
-import { refuteFinding, refuterTransport } from "./refuter.js";
-import { buildFocusedConfirmPrompt } from "./prompt.js";
+import { join, resolve } from "node:path";
+import { fsReadRepoFile, listSolFiles, loadRemappings } from "./closure.js";
+import {
+  auditEntry,
+  buildPursueMarkdown,
+  buildSweepSummary,
+  parseEntriesFromFile,
+  renderDryRunEntryReport,
+  renderLiveReport,
+  resolveEntriesGlob,
+  runSweepAudits,
+  sanitizeEntryPath,
+  type EntryPursueFindings,
+} from "./sweep.js";
 
 // Load config from any working directory: a global config (installed via the
 // `antfleet-audit` bin) first, then a repo-local override — neither overrides
@@ -126,10 +134,6 @@ function parseArgs(argv: readonly string[]): CliArgs {
   return args;
 }
 
-function fmtBytes(n: number): string {
-  return `${(n / 1000).toFixed(1)}k chars`;
-}
-
 async function main(): Promise<void> {
   const cli = parseArgs(process.argv.slice(2));
   const root = resolve(cli.target);
@@ -138,104 +142,22 @@ async function main(): Promise<void> {
   // A — bidirectional dependency-closure assembly (remappings loaded by caller)
   const allPaths = await listSolFiles(root);
   const remappings = await loadRemappings(root);
-  const closure = await assembleClosure({
-    entries: cli.entries,
-    allPaths,
-    readFile: fsReadRepoFile(root),
-    budgetBytes: cli.budgetBytes,
-    remappings,
-  });
 
-  const rolesFor = (p: string): string => closure.roles.get(p) ?? "?";
-  console.error("[audit-solidity] closure assembled:");
-  for (const block of closure.blocks) {
-    console.error(`  [${rolesFor(block.path)}] ${block.path} (${fmtBytes(block.contents.length)})`);
-  }
-  for (const evicted of closure.evicted) {
-    console.error(`  [evicted] ${evicted}`);
-  }
-  for (const external of closure.externalUnresolved) {
-    console.error(`  [unresolved external] ${external}`);
-  }
-  console.error(
-    `  total: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}, truncated=${closure.truncated}${closure.entryOverflow ? " (ENTRY OVERFLOW — entries kept whole)" : ""}`,
-  );
-  if (closure.externalUnresolved.length > 0) {
-    console.warn(
-      `[audit-solidity] WARNING: incomplete closure — ${closure.externalUnresolved.length} unresolved external(s); the prompt states this honestly.`,
-    );
-  }
-
-  // B + C — dry-run renders only; --live runs finder AND refuter.
-  // Model combo (model-client defaults): finder/stage-A/stage-B = gpt-5.6-sol,
-  // refuter = gpt-5.5. SIDECAR_FINDER_MODEL (optional) overrides just the
-  // discovery calls (stage A + focused stage-B confirm) here.
+  // B + C — dry-run renders only; --live runs finder AND refuter. Model combo
+  // (model-client defaults): finder/stage-A/stage-B = gpt-5.6-sol, refuter =
+  // gpt-5.5. SIDECAR_FINDER_MODEL (optional) overrides just the discovery
+  // calls (stage A + focused stage-B confirm).
   const finderModel = process.env["SIDECAR_FINDER_MODEL"];
-  const finderOpts = finderModel === undefined ? undefined : { model: finderModel };
-  if (cli.live && finderModel !== undefined) {
-    console.error(
-      `[audit-solidity] finder calls (stage A + confirm) routed to model: ${finderModel}`,
-    );
-  }
-  const finderTransport = cli.live
-    ? async (prompt: string) => {
-        const { payload, truncated } = await auditModelCall(prompt, finderOpts);
-        return { payload, truncated };
-      }
-    : undefined;
-  const refuterCallback: RefuteCallback | undefined = cli.live
-    ? async ({ finding }) => {
-        const r = await refuteFinding(
-          {
-            finding,
-            files: closure.blocks,
-            programRules,
-            priorFindings: [], // operator-supplied corpus hook; empty unless provided
-          },
-          refuterTransport, // WITHOUT this, refuteFinding returns the dry-run KILLED stub
-        );
-        return { verdict: r.verdict, reason: r.reason } as const;
-      }
-    : undefined;
-  // Stage-B focused confirm (CLOSURE_UPGRADE item 2.1): wiring this turns the
-  // finder two-stage — stage A sees only entries, stage B re-runs each candidate
-  // over exactly its named siblings. Without it runFinder falls back to the
-  // single whole-closure dump (which gets skimmed — the Monetrix lesson).
-  const confirmCallback: ConfirmCallback | undefined = cli.live
-    ? async ({ finding, focusedFiles, programRules: rules }) => {
-        const prompt = buildFocusedConfirmPrompt({
-          finding: {
-            title: finding.title,
-            severity: finding.severity,
-            confidence: finding.confidence,
-            reasoning: finding.reasoning,
-            evidence: finding.evidence,
-            triggerRole: finding.triggerRole,
-            preconditions: finding.preconditions,
-          },
-          files: focusedFiles,
-          programRules: rules,
-        });
-        const { payload, truncated } = await auditModelCall(prompt, finderOpts);
-        return { payload, truncated };
-      }
-    : undefined;
-  const result = await runFinder(
-    {
-      projectName: root.split("/").pop() ?? "target",
-      entries: cli.entries,
-      files: closure.blocks,
-      programRules,
-      closureStats: {
-        truncated: closure.truncated,
-        evicted: closure.evicted,
-        externalUnresolved: closure.externalUnresolved,
-      },
-    },
-    finderTransport,
-    refuterCallback,
-    confirmCallback,
-  );
+  const { closure, result } = await auditEntry({
+    root,
+    entries: cli.entries,
+    programRules,
+    budgetBytes: cli.budgetBytes,
+    allPaths,
+    remappings,
+    live: cli.live,
+    finderModel,
+  });
 
   if (!cli.live) {
     console.error("[audit-solidity] DRY-RUN: no model calls performed. Prompt below.");
@@ -259,77 +181,243 @@ async function main(): Promise<void> {
     );
   }
 
-  const lines: string[] = [];
-  lines.push(`# Solidity finder report — ${new Date().toISOString()}`);
-  lines.push("");
-  lines.push(
-    `- Closure: ${closure.blocks.length} file(s), ${fmtBytes(closure.bytes)}, truncated=${closure.truncated}${result.truncated ? "; MODEL OUTPUT TRUNCATED (INCOMPLETE)" : ""}`,
-  );
-  lines.push(`- Entries: ${cli.entries.join(", ")}`);
-  if (closure.evicted.length > 0) {
-    lines.push(`- Evicted over budget (NOT audited): ${closure.evicted.join(", ")}`);
-  }
-  if (closure.externalUnresolved.length > 0) {
-    lines.push(
-      `- Unresolved externals (INCOMPLETE CLOSURE): ${closure.externalUnresolved.join(", ")}`,
-    );
-  }
-  lines.push(
-    `- Findings: ${result.findings.length} (${result.pursueCount} PURSUE / ${result.droppedCount} DROP)`,
-  );
-  if (result.rejectedRaw.length > 0) {
-    lines.push(`- Unparseable findings (raw preserved below): ${result.rejectedRaw.length}`);
-  }
-  lines.push("");
-  lines.push("## Scored findings");
-  lines.push("");
-  for (const s of result.scored) {
-    lines.push(`### **${s.verdict}** — ${s.finding.title} [${s.finding.severity}]`);
-    lines.push(`- reason: ${s.reason}`);
-    if (s.advisory !== "no adverse advisory factors") {
-      lines.push(`- advisory (model self-report, NOT a gate): ${s.advisory}`);
-    }
-    lines.push(`- triggerRole: ${s.finding.triggerRole}`);
-    lines.push(`- preconditions: ${s.finding.preconditions}`);
-    for (const e of s.finding.evidence) {
-      lines.push(`- evidence: \`${e.path}:${e.startLine ?? "?"}-${e.endLine ?? "?"}\``);
-    }
-    lines.push(`- reasoning: ${s.finding.reasoning}`);
-    lines.push("");
-  }
-  if (result.rejectedRaw.length > 0) {
-    lines.push("## Unparseable raw findings (preserved for inspection)");
-    for (const r of result.rejectedRaw) {
-      lines.push(`- index ${r.index}: ${JSON.stringify(r.raw)}`);
-    }
-    lines.push("");
-  }
-  const mdReport = lines.join("\n");
+  const { json: reportJson, md: mdReport } = renderLiveReport({
+    entries: cli.entries,
+    closure,
+    result,
+  });
   process.stdout.write(mdReport);
   if (cli.outPath !== null) {
-    const reportJson = JSON.stringify(
-      {
-        schemaVersion: 2,
-        closure: {
-          includedFiles: closure.blocks.map((b) => b.path),
-          evicted: closure.evicted,
-          externalUnresolved: closure.externalUnresolved,
-          bytes: closure.bytes,
-          truncated: closure.truncated,
-        },
-        modelTruncated: result.truncated,
-        ...result,
-      },
-      null,
-      2,
-    );
-    await writeFile(cli.outPath, reportJson, "utf8");
+    await writeFile(cli.outPath, JSON.stringify(reportJson, null, 2), "utf8");
     await writeFile(`${cli.outPath}.md`, mdReport, "utf8");
     console.error(`[audit-solidity] report written to ${cli.outPath}(+.md)`);
   }
 }
 
-void main().catch((err) => {
+// --- sweep subcommand --------------------------------------------------------
+
+type SweepCliArgs = {
+  target: string;
+  entries: string[];
+  rulesPath: string;
+  outDir: string;
+  concurrency: number;
+  budgetBytes: number;
+  live: boolean;
+};
+
+function sweepUsage(): never {
+  console.error(`usage:
+  antfleet-audit sweep --target <dir> [--entry <repo-rel .sol path> ...]
+                        [--entries-from <file>] [--entries-glob <glob>]
+                        --rules <file.md> --out <dir>
+                        [--concurrency <N>] [--budget <bytes>] [--live]
+
+Audits MANY entry contracts over one target repo in one command. Combine
+--entry / --entries-from / --entries-glob freely; at least one is required.
+Default is DRY-RUN (no model calls). --concurrency defaults to 2.`);
+  process.exit(2);
+}
+
+function parseBudgetArg(raw: string, usageFn: () => never): number {
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.error(`invalid --budget value: ${raw}`);
+    usageFn();
+  }
+  return parsed;
+}
+
+async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
+  const args = {
+    target: "",
+    entries: [] as string[],
+    entriesFrom: [] as string[],
+    entriesGlob: [] as string[],
+    rulesPath: "",
+    outDir: "",
+    concurrency: 2,
+    budgetBytes: 400_000,
+    live: false,
+  };
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i] ?? "";
+    const take = (): string => {
+      const next = argv[i + 1];
+      if (next === undefined) {
+        sweepUsage();
+      }
+      return next ?? "";
+    };
+    switch (arg) {
+      case "--target":
+        args.target = take();
+        i += 2;
+        break;
+      case "--entry":
+        args.entries.push(take());
+        i += 2;
+        break;
+      case "--entries-from":
+        args.entriesFrom.push(take());
+        i += 2;
+        break;
+      case "--entries-glob":
+        args.entriesGlob.push(take());
+        i += 2;
+        break;
+      case "--rules":
+        args.rulesPath = take();
+        i += 2;
+        break;
+      case "--out":
+        args.outDir = take();
+        i += 2;
+        break;
+      case "--concurrency": {
+        const raw = take();
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isFinite(parsed) || parsed < 1 || String(parsed) !== raw.trim()) {
+          console.error(`invalid --concurrency value: ${raw}`);
+          sweepUsage();
+        }
+        args.concurrency = parsed;
+        i += 2;
+        break;
+      }
+      case "--budget":
+        args.budgetBytes = parseBudgetArg(take(), sweepUsage);
+        i += 2;
+        break;
+      case "--live":
+        args.live = true;
+        i += 1;
+        break;
+      case "--help":
+      case "-h":
+        sweepUsage();
+        break;
+      default:
+        console.error(`unknown argument: ${arg}`);
+        sweepUsage();
+    }
+  }
+  if (args.target === "" || args.rulesPath === "" || args.outDir === "") {
+    sweepUsage();
+  }
+
+  const root = resolve(args.target);
+  const allPaths = await listSolFiles(root);
+  const readFileRel = fsReadRepoFile(root);
+
+  const entries = new Set<string>(args.entries);
+  for (const file of args.entriesFrom) {
+    const text = await readFile(resolve(file), "utf8");
+    for (const e of parseEntriesFromFile(text)) {
+      entries.add(e);
+    }
+  }
+  for (const glob of args.entriesGlob) {
+    const matched = await resolveEntriesGlob({ glob, allPaths, readFile: readFileRel });
+    for (const e of matched) {
+      entries.add(e);
+    }
+  }
+  if (entries.size === 0) {
+    console.error("sweep: no entries resolved from --entry / --entries-from / --entries-glob");
+    sweepUsage();
+  }
+
+  return {
+    target: args.target,
+    entries: [...entries],
+    rulesPath: args.rulesPath,
+    outDir: args.outDir,
+    concurrency: args.concurrency,
+    budgetBytes: args.budgetBytes,
+    live: args.live,
+  };
+}
+
+async function runSweepCli(argv: readonly string[]): Promise<void> {
+  const cli = await parseSweepArgs(argv);
+  const root = resolve(cli.target);
+  const programRules = await readFile(resolve(cli.rulesPath), "utf8");
+  const allPaths = await listSolFiles(root);
+  const remappings = await loadRemappings(root);
+
+  console.error(
+    `[audit-sweep] ${cli.entries.length} entry(ies), concurrency=${cli.concurrency}, live=${cli.live}`,
+  );
+
+  const pursueByEntry: EntryPursueFindings[] = [];
+  const runOutcomes = await runSweepAudits({
+    entries: cli.entries,
+    concurrency: cli.concurrency,
+    auditFn: async (entry) => {
+      const { closure, result } = await auditEntry({
+        root,
+        entries: [entry],
+        programRules,
+        budgetBytes: cli.budgetBytes,
+        allPaths,
+        remappings,
+        live: cli.live,
+        finderModel: process.env["SIDECAR_FINDER_MODEL"],
+        log: (line) => console.error(`[${entry}] ${line}`),
+      });
+      return { entries: [entry], closure, result };
+    },
+  });
+
+  for (const { outcome, closure, result } of runOutcomes) {
+    const entryDir = join(cli.outDir, sanitizeEntryPath(outcome.entry));
+    await mkdir(entryDir, { recursive: true });
+    if (closure !== null && result !== null) {
+      const { json, md } = cli.live
+        ? renderLiveReport({ entries: [outcome.entry], closure, result })
+        : renderDryRunEntryReport({ entries: [outcome.entry], closure, result });
+      await writeFile(join(entryDir, "report.json"), JSON.stringify(json, null, 2), "utf8");
+      await writeFile(join(entryDir, "report.md"), md, "utf8");
+      if (cli.live) {
+        pursueByEntry.push({ entry: outcome.entry, scored: result.scored });
+      }
+    } else {
+      const errorMd = `# Solidity finder report — ERROR\n\n- Entry: ${outcome.entry}\n- Error: ${outcome.error ?? "unknown error"}\n`;
+      await writeFile(join(entryDir, "report.json"), JSON.stringify(outcome, null, 2), "utf8");
+      await writeFile(join(entryDir, "report.md"), errorMd, "utf8");
+    }
+  }
+
+  const summary = buildSweepSummary({
+    ranAt: new Date().toISOString(),
+    live: cli.live,
+    target: cli.target,
+    concurrency: cli.concurrency,
+    outcomes: runOutcomes.map((o) => o.outcome),
+  });
+  await mkdir(cli.outDir, { recursive: true });
+  await writeFile(join(cli.outDir, "summary.json"), JSON.stringify(summary, null, 2), "utf8");
+  await writeFile(join(cli.outDir, "PURSUE.md"), buildPursueMarkdown(pursueByEntry), "utf8");
+
+  console.error("");
+  console.error(
+    `[audit-sweep] done: ${summary.totals.entries} entr${summary.totals.entries === 1 ? "y" : "ies"} run, ` +
+      `${summary.totals.pursue} PURSUE, ${summary.totals.drop} DROP, ${summary.totals.errors} error(s)`,
+  );
+  console.error(`[audit-sweep] output: ${resolve(cli.outDir)}`);
+}
+
+async function dispatch(): Promise<void> {
+  if (process.argv[2] === "sweep") {
+    await runSweepCli(process.argv.slice(3));
+    return;
+  }
+  await main();
+}
+
+void dispatch().catch((err) => {
   console.error(
     `[audit-solidity] fatal: ${err instanceof Error ? (err.stack ?? err.message) : err}`,
   );

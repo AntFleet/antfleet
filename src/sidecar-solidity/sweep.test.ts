@@ -1,0 +1,296 @@
+import { describe, it, expect, vi } from "vitest";
+import {
+  buildPursueMarkdown,
+  buildSweepSummary,
+  globToRegExp,
+  isInterfaceOnlyFile,
+  parseEntriesFromFile,
+  runPool,
+  runSweepAudits,
+  sanitizeEntryPath,
+  type AuditEntryResult,
+  type EntryPursueFindings,
+} from "./sweep.js";
+import { auditFindingSchema, type AuditFinding } from "./finding-schema.js";
+import type { ScoredFinding } from "./run.js";
+import type { ClosureResult } from "./closure.js";
+
+// --- parseEntriesFromFile -----------------------------------------------------
+
+describe("parseEntriesFromFile", () => {
+  it("keeps repo-relative paths, ignoring blanks and # comments", () => {
+    const text = `# entry points\ncontracts/A.sol\n\n  \ncontracts/B.sol\n# contracts/Excluded.sol\ncontracts/C.sol  \n`;
+    expect(parseEntriesFromFile(text)).toEqual([
+      "contracts/A.sol",
+      "contracts/B.sol",
+      "contracts/C.sol",
+    ]);
+  });
+
+  it("returns empty for an all-comment/blank file", () => {
+    expect(parseEntriesFromFile("# nothing here\n\n   \n")).toEqual([]);
+  });
+
+  it("trims trailing whitespace per line", () => {
+    expect(parseEntriesFromFile("contracts/A.sol   \r\n")).toEqual(["contracts/A.sol"]);
+  });
+});
+
+// --- sanitizeEntryPath ---------------------------------------------------------
+
+describe("sanitizeEntryPath", () => {
+  it("replaces slashes and non-safe characters with underscore", () => {
+    expect(sanitizeEntryPath("contracts/smart-contract-wallet/SmartAccount.sol")).toBe(
+      "contracts_smart-contract-wallet_SmartAccount.sol",
+    );
+  });
+
+  it("leaves already-safe characters alone", () => {
+    expect(sanitizeEntryPath("A.B-c_1.sol")).toBe("A.B-c_1.sol");
+  });
+});
+
+// --- isInterfaceOnlyFile / globToRegExp -----------------------------------------
+
+describe("isInterfaceOnlyFile", () => {
+  it("is true for a file that declares only interfaces", () => {
+    expect(isInterfaceOnlyFile("interface IFoo {\n  function bar() external;\n}\n")).toBe(true);
+  });
+
+  it("is false when a contract or library is also declared", () => {
+    expect(isInterfaceOnlyFile("interface IFoo {}\ncontract Foo is IFoo {}\n")).toBe(false);
+    expect(isInterfaceOnlyFile("library LibFoo {}\n")).toBe(false);
+  });
+
+  it("is false when there is no interface at all", () => {
+    expect(isInterfaceOnlyFile("contract Foo {}\n")).toBe(false);
+  });
+});
+
+describe("globToRegExp", () => {
+  it("matches a single-segment wildcard", () => {
+    expect(globToRegExp("contracts/*.sol").test("contracts/Foo.sol")).toBe(true);
+    expect(globToRegExp("contracts/*.sol").test("contracts/nested/Foo.sol")).toBe(false);
+  });
+
+  it("matches ** across directories", () => {
+    const re = globToRegExp("contracts/**/*.sol");
+    expect(re.test("contracts/a/b/Foo.sol")).toBe(true);
+    expect(re.test("contracts/Foo.sol")).toBe(true);
+  });
+});
+
+// --- runPool ---------------------------------------------------------------
+
+describe("runPool", () => {
+  it("runs every item and preserves result order", async () => {
+    const items = [1, 2, 3, 4, 5];
+    const results = await runPool(items, 2, async (n) => n * 10);
+    expect(results).toEqual([10, 20, 30, 40, 50]);
+  });
+
+  it("never exceeds the concurrency cap", async () => {
+    const items = Array.from({ length: 8 }, (_, i) => i);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    await runPool(items, 3, async (n) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return n;
+    });
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+  });
+
+  it("processes all items even with concurrency greater than item count", async () => {
+    const results = await runPool([1, 2], 10, async (n) => n);
+    expect(results).toEqual([1, 2]);
+  });
+});
+
+// --- runSweepAudits (per-entry error isolation) -----------------------------
+
+function fakeClosure(): ClosureResult {
+  return {
+    blocks: [],
+    roles: new Map(),
+    implOf: new Map(),
+    externalUnresolved: [],
+    unresolvedEdges: [],
+    bytes: 0,
+    truncated: false,
+    evicted: [],
+    entryOverflow: false,
+  };
+}
+
+function fakeFinding(overrides: Partial<AuditFinding> = {}): AuditFinding {
+  return auditFindingSchema.parse({
+    title: "example finding",
+    severity: "high",
+    confidence: "high",
+    evidence: [{ path: "contracts/A.sol", startLine: 1, endLine: 2 }],
+    reasoning: "example reasoning",
+    unprivilegedReachable: true,
+    inScope: true,
+    ...overrides,
+  });
+}
+
+function fakeAuditResult(pursue: number, drop: number): AuditEntryResult {
+  const scored: ScoredFinding[] = [
+    ...Array.from({ length: pursue }, (_, i) => ({
+      finding: fakeFinding({ title: `pursue-${i}` }),
+      verdict: "PURSUE" as const,
+      reason: "grounded + survived",
+      advisory: "no adverse advisory factors",
+    })),
+    ...Array.from({ length: drop }, (_, i) => ({
+      finding: fakeFinding({ title: `drop-${i}` }),
+      verdict: "DROP" as const,
+      reason: "killed by refuter",
+      advisory: "no adverse advisory factors",
+    })),
+  ];
+  return {
+    entries: ["contracts/Entry.sol"],
+    closure: fakeClosure(),
+    result: {
+      prompt: "prompt",
+      findings: scored.map((s) => s.finding),
+      scored,
+      pursueCount: pursue,
+      droppedCount: drop,
+      rejectedRaw: [],
+      truncated: false,
+      crossFileDependencies: [],
+      resolvedDependencies: [],
+      focusedPrompts: [],
+    },
+  };
+}
+
+describe("runSweepAudits", () => {
+  it("records a failing entry as an error without aborting the rest", async () => {
+    const auditFn = vi.fn(async (entry: string) => {
+      if (entry === "contracts/Bad.sol") {
+        throw new Error("boom: model call failed");
+      }
+      return fakeAuditResult(1, 0);
+    });
+
+    const outcomes = await runSweepAudits({
+      entries: ["contracts/Good1.sol", "contracts/Bad.sol", "contracts/Good2.sol"],
+      concurrency: 2,
+      auditFn,
+    });
+
+    expect(auditFn).toHaveBeenCalledTimes(3);
+    const byEntry = new Map(outcomes.map((o) => [o.outcome.entry, o]));
+    expect(byEntry.get("contracts/Good1.sol")?.outcome.status).toBe("ran");
+    expect(byEntry.get("contracts/Good2.sol")?.outcome.status).toBe("ran");
+    const bad = byEntry.get("contracts/Bad.sol");
+    expect(bad?.outcome.status).toBe("error");
+    expect(bad?.outcome.error).toContain("boom");
+    expect(bad?.closure).toBeNull();
+    expect(bad?.result).toBeNull();
+  });
+
+  it("respects the concurrency cap across many entries", async () => {
+    const entries = Array.from({ length: 10 }, (_, i) => `contracts/E${i}.sol`);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const auditFn = vi.fn(async (_entry: string) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return fakeAuditResult(0, 1);
+    });
+
+    const outcomes = await runSweepAudits({ entries, concurrency: 2, auditFn });
+    expect(outcomes).toHaveLength(10);
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+  });
+});
+
+// --- buildSweepSummary (aggregate rollup) -----------------------------------
+
+describe("buildSweepSummary", () => {
+  it("counts PURSUE/DROP/errors correctly across mixed outcomes", () => {
+    const summary = buildSweepSummary({
+      ranAt: "2026-08-27T00:00:00.000Z",
+      live: true,
+      target: "/tmp/target",
+      concurrency: 2,
+      outcomes: [
+        { entry: "A.sol", status: "ran", pursue: 2, drop: 1, findings: 3, truncated: false },
+        { entry: "B.sol", status: "ran", pursue: 0, drop: 3, findings: 3, truncated: false },
+        {
+          entry: "C.sol",
+          status: "error",
+          pursue: 0,
+          drop: 0,
+          findings: 0,
+          truncated: false,
+          error: "boom",
+        },
+      ],
+    });
+    expect(summary.totals).toEqual({ entries: 3, pursue: 2, drop: 4, errors: 1 });
+    expect(summary.entries).toHaveLength(3);
+  });
+});
+
+// --- buildPursueMarkdown -----------------------------------------------------
+
+describe("buildPursueMarkdown", () => {
+  it("reports zero PURSUE findings cleanly", () => {
+    const md = buildPursueMarkdown([]);
+    expect(md).toContain("0 finding(s) across 0 entry(ies)");
+    expect(md).toContain("No PURSUE findings.");
+  });
+
+  it("sorts entries with the most/severest PURSUE first", () => {
+    const scoredOne: ScoredFinding = {
+      finding: fakeFinding({ title: "one-high", severity: "high" }),
+      verdict: "PURSUE",
+      reason: "grounded + survived",
+      advisory: "no adverse advisory factors",
+    };
+    const scoredTwoCritical: ScoredFinding = {
+      finding: fakeFinding({ title: "two-critical", severity: "critical" }),
+      verdict: "PURSUE",
+      reason: "grounded + survived",
+      advisory: "no adverse advisory factors",
+    };
+    const scoredTwoLow: ScoredFinding = {
+      finding: fakeFinding({ title: "two-low", severity: "low" }),
+      verdict: "PURSUE",
+      reason: "grounded + survived",
+      advisory: "no adverse advisory factors",
+    };
+    const dropped: ScoredFinding = {
+      finding: fakeFinding({ title: "dropped" }),
+      verdict: "DROP",
+      reason: "killed",
+      advisory: "no adverse advisory factors",
+    };
+
+    const entries: EntryPursueFindings[] = [
+      { entry: "SmallEntry.sol", scored: [scoredOne] },
+      { entry: "BigEntry.sol", scored: [scoredTwoCritical, scoredTwoLow, dropped] },
+      { entry: "NoneEntry.sol", scored: [dropped] },
+    ];
+
+    const md = buildPursueMarkdown(entries);
+    expect(md).toContain("3 finding(s) across 2 entry(ies)");
+    const bigIdx = md.indexOf("BigEntry.sol");
+    const smallIdx = md.indexOf("SmallEntry.sol");
+    expect(bigIdx).toBeGreaterThanOrEqual(0);
+    expect(smallIdx).toBeGreaterThan(bigIdx); // BigEntry (2 PURSUE) sorts before SmallEntry (1)
+    expect(md).not.toContain("NoneEntry.sol"); // no PURSUE -> excluded
+    expect(md).toContain("evidence: `contracts/A.sol:1-2`");
+  });
+});
