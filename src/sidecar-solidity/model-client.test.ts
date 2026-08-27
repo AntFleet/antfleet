@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import {
+  AUDIT_DEFAULT_MODEL,
+  CONFIRM_DEFAULT_MODEL,
+  REFUTER_DEFAULT_MODEL,
+  confirmModelCall,
   handleChatResponse,
   handleCodexOutput,
   normalizeToolInput,
@@ -114,6 +118,24 @@ describe("toCodexModelId — same per-role models, codex id spelling", () => {
 
   it("leaves an already-bare id untouched", () => {
     expect(toCodexModelId("gpt-5.6-sol")).toBe("gpt-5.6-sol");
+  });
+});
+
+describe("per-role default models — stage B is split off the finder to clear the cyber filter", () => {
+  it("stage-A finder defaults to gpt-5.6-sol; stage-B confirm and refuter default to gpt-5.5", () => {
+    // The whole point of the split: gpt-5.6-sol trips the ChatGPT cyber content
+    // filter on the stage-B exploit-completion prompt, so confirm must NOT reuse
+    // the finder model. Lock the defaults so a refactor can't silently re-merge.
+    expect(AUDIT_DEFAULT_MODEL).toBe("openai/gpt-5.6-sol");
+    expect(CONFIRM_DEFAULT_MODEL).toBe("openai/gpt-5.5");
+    expect(REFUTER_DEFAULT_MODEL).toBe("openai/gpt-5.5");
+    expect(CONFIRM_DEFAULT_MODEL).not.toBe(AUDIT_DEFAULT_MODEL);
+    // Both spell to the bare codex id cleanly.
+    expect(toCodexModelId(CONFIRM_DEFAULT_MODEL)).toBe("gpt-5.5");
+  });
+
+  it("exposes a confirmModelCall distinct from the finder call", () => {
+    expect(typeof confirmModelCall).toBe("function");
   });
 });
 

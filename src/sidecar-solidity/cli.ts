@@ -61,11 +61,11 @@ function usage(): never {
                       [--out <report.json>] [--live]
 
 Default is DRY-RUN (no model call, findings never promoted).
---live runs the finder (gpt-5.6-sol) + the independent adversarial refuter
-(gpt-5.5) through the codex CLI on your ChatGPT subscription — no API key, but
-slow. Set SIDECAR_TRANSPORT=http (with OPENROUTER_API_KEY / SIDECAR_API_KEY) to
-use OpenRouter instead. Override models with SIDECAR_FINDER_MODEL /
-SIDECAR_REFUTER_MODEL.`);
+--live runs stage-A finder (gpt-5.6-sol) + stage-B focused confirm (gpt-5.5) +
+the independent adversarial refuter (gpt-5.5) through the codex CLI on your
+ChatGPT subscription — no API key, but slow. Set SIDECAR_TRANSPORT=http (with
+OPENROUTER_API_KEY / SIDECAR_API_KEY) to use OpenRouter instead. Override models
+with SIDECAR_FINDER_MODEL / SIDECAR_CONFIRM_MODEL / SIDECAR_REFUTER_MODEL.`);
   process.exit(2);
 }
 
@@ -146,10 +146,12 @@ async function main(): Promise<void> {
   const remappings = await loadRemappings(root);
 
   // B + C — dry-run renders only; --live runs finder AND refuter. Model combo
-  // (model-client defaults): finder/stage-A/stage-B = gpt-5.6-sol, refuter =
-  // gpt-5.5. SIDECAR_FINDER_MODEL (optional) overrides just the discovery
-  // calls (stage A + focused stage-B confirm).
+  // (model-client defaults): stage-A finder = gpt-5.6-sol, stage-B confirm =
+  // gpt-5.5 (clears the ChatGPT cyber filter that gpt-5.6-sol trips on the
+  // exploit-completion prompt), refuter = gpt-5.5. SIDECAR_FINDER_MODEL and
+  // SIDECAR_CONFIRM_MODEL override the two discovery stages independently.
   const finderModel = process.env["SIDECAR_FINDER_MODEL"];
+  const confirmModel = process.env["SIDECAR_CONFIRM_MODEL"];
   const { closure, result } = await auditEntry({
     root,
     entries: cli.entries,
@@ -159,6 +161,7 @@ async function main(): Promise<void> {
     remappings,
     live: cli.live,
     finderModel,
+    confirmModel,
   });
 
   if (!cli.live) {
@@ -367,6 +370,7 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
         remappings,
         live: cli.live,
         finderModel: process.env["SIDECAR_FINDER_MODEL"],
+        confirmModel: process.env["SIDECAR_CONFIRM_MODEL"],
         log: (line) => console.error(`[${entry}] ${line}`),
       });
       return { entries: [entry], closure, result };

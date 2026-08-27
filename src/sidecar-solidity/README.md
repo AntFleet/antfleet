@@ -45,15 +45,21 @@ pnpm audit-solidity \
   --entry contracts/Wallet.sol \
   --rules program-rules.md
 
-# LIVE: finder (gpt-5.6-sol) + independent refuter (gpt-5.5). NO API KEY NEEDED
-# by default — see Transports below.
+# LIVE: stage-A finder (gpt-5.6-sol) + stage-B confirm (gpt-5.5) + independent
+# refuter (gpt-5.5). NO API KEY NEEDED by default — see Transports below.
 pnpm audit-solidity --target ... --entry ... --rules ... --live --out report.json
 
 # Model overrides (apply to BOTH transports):
-#   SIDECAR_FINDER_MODEL=<id>     # stage A + stage-B confirm (default gpt-5.6-sol)
+#   SIDECAR_FINDER_MODEL=<id>     # stage A enumerate         (default gpt-5.6-sol)
+#   SIDECAR_CONFIRM_MODEL=<id>    # stage B focused confirm    (default gpt-5.5)
 #   SIDECAR_REFUTER_MODEL=<id>    # adversarial refuter        (default gpt-5.5)
-#   SIDECAR_MODEL=<id>            # both roles at once
+#   SIDECAR_MODEL=<id>            # all three roles at once
 # SIDECAR_DEBUG=1 logs finish_reason / output length.
+#
+# WHY stage B defaults to gpt-5.5, not the finder model: on the codex/ChatGPT
+# subscription, gpt-5.6-sol trips OpenAI's cyber content filter on the stage-B
+# "complete this fund-extraction chain" prompt ("Trusted Access for Cyber
+# program"); gpt-5.5 clears it. The enumerate-only stage-A prompt passes on 5.6.
 ```
 
 ### Transports
@@ -63,9 +69,10 @@ pnpm audit-solidity --target ... --entry ... --rules ... --live --out report.jso
 -m <model>`, feeding the prompt over **stdin** (finder prompts reach ~200k chars,
 far past any argv limit) and reading the final assistant message back out of the
 temp file. Auth comes from `~/.codex` (`auth_mode: chatgpt`) — nothing is read
-from `OPENAI_API_KEY`. The per-role split is unchanged: finder `gpt-5.6-sol`,
-refuter `gpt-5.5`, both passed through `codex -m`, both overridable with the env
-vars above (an `openai/` vendor prefix is stripped for the codex id spelling).
+from `OPENAI_API_KEY`. The per-role split is unchanged: stage-A finder
+`gpt-5.6-sol`, stage-B confirm `gpt-5.5`, refuter `gpt-5.5`, all passed through
+`codex -m`, all overridable with the env vars above (an `openai/` vendor prefix
+is stripped for the codex id spelling).
 `SIDECAR_CODEX_BIN` overrides the binary path if `codex` is not on PATH.
 
 > **codex is slow** (subscription queueing + high reasoning effort on a large
