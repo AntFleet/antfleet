@@ -462,8 +462,21 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
       entries.add(e);
     }
   }
+  const selectorsGiven =
+    args.entries.length > 0 || args.entriesFrom.length > 0 || args.entriesGlob.length > 0;
   let entryList = [...entries];
   if (entryList.length === 0) {
+    // A selector that resolved to NOTHING must not silently broaden to the whole
+    // repo (a typo'd --entries-glob or comment-only --entries-from would then
+    // audit unintended scope, especially under --live). Only auto-enumerate when
+    // NO selector was given at all.
+    if (selectorsGiven) {
+      console.error(
+        "sweep: entry selectors were given but matched NO contracts — refusing to silently " +
+          "broaden to the whole repo. Check your --entry / --entries-from / --entries-glob.",
+      );
+      sweepUsage();
+    }
     // Issue #178 — "sweep by default": with no explicit selectors, audit EVERY
     // first-party contract file, each as its own never-evicted entry. This is
     // the guided path so an operator no longer has to guess the right --entry.

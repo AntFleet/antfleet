@@ -557,21 +557,25 @@ export function buildPursueMarkdown(entries: readonly EntryPursueFindings[]): st
 }
 
 /**
- * Cross-entry dedup key for a PURSUE finding (issue #178). The same bug
- * surfaced from two different entry closures shares its evidence anchors, so we
- * key on the sorted set of `path:startLine` citations — falling back to the
- * normalized title only when a finding cites nothing anchorable. Keeps the
- * union view from listing one bug N times just because N entries reached it.
+ * Cross-entry dedup key for a PURSUE finding (issue #178). The same bug surfaced
+ * from two different entry closures shares BOTH its evidence anchors and its
+ * title, so the key combines the sorted set of `path:startLine` citations with
+ * the normalized title. Title is part of the key deliberately: two DISTINCT bugs
+ * can cite the same starting line (a packed line, a shared guard/modifier), and
+ * anchors alone would collapse them into one union row and hide the second.
+ * `startLine` (not the full range) is the anchor so a confirm-stage re-anchor to
+ * a nearby end line still dedupes. Anchorless findings fall back to title only.
  */
 export function pursueFindingDedupKey(finding: AuditFinding): string {
+  const title = finding.title.trim().toLowerCase().replace(/\s+/gu, " ");
   const anchors = finding.evidence
     .map((e) => `${e.path}:${e.startLine ?? "?"}`)
     .filter((a) => a !== "(unanchored):?")
     .toSorted();
   if (anchors.length > 0) {
-    return anchors.join("|");
+    return `${anchors.join("|")}##${title}`;
   }
-  return `title:${finding.title.trim().toLowerCase().replace(/\s+/gu, " ")}`;
+  return `title:${title}`;
 }
 
 /**

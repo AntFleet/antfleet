@@ -156,18 +156,21 @@ export function isTestOrMockPath(path: string): boolean {
 
 /**
  * Issue #178 eviction guardrail: a "library" file is one checked out under a
- * dependency root (`lib/` for Foundry, `node_modules/` for npm/Hardhat layouts,
- * `dependencies/` for Soldeer). Everything else — `src/`, `contracts/`, the
- * project's own tree — is FIRST-PARTY. Under budget pressure library bulk must
- * be evicted before first-party files so the project's own contracts never lose
- * the budget race to a deep OZ/Solmate inheritance tree (the der-sc failure:
- * entering from `IndexFactory.sol` evicted the first-party `RelativeIndexHook`
- * + `WeightedIndexMath` when the `IndexToken→ERC20→OZ` tree crowded them out).
+ * dependency ROOT — Foundry's `lib/` and Soldeer's `dependencies/` sit at the
+ * project root, so they are anchored to the START of the (root-relative) path;
+ * npm/pnpm's `node_modules/` can nest, so it matches anywhere. Everything else —
+ * `src/`, `contracts/`, and crucially first-party helper dirs like `src/lib/` or
+ * `contracts/dependencies/` — is FIRST-PARTY. (Anchoring matters: a bare
+ * `/lib/` segment match would misclassify `src/lib/Math.sol` as a dependency and
+ * silently drop own code from sweeps + budget warnings.) Under budget pressure
+ * library bulk is evicted before first-party files so the project's own
+ * contracts never lose the budget race to a deep OZ/Solmate inheritance tree
+ * (the der-sc failure: entering from `IndexFactory.sol` evicted first-party
+ * `RelativeIndexHook` + `WeightedIndexMath` when the `IndexToken→ERC20→OZ` tree
+ * crowded them out).
  */
-const LIBRARY_PATH_REGEX = /(?:^|\/)(?:lib|node_modules|dependencies)\//iu;
-
 export function isLibraryPath(path: string): boolean {
-  return LIBRARY_PATH_REGEX.test(path);
+  return /^(?:lib|dependencies)\//iu.test(path) || path.includes("node_modules/");
 }
 
 // --- Remappings --------------------------------------------------------------
@@ -648,21 +651,27 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
   }
   const entryOverflow = entryBytes > budget;
   if (totalBytes > budget) {
-    // Eviction guardrail (issue #178): first-party src/ files must not lose the
-    // budget race to lib/ + node_modules/ bulk. Evict LIBRARY files first —
-    // regardless of their edge role — then, only if still over budget,
-    // first-party files from the least-essential end (highest keepRank, then
-    // deepest). Entries are never evicted. Trade-off: a directly-inherited OZ
-    // base can be dropped ahead of a deep first-party transitive; a missing base
-    // surfaces as an unresolved external, whereas a missing first-party bug file
-    // is silently un-audited — the worse failure, so first-party wins.
+    // Eviction guardrail (issue #178): first-party REAL-EDGE files must not lose
+    // the budget race to lib/ + node_modules/ bulk. Eviction tier (evicted
+    // soonest first):
+    //   2 — REVERSE hits (name-heuristic last resort, first-party OR library):
+    //       a lexical coincidence never outranks a real edge, so it goes before
+    //       any needed dependency base — preserving the pre-existing
+    //       "reverse = last resort, evicted FIRST" contract.
+    //   1 — LIBRARY real-edge files (lib/node_modules/dependencies): losing one
+    //       degrades to a VISIBLE unresolved external.
+    //   0 — FIRST-PARTY real-edge files: the operator's own code; a silent
+    //       un-audit is the worst outcome, so protect these last.
+    // Within a tier: least-essential (higher keepRank) first, then deepest.
+    // Entries are never evicted.
+    const evictTier = (info: Included): number =>
+      info.role === "reverse" ? 2 : isLibraryPath(info.path) ? 1 : 0;
     const evictionOrder = keepOrdered
       .filter((info) => info.role !== "entry")
       .toSorted((a, b) => {
-        const libA = isLibraryPath(a.path) ? 0 : 1;
-        const libB = isLibraryPath(b.path) ? 0 : 1;
-        if (libA !== libB) {
-          return libA - libB; // libraries (0) evicted before first-party (1)
+        const tier = evictTier(b) - evictTier(a); // higher tier evicted first
+        if (tier !== 0) {
+          return tier;
         }
         const rank = keepRank(b) - keepRank(a); // least-essential (higher rank) first
         if (rank !== 0) {

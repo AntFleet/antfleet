@@ -204,14 +204,48 @@ describe("assembleClosure — first-party eviction guardrail (issue #178)", () =
     expect(result.truncated).toBe(true);
   });
 
-  it("isLibraryPath recognizes lib/, node_modules/, dependencies/ roots only", () => {
+  it("isLibraryPath anchors lib/ + dependencies/ to the repo root, node_modules/ anywhere", () => {
+    // Dependency ROOTS (Foundry lib/, Soldeer dependencies/) sit at the root.
     expect(isLibraryPath("lib/openzeppelin/contracts/token/ERC20.sol")).toBe(true);
-    expect(isLibraryPath("node_modules/@openzeppelin/contracts/Ownable.sol")).toBe(true);
     expect(isLibraryPath("dependencies/solmate/src/tokens/ERC20.sol")).toBe(true);
-    expect(isLibraryPath("nested/lib/foo/Bar.sol")).toBe(true);
+    // node_modules can nest, so it matches anywhere in the path.
+    expect(isLibraryPath("node_modules/@openzeppelin/contracts/Ownable.sol")).toBe(true);
+    expect(isLibraryPath("lib/foo/node_modules/bar/Baz.sol")).toBe(true);
+    // First-party helper dirs named lib/ or dependencies/ are NOT dependencies.
+    expect(isLibraryPath("src/lib/FixedPointMath.sol")).toBe(false);
+    expect(isLibraryPath("contracts/dependencies/OracleMath.sol")).toBe(false);
+    expect(isLibraryPath("nested/lib/foo/Bar.sol")).toBe(false);
     expect(isLibraryPath("src/RelativeIndexHook.sol")).toBe(false);
-    expect(isLibraryPath("contracts/IndexFactory.sol")).toBe(false);
     expect(isLibraryPath("libraries/MyMath.sol")).toBe(false); // not a dep root
+  });
+
+  it("evicts a first-party REVERSE (lexical) hit before a needed LIBRARY base", async () => {
+    // Restores the pre-existing "reverse = last resort, evicted FIRST" contract:
+    // a name-heuristic sibling must never survive at the cost of a real edge —
+    // even a first-party one displacing a library dependency base.
+    const bigBase = `contract OzBase { /* ${"z".repeat(2000)} */ }\n`;
+    const tree = new Map<string, string>([
+      ["src/MainVault.sol", 'import "lib/oz/OzBase.sol";\ncontract MainVault is OzBase {}\n'],
+      ["lib/oz/OzBase.sol", bigBase],
+      // Reverse hit: references MainVault by name, never imported by it (plus
+      // filler so evicting it alone clears the overflow).
+      [
+        "src/Harvester.sol",
+        `contract Harvester { function harvest(MainVault v) external {} /* ${"q".repeat(3000)} */ }\n`,
+      ],
+    ]);
+    const result = await assembleClosure({
+      entries: ["src/MainVault.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+      budgetBytes: 2200, // fits entry + OzBase (~2080), but not also Harvester
+    });
+    const kept = result.blocks.map((b) => b.path);
+    expect(kept).toContain("src/MainVault.sol"); // entry
+    expect(kept).toContain("lib/oz/OzBase.sol"); // library REAL edge survives
+    expect(kept).not.toContain("src/Harvester.sol"); // first-party REVERSE hit evicts first
+    expect(result.evicted).toEqual(["src/Harvester.sol"]);
+    expect(result.evictedFirstParty).toEqual(["src/Harvester.sol"]); // still flagged
   });
 });
 

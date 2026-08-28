@@ -330,17 +330,32 @@ describe("buildPursueMarkdown", () => {
 
 // --- pursueFindingDedupKey / buildDedupedPursueMarkdown (issue #178) ----------
 
+const ev = (
+  path: string,
+  startLine: number,
+  endLine: number,
+): AuditFinding["evidence"][number] => ({ path, startLine, endLine, symbol: null, quote: null });
+
 describe("pursueFindingDedupKey", () => {
-  it("keys on sorted evidence anchors so the same bug from two entries matches", () => {
-    const a = fakeFinding({
-      title: "epoch cap inverted",
-      evidence: [{ path: "src/Hook.sol", startLine: 42, endLine: 50 }],
-    });
+  it("dedupes the same bug (same title + start anchor) even if the end line was re-anchored", () => {
+    const a = fakeFinding({ title: "epoch cap inverted", evidence: [ev("src/Hook.sol", 42, 50)] });
     const b = fakeFinding({
-      title: "cap direction wrong (reworded)", // different title, same anchor
-      evidence: [{ path: "src/Hook.sol", startLine: 42, endLine: 99 }], // different endLine
+      title: "Epoch  Cap  Inverted", // same title, case/space-normalized
+      evidence: [ev("src/Hook.sol", 42, 99)], // end re-anchored — startLine is the key
     });
     expect(pursueFindingDedupKey(a)).toBe(pursueFindingDedupKey(b));
+  });
+
+  it("does NOT collapse distinct bugs sharing a start line (title is part of the key)", () => {
+    const a = fakeFinding({
+      title: "missing auth check",
+      evidence: [ev("src/Vault.sol", 120, 120)],
+    });
+    const b = fakeFinding({
+      title: "accounting underflow", // different bug, same packed line
+      evidence: [ev("src/Vault.sol", 120, 122)],
+    });
+    expect(pursueFindingDedupKey(a)).not.toBe(pursueFindingDedupKey(b));
   });
 
   it("falls back to normalized title when no anchor is present", () => {
@@ -357,11 +372,7 @@ describe("buildDedupedPursueMarkdown", () => {
     severity: AuditFinding["severity"],
     line: number,
   ): ScoredFinding => ({
-    finding: fakeFinding({
-      title,
-      severity,
-      evidence: [{ path: "src/Hook.sol", startLine: line, endLine: line + 1 }],
-    }),
+    finding: fakeFinding({ title, severity, evidence: [ev("src/Hook.sol", line, line + 1)] }),
     verdict: "PURSUE",
     reason: "grounded + survived",
     advisory: "no adverse advisory factors",
