@@ -78,6 +78,12 @@ export type ClosureResult = {
   bytes: number;
   truncated: boolean;
   evicted: string[];
+  /**
+   * Issue #178: the subset of `evicted` that is FIRST-PARTY (not under a
+   * lib/node_modules/dependencies root). Non-empty means the operator lost their
+   * own code to the budget — callers warn LOUDLY, not just list it.
+   */
+  evictedFirstParty: string[];
   /** Set when entries alone exceed the budget (entries still kept whole). */
   entryOverflow: boolean;
 };
@@ -146,6 +152,22 @@ const TEST_PATH_REGEX =
 
 export function isTestOrMockPath(path: string): boolean {
   return TEST_PATH_REGEX.test(path);
+}
+
+/**
+ * Issue #178 eviction guardrail: a "library" file is one checked out under a
+ * dependency root (`lib/` for Foundry, `node_modules/` for npm/Hardhat layouts,
+ * `dependencies/` for Soldeer). Everything else — `src/`, `contracts/`, the
+ * project's own tree — is FIRST-PARTY. Under budget pressure library bulk must
+ * be evicted before first-party files so the project's own contracts never lose
+ * the budget race to a deep OZ/Solmate inheritance tree (the der-sc failure:
+ * entering from `IndexFactory.sol` evicted the first-party `RelativeIndexHook`
+ * + `WeightedIndexMath` when the `IndexToken→ERC20→OZ` tree crowded them out).
+ */
+const LIBRARY_PATH_REGEX = /(?:^|\/)(?:lib|node_modules|dependencies)\//iu;
+
+export function isLibraryPath(path: string): boolean {
+  return LIBRARY_PATH_REGEX.test(path);
 }
 
 // --- Remappings --------------------------------------------------------------
@@ -626,16 +648,45 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
   }
   const entryOverflow = entryBytes > budget;
   if (totalBytes > budget) {
-    for (let i = keepOrdered.length - 1; i >= 0 && totalBytes > budget; i -= 1) {
-      const info = keepOrdered[i];
-      if (info === undefined || info.role === "entry") {
-        continue; // entries always kept whole
+    // Eviction guardrail (issue #178): first-party src/ files must not lose the
+    // budget race to lib/ + node_modules/ bulk. Evict LIBRARY files first —
+    // regardless of their edge role — then, only if still over budget,
+    // first-party files from the least-essential end (highest keepRank, then
+    // deepest). Entries are never evicted. Trade-off: a directly-inherited OZ
+    // base can be dropped ahead of a deep first-party transitive; a missing base
+    // surfaces as an unresolved external, whereas a missing first-party bug file
+    // is silently un-audited — the worse failure, so first-party wins.
+    const evictionOrder = keepOrdered
+      .filter((info) => info.role !== "entry")
+      .toSorted((a, b) => {
+        const libA = isLibraryPath(a.path) ? 0 : 1;
+        const libB = isLibraryPath(b.path) ? 0 : 1;
+        if (libA !== libB) {
+          return libA - libB; // libraries (0) evicted before first-party (1)
+        }
+        const rank = keepRank(b) - keepRank(a); // least-essential (higher rank) first
+        if (rank !== 0) {
+          return rank;
+        }
+        const depth = b.depth - a.depth; // deeper padding first
+        if (depth !== 0) {
+          return depth;
+        }
+        return a.path < b.path ? 1 : a.path > b.path ? -1 : 0;
+      });
+    for (const info of evictionOrder) {
+      if (totalBytes <= budget) {
+        break;
       }
       totalBytes -= info.bytes;
-      evicted.unshift(info.path);
+      evicted.push(info.path);
       included.delete(info.path);
     }
   }
+  evicted.sort();
+  // First-party evictions are the loud case: the operator lost their OWN code to
+  // the budget, not just a dependency. Callers surface this separately.
+  const evictedFirstParty = evicted.filter((p) => !isLibraryPath(p));
 
   for (const info of keepOrdered) {
     if (!included.has(info.path)) {
@@ -660,6 +711,7 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
     bytes: totalBytes,
     truncated: evicted.length > 0 || entryOverflow,
     evicted,
+    evictedFirstParty,
     entryOverflow,
   };
 }

@@ -22,8 +22,10 @@ import { join, resolve } from "node:path";
 import { fsReadRepoFile, listSolFiles, loadRemappings } from "./closure.js";
 import {
   auditEntry,
+  buildDedupedPursueMarkdown,
   buildPursueMarkdown,
   buildSweepSummary,
+  enumerateFirstPartyEntries,
   parseEntriesFromFile,
   renderDryRunEntryReport,
   renderLiveReport,
@@ -249,6 +251,30 @@ async function main(): Promise<void> {
     contextPack,
   });
 
+  // Issue #178 — entry choice steers WHAT is found, not just scope. On a
+  // multi-contract system a single --entry can skim past bugs living in sibling
+  // files (measured on der-sc: the hook Highs and the factory findings each
+  // needed a different entry). Strongly recommend the sweep, which audits every
+  // first-party file as its own never-evicted entry and dedupes the union.
+  const firstPartyEntries = await enumerateFirstPartyEntries({
+    allPaths,
+    readFile: fsReadRepoFile(root),
+  });
+  const auditedSet = new Set(cli.entries);
+  const uncovered = firstPartyEntries.filter((p) => !auditedSet.has(p));
+  if (firstPartyEntries.length > 1 && uncovered.length > 0) {
+    console.error(
+      `[audit-solidity] NOTE: this target has ${firstPartyEntries.length} first-party contract file(s); ` +
+        `you selected ${cli.entries.length} --entry, leaving ${uncovered.length} un-entered. ` +
+        `Entry choice steers WHAT is found, not just scope — a single entry can skim past bugs in sibling files.`,
+    );
+    console.error(
+      `[audit-solidity] STRONGLY RECOMMENDED for multi-contract systems: ` +
+        `antfleet-audit sweep --target ${cli.target} --rules ${cli.rulesPath} --out <dir>${cli.live ? " --live" : ""} ` +
+        `(auto-enumerates every first-party entry, unions + dedupes findings).`,
+    );
+  }
+
   if (!cli.live) {
     console.error("[audit-solidity] DRY-RUN: no model calls performed. Prompt below.");
     console.error("");
@@ -305,7 +331,9 @@ function sweepUsage(): never {
                         [--concurrency <N>] [--budget <bytes>] [--live]
 
 Audits MANY entry contracts over one target repo in one command. Combine
---entry / --entries-from / --entries-glob freely; at least one is required.
+--entry / --entries-from / --entries-glob freely; with NONE given, sweep
+auto-enumerates every first-party contract file (non-test, non-library,
+non-interface-only) — the recommended path for multi-contract systems.
 Phase 0 off-chain context: [--docs <dir>] [--audits <dir>] [--trust-model <file>]
 [--no-context] (docs/ + README* auto-ingested from --target; pack built once).
 Default is DRY-RUN (no model calls). --concurrency defaults to 2.`);
@@ -434,14 +462,26 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
       entries.add(e);
     }
   }
-  if (entries.size === 0) {
-    console.error("sweep: no entries resolved from --entry / --entries-from / --entries-glob");
-    sweepUsage();
+  let entryList = [...entries];
+  if (entryList.length === 0) {
+    // Issue #178 — "sweep by default": with no explicit selectors, audit EVERY
+    // first-party contract file, each as its own never-evicted entry. This is
+    // the guided path so an operator no longer has to guess the right --entry.
+    entryList = await enumerateFirstPartyEntries({ allPaths, readFile: readFileRel });
+    if (entryList.length === 0) {
+      console.error(
+        "sweep: no --entry given and no first-party .sol contracts auto-discovered under --target",
+      );
+      sweepUsage();
+    }
+    console.error(
+      `[audit-sweep] no --entry given — auto-selected ${entryList.length} first-party contract entry(ies) under ${args.target}`,
+    );
   }
 
   return {
     target: args.target,
-    entries: [...entries],
+    entries: entryList,
     rulesPath: args.rulesPath,
     outDir: args.outDir,
     concurrency: args.concurrency,
@@ -514,7 +554,11 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
   });
   await mkdir(cli.outDir, { recursive: true });
   await writeFile(join(cli.outDir, "summary.json"), JSON.stringify(summary, null, 2), "utf8");
-  await writeFile(join(cli.outDir, "PURSUE.md"), buildPursueMarkdown(pursueByEntry), "utf8");
+  // PURSUE.md leads with the cross-entry DEDUPED union (issue #178) so the
+  // operator reads the whole-system picture — one bug once, with the entries
+  // that surfaced it — then the per-entry breakdown below it.
+  const pursueMd = `${buildDedupedPursueMarkdown(pursueByEntry)}\n\n---\n\n${buildPursueMarkdown(pursueByEntry)}`;
+  await writeFile(join(cli.outDir, "PURSUE.md"), pursueMd, "utf8");
 
   console.error("");
   console.error(

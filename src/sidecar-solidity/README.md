@@ -49,6 +49,15 @@ pnpm audit-solidity \
 # refuter (gpt-5.5). NO API KEY NEEDED by default — see Transports below.
 pnpm audit-solidity --target ... --entry ... --rules ... --live --out report.json
 
+# SWEEP (recommended for multi-contract systems): audit EVERY first-party
+# contract, each as its own never-evicted entry, then union + dedupe. With no
+# --entry given the entries are auto-enumerated (non-test, non-library,
+# non-interface-only). No single entry finds the whole defect set — see Honest
+# limits. Output dir gets per-entry reports + summary.json + a deduped PURSUE.md.
+antfleet-audit sweep --target <dir> --rules program-rules.md --out sweep-out/ [--live]
+#   --entry / --entries-from <file> / --entries-glob '<glob>'  narrow the set
+#   --concurrency <N>   parallel entries in flight (default 2)
+
 # Model overrides (apply to BOTH transports):
 #   SIDECAR_FINDER_MODEL=<id>     # stage A enumerate         (default gpt-5.6-sol)
 #   SIDECAR_CONFIRM_MODEL=<id>    # stage B focused confirm    (default gpt-5.5)
@@ -104,8 +113,36 @@ Closure stats print to stderr; the prompt/report goes to stdout and `--out`.
 
 ## Honest limits
 
+- **Entry choice steers WHAT is found, not just scope.** The two-stage finder
+  anchors on the entry file's concerns, so a bug living in a *non-entry* file
+  can be skimmed past even when that file is present in the closure (measured on
+  der-sc: entering from `RelativeIndexHook.sol` found the hook Highs but only
+  *conditionally* raised the factory findings; entering from `IndexFactory.sol`
+  confirmed the factory findings but did not re-find the hook Highs at all). **No
+  single entry finds the whole defect set.** For any multi-contract system run a
+  **sweep** (below) — it audits every first-party file as its own never-evicted
+  entry and unions + dedupes the findings. Single-audit mode prints this
+  recommendation when it sees more first-party files than you entered.
+- **Class coverage — the finder covers code-*citable* defects only.** It does
+  NOT reach, and should not be claimed to reach:
+  - *Economic / design* bugs (e.g. a below-band condition that blocks all sells →
+    holder trap) — they require reasoning about market dynamics, not a code
+    citation.
+  - *Latent, ordering-guarded* bugs (e.g. a truncation currently unreachable only
+    because another check reverts first) — they need cross-check reasoning the
+    finder does not perform.
+  - `script/` **deploy-script** bugs — scripts are excluded from every closure by
+    default and sit outside an entry's forward closure entirely.
+  - *Build / test / coverage* signals (branch coverage, untested directions) — the
+    finder never builds or runs anything.
+
+  These are the **human + Foundry** pass, not the sidecar's job.
 - Closure bounding can evict relevant files under budget pressure; evicted files
-  are listed in every report so misses are traceable. Entries are never evicted.
+  are listed in every report so misses are traceable. Entries are never evicted,
+  and **library bulk (`lib/`, `node_modules/`, `dependencies/`) is evicted before
+  first-party files** so `src/` never loses the budget race to a deep OZ/Solmate
+  tree. A first-party eviction (own code un-audited) is flagged **loudly** —
+  `evictedFirstParty` in every report — with the fix: raise `--budget` or sweep.
 - Reverse coupling heuristics (compound names like `XFactory.sol`) can
   over-include; that costs tokens, not correctness, and the budget caps it.
 - Output is unverified candidate findings until each survives grounding + the
