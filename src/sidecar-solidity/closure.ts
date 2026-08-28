@@ -78,6 +78,12 @@ export type ClosureResult = {
   bytes: number;
   truncated: boolean;
   evicted: string[];
+  /**
+   * Issue #178: the subset of `evicted` that is FIRST-PARTY (not under a
+   * lib/node_modules/dependencies root). Non-empty means the operator lost their
+   * own code to the budget — callers warn LOUDLY, not just list it.
+   */
+  evictedFirstParty: string[];
   /** Set when entries alone exceed the budget (entries still kept whole). */
   entryOverflow: boolean;
 };
@@ -146,6 +152,25 @@ const TEST_PATH_REGEX =
 
 export function isTestOrMockPath(path: string): boolean {
   return TEST_PATH_REGEX.test(path);
+}
+
+/**
+ * Issue #178 eviction guardrail: a "library" file is one checked out under a
+ * dependency ROOT — Foundry's `lib/` and Soldeer's `dependencies/` sit at the
+ * project root, so they are anchored to the START of the (root-relative) path;
+ * npm/pnpm's `node_modules/` can nest, so it matches anywhere. Everything else —
+ * `src/`, `contracts/`, and crucially first-party helper dirs like `src/lib/` or
+ * `contracts/dependencies/` — is FIRST-PARTY. (Anchoring matters: a bare
+ * `/lib/` segment match would misclassify `src/lib/Math.sol` as a dependency and
+ * silently drop own code from sweeps + budget warnings.) Under budget pressure
+ * library bulk is evicted before first-party files so the project's own
+ * contracts never lose the budget race to a deep OZ/Solmate inheritance tree
+ * (the der-sc failure: entering from `IndexFactory.sol` evicted first-party
+ * `RelativeIndexHook` + `WeightedIndexMath` when the `IndexToken→ERC20→OZ` tree
+ * crowded them out).
+ */
+export function isLibraryPath(path: string): boolean {
+  return /^(?:lib|dependencies)\//iu.test(path) || path.includes("node_modules/");
 }
 
 // --- Remappings --------------------------------------------------------------
@@ -626,16 +651,51 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
   }
   const entryOverflow = entryBytes > budget;
   if (totalBytes > budget) {
-    for (let i = keepOrdered.length - 1; i >= 0 && totalBytes > budget; i -= 1) {
-      const info = keepOrdered[i];
-      if (info === undefined || info.role === "entry") {
-        continue; // entries always kept whole
+    // Eviction guardrail (issue #178): first-party REAL-EDGE files must not lose
+    // the budget race to lib/ + node_modules/ bulk. Eviction tier (evicted
+    // soonest first):
+    //   2 — REVERSE hits (name-heuristic last resort, first-party OR library):
+    //       a lexical coincidence never outranks a real edge, so it goes before
+    //       any needed dependency base — preserving the pre-existing
+    //       "reverse = last resort, evicted FIRST" contract.
+    //   1 — LIBRARY real-edge files (lib/node_modules/dependencies): losing one
+    //       degrades to a VISIBLE unresolved external.
+    //   0 — FIRST-PARTY real-edge files: the operator's own code; a silent
+    //       un-audit is the worst outcome, so protect these last.
+    // Within a tier: least-essential (higher keepRank) first, then deepest.
+    // Entries are never evicted.
+    const evictTier = (info: Included): number =>
+      info.role === "reverse" ? 2 : isLibraryPath(info.path) ? 1 : 0;
+    const evictionOrder = keepOrdered
+      .filter((info) => info.role !== "entry")
+      .toSorted((a, b) => {
+        const tier = evictTier(b) - evictTier(a); // higher tier evicted first
+        if (tier !== 0) {
+          return tier;
+        }
+        const rank = keepRank(b) - keepRank(a); // least-essential (higher rank) first
+        if (rank !== 0) {
+          return rank;
+        }
+        const depth = b.depth - a.depth; // deeper padding first
+        if (depth !== 0) {
+          return depth;
+        }
+        return a.path < b.path ? 1 : a.path > b.path ? -1 : 0;
+      });
+    for (const info of evictionOrder) {
+      if (totalBytes <= budget) {
+        break;
       }
       totalBytes -= info.bytes;
-      evicted.unshift(info.path);
+      evicted.push(info.path);
       included.delete(info.path);
     }
   }
+  evicted.sort();
+  // First-party evictions are the loud case: the operator lost their OWN code to
+  // the budget, not just a dependency. Callers surface this separately.
+  const evictedFirstParty = evicted.filter((p) => !isLibraryPath(p));
 
   for (const info of keepOrdered) {
     if (!included.has(info.path)) {
@@ -660,6 +720,7 @@ export async function assembleClosure(args: AssembleClosureArgs): Promise<Closur
     bytes: totalBytes,
     truncated: evicted.length > 0 || entryOverflow,
     evicted,
+    evictedFirstParty,
     entryOverflow,
   };
 }

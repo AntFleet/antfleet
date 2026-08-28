@@ -10,6 +10,7 @@
 
 import {
   isTestOrMockPath,
+  isLibraryPath,
   assembleClosure,
   fsReadRepoFile,
   type ClosureResult,
@@ -30,6 +31,7 @@ import {
   type ContextPack,
 } from "./context-pack.js";
 import type { ScoredFinding } from "./run.js";
+import type { AuditFinding } from "./finding-schema.js";
 
 // --- Single-entry pipeline (task 1: factored out of cli.ts for reuse) -------
 
@@ -102,6 +104,16 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
   if (closure.externalUnresolved.length > 0) {
     log(
       `[audit-solidity] WARNING: incomplete closure — ${closure.externalUnresolved.length} unresolved external(s); the prompt states this honestly.`,
+    );
+  }
+  if (closure.evictedFirstParty.length > 0) {
+    // Issue #178: losing a FIRST-PARTY file to the budget is the loud case — the
+    // operator's own code went un-audited, not just a dependency. Libraries are
+    // already evicted first, so this means first-party bulk alone overflowed:
+    // raise --budget or narrow --entry (or sweep, which audits each file as its
+    // own never-evicted entry).
+    log(
+      `[audit-solidity] WARNING: ${closure.evictedFirstParty.length} FIRST-PARTY file(s) EVICTED (un-audited) under budget: ${closure.evictedFirstParty.join(", ")} — raise --budget or run a sweep so each is its own entry.`,
     );
   }
 
@@ -212,6 +224,11 @@ export function renderLiveReport(args: {
   if (closure.evicted.length > 0) {
     lines.push(`- Evicted over budget (NOT audited): ${closure.evicted.join(", ")}`);
   }
+  if (closure.evictedFirstParty.length > 0) {
+    lines.push(
+      `- ⚠️ FIRST-PARTY EVICTED (own code un-audited — raise --budget or sweep): ${closure.evictedFirstParty.join(", ")}`,
+    );
+  }
   if (closure.externalUnresolved.length > 0) {
     lines.push(
       `- Unresolved externals (INCOMPLETE CLOSURE): ${closure.externalUnresolved.join(", ")}`,
@@ -253,6 +270,7 @@ export function renderLiveReport(args: {
     closure: {
       includedFiles: closure.blocks.map((b) => b.path),
       evicted: closure.evicted,
+      evictedFirstParty: closure.evictedFirstParty,
       externalUnresolved: closure.externalUnresolved,
       bytes: closure.bytes,
       truncated: closure.truncated,
@@ -285,6 +303,11 @@ export function renderDryRunEntryReport(args: {
   if (closure.evicted.length > 0) {
     lines.push(`- Evicted over budget (NOT audited): ${closure.evicted.join(", ")}`);
   }
+  if (closure.evictedFirstParty.length > 0) {
+    lines.push(
+      `- ⚠️ FIRST-PARTY EVICTED (own code un-audited — raise --budget or sweep): ${closure.evictedFirstParty.join(", ")}`,
+    );
+  }
   if (closure.externalUnresolved.length > 0) {
     lines.push(
       `- Unresolved externals (INCOMPLETE CLOSURE): ${closure.externalUnresolved.join(", ")}`,
@@ -302,6 +325,7 @@ export function renderDryRunEntryReport(args: {
     closure: {
       includedFiles: closure.blocks.map((b) => b.path),
       evicted: closure.evicted,
+      evictedFirstParty: closure.evictedFirstParty,
       externalUnresolved: closure.externalUnresolved,
       bytes: closure.bytes,
       truncated: closure.truncated,
@@ -365,6 +389,29 @@ export function globToRegExp(glob: string): RegExp {
     }
   }
   return new RegExp(`^${re}$`, "u");
+}
+
+/**
+ * Issue #178 — "sweep by default": enumerate every FIRST-PARTY contract entry
+ * under the target (non-test, non-library, non-interface-only .sol). This is
+ * the guided path so an operator no longer has to guess the single right
+ * `--entry`; each file becomes its own never-evicted entry and no bug can be
+ * skimmed past for living in a non-entry sibling. Same exclusion policy as
+ * `--entries-glob`, minus the glob filter and plus a library-root exclusion.
+ */
+export async function enumerateFirstPartyEntries(args: {
+  allPaths: readonly string[];
+  readFile: (repoRelativePath: string) => Promise<string>;
+}): Promise<string[]> {
+  const candidates = args.allPaths.filter((p) => !isTestOrMockPath(p) && !isLibraryPath(p));
+  const out: string[] = [];
+  for (const candidate of candidates) {
+    const contents = await args.readFile(candidate);
+    if (!isInterfaceOnlyFile(contents)) {
+      out.push(candidate);
+    }
+  }
+  return out.toSorted();
 }
 
 /** Resolve `--entries-glob` against the target's .sol tree, excluding
@@ -504,6 +551,92 @@ export function buildPursueMarkdown(entries: readonly EntryPursueFindings[]): st
       const reasoning = s.finding.reasoning.split(/\r?\n/u)[0] ?? s.finding.reasoning;
       lines.push(`  - reasoning: ${reasoning}`);
     }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Cross-entry dedup key for a PURSUE finding (issue #178). The same bug surfaced
+ * from two different entry closures shares BOTH its evidence anchors and its
+ * title, so the key combines the sorted set of `path:startLine` citations with
+ * the normalized title. Title is part of the key deliberately: two DISTINCT bugs
+ * can cite the same starting line (a packed line, a shared guard/modifier), and
+ * anchors alone would collapse them into one union row and hide the second.
+ * `startLine` (not the full range) is the anchor so a confirm-stage re-anchor to
+ * a nearby end line still dedupes. Anchorless findings fall back to title only.
+ */
+export function pursueFindingDedupKey(finding: AuditFinding): string {
+  const title = finding.title.trim().toLowerCase().replace(/\s+/gu, " ");
+  const anchors = finding.evidence
+    .map((e) => `${e.path}:${e.startLine ?? "?"}`)
+    .filter((a) => a !== "(unanchored):?")
+    .toSorted();
+  if (anchors.length > 0) {
+    return `${anchors.join("|")}##${title}`;
+  }
+  return `title:${title}`;
+}
+
+/**
+ * Issue #178 — the UNION view across the whole sweep: every PURSUE finding
+ * deduplicated across entries by {@link pursueFindingDedupKey}, so a bug two
+ * entries both reach is listed once with the set of entries that surfaced it.
+ * The per-entry breakdown lives in {@link buildPursueMarkdown}; the CLI writes
+ * this union first so the operator reads the deduped whole-system picture up top.
+ */
+export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings[]): string {
+  type Group = { rep: ScoredFinding; severityRank: number; entries: Set<string> };
+  const groups = new Map<string, Group>();
+  let rawPursue = 0;
+  for (const { entry, scored } of entries) {
+    for (const s of scored) {
+      if (s.verdict !== "PURSUE") {
+        continue;
+      }
+      rawPursue += 1;
+      const key = pursueFindingDedupKey(s.finding);
+      const rank = SEVERITY_ORDER[s.finding.severity] ?? 0;
+      const existing = groups.get(key);
+      if (existing === undefined) {
+        groups.set(key, { rep: s, severityRank: rank, entries: new Set([entry]) });
+        continue;
+      }
+      existing.entries.add(entry);
+      if (rank > existing.severityRank) {
+        existing.rep = s;
+        existing.severityRank = rank; // keep the highest-severity representative
+      }
+    }
+  }
+
+  const uniques = [...groups.values()].toSorted((a, b) => {
+    if (b.severityRank !== a.severityRank) {
+      return b.severityRank - a.severityRank;
+    }
+    const ta = a.rep.finding.title;
+    const tb = b.rep.finding.title;
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
+  });
+
+  const lines: string[] = [];
+  lines.push(
+    `# PURSUE union — ${uniques.length} unique finding(s) (${rawPursue} raw across ${entries.length} entry(ies))`,
+  );
+  lines.push("");
+  if (uniques.length === 0) {
+    lines.push("No PURSUE findings.");
+    return lines.join("\n");
+  }
+  for (const { rep, entries: surfacedFrom } of uniques) {
+    const f = rep.finding;
+    lines.push(`## **[${f.severity}]** ${f.title}`);
+    lines.push(`- surfaced from: ${[...surfacedFrom].toSorted().join(", ")}`);
+    for (const e of f.evidence) {
+      lines.push(`- evidence: \`${e.path}:${e.startLine ?? "?"}-${e.endLine ?? "?"}\``);
+    }
+    const reasoning = f.reasoning.split(/\r?\n/u)[0] ?? f.reasoning;
+    lines.push(`- reasoning: ${reasoning}`);
     lines.push("");
   }
   return lines.join("\n");

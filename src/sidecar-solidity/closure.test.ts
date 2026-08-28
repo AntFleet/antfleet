@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { assembleClosure, parseFoundryTomlRemappings, parseRemappingsTxt } from "./closure.js";
+import {
+  assembleClosure,
+  isLibraryPath,
+  parseFoundryTomlRemappings,
+  parseRemappingsTxt,
+} from "./closure.js";
 
 /**
  * Committed inline fixture mirroring the biconomy-counterfactual shape
@@ -143,6 +148,104 @@ describe("assembleClosure — budget policy", () => {
     await expect(
       assembleClosure({ entries: ["nope.sol"], allPaths: [], readFile: async () => "" }),
     ).rejects.toThrow(/not in file set/);
+  });
+});
+
+const big = (tag: string): string => `contract ${tag} { /* ${"y".repeat(4000)} */ }\n`;
+
+describe("assembleClosure — first-party eviction guardrail (issue #178)", () => {
+  it("evicts LIBRARY files before same-rank first-party files under budget", async () => {
+    // Entry imports one first-party sibling AND one library base, both forward
+    // rank-1 depth-1. Budget fits the entry + exactly one of them: the library
+    // must lose the race so the operator's own code survives.
+    const bigLib = `contract Lib { /* ${"x".repeat(4000)} */ }\n`;
+    const tree = new Map<string, string>([
+      [
+        "src/Main.sol",
+        'import "./Helper.sol";\nimport "lib/oz/Lib.sol";\ncontract Main {\n  function f(Helper h, Lib l) external {}\n}\n',
+      ],
+      ["src/Helper.sol", "contract Helper {}\n"],
+      ["lib/oz/Lib.sol", bigLib],
+    ]);
+    const result = await assembleClosure({
+      entries: ["src/Main.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+      budgetBytes: 300,
+    });
+    const kept = result.blocks.map((b) => b.path);
+    expect(kept).toContain("src/Main.sol"); // entry always kept
+    expect(kept).toContain("src/Helper.sol"); // first-party wins the budget race
+    expect(kept).not.toContain("lib/oz/Lib.sol"); // library evicted first
+    expect(result.evicted).toEqual(["lib/oz/Lib.sol"]);
+    expect(result.evictedFirstParty).toEqual([]); // no first-party loss → quiet
+  });
+
+  it("flags first-party evictions loudly when first-party bulk alone overflows", async () => {
+    const tree = new Map<string, string>([
+      [
+        "src/Main.sol",
+        'import "./A.sol";\nimport "lib/L.sol";\ncontract Main {\n  function f(A a, L l) external {}\n}\n',
+      ],
+      ["src/A.sol", big("A")],
+      ["lib/L.sol", big("L")],
+    ]);
+    // Budget fits ONLY the entry: the library goes first, then the first-party
+    // A.sol is forced out too — that loss must surface in evictedFirstParty.
+    const result = await assembleClosure({
+      entries: ["src/Main.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+      budgetBytes: 200,
+    });
+    expect(result.blocks.map((b) => b.path)).toEqual(["src/Main.sol"]);
+    expect(result.evicted).toEqual(["lib/L.sol", "src/A.sol"]); // sorted
+    expect(result.evictedFirstParty).toEqual(["src/A.sol"]);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("isLibraryPath anchors lib/ + dependencies/ to the repo root, node_modules/ anywhere", () => {
+    // Dependency ROOTS (Foundry lib/, Soldeer dependencies/) sit at the root.
+    expect(isLibraryPath("lib/openzeppelin/contracts/token/ERC20.sol")).toBe(true);
+    expect(isLibraryPath("dependencies/solmate/src/tokens/ERC20.sol")).toBe(true);
+    // node_modules can nest, so it matches anywhere in the path.
+    expect(isLibraryPath("node_modules/@openzeppelin/contracts/Ownable.sol")).toBe(true);
+    expect(isLibraryPath("lib/foo/node_modules/bar/Baz.sol")).toBe(true);
+    // First-party helper dirs named lib/ or dependencies/ are NOT dependencies.
+    expect(isLibraryPath("src/lib/FixedPointMath.sol")).toBe(false);
+    expect(isLibraryPath("contracts/dependencies/OracleMath.sol")).toBe(false);
+    expect(isLibraryPath("nested/lib/foo/Bar.sol")).toBe(false);
+    expect(isLibraryPath("src/RelativeIndexHook.sol")).toBe(false);
+    expect(isLibraryPath("libraries/MyMath.sol")).toBe(false); // not a dep root
+  });
+
+  it("evicts a first-party REVERSE (lexical) hit before a needed LIBRARY base", async () => {
+    // Restores the pre-existing "reverse = last resort, evicted FIRST" contract:
+    // a name-heuristic sibling must never survive at the cost of a real edge —
+    // even a first-party one displacing a library dependency base.
+    const bigBase = `contract OzBase { /* ${"z".repeat(2000)} */ }\n`;
+    const tree = new Map<string, string>([
+      ["src/MainVault.sol", 'import "lib/oz/OzBase.sol";\ncontract MainVault is OzBase {}\n'],
+      ["lib/oz/OzBase.sol", bigBase],
+      // Reverse hit: references MainVault by name, never imported by it (plus
+      // filler so evicting it alone clears the overflow).
+      [
+        "src/Harvester.sol",
+        `contract Harvester { function harvest(MainVault v) external {} /* ${"q".repeat(3000)} */ }\n`,
+      ],
+    ]);
+    const result = await assembleClosure({
+      entries: ["src/MainVault.sol"],
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+      budgetBytes: 2200, // fits entry + OzBase (~2080), but not also Harvester
+    });
+    const kept = result.blocks.map((b) => b.path);
+    expect(kept).toContain("src/MainVault.sol"); // entry
+    expect(kept).toContain("lib/oz/OzBase.sol"); // library REAL edge survives
+    expect(kept).not.toContain("src/Harvester.sol"); // first-party REVERSE hit evicts first
+    expect(result.evicted).toEqual(["src/Harvester.sol"]);
+    expect(result.evictedFirstParty).toEqual(["src/Harvester.sol"]); // still flagged
   });
 });
 

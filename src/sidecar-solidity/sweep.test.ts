@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  buildDedupedPursueMarkdown,
   buildPursueMarkdown,
   buildSweepSummary,
+  enumerateFirstPartyEntries,
   globToRegExp,
   isInterfaceOnlyFile,
   parseEntriesFromFile,
+  pursueFindingDedupKey,
   runPool,
   runSweepAudits,
   sanitizeEntryPath,
@@ -80,6 +83,35 @@ describe("globToRegExp", () => {
   });
 });
 
+// --- enumerateFirstPartyEntries (issue #178: sweep by default) --------------
+
+describe("enumerateFirstPartyEntries", () => {
+  it("selects first-party contract files, excluding test/mock/library/interface-only", async () => {
+    const tree = new Map<string, string>([
+      ["src/IndexFactory.sol", "contract IndexFactory {}\n"],
+      ["src/RelativeIndexHook.sol", "contract RelativeIndexHook {}\n"],
+      ["src/IIndex.sol", "interface IIndex { function x() external; }\n"], // interface-only
+      ["lib/oz/ERC20.sol", "contract ERC20 {}\n"], // library
+      ["node_modules/@oz/Ownable.sol", "contract Ownable {}\n"], // library
+      ["test/Index.t.sol", "contract IndexTest {}\n"], // test
+      ["script/Deploy.s.sol", "contract Deploy {}\n"], // script dir
+    ]);
+    const entries = await enumerateFirstPartyEntries({
+      allPaths: [...tree.keys()],
+      readFile: async (p) => tree.get(p) ?? "",
+    });
+    expect(entries).toEqual(["src/IndexFactory.sol", "src/RelativeIndexHook.sol"]);
+  });
+
+  it("returns [] when nothing first-party is present", async () => {
+    const entries = await enumerateFirstPartyEntries({
+      allPaths: ["lib/oz/ERC20.sol"],
+      readFile: async () => "contract ERC20 {}\n",
+    });
+    expect(entries).toEqual([]);
+  });
+});
+
 // --- runPool ---------------------------------------------------------------
 
 describe("runPool", () => {
@@ -121,6 +153,7 @@ function fakeClosure(): ClosureResult {
     bytes: 0,
     truncated: false,
     evicted: [],
+    evictedFirstParty: [],
     entryOverflow: false,
   };
 }
@@ -292,5 +325,83 @@ describe("buildPursueMarkdown", () => {
     expect(smallIdx).toBeGreaterThan(bigIdx); // BigEntry (2 PURSUE) sorts before SmallEntry (1)
     expect(md).not.toContain("NoneEntry.sol"); // no PURSUE -> excluded
     expect(md).toContain("evidence: `contracts/A.sol:1-2`");
+  });
+});
+
+// --- pursueFindingDedupKey / buildDedupedPursueMarkdown (issue #178) ----------
+
+const ev = (
+  path: string,
+  startLine: number,
+  endLine: number,
+): AuditFinding["evidence"][number] => ({ path, startLine, endLine, symbol: null, quote: null });
+
+describe("pursueFindingDedupKey", () => {
+  it("dedupes the same bug (same title + start anchor) even if the end line was re-anchored", () => {
+    const a = fakeFinding({ title: "epoch cap inverted", evidence: [ev("src/Hook.sol", 42, 50)] });
+    const b = fakeFinding({
+      title: "Epoch  Cap  Inverted", // same title, case/space-normalized
+      evidence: [ev("src/Hook.sol", 42, 99)], // end re-anchored — startLine is the key
+    });
+    expect(pursueFindingDedupKey(a)).toBe(pursueFindingDedupKey(b));
+  });
+
+  it("does NOT collapse distinct bugs sharing a start line (title is part of the key)", () => {
+    const a = fakeFinding({
+      title: "missing auth check",
+      evidence: [ev("src/Vault.sol", 120, 120)],
+    });
+    const b = fakeFinding({
+      title: "accounting underflow", // different bug, same packed line
+      evidence: [ev("src/Vault.sol", 120, 122)],
+    });
+    expect(pursueFindingDedupKey(a)).not.toBe(pursueFindingDedupKey(b));
+  });
+
+  it("falls back to normalized title when no anchor is present", () => {
+    const a = fakeFinding({ title: "  Holder  Trap  ", evidence: [] });
+    const b = fakeFinding({ title: "holder trap", evidence: [] });
+    expect(pursueFindingDedupKey(a)).toBe(pursueFindingDedupKey(b));
+    expect(pursueFindingDedupKey(a)).toContain("title:");
+  });
+});
+
+describe("buildDedupedPursueMarkdown", () => {
+  const pursue = (
+    title: string,
+    severity: AuditFinding["severity"],
+    line: number,
+  ): ScoredFinding => ({
+    finding: fakeFinding({ title, severity, evidence: [ev("src/Hook.sol", line, line + 1)] }),
+    verdict: "PURSUE",
+    reason: "grounded + survived",
+    advisory: "no adverse advisory factors",
+  });
+
+  it("collapses one bug reached from two entries into a single union row", () => {
+    const entries: EntryPursueFindings[] = [
+      { entry: "src/IndexFactory.sol", scored: [pursue("epoch cap inverted", "high", 42)] },
+      { entry: "src/RelativeIndexHook.sol", scored: [pursue("epoch cap inverted", "high", 42)] },
+    ];
+    const md = buildDedupedPursueMarkdown(entries);
+    expect(md).toContain("1 unique finding(s) (2 raw across 2 entry(ies))");
+    // one row, listing BOTH surfacing entries
+    expect(md.match(/epoch cap inverted/gu)).toHaveLength(1);
+    expect(md).toContain("surfaced from: src/IndexFactory.sol, src/RelativeIndexHook.sol");
+  });
+
+  it("keeps distinct bugs separate and sorts by severity", () => {
+    const entries: EntryPursueFindings[] = [
+      { entry: "src/A.sol", scored: [pursue("low bug", "low", 1)] },
+      { entry: "src/B.sol", scored: [pursue("crit bug", "critical", 2)] },
+    ];
+    const md = buildDedupedPursueMarkdown(entries);
+    expect(md).toContain("2 unique finding(s)");
+    expect(md.indexOf("crit bug")).toBeLessThan(md.indexOf("low bug")); // critical first
+  });
+
+  it("reports zero cleanly", () => {
+    expect(buildDedupedPursueMarkdown([])).toContain("0 unique finding(s)");
+    expect(buildDedupedPursueMarkdown([])).toContain("No PURSUE findings.");
   });
 });
