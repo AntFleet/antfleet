@@ -34,6 +34,17 @@ import {
   buildSlicePrompt,
   describeClosureHonesty,
 } from "./prompt.js";
+import {
+  parseClosureFile,
+  resolvePocTarget,
+  staticGatePoc,
+  promoteWithPoc,
+  type ClosureAst,
+  type PocExecution,
+  type PocRecord,
+  type PocTarget,
+} from "./poc.js";
+import type { PocGenerationOutput } from "./poc-prompt.js";
 import type { HandledPayload } from "./model-client.js";
 
 export type RunFinderInput = {
@@ -81,11 +92,33 @@ export type CrossFileDependency = { symbol: string; reason: string };
 
 export type ScoredFinding = {
   finding: AuditFinding;
-  verdict: "PURSUE" | "DROP";
+  /** CONFIRMED is reachable ONLY from PURSUE via promoteWithPoc after execution
+   * (Phase 3). In the generation-only tier it never appears. */
+  verdict: "CONFIRMED" | "PURSUE" | "DROP";
   reason: string;
   /** Advisory metadata from the finder model. Never gates promotion. */
   advisory: string;
+  /** Post-PURSUE PoC record — present only when the --poc stage ran (§3.1). */
+  poc?: PocRecord;
 };
+
+/** Injected PoC generation callback (--poc). Production composes this from
+ * buildPocGenerationPrompt + pocModelCall (sweep.ts). Receives the resolved
+ * target + focused files; returns the model's generation output. */
+export type GeneratePocCallback = (args: {
+  finding: AuditFinding;
+  pocTarget: PocTarget;
+  files: readonly { path: string; contents: string }[];
+  programRules: string;
+}) => Promise<PocGenerationOutput>;
+
+/** Injected PoC execution callback. UNSET in Phase 1 (executor is Phase 3, gated
+ * behind the §7 spike) — so CONFIRMED is unreachable until it is wired. */
+export type ExecutePocCallback = (args: {
+  testContents: string;
+  binding: NonNullable<ReturnType<typeof staticGatePoc>["binding"]>;
+  pocTarget: PocTarget;
+}) => Promise<PocExecution>;
 
 export type FinderRunResult = {
   prompt: string;
@@ -104,6 +137,12 @@ export type FinderRunResult = {
   crossFileDependencies: CrossFileDependency[];
   resolvedDependencies: string[];
   focusedPrompts: string[];
+  /** PoC-stage counters — UNDEFINED (omitted from JSON) when --poc is off, so a
+   * no-`--poc` run is byte-identical to today (§3.1). */
+  confirmedCount?: number;
+  pocAttempted?: number;
+  pocExecuted?: number;
+  pocSkippedInfra?: number;
 };
 
 const DECLARATION_AT_REGEX = /\b(?:abstract\s+)?(?:contract|interface|library)\s+SYMBOL\b/u;
@@ -214,6 +253,8 @@ export async function runFinder(
   callFinder?: ((prompt: string) => Promise<FinderHandled>) | undefined,
   refute?: RefuteCallback | undefined,
   confirm?: ConfirmCallback | undefined,
+  generatePoc?: GeneratePocCallback | undefined,
+  executePoc?: ExecutePocCallback | undefined,
 ): Promise<FinderRunResult> {
   const closureStats = input.closureStats ?? {
     truncated: false,
@@ -375,6 +416,38 @@ export async function runFinder(
     });
   }
 
+  // --- Post-PURSUE PoC stage (§3.3/§4) — strictly opt-in via `generatePoc` ----
+  // Runs only on PURSUE findings; never demotes to DROP. In the generation-only
+  // tier (`executePoc` unset — Phase 1) findings stay PURSUE with a CANDIDATE PoC.
+  const pocCounters = { attempted: 0, executed: 0, skippedInfra: 0 };
+  if (generatePoc !== undefined) {
+    const closureAstByPath = buildClosureAstMap(input.files);
+    for (const s of scored) {
+      if (s.verdict !== "PURSUE") {
+        continue;
+      }
+      pocCounters.attempted += 1;
+      s.poc = await runPocStage({
+        finding: s.finding,
+        baseReason: s.reason,
+        entries: input.entries,
+        files: input.files,
+        programRules: input.programRules,
+        closureAstByPath,
+        generatePoc,
+        executePoc,
+        onExecuted: () => (pocCounters.executed += 1),
+        onSkippedInfra: () => (pocCounters.skippedInfra += 1),
+      });
+      const promoted = promoteWithPoc({
+        base: { verdict: "PURSUE", reason: s.reason },
+        poc: s.poc,
+      });
+      s.verdict = promoted.verdict;
+      s.reason = promoted.reason;
+    }
+  }
+
   return {
     prompt,
     findings,
@@ -386,5 +459,134 @@ export async function runFinder(
     crossFileDependencies: twoStage ? extractCrossFileDependencies(handled) : [],
     resolvedDependencies: resolvedDeps,
     focusedPrompts,
+    ...(generatePoc !== undefined
+      ? {
+          confirmedCount: scored.filter((s) => s.verdict === "CONFIRMED").length,
+          pocAttempted: pocCounters.attempted,
+          pocExecuted: pocCounters.executed,
+          pocSkippedInfra: pocCounters.skippedInfra,
+        }
+      : {}),
   };
+}
+
+// --- PoC stage helpers -------------------------------------------------------
+
+/** Parse the closure blocks into a canonical-path-keyed AST map (once per run). */
+function buildClosureAstMap(
+  files: readonly { path: string; contents: string }[],
+): Map<string, ClosureAst> {
+  const map = new Map<string, ClosureAst>();
+  for (const f of files) {
+    const ast = parseClosureFile(f.path, f.contents);
+    if (ast !== null) {
+      map.set(f.path, ast);
+    }
+  }
+  return map;
+}
+
+function pocSlug(title: string): string {
+  const s = title
+    .replace(/[^A-Za-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "")
+    .slice(0, 48);
+  return s.length > 0 ? s : "finding";
+}
+
+/**
+ * Run the PoC stage for ONE PURSUE finding: resolve the target → generate →
+ * static-gate → (execute if an executor is wired) → PocRecord. Never throws — a
+ * failure at any step becomes a record that keeps the finding PURSUE.
+ */
+async function runPocStage(args: {
+  finding: AuditFinding;
+  baseReason: string;
+  entries: readonly string[];
+  files: readonly { path: string; contents: string }[];
+  programRules: string;
+  closureAstByPath: Map<string, ClosureAst>;
+  generatePoc: GeneratePocCallback;
+  executePoc?: ExecutePocCallback | undefined;
+  onExecuted: () => void;
+  onSkippedInfra: () => void;
+}): Promise<PocRecord> {
+  const base: PocRecord = {
+    generated: false,
+    rationale: null,
+    target: null,
+    testPath: null,
+    testContents: null,
+    staticGate: { passed: false, reasons: [] },
+    executed: false,
+    execution: null,
+    humanGated: true,
+    runSpecific: true,
+  };
+  try {
+    const target = resolvePocTarget(args.finding, { entries: args.entries }, args.closureAstByPath);
+    if (target === null) {
+      return { ...base, rationale: "no unique concrete deployable target for cited evidence" };
+    }
+    const evidencePaths = new Set(
+      args.finding.evidence.map((e) => e.path).filter((p): p is string => p !== null),
+    );
+    const focused = args.files.filter((f) => f.path === target.path || evidencePaths.has(f.path));
+    const files = focused.length > 0 ? focused : args.files;
+    const out = await args.generatePoc({
+      finding: args.finding,
+      pocTarget: target,
+      files,
+      programRules: args.programRules,
+    });
+    if (out.testContents === null) {
+      return { ...base, target, rationale: out.rationale ?? "model declined without a rationale" };
+    }
+    const gate = staticGatePoc(out.testContents, args.finding, target, args.closureAstByPath);
+    const testPath = `test/AuditPoc_${pocSlug(args.finding.title)}.t.sol`;
+    if (!gate.passed || gate.binding === undefined) {
+      return {
+        ...base,
+        generated: true,
+        target,
+        testPath,
+        testContents: out.testContents,
+        staticGate: { passed: false, reasons: gate.reasons },
+      };
+    }
+    if (args.executePoc === undefined) {
+      args.onSkippedInfra(); // executor off (Phase 1): CANDIDATE only, stays PURSUE
+      return {
+        ...base,
+        generated: true,
+        target,
+        testPath,
+        testContents: out.testContents,
+        staticGate: { passed: true, reasons: [] },
+      };
+    }
+    const execution = await args.executePoc({
+      testContents: out.testContents,
+      binding: gate.binding,
+      pocTarget: target,
+    });
+    args.onExecuted();
+    return {
+      generated: true,
+      rationale: null,
+      target,
+      testPath,
+      testContents: out.testContents,
+      staticGate: { passed: true, reasons: [] },
+      executed: true,
+      execution,
+      humanGated: true,
+      runSpecific: true,
+    };
+  } catch (err) {
+    return {
+      ...base,
+      rationale: `generation failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }

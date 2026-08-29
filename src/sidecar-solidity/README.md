@@ -32,9 +32,17 @@ Implements [`specs/SOLIDITY_SIDECAR_SPEC.md`](../../specs/SOLIDITY_SIDECAR_SPEC.
   confounded flip in 3 non-memorized targets (see below). Ship it as a
   confidence/chain-completion layer, not as a capability the diff-reviewer lacks.
 - **Is NOT:** an uplift on single-file inline bugs (measured: no uplift). Not a
-  verifier: nothing here executes a PoC or confirms exploitability. Not a
-  submitter: bounty submission is always a human action. The parked Foundry lane
-  stays parked.
+  submitter: bounty submission is always a human action.
+- **Optional PoC stage (`--poc`, opt-in, off by default —
+  `specs/SOLIDITY_SIDECAR_POC_SPEC.md`, #179).** A strictly **post-PURSUE** stage
+  that generates a minimal **local-deploy** Foundry PoC for each PURSUE finding and
+  runs it through AST static gates (no fabrication cheatcodes, no test-authored
+  contracts, straight-line body, deploy+drive+assertion binding). **Phase 1 (this
+  build) is generation-only**: the PoC is attached as a **CANDIDATE — generated, NOT
+  executed, unverified** and the verdict does **not** move (run a CANDIDATE only in
+  an isolated sandbox). The container executor and the terminal **`CONFIRMED`** state
+  are **Phase 3**, gated behind a machine-validated generation spike (§7); until then
+  nothing here executes a PoC or confirms exploitability.
 
 ## Usage
 

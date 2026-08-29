@@ -115,6 +115,7 @@ type CliArgs = {
   budgetBytes: number;
   outPath: string | null;
   live: boolean;
+  poc: boolean;
   context: ContextCliArgs;
 };
 
@@ -122,7 +123,7 @@ function usage(): never {
   console.error(`usage:
   pnpm audit-solidity --target <dir> --entry <repo-relative .sol path>
                       [--entry ...] --rules <file.md> [--budget <bytes>]
-                      [--out <report.json>] [--live]
+                      [--out <report.json>] [--live] [--poc]
                       [--docs <dir>] [--audits <dir>] [--trust-model <file>] [--no-context]
 
 Phase 0 (off-chain context): docs/ + README* under --target are auto-ingested;
@@ -132,7 +133,11 @@ Default is DRY-RUN (no model call, findings never promoted).
 the independent adversarial refuter (gpt-5.5) through the codex CLI on your
 ChatGPT subscription — no API key, but slow. Set SIDECAR_TRANSPORT=http (with
 OPENROUTER_API_KEY / SIDECAR_API_KEY) to use OpenRouter instead. Override models
-with SIDECAR_FINDER_MODEL / SIDECAR_CONFIRM_MODEL / SIDECAR_REFUTER_MODEL.`);
+with SIDECAR_FINDER_MODEL / SIDECAR_CONFIRM_MODEL / SIDECAR_REFUTER_MODEL.
+--poc (with --live) runs the post-PURSUE PoC GENERATION stage (§7 Phase 1): a
+local-deploy Foundry PoC is generated + statically gated per PURSUE finding and
+attached as a CANDIDATE (verdict does NOT move — the executor is Phase 3, gated
+behind the generation spike). SIDECAR_POC_MODEL overrides the generation model.`);
   process.exit(2);
 }
 
@@ -144,6 +149,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
     budgetBytes: 400_000,
     outPath: null,
     live: false,
+    poc: false,
     context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
@@ -187,6 +193,10 @@ function parseArgs(argv: readonly string[]): CliArgs {
         break;
       case "--live":
         args.live = true;
+        i += 1;
+        break;
+      case "--poc":
+        args.poc = true;
         i += 1;
         break;
       case "--docs":
@@ -238,6 +248,11 @@ async function main(): Promise<void> {
   const confirmModel = process.env["SIDECAR_CONFIRM_MODEL"];
   // Phase 0 — assemble the off-chain context pack once (specs/…_PHASE0_SPEC.md).
   const contextPack = await assembleCliContextPack(root, cli.context);
+  if (cli.poc && !cli.live) {
+    console.error(
+      "[audit-solidity] --poc has no effect without --live (dry-run never spends); ignoring.",
+    );
+  }
   const { closure, result } = await auditEntry({
     root,
     entries: cli.entries,
@@ -246,6 +261,8 @@ async function main(): Promise<void> {
     allPaths,
     remappings,
     live: cli.live,
+    poc: cli.poc,
+    pocModel: process.env["SIDECAR_POC_MODEL"],
     finderModel,
     confirmModel,
     contextPack,
@@ -320,6 +337,7 @@ type SweepCliArgs = {
   concurrency: number;
   budgetBytes: number;
   live: boolean;
+  poc: boolean;
   context: ContextCliArgs;
 };
 
@@ -328,7 +346,7 @@ function sweepUsage(): never {
   antfleet-audit sweep --target <dir> [--entry <repo-rel .sol path> ...]
                         [--entries-from <file>] [--entries-glob <glob>]
                         --rules <file.md> --out <dir>
-                        [--concurrency <N>] [--budget <bytes>] [--live]
+                        [--concurrency <N>] [--budget <bytes>] [--live] [--poc]
 
 Audits MANY entry contracts over one target repo in one command. Combine
 --entry / --entries-from / --entries-glob freely; with NONE given, sweep
@@ -360,6 +378,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     concurrency: 2,
     budgetBytes: 400_000,
     live: false,
+    poc: false,
     context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
@@ -414,6 +433,10 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
         break;
       case "--live":
         args.live = true;
+        i += 1;
+        break;
+      case "--poc":
+        args.poc = true;
         i += 1;
         break;
       case "--docs":
@@ -500,6 +523,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     concurrency: args.concurrency,
     budgetBytes: args.budgetBytes,
     live: args.live,
+    poc: args.poc,
     context: args.context,
   };
 }
@@ -516,6 +540,11 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
   console.error(
     `[audit-sweep] ${cli.entries.length} entry(ies), concurrency=${cli.concurrency}, live=${cli.live}`,
   );
+  if (cli.poc && !cli.live) {
+    console.error(
+      "[audit-sweep] --poc has no effect without --live (dry-run never spends); ignoring.",
+    );
+  }
 
   const pursueByEntry: EntryPursueFindings[] = [];
   const runOutcomes = await runSweepAudits({
@@ -530,6 +559,8 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
         allPaths,
         remappings,
         live: cli.live,
+        poc: cli.poc,
+        pocModel: process.env["SIDECAR_POC_MODEL"],
         finderModel: process.env["SIDECAR_FINDER_MODEL"],
         confirmModel: process.env["SIDECAR_CONFIRM_MODEL"],
         contextPack,

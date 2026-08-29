@@ -73,6 +73,9 @@ const CONFIRM_MODEL =
   process.env["SIDECAR_CONFIRM_MODEL"] ?? SHARED_MODEL_OVERRIDE ?? CONFIRM_DEFAULT_MODEL;
 const REFUTER_MODEL =
   process.env["SIDECAR_REFUTER_MODEL"] ?? SHARED_MODEL_OVERRIDE ?? REFUTER_DEFAULT_MODEL;
+// PoC generation (§3.5) — default gpt-5.5, same cyber-filter rationale as confirm.
+const POC_MODEL =
+  process.env["SIDECAR_POC_MODEL"] ?? SHARED_MODEL_OVERRIDE ?? CONFIRM_DEFAULT_MODEL;
 // The model any codex call falls back to when the cyber content filter refuses
 // the primary (see callCodexExec / isCyberRefusal). gpt-5.5 clears the filter.
 const CYBER_FALLBACK_MODEL = process.env["SIDECAR_CYBER_FALLBACK_MODEL"] ?? CONFIRM_DEFAULT_MODEL;
@@ -561,6 +564,19 @@ export function refuteModelCall(
   options?: { model?: string; signal?: AbortSignal | null },
 ): Promise<HandledPayload> {
   return callModel({ prompt, model: options?.model ?? REFUTER_MODEL, signal: options?.signal });
+}
+
+/**
+ * Post-PURSUE PoC generation call (default `gpt-5.5`; `SIDECAR_POC_MODEL`
+ * override). Same cyber-filter rationale as stage-B/refuter — the
+ * exploit-completion shape trips the ChatGPT content filter on gpt-5.6-sol while
+ * gpt-5.5 clears it (and codex auto-falls-back regardless).
+ */
+export function pocModelCall(
+  prompt: string,
+  options?: { model?: string; signal?: AbortSignal | null },
+): Promise<HandledPayload> {
+  return callModel({ prompt, model: options?.model ?? POC_MODEL, signal: options?.signal });
 }
 
 /** Debug-only structural summary (no full payload dump — keeps logs sane). */

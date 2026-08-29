@@ -78,6 +78,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
+    "@solidity-parser/parser": "^0.20.1",
     "dotenv": "^17.4.2",
     "openai": "^6.39.1",
     "zod": "^4.4.3"
