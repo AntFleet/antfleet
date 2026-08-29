@@ -19,6 +19,18 @@ cannot tell a true PURSUE from a plausible-but-wrong one. Live ROI (der-sc @`59e
 the hedged headline "likely" into "proven" for H1/H2/M1. That the motivating PoC was
 human-, not model-, authored is why §7's generation spike GATES the executor build.
 
+**Scope caveat — der-sc itself is OUT of the strict Phase-1 eligible class (measured
+2026-08-29).** der-sc is a Uniswap-v4 hook; its human PoC (`test/AuditPoC.t.sol`) is
+`contract AuditPoC is Test, Deployers` with 4 test functions, a `PoolManager` harness,
+and `MockERC20` currencies — every one of those is forbidden by the §3.3 gates
+(non-forge-std base, multi-function, mock dependencies). Running that PoC through
+`staticGatePoc` rejects it at the first gate. So der-sc's bug class is **harness-
+dependent** (§2.2/§2.3): its proof needs a multi-contract test fixture the sound gates
+exclude. The ROI motivator is therefore in the *harder* class; the strict v1 targets the
+narrower **single-contract, mock-free, EOA-drivable** class (access-control, re-init,
+ETH/parameter accounting). Supporting harness-dependent bugs is a deferred increment with
+a real trade-off (§7).
+
 ## Goal
 
 An **optional, strictly post-PURSUE** stage that (1) **generates** a minimal
@@ -427,14 +439,17 @@ generation failure (never a crash that loses the finding — §4).
   except the target + real closure contracts (no mocks at all) closes the bespoke- AND
   sanctioned-scaffold fake-dependency vectors, at the cost of §2's coverage.
 - **Coverage is narrow by design** — single-target local-deploy only; the ineligible
-  classes (fork, multi-contract, substituted-dependency, token-balance-dependent,
-  signature-dependent, revert-demonstration — §2) stay PURSUE. The eligible class is
-  **not** empty: access-control, re-initialization, and ETH-denominated/parameter and
-  epoch/time accounting bugs (the der-sc H1/H2 archetype, reachable with
-  `vm.prank`/`vm.deal`/`vm.warp`/`vm.roll`) are EOA-drivable, single-contract, and
-  mock-free. Actual prevalence in an unfiltered PURSUE population is unknown until the
-  Phase-2 spike measures it (§7 GO criterion e); the banner states absence of CONFIRMED
-  does not lower severity.
+  classes (fork, multi-contract, **harness-dependent**, substituted-dependency,
+  token-balance-dependent, signature-dependent, revert-demonstration — §2) stay PURSUE.
+  **der-sc itself is ineligible** — it is a v4 hook whose PoC needs a `Deployers`/
+  `PoolManager` harness + mock currencies (measured: its human PoC is gate-rejected; see
+  §Problem). The eligible class is **not** empty, but it is narrower than der-sc suggested:
+  **single-contract, mock-free, EOA-drivable** bugs — access-control, re-initialization,
+  and ETH-denominated/parameter accounting (reachable with `vm.prank`/`vm.deal`(EOA)/
+  `vm.warp`/`vm.roll`), where a plain deploy-and-call PoC suffices. Actual prevalence in an
+  unfiltered PURSUE population is unknown until the Phase-2 spike measures it (§7 GO
+  criterion e), and the spike targets must come from this eligible class (not v4-hook/AMM
+  targets like der-sc); the banner states absence of CONFIRMED does not lower severity.
 - **Docker-on-Mac vs the 2b-sandbox Actions decision** — deliberate override; containment
   (no network, non-root, read-only root, empty env, allowlist scratch, `ffi=false`,
   `fs_permissions=[]`, fixed argv, caps, timeout) bounds untrusted model-Solidity;
@@ -509,3 +524,20 @@ The der-sc ROI PoC was **human-authored**, and the only GO'd generation spike co
   on the committed `SPIKE_RESULT.json` (schema-valid AND every predicate **recomputed** GO
   from the per-finding array — not merely `verdict==="GO"`). Then a **cross-model audit of
   the full executor diff** before enabling in any real run. Executor stays opt-in throughout.
+
+### Deferred future increment (NOT v1) — a bounded-harness lane
+
+The strict single-target scope excludes **harness-dependent** bug classes (Uniswap-v4
+hooks, AMMs, lending) whose PoC needs a test fixture — a `Deployers`/`PoolManager`-style
+base + mock currencies (the der-sc class; scope caveat in §Problem). Re-including them is a
+**deliberate future increment, not a quick allowlist flip**, because it re-opens the exact
+fabrication surface the §3.3 gates close: once any base/mock is permitted, a *settable*
+mock the target trusts (a `MockOracle.setPrice`) can inject the state the assertion then
+"exploits" → a hollow CONFIRMED. It requires its own spec + spike + cross-model audit, and
+at minimum: (a) a **content-hash allowlist** of specific vetted harness bases + mock
+sources (never an arbitrary base/mock); (b) a static rule permitting a mock only as
+**benign scaffolding** (a currency the pool trades), never as the dependency whose
+behavior IS the finding; (c) a **runtime check** (Phase-3 trace) that the asserted state
+was not produced by a mock the test configured. **Decision (2026-08-29): keep v1 strict;
+this lane is gated on the strict lane first proving value via the §7 GO spike.** Rationale:
+soundness before coverage — CONFIRMED's whole worth is that it is not hollow.
