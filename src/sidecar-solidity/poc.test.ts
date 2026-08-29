@@ -16,6 +16,7 @@ contract Vault {
     uint256 public total;
     function deposit(uint256 amt) external { total += amt; }
     function drain() external { total = 0; }
+    function resetAndReturn() external returns (uint256) { total = 0; return total; }
     function balance() external view returns (uint256) { return total; }
 }
 `;
@@ -335,6 +336,122 @@ contract AuditPoc is Test {
         assertEq(b, 1);`),
   );
 
+  // --- audit round: adversarial bypasses (3-lane codex impl audit) ---
+  reject(
+    "vm.deal to a target-derived local",
+    poc(`        Vault t = new Vault();
+        address a = address(t);
+        vm.deal(a, 1 ether);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "vm.deal transitively target-derived",
+    poc(`        Vault t = new Vault();
+        address a = address(uint160(address(t)));
+        vm.deal(a, 1 ether);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "vm.deal 3-arg token-balance overload",
+    poc(`        Vault t = new Vault();
+        vm.deal(address(2), address(3), 100);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "bound Vm alias .store()",
+    poc(`        Vault t = new Vault();
+        Vm z = vm;
+        z.store(address(t), bytes32(0), bytes32(uint256(1)));
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "stdstore.checked_write member chain",
+    poc(`        Vault t = new Vault();
+        stdstore.target(address(t)).sig("total()").checked_write(0);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "file-scope free assertEq shadow",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+function assertEq(uint256, uint256) pure {}
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  reject(
+    "test contract inherits a closure contract",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Vault, Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  reject(
+    "assertion binds only via the message arg",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertEq(uint256(0), uint256(0), string(abi.encodePacked(t.balance())));`),
+  );
+
+  reject(
+    "assertion read is a mutating call",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertEq(t.resetAndReturn(), 0);`),
+  );
+
+  reject(
+    "revert() early-exit call",
+    poc(`        Vault t = new Vault();
+        revert("x");
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "require() guard call",
+    poc(`        Vault t = new Vault();
+        require(true, "x");
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
   reject("unparseable solidity", "this is not solidity {");
 
   reject(
@@ -345,6 +462,102 @@ contract AuditPoc is Test {
         assertEq(b, 0);
         // ${"x".repeat(25000)}`),
   );
+});
+
+describe("staticGatePoc — audit fixtures", () => {
+  it("accepts an aliased target import (import {Vault as V})", () => {
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault as V} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        V t = new V();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = gate(src);
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+  });
+
+  it("rejects an overloaded name where the zero-arg call is a view (ambiguous drive/read)", () => {
+    const OVL = `pragma solidity ^0.8.0;
+contract Ovl {
+    uint256 public total;
+    function balance() external view returns (uint256) { return total; }
+    function balance(uint256 x) external { total += x; }
+}
+`;
+    const target = {
+      path: "src/Ovl.sol",
+      symbol: "Ovl",
+      kind: "contract" as const,
+      derivation: "t",
+    };
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Ovl} from "src/Ovl.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Ovl t = new Ovl();
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(src, { evidence: [] }, target, closure({ "src/Ovl.sol": OVL }));
+    expect(r.passed).toBe(false);
+  });
+
+  it("rejects a closure mock used as a target dependency", () => {
+    const MOCK = `pragma solidity ^0.8.0;\ncontract MockOracle { function price() external pure returns (uint256){ return 1; } }\n`;
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+import {MockOracle} from "test/mocks/MockOracle.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        MockOracle o = new MockOracle();
+        o;
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(
+      src,
+      { evidence: [] },
+      TARGET,
+      closure({ "test/mocks/MockOracle.sol": MOCK }),
+    );
+    expect(r.passed).toBe(false);
+  });
+});
+
+describe("resolvePocTarget — interface evidence must not fall through to an unrelated contract", () => {
+  it("declines when the cited file mixes an interface (cited) with an unrelated concrete contract", () => {
+    const SRC = `pragma solidity ^0.8.0;
+interface IFoo { function bad() external; }
+contract Unrelated { function ping() external {} }
+`;
+    const t = resolvePocTarget(
+      {
+        evidence: [
+          { path: "src/Mixed.sol", startLine: 2, endLine: 2, symbol: "IFoo", quote: null },
+        ],
+      },
+      { entries: ["src/Mixed.sol"] },
+      closure({ "src/Mixed.sol": SRC }),
+    );
+    expect(t).toBeNull();
+  });
 });
 
 describe("promoteWithPoc truth table", () => {

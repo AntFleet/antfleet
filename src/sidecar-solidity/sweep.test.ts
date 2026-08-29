@@ -405,3 +405,58 @@ describe("buildDedupedPursueMarkdown", () => {
     expect(buildDedupedPursueMarkdown([])).toContain("No PURSUE findings.");
   });
 });
+
+describe("buildSweepSummary — PoC coverage counters (#179 §4)", () => {
+  const outcome = (
+    o: Partial<import("./sweep.js").SweepEntryOutcome>,
+  ): import("./sweep.js").SweepEntryOutcome => ({
+    entry: "E.sol",
+    status: "ran",
+    pursue: 1,
+    drop: 0,
+    findings: 1,
+    truncated: false,
+    ...o,
+  });
+
+  it("omits PoC totals entirely on a non-`--poc` sweep (byte-identical)", () => {
+    const s = buildSweepSummary({
+      ranAt: "t",
+      live: true,
+      target: "x",
+      concurrency: 1,
+      outcomes: [outcome({}), outcome({ entry: "F.sol" })],
+    });
+    expect("confirmed" in s.totals).toBe(false);
+    expect("pocAttempted" in s.totals).toBe(false);
+  });
+
+  it("sums PoC counters when the --poc stage ran", () => {
+    const s = buildSweepSummary({
+      ranAt: "t",
+      live: true,
+      target: "x",
+      concurrency: 1,
+      outcomes: [
+        outcome({
+          entry: "A.sol",
+          confirmed: 1,
+          pocAttempted: 2,
+          pocExecuted: 1,
+          pocSkippedInfra: 1,
+        }),
+        outcome({
+          entry: "B.sol",
+          confirmed: 0,
+          pocAttempted: 3,
+          pocExecuted: 0,
+          pocSkippedInfra: 3,
+        }),
+      ],
+    });
+    expect(s.totals.confirmed).toBe(1);
+    expect(s.totals.pocAttempted).toBe(5);
+    expect(s.totals.pocExecuted).toBe(1);
+    expect(s.totals.pocSkippedInfra).toBe(4);
+  });
+});

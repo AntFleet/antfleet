@@ -4,8 +4,9 @@
 //
 // The gates operate on a PARSED Solidity AST (@solidity-parser/parser), which is
 // string/comment/literal-aware by construction (a regex scan is not). Any fact
-// the AST cannot resolve (dynamic dispatch, unknown mutability, unparseable body)
-// DECLINES → the finding stays PURSUE. Nothing fails open into a false CONFIRMED.
+// the AST cannot resolve (dynamic dispatch, unknown/overloaded mutability,
+// unparseable body, an alias it cannot follow) DECLINES → the finding stays
+// PURSUE. Nothing fails open into a false CONFIRMED.
 //
 // Phase 1 (this build) ships generation + these static gates; the executor
 // (§3.4) and terminal CONFIRMED promotion are Phase 3, gated behind the §7 spike.
@@ -18,7 +19,7 @@ import type { PromotionDecision } from "./scoring.js";
 export const POC_FILE_MAX_BYTES = 24 * 1024;
 
 /** vm.<member> cheats permitted (fabrication-free). vm.deal is additionally
- * recipient-constrained (gate 3). Everything else on `vm` is rejected. */
+ * recipient-constrained + arity-locked (gate 3). Everything else on `vm` is rejected. */
 export const ALLOWED_VM_CHEATS: ReadonlySet<string> = new Set([
   "prank",
   "startPrank",
@@ -28,13 +29,14 @@ export const ALLOWED_VM_CHEATS: ReadonlySet<string> = new Set([
   "roll",
 ]);
 
-/** Bare (inherited-from-Test) identifiers that reach a forbidden cheat internally. */
-export const FORBIDDEN_BARE_CALLS: ReadonlySet<string> = new Set([
+/** Identifiers/members that reach a forbidden cheat internally (StdCheats/StdStorage). */
+export const FORBIDDEN_HELPER_NAMES: ReadonlySet<string> = new Set([
   "deal", // StdCheats deal(token,…) / deal(addr,eth); only vm.deal(addr,uint) is allowed
   "hoax",
   "startHoax",
   "deployCode",
   "deployCodeTo",
+  "stdstore",
   "checked_write",
   "checked_read",
   "makePersistent",
@@ -44,8 +46,23 @@ export const FORBIDDEN_BARE_CALLS: ReadonlySet<string> = new Set([
 const ALLOWED_FORGE_STD_IMPORTS = new Set(["forge-std/Test.sol", "forge-std/StdAssertions.sol"]);
 const FORBIDDEN_FORGE_STD_SUBSTR = ["StdStorage", "StdCheats", "/Vm.sol"];
 
+/** Base contracts the single test contract may inherit (forge-std assertion surface). */
+const ALLOWED_TEST_BASES = new Set(["Test", "StdAssertions", "DSTest"]);
+
 /** The HEVM cheatcode address, literal + its keccak derivation string. */
 const HEVM_ADDRESS_LOWER = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
+
+/** assert* helpers whose FIRST arg only is the checked condition. */
+const ASSERT_CONDITION_ONLY = new Set(["assertTrue", "assertFalse", "assert"]);
+
+/** A closure path that is NOT real audited source (mock/test/fixture/scaffold/script). */
+function isNonRealDepPath(p: string): boolean {
+  return (
+    /(^|\/)(test|tests|mock|mocks|fixture|fixtures|scaffold|scaffolds|script|scripts)(\/|$)/iu.test(
+      p,
+    ) || /\.t\.sol$|\.s\.sol$/iu.test(p)
+  );
+}
 
 // --- Target resolution (§3.3 resolvePocTarget) -------------------------------
 
@@ -63,8 +80,9 @@ export type ClosureContractDecl = {
   kind: "contract" | "interface" | "library" | "abstract";
   /** Base contract names (for inheritance-aware mutability resolution). */
   bases: string[];
-  /** function name -> stateMutability ("view"|"pure"|"payable"|"nonpayable"|null). */
-  functions: Map<string, string | null>;
+  /** function name -> the stateMutability of EVERY overload with that name
+   * (null = nonpayable/mutating; "view"/"pure"/"payable"). */
+  functions: Map<string, (string | null)[]>;
 };
 
 /** A parsed closure file: its source text + the contracts it declares. */
@@ -103,18 +121,8 @@ export function parseClosureFile(path: string, source: string): ClosureAst | nul
           : isAbstract
             ? "abstract"
             : "contract";
-    const bases: string[] = [];
-    for (const base of asArray(rec["baseContracts"])) {
-      const bn = (base as Record<string, unknown>)["baseName"];
-      const bname =
-        bn !== null && typeof bn === "object"
-          ? (bn as Record<string, unknown>)["namePath"]
-          : undefined;
-      if (typeof bname === "string") {
-        bases.push(bname);
-      }
-    }
-    const functions = new Map<string, string | null>();
+    const bases = baseContractNames(rec);
+    const functions = new Map<string, (string | null)[]>();
     for (const sub of asArray(rec["subNodes"])) {
       if (nodeType(sub) !== "FunctionDefinition") {
         continue;
@@ -125,11 +133,28 @@ export function parseClosureFile(path: string, source: string): ClosureAst | nul
         continue;
       }
       const mut = typeof f["stateMutability"] === "string" ? f["stateMutability"] : null;
-      functions.set(fname, mut);
+      const list = functions.get(fname) ?? [];
+      list.push(mut);
+      functions.set(fname, list);
     }
     contracts.push({ path, name, kind, bases, functions });
   }
   return { path, source, contracts };
+}
+
+function baseContractNames(contractRec: Record<string, unknown>): string[] {
+  const bases: string[] = [];
+  for (const base of asArray(contractRec["baseContracts"])) {
+    const bn = (base as Record<string, unknown>)["baseName"];
+    const bname =
+      bn !== null && typeof bn === "object"
+        ? (bn as Record<string, unknown>)["namePath"]
+        : undefined;
+    if (typeof bname === "string") {
+      bases.push(bname);
+    }
+  }
+  return bases;
 }
 
 /** Minimal roles/edge view the resolver needs (subset of ClosureResult). */
@@ -141,9 +166,10 @@ export type ClosureRolesGraph = {
 /**
  * Resolve the concrete deployable target for a finding (§3.3 precedence):
  * (1) the concrete `contract` enclosing the primary grounded evidence line;
- * (2) else the UNIQUE concrete deployable entry that declares/reaches the cited
- *     symbol; (3) else null → decline.
- * Interfaces / libraries / abstract contracts are never the deployed target.
+ * (2) else the UNIQUE concrete deployable entry declaring the cited symbol;
+ * (3) else null → decline. Interfaces / libraries / abstract contracts are never
+ * the deployed target. There is deliberately NO "sole concrete contract in file"
+ * fallback — it could pick a contract unrelated to interface/library evidence.
  */
 export function resolvePocTarget(
   finding: Pick<AuditFinding, "evidence">,
@@ -158,24 +184,12 @@ export function resolvePocTarget(
   // (1) enclosing concrete contract at the primary grounded line.
   if (primaryAst !== undefined && primary.startLine !== null) {
     const enclosing = enclosingContractAtLine(primaryAst, primary.startLine);
-    if (enclosing !== null && enclosing.kind === "contract") {
+    if (enclosing !== null && enclosing.kind === "contract" && !isNonRealDepPath(enclosing.path)) {
       return {
         path: enclosing.path,
         symbol: enclosing.name,
         kind: "contract",
         derivation: "enclosing concrete contract at primary cited line",
-      };
-    }
-  }
-  // (1b) if the primary file has exactly one concrete contract, use it.
-  if (primaryAst !== undefined) {
-    const concrete = primaryAst.contracts.filter((c) => c.kind === "contract");
-    if (concrete.length === 1) {
-      return {
-        path: concrete[0]!.path,
-        symbol: concrete[0]!.name,
-        kind: "contract",
-        derivation: "sole concrete contract in the primary cited file",
       };
     }
   }
@@ -185,7 +199,7 @@ export function resolvePocTarget(
     const hits: PocTarget[] = [];
     for (const entryPath of graph.entries) {
       const entryAst = closureAstByPath.get(entryPath);
-      if (entryAst === undefined) {
+      if (entryAst === undefined || isNonRealDepPath(entryPath)) {
         continue;
       }
       const match = entryAst.contracts.find((c) => c.kind === "contract" && c.name === symbol);
@@ -245,18 +259,22 @@ export type PocBinding = {
 
 export type PocStaticGate = { passed: boolean; reasons: string[]; binding?: PocBinding };
 
-type Sym = { kind: "deployed" | "eoa" | "targetRead" | "other" };
+/** Straight-line taint of a local variable. */
+type Taint = "deployed" | "eoa" | "other";
+
+/** localName -> { original symbol, import path } from `import {A as B} from "p"`. */
+type ImportAlias = { original: string; path: string };
 
 /**
  * The eight AST gates (§3.3). Returns `passed:true` + a `PocBinding` only when a
  * straight-line PoC deploys exactly the resolved target, drives it with a
- * non-view call, and asserts a post-drive read of it, with no fabrication /
- * disallowed cheat / out-of-allowlist import / non-target creation. Any
- * unresolvable fact fails the gate (fail-safe → PURSUE).
+ * non-view call, and asserts a post-drive VIEW read of it, with no fabrication /
+ * disallowed cheat / out-of-allowlist import / non-target creation / shadowed
+ * assertion. Any unresolvable fact fails the gate (fail-safe → PURSUE).
  */
 export function staticGatePoc(
   testContents: string,
-  finding: Pick<AuditFinding, "evidence">,
+  _finding: Pick<AuditFinding, "evidence">,
   pocTarget: PocTarget,
   closureAstByPath: ReadonlyMap<string, ClosureAst>,
 ): PocStaticGate {
@@ -278,23 +296,33 @@ export function staticGatePoc(
     return fail(`test does not parse: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Gate 1 (shape): exactly one contract; exactly one function `testAuditPoc`
-  // (public, no args, no modifiers); no other function/modifier declarations.
-  const contracts = childNodes(ast).filter((n) => nodeType(n) === "ContractDefinition");
+  // Gate 1 (shape): NO top-level free functions/modifiers; exactly one contract;
+  // exactly one function `testAuditPoc` (public, no args, no modifiers) inside it.
+  const topLevel = childNodes(ast);
+  if (
+    topLevel.some(
+      (n) => nodeType(n) === "FunctionDefinition" || nodeType(n) === "ModifierDefinition",
+    )
+  ) {
+    return fail("test declares a file-scope (free) function/modifier (can shadow assertions)");
+  }
+  const contracts = topLevel.filter((n) => nodeType(n) === "ContractDefinition");
   if (contracts.length !== 1) {
     return fail(`test must declare exactly one contract (found ${contracts.length})`);
   }
   const testContract = contracts[0] as Record<string, unknown>;
+  // Gate 5b: the test contract may inherit ONLY the forge-std assertion surface —
+  // never a closure/test-authored base that could shadow assert* (§gate 8 soundness).
+  for (const base of baseContractNames(testContract)) {
+    if (!ALLOWED_TEST_BASES.has(base)) {
+      return fail(
+        `test contract inherits a non-forge-std base \`${base}\` (could shadow assertions)`,
+      );
+    }
+  }
   const subNodes = asArray(testContract["subNodes"]);
   const funcs = subNodes.filter((s) => nodeType(s) === "FunctionDefinition");
-  const modifiers = subNodes.filter((s) => nodeType(s) === "ModifierDefinition");
-  const otherContracts = childNodes(ast).filter(
-    (n) => nodeType(n) === "ContractDefinition" && n !== contracts[0],
-  );
-  if (otherContracts.length > 0) {
-    return fail("test declares more than one contract/library/interface");
-  }
-  if (modifiers.length > 0) {
+  if (subNodes.some((s) => nodeType(s) === "ModifierDefinition")) {
     return fail("test declares a modifier (only testAuditPoc is allowed)");
   }
   if (funcs.length !== 1) {
@@ -319,70 +347,51 @@ export function staticGatePoc(
   }
   const statements = asArray(body["statements"]);
 
-  // Straight-line: no control flow / assembly / ternary / early return anywhere.
-  const CONTROL = new Set([
-    "IfStatement",
-    "ForStatement",
-    "WhileStatement",
-    "DoWhileStatement",
-    "TryStatement",
-    "InlineAssemblyStatement",
-    "Conditional",
-    "ReturnStatement",
-  ]);
-  let controlViolation: string | null = null;
-  walk(body, (n) => {
-    const t = nodeType(n);
-    if (CONTROL.has(t)) {
-      controlViolation = t === "Conditional" ? "ternary (?:)" : t;
-    }
-    if (t === "RevertStatement") {
-      controlViolation = "revert";
-    }
-  });
+  // Straight-line: no control flow / assembly / ternary / early return|revert anywhere.
+  const controlViolation = findControlFlow(body);
   if (controlViolation !== null) {
     return fail(`testAuditPoc body is not straight-line (contains ${controlViolation})`);
   }
 
-  // Gate 2/3 scan the whole body once for forbidden constructs.
-  const forbidden = scanForbiddenConstructs(body);
-  if (forbidden !== null) {
-    return fail(forbidden);
-  }
-
-  // Imports: allowlist (gate 3 forge-std + gate 5/6 closure paths).
+  // Import alias map + import allowlist (gate 3 forge-std + gate 5/6 closure paths).
+  const aliases = collectImportAliases(ast);
   const importErr = checkImports(ast, pocTarget, closureAstByPath);
   if (importErr !== null) {
     return fail(importErr);
   }
 
-  // Straight-line symbol table + the single target instance (gate 5/6).
-  const symbols = new Map<string, Sym>();
+  // Gate 2/3: forbidden constructs (fabrication, HEVM addr, low-level calls, Vm
+  // aliases, stdstore chains, non-allowlisted vm.*, non-`new` creation).
+  const forbidden = scanForbiddenConstructs(body);
+  if (forbidden !== null) {
+    return fail(forbidden);
+  }
+
+  // Straight-line symbol table (taint) + the single target instance (gate 5/6).
+  const taints = new Map<string, Taint>();
+  const instantiableNames = collectRealClosureContractNames(closureAstByPath);
   let deployedVar: string | null = null;
   let deployCount = 0;
-  const closureContractNames = collectClosureContractNames(closureAstByPath);
   for (const stmt of statements) {
     const decl = varDeclInit(stmt);
     if (decl === null) {
       continue;
     }
-    const cls = classifyRhs(decl.init, deployedVar, symbols);
-    if (cls.kind === "deployed") {
-      // Every `new X` must be the target or a real closure contract (gate 6).
-      if (cls.newSymbol !== pocTarget.symbol && !closureContractNames.has(cls.newSymbol ?? "")) {
-        return fail(`\`new ${cls.newSymbol}\` is not the target or a cited closure contract`);
-      }
-      if (cls.newSymbol === pocTarget.symbol) {
+    const cls = classifyRhs(decl.init, taints);
+    if (cls.newSymbol !== undefined) {
+      // Gate 6: every `new X` must be the target or a REAL (non-mock) cited
+      // closure contract, imported from a real closure path.
+      const resolved = resolveNewTarget(cls.newSymbol, aliases);
+      const isTarget =
+        resolved.original === pocTarget.symbol && pathMatches(resolved.path, pocTarget.path);
+      if (isTarget) {
         deployCount += 1;
         deployedVar = decl.name;
+      } else if (!instantiableNames.has(resolved.original)) {
+        return fail(`\`new ${cls.newSymbol}\` is not the target or a real cited closure contract`);
       }
     }
-    symbols.set(decl.name, { kind: cls.kind });
-  }
-  // Also reject any `new X` appearing outside a top-level var decl (defensive).
-  const strayNew = findStrayNew(body, pocTarget.symbol, closureContractNames);
-  if (strayNew !== null) {
-    return fail(strayNew);
+    taints.set(decl.name, cls.taint);
   }
   if (deployCount !== 1 || deployedVar === null) {
     return fail(
@@ -391,27 +400,28 @@ export function staticGatePoc(
   }
 
   // Gate 5: the deployed symbol must be imported from pocTarget.path (canonical).
-  if (!importBindsTargetFromPath(ast, pocTarget)) {
+  if (!importBindsTargetFromPath(ast, pocTarget, aliases)) {
     return fail(`${pocTarget.symbol} is not imported from ${pocTarget.path}`);
   }
 
-  // Gate 3 (vm.deal recipient): reject deal to the target / a deployed instance.
-  const dealErr = checkVmDealRecipients(body, deployedVar, symbols);
+  // Gate 3 (vm.deal): arity 2 + recipient is a proven EOA actor (never the target
+  // / a deployed instance / any deployed-derived value).
+  const dealErr = checkVmDealRecipients(body, taints);
   if (dealErr !== null) {
     return fail(dealErr);
   }
 
-  // Gate 7 (drive): a non-view/non-pure call on the deployed var, before the
-  // asserted read. Mutability resolved over the target's inheritance closure.
+  // Gate 7 (drive): a call on the deployed var whose EVERY overload is
+  // non-view/non-pure, before the asserted read. Mutability over inheritance.
   const driveIdx = findDriveStatementIndex(statements, deployedVar, pocTarget, closureAstByPath);
   if (driveIdx < 0) {
     return fail("no resolved non-view drive call on the deployed target before the assertion");
   }
 
-  // Gate 8 (assertion-binding): an assert* after the drive whose operand
-  // data-depends on a post-drive read of the deployed target.
-  if (!hasBoundAssertion(statements, driveIdx, deployedVar)) {
-    return fail("no assertion after the drive reads the deployed target's post-drive state");
+  // Gate 8 (assertion-binding): a forge-std assert* after the drive whose CHECKED
+  // operand data-depends on a post-drive VIEW read of the deployed target.
+  if (!hasBoundAssertion(statements, driveIdx, deployedVar, pocTarget, closureAstByPath)) {
+    return fail("no assertion after the drive reads the deployed target's post-drive view state");
   }
 
   return {
@@ -547,9 +557,81 @@ function walk(node: unknown, visit: (n: unknown) => void): void {
   }
 }
 
-/** Reject fabrication cheats, HEVM-address use, low-level calls, non-`new`
- * creation, forbidden bare StdCheats helpers, and non-allowlisted vm.* members. */
+/** Name of a call's identifier callee (`foo(...)` → "foo"), else null. */
+function calleeIdentifierName(call: unknown): string | null {
+  const callee = (call as Record<string, unknown>)["expression"];
+  if (nodeType(callee) === "Identifier") {
+    const n = (callee as Record<string, unknown>)["name"];
+    return typeof n === "string" ? n : null;
+  }
+  return null;
+}
+
+/** Any control-flow / assembly / ternary / early return / revert() anywhere in the body. */
+function findControlFlow(body: unknown): string | null {
+  const CONTROL = new Set([
+    "IfStatement",
+    "ForStatement",
+    "WhileStatement",
+    "DoWhileStatement",
+    "TryStatement",
+    "InlineAssemblyStatement",
+    "Conditional",
+    "ReturnStatement",
+    "RevertStatement",
+  ]);
+  let hit: string | null = null;
+  walk(body, (n) => {
+    if (hit !== null) {
+      return;
+    }
+    const t = nodeType(n);
+    if (CONTROL.has(t)) {
+      hit = t === "Conditional" ? "ternary (?:)" : t;
+    }
+    // `revert("x")` / `require(...)` parse as identifier calls, not RevertStatement.
+    if (t === "FunctionCall") {
+      const name = calleeIdentifierName(n);
+      if (name === "revert" || name === "require") {
+        hit = `${name}(...)`;
+      }
+    }
+  });
+  return hit;
+}
+
+/**
+ * Reject fabrication cheats, HEVM-address use, low-level calls, non-`new`
+ * creation, forbidden StdCheats/StdStorage helpers (bare OR member-chain),
+ * bound-`Vm` aliases, and non-allowlisted vm.* members.
+ */
 function scanForbiddenConstructs(body: unknown): string | null {
+  // First pass: identify variables bound to the canonical `vm` (Vm aliases).
+  const vmAliases = new Set<string>();
+  walk(body, (n) => {
+    const decl = varDeclInit(n);
+    if (decl !== null && isVmExpression(decl.init)) {
+      vmAliases.add(decl.name);
+    }
+    // Also a `Vm z;` / `Vm z = vm;` typed declaration.
+    if (nodeType(n) === "VariableDeclarationStatement") {
+      for (const v of asArray((n as Record<string, unknown>)["variables"])) {
+        if (v === null || typeof v !== "object") {
+          continue; // tuple destructuring leaves empty slots as null
+        }
+        const tn = (v as Record<string, unknown>)["typeName"];
+        const tname =
+          tn !== null && typeof tn === "object"
+            ? (tn as Record<string, unknown>)["namePath"]
+            : undefined;
+        const vname = (v as Record<string, unknown>)["name"];
+        if (tname === "Vm" && typeof vname === "string") {
+          vmAliases.add(vname);
+        }
+      }
+    }
+  });
+
   let problem: string | null = null;
   walk(body, (n) => {
     if (problem !== null) {
@@ -558,10 +640,9 @@ function scanForbiddenConstructs(body: unknown): string | null {
     const t = nodeType(n);
     const rec = n as Record<string, unknown>;
 
-    // Literal HEVM cheatcode address anywhere.
     if (t === "NumberLiteral" || t === "HexLiteral" || t === "StringLiteral") {
       const raw = String(rec["number"] ?? rec["value"] ?? "").toLowerCase();
-      if (raw.replace(/_/g, "").includes(HEVM_ADDRESS_LOWER)) {
+      if (raw.replace(/_/gu, "").includes(HEVM_ADDRESS_LOWER)) {
         problem = "constructs/uses the HEVM cheatcode address";
       }
     }
@@ -574,65 +655,87 @@ function scanForbiddenConstructs(body: unknown): string | null {
       problem = 'derives the HEVM cheatcode address (keccak("hevm cheat code"))';
     }
 
-    // `type(X).creationCode` / `.runtimeCode`.
     if (t === "MemberAccess") {
       const m = rec["memberName"];
       if (m === "creationCode" || m === "runtimeCode") {
-        problem = "uses type(X).creationCode/runtimeCode (contract creation must be `new X`)";
+        problem = "uses type(X).creationCode/runtimeCode (creation must be `new X`)";
+      }
+      // stdstore / checked_write / checked_read anywhere in a member chain.
+      if (typeof m === "string" && FORBIDDEN_HELPER_NAMES.has(m)) {
+        problem = `uses a forbidden fabrication helper .${m}(...)`;
+      }
+    }
+    if (t === "Identifier") {
+      const nm = rec["name"];
+      if (
+        typeof nm === "string" &&
+        (nm === "stdstore" || nm === "checked_write" || nm === "checked_read")
+      ) {
+        problem = `references a forbidden StdStorage helper \`${nm}\``;
       }
     }
 
     if (t === "FunctionCall") {
       const callee = rec["expression"];
       const ct = nodeType(callee);
-      // Low-level .call/.delegatecall/.staticcall.
       if (ct === "MemberAccess") {
         const mn = (callee as Record<string, unknown>)["memberName"];
         if (mn === "call" || mn === "delegatecall" || mn === "staticcall") {
           problem = `uses a low-level .${String(mn)}()`;
         }
-        // vm.<member> allowlist (also catches Vm-typed aliases named `vm`).
         const obj = (callee as Record<string, unknown>)["expression"];
-        if (nodeType(obj) === "Identifier" && (obj as Record<string, unknown>)["name"] === "vm") {
+        const objName =
+          nodeType(obj) === "Identifier" ? (obj as Record<string, unknown>)["name"] : undefined;
+        if (objName === "vm") {
           if (typeof mn === "string" && !ALLOWED_VM_CHEATS.has(mn)) {
             problem = `uses a non-allowlisted cheat vm.${mn}`;
           }
+        } else if (typeof objName === "string" && vmAliases.has(objName)) {
+          problem = `uses a bound Vm alias \`${objName}.${String(mn)}\` (cheats allowed only on canonical vm)`;
         }
       }
       // Bare StdCheats-style helper calls (deal/hoax/deployCode/…).
-      if (ct === "Identifier") {
-        const name = (callee as Record<string, unknown>)["name"];
-        if (typeof name === "string" && FORBIDDEN_BARE_CALLS.has(name)) {
-          problem = `uses a forbidden bare helper ${name}(...) (only vm.deal(address,uint256) is allowed)`;
-        }
+      const bare = calleeIdentifierName(n);
+      if (bare !== null && FORBIDDEN_HELPER_NAMES.has(bare)) {
+        problem = `uses a forbidden bare helper ${bare}(...) (only vm.deal(address,uint256) is allowed)`;
       }
     }
-    // `new X{salt:...}` salted creation.
-    if (t === "NewExpression") {
-      // handled at construction sites; salted new appears as FunctionCall on a
-      // NameValueExpression — conservatively reject any options on `new`.
-      // (plain `new X(args)` is a FunctionCall whose expression is NewExpression)
-    }
+
     if (t === "FunctionCallOptions" || t === "NameValueExpression") {
-      problem = "uses call/creation options (e.g. `new X{salt:…}` / `{value:…}` on low-level)";
+      problem = "uses call/creation options (e.g. `new X{salt:…}` / `{value:…}`)";
     }
   });
   return problem;
 }
 
-function collectClosureContractNames(
+/** True when an expression IS the canonical `vm` identifier. */
+function isVmExpression(expr: unknown): boolean {
+  return nodeType(expr) === "Identifier" && (expr as Record<string, unknown>)["name"] === "vm";
+}
+
+/** Real (non-mock/test/script) closure contract names — the instantiable set (gate 6). */
+function collectRealClosureContractNames(
   closureAstByPath: ReadonlyMap<string, ClosureAst>,
 ): Set<string> {
   const names = new Set<string>();
   for (const ast of closureAstByPath.values()) {
+    if (isNonRealDepPath(ast.path)) {
+      continue;
+    }
     for (const c of ast.contracts) {
-      names.add(c.name);
+      if (c.kind === "contract") {
+        names.add(c.name);
+      }
     }
   }
   return names;
 }
 
-type ImportInfo = { path: string; symbols: Map<string, string> /* localName -> originalName */ };
+type ImportInfo = {
+  path: string;
+  symbols: Map<string, string> /* localName -> originalName */;
+  whole: boolean;
+};
 
 function collectImports(ast: unknown): ImportInfo[] {
   const out: ImportInfo[] = [];
@@ -655,13 +758,33 @@ function collectImports(ast: unknown): ImportInfo[] {
         }
       }
     }
-    out.push({ path, symbols });
+    out.push({ path, symbols, whole: !Array.isArray(aliases) || aliases.length === 0 });
   }
   return out;
 }
 
-/** Every import must resolve to the allowed forge-std surface or a cited
- * closure path; anything else (non-.sol, out-of-allowlist) fails. */
+/** localName -> {original, path}. Whole-file imports (no symbol list) map a name
+ * to itself at that path — used to resolve `new X` back to its source file. */
+function collectImportAliases(ast: unknown): Map<string, ImportAlias> {
+  const map = new Map<string, ImportAlias>();
+  for (const imp of collectImports(ast)) {
+    if (imp.whole) {
+      continue; // no local bindings to resolve; handled by whole-file path checks
+    }
+    for (const [local, original] of imp.symbols) {
+      map.set(local, { original, path: imp.path });
+    }
+  }
+  return map;
+}
+
+/** Resolve a `new <sym>` type name to its original symbol + import path. */
+function resolveNewTarget(sym: string, aliases: Map<string, ImportAlias>): ImportAlias {
+  return aliases.get(sym) ?? { original: sym, path: "" };
+}
+
+/** Every import must resolve to the allowed forge-std surface or a REAL cited
+ * closure path; anything else (non-.sol, out-of-allowlist, mock/test path) fails. */
 function checkImports(
   ast: unknown,
   pocTarget: PocTarget,
@@ -681,57 +804,67 @@ function checkImports(
     if (!p.endsWith(".sol")) {
       return `import ${p} is not a .sol source`;
     }
-    if (!importResolvesToClosure(p, pocTarget, closureAstByPath)) {
+    const key = resolveImportToClosureKey(p, closureAstByPath);
+    if (key === null) {
       return `import ${p} does not resolve to a cited closure path`;
+    }
+    if (isNonRealDepPath(key) && !pathMatches(p, pocTarget.path)) {
+      return `import ${p} resolves to a mock/test/script path (not a real dependency)`;
     }
   }
   return null;
 }
 
-/** Phase-1 best-effort path canonicalization (Phase 3 uses forge build-info as
- * ground truth). An import path canonicalizes to a closure path when it equals,
- * suffix-matches, or basename+dir-tail-matches a known closure path. */
-function importResolvesToClosure(
+/**
+ * Resolve an import path to a closure KEY. Directionality is safe: the real
+ * closure key must END WITH the (normalized) import path — never the reverse, so
+ * a crafted longer path (`test/mocks/src/Vault.sol`) cannot masquerade as a
+ * shorter cited key (`src/Vault.sol`). Phase-1 best-effort; Phase-3 build-info is
+ * the CONFIRMED authority for target identity.
+ */
+function resolveImportToClosureKey(
   importPath: string,
-  pocTarget: PocTarget,
   closureAstByPath: ReadonlyMap<string, ClosureAst>,
-): boolean {
-  // Full-path suffix identity only — NEVER basename (gate 5): a same-name stub at
-  // a non-cited path must not resolve. (Phase-1 best-effort; Phase-3 build-info is
-  // the CONFIRMED authority for target identity.)
-  void pocTarget;
+): string | null {
   const norm = stripDotSegments(importPath);
   for (const key of closureAstByPath.keys()) {
-    if (key === norm || norm.endsWith(`/${key}`) || key.endsWith(`/${norm}`)) {
-      return true;
+    if (key === norm || key.endsWith(`/${norm}`)) {
+      return key;
     }
   }
-  return false;
+  return null;
 }
 
-function importBindsTargetFromPath(ast: unknown, pocTarget: PocTarget): boolean {
+/** True when an import path canonicalizes to the target's closure path (§gate 5;
+ * safe directionality — target path ends with the import, never the reverse). */
+function pathMatches(importPath: string, targetPath: string): boolean {
+  const norm = stripDotSegments(importPath);
+  return targetPath === norm || targetPath.endsWith(`/${norm}`);
+}
+
+function importBindsTargetFromPath(
+  ast: unknown,
+  pocTarget: PocTarget,
+  aliases: Map<string, ImportAlias>,
+): boolean {
+  // Resolved via an aliased/named import.
+  const viaAlias = [...aliases.values()].some(
+    (a) => a.original === pocTarget.symbol && pathMatches(a.path, pocTarget.path),
+  );
+  if (viaAlias) {
+    return true;
+  }
+  // Or a whole-file import of the target's path.
   for (const imp of collectImports(ast)) {
-    // Full closure-relative path identity only — NEVER basename (gate 5).
-    const norm = stripDotSegments(imp.path);
-    const resolvesPath = norm === pocTarget.path || norm.endsWith(`/${pocTarget.path}`);
-    if (!resolvesPath) {
-      continue;
-    }
-    // whole-file import (no symbol list) OR the target symbol is imported (aliased or not).
-    if (imp.symbols.size === 0) {
+    if (imp.whole && pathMatches(imp.path, pocTarget.path)) {
       return true;
-    }
-    for (const orig of imp.symbols.values()) {
-      if (orig === pocTarget.symbol) {
-        return true;
-      }
     }
   }
   return false;
 }
 
 function stripDotSegments(p: string): string {
-  return p.replace(/^\.\//, "").replace(/(^|\/)\.\.\//g, "");
+  return p.replace(/^\.\//u, "").replace(/(^|\/)\.\.\//gu, "");
 }
 
 /** A `Type x = <init>;` top-level statement → {name, init}. */
@@ -751,12 +884,11 @@ function varDeclInit(stmt: unknown): { name: string; init: unknown } | null {
   return { name, init: rec["initialValue"] ?? null };
 }
 
-/** Classify the RHS of a straight-line assignment. */
+/** Classify the RHS of a straight-line assignment for taint + deploy detection. */
 function classifyRhs(
   init: unknown,
-  deployedVar: string | null,
-  symbols: Map<string, Sym>,
-): Sym & { newSymbol?: string } {
+  taints: Map<string, Taint>,
+): { taint: Taint; newSymbol?: string } {
   // `new X(...)` → FunctionCall whose expression is NewExpression.
   if (nodeType(init) === "FunctionCall") {
     const callee = (init as Record<string, unknown>)["expression"];
@@ -766,45 +898,22 @@ function classifyRhs(
         tn !== null && typeof tn === "object"
           ? (tn as Record<string, unknown>)["namePath"]
           : undefined;
-      return { kind: "deployed", newSymbol: typeof nm === "string" ? nm : "" };
-    }
-    // `<deployedVar>.method(...)` → target read/call.
-    if (nodeType(callee) === "MemberAccess") {
-      const obj = (callee as Record<string, unknown>)["expression"];
-      if (
-        nodeType(obj) === "Identifier" &&
-        (obj as Record<string, unknown>)["name"] === deployedVar
-      ) {
-        return { kind: "targetRead" };
-      }
-    }
-    // makeAddr(...) → EOA.
-    if (
-      nodeType(callee) === "Identifier" &&
-      (callee as Record<string, unknown>)["name"] === "makeAddr"
-    ) {
-      return { kind: "eoa" };
-    }
-    // address(uintN(...)) → EOA-ish literal actor.
-    if (nodeType(callee) === "ElementaryTypeName" || nodeType(callee) === "Identifier") {
-      const nm = (callee as Record<string, unknown>)["name"];
-      if (nm === "address") {
-        return { kind: "eoa" };
-      }
+      return { taint: "deployed", newSymbol: typeof nm === "string" ? nm : "" };
     }
   }
-  if (isEoaExpression(init, symbols)) {
-    return { kind: "eoa" };
-  }
-  return { kind: "other" };
+  return { taint: addressTaint(init, taints) };
 }
 
-/** Whether an expression is an EOA-origin actor address (literal / makeAddr /
- * address(uintN) / msg.sender / a var already classified EOA). */
-function isEoaExpression(expr: unknown, symbols: Map<string, Sym>): boolean {
+/**
+ * Taint of an address-valued expression. `deployed` (a contract instance or any
+ * value derived from one, incl. address(...)/payable(...)/uint160(...) wrappers),
+ * `eoa` (literal / makeAddr / msg.sender / a proven-EOA local), else `other`
+ * (unknown — treated as non-EOA by the vm.deal gate).
+ */
+function addressTaint(expr: unknown, taints: Map<string, Taint>): Taint {
   const t = nodeType(expr);
   if (t === "NumberLiteral" || t === "HexLiteral") {
-    return true;
+    return "eoa";
   }
   if (t === "MemberAccess") {
     const obj = (expr as Record<string, unknown>)["expression"];
@@ -814,34 +923,48 @@ function isEoaExpression(expr: unknown, symbols: Map<string, Sym>): boolean {
       (obj as Record<string, unknown>)["name"] === "msg" &&
       mn === "sender"
     ) {
-      return true;
+      return "eoa";
     }
+    return "other";
   }
   if (t === "Identifier") {
     const nm = (expr as Record<string, unknown>)["name"];
-    if (nm === "address") {
-      return true;
+    if (nm === "this") {
+      return "deployed";
     }
     if (typeof nm === "string") {
-      return symbols.get(nm)?.kind === "eoa";
+      return taints.get(nm) ?? "other";
     }
   }
   if (t === "FunctionCall") {
     const callee = (expr as Record<string, unknown>)["expression"];
-    const cn = (callee as Record<string, unknown>)["name"];
-    if (cn === "makeAddr" || cn === "address") {
-      return true;
+    // `new X()` in an address position → deployed.
+    if (nodeType(callee) === "NewExpression") {
+      return "deployed";
+    }
+    const cn = calleeIdentifierName(expr);
+    if (cn === "makeAddr") {
+      return "eoa";
+    }
+    // Wrapper casts: address(x) / payable(x) / uint160(x) → propagate inner taint.
+    if (
+      cn === "address" ||
+      cn === "payable" ||
+      cn === "uint160" ||
+      nodeType(callee) === "ElementaryTypeName"
+    ) {
+      const args = asArray((expr as Record<string, unknown>)["arguments"]);
+      if (args.length === 1) {
+        return addressTaint(args[0], taints);
+      }
+      return "other";
     }
   }
-  return false;
+  return "other";
 }
 
-/** vm.deal recipient must be an EOA actor, never the target / a deployed instance. */
-function checkVmDealRecipients(
-  body: unknown,
-  deployedVar: string,
-  symbols: Map<string, Sym>,
-): string | null {
+/** vm.deal must have arity 2 and a proven-EOA recipient (never deployed-derived). */
+function checkVmDealRecipients(body: unknown, taints: Map<string, Taint>): string | null {
   let problem: string | null = null;
   walk(body, (n) => {
     if (problem !== null || nodeType(n) !== "FunctionCall") {
@@ -863,76 +986,29 @@ function checkVmDealRecipients(
       return;
     }
     const argsList = asArray((n as Record<string, unknown>)["arguments"]);
-    const recip = argsList[0];
-    if (
-      recip === undefined ||
-      referencesDeployed(recip, deployedVar) ||
-      !isEoaExpression(recip, symbols)
-    ) {
+    if (argsList.length !== 2) {
+      problem = `vm.deal must take exactly 2 args (ETH funding); found ${argsList.length} (3-arg token deal is forbidden)`;
+      return;
+    }
+    if (addressTaint(argsList[0], taints) !== "eoa") {
       problem =
-        "vm.deal recipient is not a proven EOA actor (must not be the target / a deployed instance)";
+        "vm.deal recipient is not a proven EOA actor (must not be the target / a deployed-derived value)";
     }
   });
   return problem;
 }
 
-/** True when an expression references the deployed target var (directly or via
- * address(...)/payable(...) wrappers). */
-function referencesDeployed(expr: unknown, deployedVar: string): boolean {
-  let hit = false;
-  walk(expr, (n) => {
-    if (nodeType(n) === "Identifier" && (n as Record<string, unknown>)["name"] === deployedVar) {
-      hit = true;
-    }
-  });
-  // walk skips the root when it is the identifier itself; handle that:
-  if (
-    nodeType(expr) === "Identifier" &&
-    (expr as Record<string, unknown>)["name"] === deployedVar
-  ) {
-    hit = true;
-  }
-  return hit;
-}
-
-/** Any `new X` (target or closure contract) that is NOT the single top-level
- * deploy — defensive against constructing extra instances mid-expression. */
-function findStrayNew(
-  body: unknown,
-  targetSymbol: string,
-  closureNames: Set<string>,
-): string | null {
-  const news: string[] = [];
-  walk(body, (n) => {
-    if (nodeType(n) === "NewExpression") {
-      const tn = (n as Record<string, unknown>)["typeName"];
-      const nm =
-        tn !== null && typeof tn === "object"
-          ? (tn as Record<string, unknown>)["namePath"]
-          : undefined;
-      news.push(typeof nm === "string" ? nm : "");
-    }
-  });
-  for (const nm of news) {
-    if (nm !== targetSymbol && !closureNames.has(nm)) {
-      return `\`new ${nm}\` is not the target or a cited closure contract`;
-    }
-  }
-  if (news.filter((nm) => nm === targetSymbol).length !== 1) {
-    return null; // deploy-count enforced by caller
-  }
-  return null;
-}
-
-/** Resolve a function's mutability over the target's inheritance closure. */
-function resolveMutability(
+/** The set of mutabilities across all overloads of `fnName` over the target's
+ * inheritance closure. Empty when the function is unknown. */
+function resolveMutabilitySet(
   contractName: string,
   fnName: string,
   closureAstByPath: ReadonlyMap<string, ClosureAst>,
   seen = new Set<string>(),
-): string | null | undefined {
+): Set<string | null> {
+  const out = new Set<string | null>();
   if (seen.has(contractName)) {
-    return undefined;
+    return out;
   }
   seen.add(contractName);
   for (const ast of closureAstByPath.values()) {
@@ -940,17 +1016,43 @@ function resolveMutability(
     if (decl === undefined) {
       continue;
     }
-    if (decl.functions.has(fnName)) {
-      return decl.functions.get(fnName) ?? null; // null = nonpayable/mutating
+    for (const m of decl.functions.get(fnName) ?? []) {
+      out.add(m);
     }
     for (const base of decl.bases) {
-      const m = resolveMutability(base, fnName, closureAstByPath, seen);
-      if (m !== undefined) {
-        return m;
+      for (const m of resolveMutabilitySet(base, fnName, closureAstByPath, seen)) {
+        out.add(m);
       }
     }
   }
-  return undefined; // unresolved
+  return out;
+}
+
+/** Drive: EVERY overload of the called name is non-view/non-pure (so whichever
+ * one binds at runtime, it mutates). Empty/mixed/unknown → not a safe drive. */
+function isDrivingCall(set: Set<string | null>): boolean {
+  if (set.size === 0) {
+    return false;
+  }
+  for (const m of set) {
+    if (m === "view" || m === "pure") {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Read (for assertion binding): EVERY overload is view/pure. Empty/mixed → not a read. */
+function isViewRead(set: Set<string | null>): boolean {
+  if (set.size === 0) {
+    return false;
+  }
+  for (const m of set) {
+    if (m !== "view" && m !== "pure") {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Index of the first statement that drives the target with a resolved
@@ -976,12 +1078,10 @@ function findDriveStatementIndex(
       if (
         nodeType(obj) === "Identifier" &&
         (obj as Record<string, unknown>)["name"] === deployedVar &&
-        typeof fnName === "string"
+        typeof fnName === "string" &&
+        isDrivingCall(resolveMutabilitySet(pocTarget.symbol, fnName, closureAstByPath))
       ) {
-        const mut = resolveMutability(pocTarget.symbol, fnName, closureAstByPath);
-        if (mut === null || mut === "payable") {
-          driveHere = true; // nonpayable or payable = state-mutating
-        }
+        driveHere = true;
       }
     });
     if (driveHere) {
@@ -991,36 +1091,40 @@ function findDriveStatementIndex(
   return -1;
 }
 
-/** Whether some statement after the drive contains an `assert*` whose argument
- * data-depends on a post-drive read of the deployed target. */
-function hasBoundAssertion(statements: unknown[], driveIdx: number, deployedVar: string): boolean {
-  // Track locals assigned from a target read at/after the drive.
+/** Whether some statement after the drive contains a forge-std `assert*` whose
+ * CHECKED operand data-depends on a post-drive VIEW read of the deployed target. */
+function hasBoundAssertion(
+  statements: unknown[],
+  driveIdx: number,
+  deployedVar: string,
+  pocTarget: PocTarget,
+  closureAstByPath: ReadonlyMap<string, ClosureAst>,
+): boolean {
+  const readsTarget = (expr: unknown): boolean =>
+    exprReadsViewTarget(expr, deployedVar, pocTarget, closureAstByPath, targetDerived);
   const targetDerived = new Set<string>();
   for (let i = driveIdx; i < statements.length; i++) {
     const decl = varDeclInit(statements[i]);
-    if (decl !== null && exprReadsTarget(decl.init, deployedVar, targetDerived)) {
+    if (decl !== null && readsTarget(decl.init)) {
       targetDerived.add(decl.name);
     }
-    // Assertions in this statement.
     let bound = false;
     walk(statements[i], (n) => {
       if (bound || nodeType(n) !== "FunctionCall") {
         return;
       }
-      const callee = (n as Record<string, unknown>)["expression"];
-      const name =
-        nodeType(callee) === "Identifier" ? (callee as Record<string, unknown>)["name"] : undefined;
-      if (typeof name !== "string" || !name.startsWith("assert")) {
+      const name = calleeIdentifierName(n);
+      if (name === null || !name.startsWith("assert")) {
         return;
       }
-      if (
-        name === "assertTrue" &&
-        isConstantTrue(asArray((n as Record<string, unknown>)["arguments"])[0])
-      ) {
-        return; // assertTrue(true) never binds
+      // Callee-aware: inspect only the CHECKED operands, never the message arg.
+      const argsAll = asArray((n as Record<string, unknown>)["arguments"]);
+      const checked = ASSERT_CONDITION_ONLY.has(name) ? argsAll.slice(0, 1) : argsAll.slice(0, 2);
+      if (name === "assertTrue" && isBooleanLiteral(argsAll[0])) {
+        return; // assertTrue(true) / assertTrue(false) never binds
       }
-      for (const arg of asArray((n as Record<string, unknown>)["arguments"])) {
-        if (i > driveIdx && exprReadsTarget(arg, deployedVar, targetDerived)) {
+      for (const arg of checked) {
+        if (i > driveIdx && readsTarget(arg)) {
           bound = true;
         }
       }
@@ -1032,9 +1136,18 @@ function hasBoundAssertion(statements: unknown[], driveIdx: number, deployedVar:
   return false;
 }
 
-/** True when an expression reads the deployed target (a `<var>.g(...)` call or a
- * var previously derived from one), excluding deployment-only reads. */
-function exprReadsTarget(expr: unknown, deployedVar: string, derived: Set<string>): boolean {
+/**
+ * True when an expression reads the deployed target via a VIEW/pure getter call
+ * (`<var>.g(...)` resolving to view/pure over the target closure), or references
+ * a local already derived from such a read. A mutating "read" does NOT count.
+ */
+function exprReadsViewTarget(
+  expr: unknown,
+  deployedVar: string,
+  pocTarget: PocTarget,
+  closureAstByPath: ReadonlyMap<string, ClosureAst>,
+  derived: Set<string>,
+): boolean {
   let reads = false;
   const check = (n: unknown): void => {
     if (nodeType(n) === "FunctionCall") {
@@ -1045,7 +1158,8 @@ function exprReadsTarget(expr: unknown, deployedVar: string, derived: Set<string
         if (
           nodeType(obj) === "Identifier" &&
           (obj as Record<string, unknown>)["name"] === deployedVar &&
-          mn !== undefined
+          typeof mn === "string" &&
+          isViewRead(resolveMutabilitySet(pocTarget.symbol, mn, closureAstByPath))
         ) {
           reads = true;
         }
@@ -1057,15 +1171,12 @@ function exprReadsTarget(expr: unknown, deployedVar: string, derived: Set<string
         reads = true;
       }
     }
-    // deployment-only reads (address(t) / t.code / balances) do NOT count as
-    // reading target *state*; they never set `reads` because they are not
-    // `<var>.<method>()` calls.
   };
   check(expr);
   walk(expr, check);
   return reads;
 }
 
-function isConstantTrue(arg: unknown): boolean {
-  return nodeType(arg) === "BooleanLiteral" && (arg as Record<string, unknown>)["value"] === true;
+function isBooleanLiteral(arg: unknown): boolean {
+  return nodeType(arg) === "BooleanLiteral";
 }

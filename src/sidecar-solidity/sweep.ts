@@ -538,6 +538,11 @@ export type SweepEntryOutcome = {
   findings: number;
   truncated: boolean;
   error?: string;
+  /** PoC-stage counters — present only on a --poc run (§4 coverage). */
+  confirmed?: number;
+  pocAttempted?: number;
+  pocExecuted?: number;
+  pocSkippedInfra?: number;
 };
 
 export type SweepSummary = {
@@ -546,7 +551,17 @@ export type SweepSummary = {
   target: string;
   concurrency: number;
   entries: SweepEntryOutcome[];
-  totals: { entries: number; pursue: number; drop: number; errors: number };
+  totals: {
+    entries: number;
+    pursue: number;
+    drop: number;
+    errors: number;
+    /** PoC-stage totals — present only when some entry ran the --poc stage. */
+    confirmed?: number;
+    pocAttempted?: number;
+    pocExecuted?: number;
+    pocSkippedInfra?: number;
+  };
 };
 
 export function buildSweepSummary(args: {
@@ -556,12 +571,22 @@ export function buildSweepSummary(args: {
   concurrency: number;
   outcomes: readonly SweepEntryOutcome[];
 }): SweepSummary {
-  const totals = {
+  const totals: SweepSummary["totals"] = {
     entries: args.outcomes.length,
     pursue: args.outcomes.reduce((sum, o) => sum + o.pursue, 0),
     drop: args.outcomes.reduce((sum, o) => sum + o.drop, 0),
     errors: args.outcomes.filter((o) => o.status === "error").length,
   };
+  // PoC totals are added ONLY when at least one entry ran the --poc stage, so a
+  // non-`--poc` sweep summary is byte-identical to before (§4).
+  if (args.outcomes.some((o) => o.pocAttempted !== undefined)) {
+    const sum = (pick: (o: SweepEntryOutcome) => number | undefined): number =>
+      args.outcomes.reduce((acc, o) => acc + (pick(o) ?? 0), 0);
+    totals.confirmed = sum((o) => o.confirmed);
+    totals.pocAttempted = sum((o) => o.pocAttempted);
+    totals.pocExecuted = sum((o) => o.pocExecuted);
+    totals.pocSkippedInfra = sum((o) => o.pocSkippedInfra);
+  }
   return {
     ranAt: args.ranAt,
     live: args.live,
@@ -745,6 +770,16 @@ export async function runSweepAudits(args: {
           drop: result.droppedCount,
           findings: result.findings.length,
           truncated: result.truncated,
+          // PoC counters ride along ONLY when the --poc stage ran (undefined
+          // otherwise → omitted from JSON, byte-identical no-`--poc` summary).
+          ...(result.pocAttempted !== undefined
+            ? {
+                confirmed: result.confirmedCount ?? 0,
+                pocAttempted: result.pocAttempted,
+                pocExecuted: result.pocExecuted ?? 0,
+                pocSkippedInfra: result.pocSkippedInfra ?? 0,
+              }
+            : {}),
         },
         closure,
         result,
