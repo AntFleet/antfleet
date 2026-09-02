@@ -316,6 +316,26 @@ contract AuditPoc is Test {
         assertEq(b, 0);`),
   );
 
+  // A relative/basename import (`./Vault.sol`) must NOT bind the target `src/Vault.sol`:
+  // the generated test lives under test/, so it resolves to a DIFFERENT file — a
+  // same-name wrong-instance the loose `endsWith` path match let through.
+  notStrongConfirmed(
+    "relative same-name import (./Vault.sol) does not bind src/Vault.sol",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "./Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
   notStrongConfirmed(
     "a ternary",
     poc(`        Vault t = new Vault();
@@ -613,6 +633,9 @@ contract AuditPoc is Vault, Test {
       "mutating call as independent (assertEq(t.balance(), t.resetAndReturn()))",
       "assertEq(t.balance(), t.resetAndReturn());",
     ],
+    // The built-in `assert(cond)` (not just assertTrue/assertFalse) must also be
+    // tautology-checked: `assert(b >= 0e0)` is always true.
+    ["built-in assert reflexive (assert(b >= 0e0))", "assert(b >= 0e0);"],
   ] as const) {
     notStrongConfirmed(
       label,

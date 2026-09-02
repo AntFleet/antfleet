@@ -1410,9 +1410,11 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
   // expected polarity each step) and redundant parens, then decide the inner
   // comparison / const-collapse under that polarity. `assertTrue(!(x<0))` ≡
   // `assertFalse(x<0)`; `assertTrue(!!(x>=0))` ≡ `assertTrue(x>=0)`.
-  if ((name === "assertTrue" || name === "assertFalse") && args.length >= 1) {
+  // `assertTrue`, `assertFalse`, AND the built-in `assert(cond)` (which passes iff
+  // `cond` is true, exactly like `assertTrue`) are all condition-only asserts.
+  if ((name === "assertTrue" || name === "assertFalse" || name === "assert") && args.length >= 1) {
     let expr: unknown = unwrapParens(args[0]);
-    let expectTrue = name === "assertTrue";
+    let expectTrue = name !== "assertFalse";
     while (isLogicalNot(expr)) {
       expr = unwrapParens((expr as Record<string, unknown>)["subExpression"]);
       expectTrue = !expectTrue;
@@ -2468,8 +2470,11 @@ function resolveImportToClosureKey(
 /** True when an import path canonicalizes to the target's closure path (§gate 5;
  * safe directionality — target path ends with the import, never the reverse). */
 function pathMatches(importPath: string, targetPath: string): boolean {
-  const norm = stripDotSegments(importPath);
-  return targetPath === norm || targetPath.endsWith(`/${norm}`);
+  // EXACT repo-relative match only. A basename/relative suffix (`./Vault.sol`,
+  // `Vault.sol`) must NOT bind `src/Vault.sol`: the generated test lives under
+  // `test/`, so `./Vault.sol` resolves to a DIFFERENT file (`test/Vault.sol`) — a
+  // same-name wrong-instance the loose `endsWith` suffix match let through.
+  return targetPath === stripDotSegments(importPath);
 }
 
 function importBindsTargetFromPath(
