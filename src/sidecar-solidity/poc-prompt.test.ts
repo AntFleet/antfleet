@@ -41,13 +41,27 @@ describe("buildPocGenerationPrompt", () => {
     expect(prompt).toContain("testAuditPoc");
     expect(prompt.toLowerCase()).toContain("straight-line");
     expect(prompt).toContain("vm.deal");
-    expect(prompt).toContain("NEVER to the");
+    expect(prompt).toContain("ETH to an EOA");
     expect(prompt).toContain("assertTrue(true)");
+    expect(prompt).toContain("assertEq(x,x)");
   });
 
-  it("defines the decline / output JSON shape", () => {
+  it("describes BOTH tiers and the §3.3.A scaffolding allowlist", () => {
+    expect(prompt).toContain("TIER-1");
+    expect(prompt).toContain("TIER-2");
+    expect(prompt).toMatch(/Deployers/u);
+    expect(prompt).toMatch(/HookMiner/u);
+    expect(prompt).toContain("vm.expectRevert");
+    // no-revert is not a terminal proof
+    expect(prompt).toContain("NO terminal verdict");
+  });
+
+  it("defines the decline / output JSON shape (incl. the advisory shape field)", () => {
     expect(prompt).toContain('"testContents"');
+    expect(prompt).toContain('"shape"');
     expect(prompt).toContain("DECLINE");
+    // revert/callback proofs are NOT declines
+    expect(prompt).toContain("route to Tier-2");
   });
 
   it("fences untrusted files with the nonce", () => {
