@@ -15,15 +15,17 @@ import {
   fsReadRepoFile,
   type ClosureResult,
 } from "./closure.js";
-import { auditModelCall, confirmModelCall } from "./model-client.js";
+import { auditModelCall, confirmModelCall, pocModelCall } from "./model-client.js";
 import {
   runFinder,
   type ConfirmCallback,
   type FinderRunResult,
+  type GeneratePocCallback,
   type RefuteCallback,
 } from "./run.js";
 import { refuteFinding, refuterTransport } from "./refuter.js";
 import { buildFocusedConfirmPrompt } from "./prompt.js";
+import { buildPocGenerationPrompt, parsePocGenerationOutput } from "./poc-prompt.js";
 import {
   EMPTY_CONTEXT_PACK,
   extractNatSpecTrustHints,
@@ -57,6 +59,11 @@ export type AuditEntryArgs = {
   confirmModel?: string | undefined;
   /** Phase 0 off-chain context (docs/audits/trust-model), assembled once per repo. */
   contextPack?: ContextPack | undefined;
+  /** Opt-in post-PURSUE PoC generation (--poc, §7 Phase 1: generation-only —
+   * CANDIDATE attached, verdict does not move; the executor is Phase 3). */
+  poc?: boolean | undefined;
+  /** PoC generation model override (default gpt-5.5). */
+  pocModel?: string | undefined;
   /** Defaults to console.error; injectable so sweep can label/silence lines. */
   log?: ((line: string) => void) | undefined;
 };
@@ -180,12 +187,45 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
       }
     : undefined;
 
+  // Phase 1 generation-only: build + call the PoC generation model and parse it.
+  // No executor is wired here (Phase 3, §7 spike-gated) — findings with a
+  // gate-passing CANDIDATE PoC stay PURSUE.
+  const pocOpts = args.pocModel === undefined ? undefined : { model: args.pocModel };
+  const generatePoc: GeneratePocCallback | undefined =
+    args.live && args.poc === true
+      ? async ({ finding, pocTarget, files, programRules: rules }) => {
+          const prompt = buildPocGenerationPrompt({
+            finding: {
+              title: finding.title,
+              severity: finding.severity,
+              confidence: finding.confidence,
+              reasoning: finding.reasoning,
+              evidence: finding.evidence,
+              triggerRole: finding.triggerRole,
+              preconditions: finding.preconditions,
+            },
+            pocTarget,
+            files,
+            programRules: rules,
+            systemContext,
+          });
+          const { payload } = await pocModelCall(prompt, pocOpts);
+          return parsePocGenerationOutput(payload);
+        }
+      : undefined;
+  if (args.live && args.poc === true) {
+    log("[audit-solidity] --poc: generation-only PoC stage active (executor is Phase 3, off)");
+  }
+
   const result = await runFinder(
     {
       projectName: args.root.split("/").pop() ?? "target",
       entries: args.entries,
       files: closure.blocks,
       programRules: args.programRules,
+      // §3.3.A anchor (PoC stage only) resolves vendored-scaffolding imports
+      // against the repo's remappings; harmless/unused when --poc is off.
+      remappings: args.remappings,
       systemContext,
       closureStats: {
         truncated: closure.truncated,
@@ -196,6 +236,8 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
     finderTransport,
     refuterCallback,
     confirmCallback,
+    generatePoc,
+    undefined, // executePoc — Phase 3 only
   );
 
   return { entries: args.entries, closure, result };
@@ -235,8 +277,18 @@ export function renderLiveReport(args: {
     );
   }
   lines.push(
-    `- Findings: ${result.findings.length} (${result.pursueCount} PURSUE / ${result.droppedCount} DROP)`,
+    `- Findings: ${result.findings.length} (${result.pursueCount} PURSUE / ${result.droppedCount} DROP` +
+      `${result.confirmedVerdictCount !== undefined ? ` / ${result.confirmedVerdictCount} CONFIRMED` : ""}` +
+      `${result.pocExecutedVerdictCount !== undefined ? ` / ${result.pocExecutedVerdictCount} POC_EXECUTED` : ""})`,
   );
+  if (result.pocAttemptedCount !== undefined) {
+    lines.push(
+      `- PoC stage: ${result.pocAttemptedCount} attempted, ${result.pocRanCount ?? 0} executed, ${result.pocSkippedInfraCount ?? 0} skipped (executor off / infra). ` +
+        `CONFIRMED = direct-drive, executed (strong); POC_EXECUTED = harness-driven, executed (weaker); ` +
+        `both are human-review-required and local-deploy only; absence does not lower severity ` +
+        `(fork / test-authored attacker or dependency / repo-src collaborator / token-balance / signature classes cannot earn either).`,
+    );
+  }
   if (result.rejectedRaw.length > 0) {
     lines.push(`- Unparseable findings (raw preserved below): ${result.rejectedRaw.length}`);
   }
@@ -255,6 +307,28 @@ export function renderLiveReport(args: {
       lines.push(`- evidence: \`${e.path}:${e.startLine ?? "?"}-${e.endLine ?? "?"}\``);
     }
     lines.push(`- reasoning: ${s.finding.reasoning}`);
+    if (s.poc !== undefined) {
+      if (s.verdict === "CONFIRMED") {
+        lines.push(
+          `- PoC: CONFIRMED — direct-drive, executed & deploy-verified (strong, human-review-required); test \`${s.poc.testPath}\``,
+        );
+      } else if (s.verdict === "POC_EXECUTED") {
+        lines.push(
+          `- PoC: POC_EXECUTED — harness-driven, executed & deploy-verified (weaker than CONFIRMED, human-review-required); test \`${s.poc.testPath}\``,
+        );
+      } else if (s.poc.staticGate.passed) {
+        lines.push(
+          `- PoC: **CANDIDATE — generated, NOT executed, correctness AND relevance unverified**; ` +
+            `run only in an isolated sandbox (offline, non-root), never against a checkout with real secrets. test \`${s.poc.testPath}\``,
+        );
+      } else if (s.poc.generated) {
+        lines.push(
+          `- PoC: generated but failed static gate — ${s.poc.staticGate.reasons.join("; ")}`,
+        );
+      } else {
+        lines.push(`- PoC: not generated — ${s.poc.rationale ?? "n/a"}`);
+      }
+    }
     lines.push("");
   }
   if (result.rejectedRaw.length > 0) {
@@ -473,6 +547,13 @@ export type SweepEntryOutcome = {
   findings: number;
   truncated: boolean;
   error?: string;
+  /** PoC-stage counters — present only on a --poc run (§4 coverage). Canonical
+   * names: verdict tallies vs executions run are never conflated. */
+  confirmedVerdictCount?: number;
+  pocExecutedVerdictCount?: number;
+  pocAttemptedCount?: number;
+  pocRanCount?: number;
+  pocSkippedInfraCount?: number;
 };
 
 export type SweepSummary = {
@@ -481,7 +562,18 @@ export type SweepSummary = {
   target: string;
   concurrency: number;
   entries: SweepEntryOutcome[];
-  totals: { entries: number; pursue: number; drop: number; errors: number };
+  totals: {
+    entries: number;
+    pursue: number;
+    drop: number;
+    errors: number;
+    /** PoC-stage totals — present only when some entry ran the --poc stage. */
+    confirmedVerdictCount?: number;
+    pocExecutedVerdictCount?: number;
+    pocAttemptedCount?: number;
+    pocRanCount?: number;
+    pocSkippedInfraCount?: number;
+  };
 };
 
 export function buildSweepSummary(args: {
@@ -491,12 +583,23 @@ export function buildSweepSummary(args: {
   concurrency: number;
   outcomes: readonly SweepEntryOutcome[];
 }): SweepSummary {
-  const totals = {
+  const totals: SweepSummary["totals"] = {
     entries: args.outcomes.length,
     pursue: args.outcomes.reduce((sum, o) => sum + o.pursue, 0),
     drop: args.outcomes.reduce((sum, o) => sum + o.drop, 0),
     errors: args.outcomes.filter((o) => o.status === "error").length,
   };
+  // PoC totals are added ONLY when at least one entry ran the --poc stage, so a
+  // non-`--poc` sweep summary is byte-identical to before (§4).
+  if (args.outcomes.some((o) => o.pocAttemptedCount !== undefined)) {
+    const sum = (pick: (o: SweepEntryOutcome) => number | undefined): number =>
+      args.outcomes.reduce((acc, o) => acc + (pick(o) ?? 0), 0);
+    totals.confirmedVerdictCount = sum((o) => o.confirmedVerdictCount);
+    totals.pocExecutedVerdictCount = sum((o) => o.pocExecutedVerdictCount);
+    totals.pocAttemptedCount = sum((o) => o.pocAttemptedCount);
+    totals.pocRanCount = sum((o) => o.pocRanCount);
+    totals.pocSkippedInfraCount = sum((o) => o.pocSkippedInfraCount);
+  }
   return {
     ranAt: args.ranAt,
     live: args.live,
@@ -512,6 +615,13 @@ export type EntryPursueFindings = { entry: string; scored: readonly ScoredFindin
 
 const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
+/** A finding that earns a roll-up row: PURSUE or its post-PURSUE promotion
+ * CONFIRMED (§4 — CONFIRMED must never be dropped by a `verdict === "PURSUE"`
+ * filter). No-op in the generation-only tier, which never produces CONFIRMED. */
+function isRolledUp(s: ScoredFinding): boolean {
+  return s.verdict === "PURSUE" || s.verdict === "CONFIRMED" || s.verdict === "POC_EXECUTED";
+}
+
 /**
  * Aggregate PURSUE roll-up across the whole sweep. Entries sorted with the
  * most/severest PURSUE first (PURSUE count desc, tie-broken by the highest
@@ -519,7 +629,7 @@ const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2
  */
 export function buildPursueMarkdown(entries: readonly EntryPursueFindings[]): string {
   const withPursue = entries
-    .map((e) => ({ entry: e.entry, pursue: e.scored.filter((s) => s.verdict === "PURSUE") }))
+    .map((e) => ({ entry: e.entry, pursue: e.scored.filter(isRolledUp) }))
     .filter((e) => e.pursue.length > 0);
 
   const maxSeverityRank = (list: readonly ScoredFinding[]): number =>
@@ -544,7 +654,13 @@ export function buildPursueMarkdown(entries: readonly EntryPursueFindings[]): st
     lines.push(`## ${entry} (${pursue.length} PURSUE)`);
     lines.push("");
     for (const s of pursue) {
-      lines.push(`- **[${s.finding.severity}]** ${s.finding.title}`);
+      const tag =
+        s.verdict === "CONFIRMED"
+          ? " _(CONFIRMED — direct-drive PoC-executed, human-review-required)_"
+          : s.verdict === "POC_EXECUTED"
+            ? " _(POC_EXECUTED — harness-driven, executed, weaker than CONFIRMED, human-review-required)_"
+            : "";
+      lines.push(`- **[${s.finding.severity}]** ${s.finding.title}${tag}`);
       for (const e of s.finding.evidence) {
         lines.push(`  - evidence: \`${e.path}:${e.startLine ?? "?"}-${e.endLine ?? "?"}\``);
       }
@@ -585,13 +701,25 @@ export function pursueFindingDedupKey(finding: AuditFinding): string {
  * The per-entry breakdown lives in {@link buildPursueMarkdown}; the CLI writes
  * this union first so the operator reads the deduped whole-system picture up top.
  */
+/** Strength rank of a terminal PoC verdict (CONFIRMED > POC_EXECUTED > other). */
+function verdictRank(v: ScoredFinding["verdict"]): number {
+  return v === "CONFIRMED" ? 2 : v === "POC_EXECUTED" ? 1 : 0;
+}
+
 export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings[]): string {
-  type Group = { rep: ScoredFinding; severityRank: number; entries: Set<string> };
+  // Track the STRONGEST verdict tier across the group so the union never collapses
+  // a CONFIRMED and a POC_EXECUTED of the same finding into an untagged row.
+  type Group = {
+    rep: ScoredFinding;
+    severityRank: number;
+    bestVerdict: ScoredFinding["verdict"];
+    entries: Set<string>;
+  };
   const groups = new Map<string, Group>();
   let rawPursue = 0;
   for (const { entry, scored } of entries) {
     for (const s of scored) {
-      if (s.verdict !== "PURSUE") {
+      if (!isRolledUp(s)) {
         continue;
       }
       rawPursue += 1;
@@ -599,13 +727,21 @@ export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings
       const rank = SEVERITY_ORDER[s.finding.severity] ?? 0;
       const existing = groups.get(key);
       if (existing === undefined) {
-        groups.set(key, { rep: s, severityRank: rank, entries: new Set([entry]) });
+        groups.set(key, {
+          rep: s,
+          severityRank: rank,
+          bestVerdict: s.verdict,
+          entries: new Set([entry]),
+        });
         continue;
       }
       existing.entries.add(entry);
       if (rank > existing.severityRank) {
         existing.rep = s;
         existing.severityRank = rank; // keep the highest-severity representative
+      }
+      if (verdictRank(s.verdict) > verdictRank(existing.bestVerdict)) {
+        existing.bestVerdict = s.verdict; // keep the strongest tier seen
       }
     }
   }
@@ -628,9 +764,15 @@ export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings
     lines.push("No PURSUE findings.");
     return lines.join("\n");
   }
-  for (const { rep, entries: surfacedFrom } of uniques) {
+  for (const { rep, bestVerdict, entries: surfacedFrom } of uniques) {
     const f = rep.finding;
-    lines.push(`## **[${f.severity}]** ${f.title}`);
+    const tierTag =
+      bestVerdict === "CONFIRMED"
+        ? " _(CONFIRMED)_"
+        : bestVerdict === "POC_EXECUTED"
+          ? " _(POC_EXECUTED)_"
+          : "";
+    lines.push(`## **[${f.severity}]** ${f.title}${tierTag}`);
     lines.push(`- surfaced from: ${[...surfacedFrom].toSorted().join(", ")}`);
     for (const e of f.evidence) {
       lines.push(`- evidence: \`${e.path}:${e.startLine ?? "?"}-${e.endLine ?? "?"}\``);
@@ -671,6 +813,17 @@ export async function runSweepAudits(args: {
           drop: result.droppedCount,
           findings: result.findings.length,
           truncated: result.truncated,
+          // PoC counters ride along ONLY when the --poc stage ran (undefined
+          // otherwise → omitted from JSON, byte-identical no-`--poc` summary).
+          ...(result.pocAttemptedCount !== undefined
+            ? {
+                confirmedVerdictCount: result.confirmedVerdictCount ?? 0,
+                pocExecutedVerdictCount: result.pocExecutedVerdictCount ?? 0,
+                pocAttemptedCount: result.pocAttemptedCount,
+                pocRanCount: result.pocRanCount ?? 0,
+                pocSkippedInfraCount: result.pocSkippedInfraCount ?? 0,
+              }
+            : {}),
         },
         closure,
         result,

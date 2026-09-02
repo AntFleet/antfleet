@@ -372,3 +372,199 @@ describe("scalar-drift coercion through the pipeline (#6b)", () => {
     expect(finding?.unprivilegedReachable).toBe(true);
   });
 });
+
+// --- Post-PURSUE PoC stage (§3.3/§4) -----------------------------------------
+
+const VAULT_SOL = `pragma solidity ^0.8.0;
+contract Vault {
+    uint256 public total;
+    function deposit(uint256 amt) external { total += amt; }
+    function balance() external view returns (uint256) { return total; }
+}
+`;
+
+const vaultInput = {
+  projectName: "vault",
+  entries: ["src/Vault.sol"],
+  files: [{ path: "src/Vault.sol", contents: VAULT_SOL }],
+  programRules: NEUTRAL_RULES,
+  closureStats: { truncated: false, evicted: [], externalUnresolved: [] },
+};
+
+const vaultFinding: AuditFinding = auditFindingSchema.parse({
+  title: "epoch outflow cap tracks inflow",
+  severity: "high",
+  confidence: "medium",
+  evidence: [
+    { path: "src/Vault.sol", startLine: 4, endLine: 4, symbol: "Vault", quote: "total += amt;" },
+  ],
+  reasoning: "the sign is inverted",
+});
+
+const VALID_POC = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+
+const genValid = async () => ({ testContents: VALID_POC, shape: null, rationale: null });
+
+const execPass = async () => ({
+  executed: true,
+  compiled: true,
+  passed: true,
+  drove: true,
+  targetFrameObserved: true,
+  driveKind: null,
+  deployedTargetPath: "src/Vault.sol",
+  reason: "ok",
+});
+const execFail = async () => ({
+  executed: true,
+  compiled: true,
+  passed: false,
+  drove: true,
+  targetFrameObserved: true,
+  driveKind: null,
+  deployedTargetPath: "src/Vault.sol",
+  reason: "assertion held (no bug)",
+});
+const execThrow = async () => {
+  throw new Error("docker unavailable");
+};
+
+describe("runFinder — PoC stage", () => {
+  it("generation-only tier keeps a gate-passing PoC at PURSUE (CANDIDATE)", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+      undefined,
+      genValid,
+      undefined, // no executor (Phase 1)
+    );
+    const s = result.scored[0]!;
+    expect(s.verdict).toBe("PURSUE");
+    expect(s.poc?.generated).toBe(true);
+    expect(s.poc?.staticGate.passed, s.poc?.staticGate.reasons.join(" | ")).toBe(true);
+    expect(s.poc?.executed).toBe(false);
+    expect(s.poc?.tier).toBe("static-bound");
+    expect(result.confirmedVerdictCount).toBe(0);
+    expect(result.pocAttemptedCount).toBe(1);
+  });
+
+  it("a passing execution + enableStatic GO promotes PURSUE → CONFIRMED", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+      undefined,
+      genValid,
+      execPass,
+      { enableStatic: true, enableHarness: false },
+    );
+    const s = result.scored[0]!;
+    expect(s.verdict).toBe("CONFIRMED");
+    expect(s.poc?.humanGated).toBe(true);
+    expect(result.confirmedVerdictCount).toBe(1);
+    expect(result.pocRanCount).toBe(1);
+  });
+
+  it("a passing execution WITHOUT a GO stays PURSUE (tier-not-enabled)", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+      undefined,
+      genValid,
+      execPass,
+      // no activeGo → generation/exec ran but nothing terminal
+    );
+    const s = result.scored[0]!;
+    expect(s.verdict).toBe("PURSUE");
+    expect(s.reason).toContain("tier-not-enabled-by-spike");
+    expect(result.confirmedVerdictCount).toBe(0);
+  });
+
+  it("a declined PoC stays PURSUE", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+      undefined,
+      async () => ({ testContents: null, shape: null, rationale: "requires live fork" }),
+    );
+    const s = result.scored[0]!;
+    expect(s.verdict).toBe("PURSUE");
+    expect(s.poc?.generated).toBe(false);
+    expect(s.reason).toContain("PoC declined");
+  });
+
+  it("an execution that does not hold stays PURSUE", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+      undefined,
+      genValid,
+      execFail,
+    );
+    expect(result.scored[0]!.verdict).toBe("PURSUE");
+  });
+
+  it("a thrown executor is a skipped-infra CANDIDATE, not a generation failure", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+      undefined,
+      genValid,
+      execThrow,
+    );
+    expect(result.scored[0]!.verdict).toBe("PURSUE");
+    expect(result.findings).toHaveLength(1);
+    // The executor THREW: the gated candidate record must be PRESERVED (not
+    // collapsed to the empty "generation failed" base) and counted as skipped-infra.
+    const poc = result.scored[0]!.poc!;
+    expect(poc.generated).toBe(true);
+    expect(poc.target).not.toBeNull();
+    expect(poc.staticGate.passed).toBe(true);
+    expect(poc.label).toContain("CANDIDATE — generated");
+    expect(poc.rationale).toContain("executor error");
+    expect(result.pocSkippedInfraCount).toBe(1);
+    expect(result.pocRanCount).toBe(0);
+  });
+
+  it("a DROP finding is never given a PoC", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteKills,
+      undefined,
+      genValid,
+    );
+    const s = result.scored[0]!;
+    expect(s.verdict).toBe("DROP");
+    expect(s.poc).toBeUndefined();
+  });
+
+  it("without a generatePoc callback the result carries no PoC fields (byte-identical)", async () => {
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+    );
+    expect(result.confirmedVerdictCount).toBeUndefined();
+    expect(result.pocAttemptedCount).toBeUndefined();
+    expect("confirmedCount" in result).toBe(false);
+    expect(result.scored[0]!.poc).toBeUndefined();
+  });
+});

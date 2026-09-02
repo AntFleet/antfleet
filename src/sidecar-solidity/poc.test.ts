@@ -1,0 +1,1448 @@
+import { describe, it, expect } from "vitest";
+import {
+  parseClosureFile,
+  resolvePocTarget,
+  staticGatePoc,
+  promoteWithPoc,
+  type ClosureAst,
+  type PocTarget,
+  type PocRecord,
+} from "./poc.js";
+import type { PromotionDecision } from "./scoring.js";
+
+const TARGET_SRC = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract Vault {
+    uint256 public total;
+    function deposit(uint256 amt) external { total += amt; }
+    function drain() external { total = 0; }
+    function resetAndReturn() external returns (uint256) { total = 0; return total; }
+    function balance() external view returns (uint256) { return total; }
+}
+`;
+
+const VAULT_PATH = "src/Vault.sol";
+
+function closure(extra: Record<string, string> = {}): Map<string, ClosureAst> {
+  const map = new Map<string, ClosureAst>();
+  for (const [path, src] of [[VAULT_PATH, TARGET_SRC], ...Object.entries(extra)] as [
+    string,
+    string,
+  ][]) {
+    const ast = parseClosureFile(path, src);
+    if (ast !== null) {
+      map.set(path, ast);
+    }
+  }
+  return map;
+}
+
+const TARGET: PocTarget = {
+  path: VAULT_PATH,
+  symbol: "Vault",
+  kind: "contract",
+  derivation: "test",
+};
+
+const HEADER = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+`;
+
+/** Wrap a straight-line testAuditPoc body into a full valid-shape file. */
+function poc(body: string): string {
+  return `${HEADER}contract AuditPoc is Test {
+    function testAuditPoc() public {
+${body}
+    }
+}
+`;
+}
+
+const VALID = poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertEq(b, 0);`);
+
+function gate(src: string) {
+  return staticGatePoc(src, { evidence: [] }, TARGET, closure());
+}
+
+describe("resolvePocTarget", () => {
+  it("resolves the enclosing concrete contract at the cited line", () => {
+    const t = resolvePocTarget(
+      { evidence: [{ path: VAULT_PATH, startLine: 4, endLine: 4, symbol: "Vault", quote: null }] },
+      { entries: [VAULT_PATH] },
+      closure(),
+    );
+    expect(t?.symbol).toBe("Vault");
+    expect(t?.path).toBe(VAULT_PATH);
+  });
+
+  it("declines interface-only evidence (no concrete deployable target)", () => {
+    const IFACE = `pragma solidity ^0.8.0;\ninterface IThing { function f() external; }\n`;
+    const t = resolvePocTarget(
+      {
+        evidence: [
+          { path: "src/IThing.sol", startLine: 2, endLine: 2, symbol: "IThing", quote: null },
+        ],
+      },
+      { entries: ["src/IThing.sol"] },
+      closure({ "src/IThing.sol": IFACE }),
+    );
+    expect(t).toBeNull();
+  });
+
+  it("declines an ABSTRACT contract (non-deployable — parser emits kind:abstract)", () => {
+    const ABS = `pragma solidity ^0.8.0;\nabstract contract Abs { function f() external virtual; }\n`;
+    const t = resolvePocTarget(
+      { evidence: [{ path: "src/Abs.sol", startLine: 2, endLine: 2, symbol: "Abs", quote: null }] },
+      { entries: ["src/Abs.sol"] },
+      closure({ "src/Abs.sol": ABS }),
+    );
+    expect(t).toBeNull();
+  });
+
+  it("declines when two entries declare the same concrete symbol (ambiguous)", () => {
+    const A = `pragma solidity ^0.8.0;\ncontract Dup { function f() external {} }\n`;
+    const B = `pragma solidity ^0.8.0;\ncontract Dup { function g() external {} }\n`;
+    const t = resolvePocTarget(
+      { evidence: [{ path: "x", startLine: null, endLine: null, symbol: "Dup", quote: null }] },
+      { entries: ["a/Dup.sol", "b/Dup.sol"] },
+      closure({ "a/Dup.sol": A, "b/Dup.sol": B }),
+    );
+    expect(t).toBeNull();
+  });
+});
+
+describe("staticGatePoc — a valid local-deploy PoC passes", () => {
+  it("passes and yields a PocBinding", () => {
+    const r = gate(VALID);
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.binding?.deployedVar).toBe("t");
+    expect(r.binding?.targetSymbol).toBe("Vault");
+  });
+
+  // A PUBLIC STATE VARIABLE getter (`uint256 public total` → `total()`) is the
+  // most common target read; it must resolve as a view getter (was missed when
+  // only FunctionDefinition subnodes were indexed).
+  it("a public state-variable getter (t.total()) is a Tier-1 view read", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.total();
+        assertEq(b, 0);`),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+  });
+});
+
+describe("staticGatePoc — rejections", () => {
+  const reject = (label: string, src: string) =>
+    it(label, () => {
+      const r = gate(src);
+      expect(r.passed, `expected reject; reasons: ${r.reasons.join(" | ")}`).toBe(false);
+    });
+
+  // Two-tier successor to a single-tier rejection: the PoC must NEVER become a
+  // strong static-bound CONFIRMED. It may fall through to a weaker harness result
+  // (target-read is human-gated POC_EXECUTED; no-revert is non-terminal) or
+  // decline — but a static-bound target-read (Tier-1 CONFIRMED) is forbidden.
+  const notStrongConfirmed = (label: string, src: string) =>
+    it(label, () => {
+      const r = gate(src);
+      const strongConfirmed = r.tier === "static-bound" && r.assertionForm === "target-read";
+      expect(
+        strongConfirmed,
+        `must not be a strong static-bound CONFIRMED; tier=${String(r.tier)} form=${String(r.assertionForm)} reasons=${r.reasons.join(" | ")}`,
+      ).toBe(false);
+    });
+
+  reject(
+    "vm.store fabrication",
+    poc(`        Vault t = new Vault();
+        vm.store(address(t), bytes32(0), bytes32(uint256(1)));
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "vm.etch fabrication",
+    poc(`        Vault t = new Vault();
+        vm.etch(address(t), hex"00");
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "bare StdCheats deal(token,...)",
+    poc(`        Vault t = new Vault();
+        deal(address(1), address(2), 100);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "vm.deal to the target instance",
+    poc(`        Vault t = new Vault();
+        vm.deal(address(t), 1 ether);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "inline assembly",
+    poc(`        Vault t = new Vault();
+        assembly { pop(0) }
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "low-level call",
+    poc(`        Vault t = new Vault();
+        (bool ok, ) = address(t).call("");
+        ok;
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "type(X).creationCode",
+    poc(`        Vault t = new Vault();
+        bytes memory c = type(Vault).creationCode;
+        c;
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "HEVM cheatcode address literal",
+    poc(`        Vault t = new Vault();
+        address h = 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D;
+        h;
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "a bespoke test-authored contract",
+    `${HEADER}contract Fake { function price() external pure returns (uint256){ return 1; } }
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        Fake f = new Fake();
+        f;
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  notStrongConfirmed(
+    "a helper function declaration",
+    `${HEADER}contract AuditPoc is Test {
+    function helper() internal pure returns (uint256){ return 1; }
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  reject(
+    "an if statement (not straight-line)",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        if (b == 0) { assertEq(b, 0); }`),
+  );
+
+  reject(
+    "a for loop",
+    poc(`        Vault t = new Vault();
+        for (uint256 i; i < 2; i++) { t.deposit(1); }
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  // Deployed-target variable rebound to a NON-target before the assertion: the
+  // drive hits the real Vault, but `t = Vault(address(this))` rebinds the tracked
+  // name so `t.balance()` reads AuditPoc's own getter (a hollow CONFIRMED). The
+  // single-assignment guard rejects it from the promotable Tier-1 path.
+  notStrongConfirmed(
+    "deployed-target variable reassignment (rebind to non-target)",
+    `${HEADER}contract AuditPoc is Test {
+    uint256 public balance;
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        t = Vault(address(this));
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  notStrongConfirmed(
+    "any reassignment of the deployed-target variable (t = t)",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        t = t;
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  notStrongConfirmed(
+    "parenthesized-LHS reassignment of the deployed-target variable ((t) = ...)",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        (t) = new Vault();
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  // A relative import (`./Vault.sol`, `./src/Vault.sol`, `../src/Vault.sol`) must
+  // NOT bind the target `src/Vault.sol`: the generated test lives under test/, so a
+  // relative specifier resolves to a DIFFERENT file — a same-name wrong-instance.
+  // pathMatches is LITERAL equality (no dot-segment normalization).
+  for (const relImport of ["./Vault.sol", "./src/Vault.sol", "../src/Vault.sol"]) {
+    notStrongConfirmed(
+      `relative import (${relImport}) does not bind src/Vault.sol`,
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "${relImport}";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+    );
+  }
+
+  notStrongConfirmed(
+    "a ternary",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        uint256 c = b == 0 ? 1 : 2;
+        assertEq(c, 1);`),
+  );
+
+  reject(
+    "an early return",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        return;`),
+  );
+
+  reject(
+    "a forbidden forge-std import (StdCheats)",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {StdCheats} from "forge-std/StdCheats.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  reject(
+    "an out-of-allowlist import",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+import {Other} from "src/Other.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  reject(
+    "a same-name stub imported from another path",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "test/mocks/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  reject(
+    "a view-only 'drive'",
+    poc(`        Vault t = new Vault();
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  notStrongConfirmed(
+    "a deployment-only assertion",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertTrue(address(t) != address(0));`),
+  );
+
+  notStrongConfirmed(
+    "assertTrue(true)",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertTrue(true);`),
+  );
+
+  reject(
+    "no deploy of the target",
+    poc(`        uint256 b = uint256(1);
+        assertEq(b, 1);`),
+  );
+
+  // --- audit round: adversarial bypasses (3-lane codex impl audit) ---
+  reject(
+    "vm.deal to a target-derived local",
+    poc(`        Vault t = new Vault();
+        address a = address(t);
+        vm.deal(a, 1 ether);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "vm.deal transitively target-derived",
+    poc(`        Vault t = new Vault();
+        address a = address(uint160(address(t)));
+        vm.deal(a, 1 ether);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "vm.deal 3-arg token-balance overload",
+    poc(`        Vault t = new Vault();
+        vm.deal(address(2), address(3), 100);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "bound Vm alias .store()",
+    poc(`        Vault t = new Vault();
+        Vm z = vm;
+        z.store(address(t), bytes32(0), bytes32(uint256(1)));
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "stdstore.checked_write member chain",
+    poc(`        Vault t = new Vault();
+        stdstore.target(address(t)).sig("total()").checked_write(0);
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "file-scope free assertEq shadow",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+function assertEq(uint256, uint256) pure {}
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  reject(
+    "test contract inherits a closure contract",
+    `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Vault, Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  notStrongConfirmed(
+    "assertion binds only via the message arg",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertEq(uint256(0), uint256(0), string(abi.encodePacked(t.balance())));`),
+  );
+
+  notStrongConfirmed(
+    "assertion read is a mutating call",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertEq(t.resetAndReturn(), 0);`),
+  );
+
+  reject(
+    "revert() early-exit call",
+    poc(`        Vault t = new Vault();
+        revert("x");
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject(
+    "require() guard call",
+    poc(`        Vault t = new Vault();
+        require(true, "x");
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  reject("unparseable solidity", "this is not solidity {");
+
+  reject(
+    "oversized file",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+        // ${"x".repeat(25000)}`),
+  );
+
+  // --- audit round 3 (focused Tier-1 re-audit): annihilator / self-cancel
+  // tautologies. Each buries the post-drive target read (`b = t.balance()`)
+  // inside an operand that collapses to a compile-time constant, so the
+  // assertion passes for every `b` — a hollow CONFIRMED. hasConstCollapse now
+  // rejects the whole bitwise/boolean class + arithmetic annihilators, so these
+  // must NOT reach a strong static-bound target-read (they fall to Tier-2). --
+  for (const [label, assertLine] of [
+    [
+      "bitwise-OR annihilator (b | type(uint256).max)",
+      "assertEq(b | type(uint256).max, type(uint256).max);",
+    ],
+    ["bitwise-AND-zero annihilator (b & 0)", "assertEq(b & 0, 0);"],
+    ["XOR self-cancel (b ^ b)", "assertEq(b ^ b, 0);"],
+    ["modulo-1 collapse (b % 1)", "assertEq(b % 1, 0);"],
+    ["power-zero collapse (b ** 0)", "assertEq(b ** 0, 1);"],
+    ["div self-cancel (b / b)", "assertEq(b / b, 1);"],
+    ["shift-away annihilator (0 << b)", "assertEq(uint256(0) << b, 0);"],
+    // Booleanized reflexive bounds — the `assertTrue(x OP bound)` twins of the
+    // `assertGe(x, 0)` numeric-bound tautologies (unsigned `>= 0` etc.).
+    ["booleanized >= 0", "assertTrue(b >= 0);"],
+    ["booleanized >= type().min", "assertTrue(b >= type(uint256).min);"],
+    ["booleanized <= type().max", "assertTrue(b <= type(uint256).max);"],
+    ["booleanized assertFalse(b < 0)", "assertFalse(b < 0);"],
+    // Negation- / paren-laundered reflexive bounds (peeled by unwrapParens +
+    // the isLogicalNot polarity flip): assertTrue(!(x<0)) ≡ assertTrue(x>=0).
+    ["negation-laundered !(b < 0)", "assertTrue(!(b < 0));"],
+    ["negation-laundered assertFalse(!(b >= 0))", "assertFalse(!(b >= 0));"],
+    ["double-negation !!(b >= 0)", "assertTrue(!!(b >= 0));"],
+    ["paren-laundered (b) >= (0)", "assertTrue((b) >= (0));"],
+    // Cast / identity self-comparison (constTruth canonicalizes both sides):
+    // `b == uint256(b)`, `b >= b + 0` are reflexive despite distinct spellings.
+    ["cast self-comparison assertTrue(b == uint256(b))", "assertTrue(b == uint256(b));"],
+    ["cast self-comparison assertEq(b, uint256(b))", "assertEq(b, uint256(b));"],
+    ["identity self assertTrue(b == b + 0)", "assertTrue(b == b + 0);"],
+    // Comparator-family self-comparison (not just assertEq): always-true.
+    ["assertGe self (assertGe(b, b))", "assertGe(b, b);"],
+    ["assertLe self (assertLe(b, b))", "assertLe(b, b);"],
+    ["assertGe cast self (assertGe(b, uint256(b)))", "assertGe(b, uint256(b));"],
+    // Offset-inequality: assertNotEq(x, x + k) is always true (x != x + 1).
+    ["offset inequality assertNotEq(b, b + 1)", "assertNotEq(b, b + 1);"],
+    // Approximate-equality is excluded from Tier-1 (model-supplied tolerance is
+    // not statically verifiable; a max delta always passes → hollow).
+    ["approx-eq max delta", "assertApproxEqAbs(b, 0, type(uint256).max);"],
+    ["approx-eq small delta (still Tier-2)", "assertApproxEqAbs(b, 100, 1);"],
+    ["approx-eq rel", "assertApproxEqRel(b, 100, 1e18);"],
+    // STRICT bare-vs-independent rule (both sides read the target → not
+    // promotable): constant-fold self (`b + 5 - 5` ≡ b) and duplicate view read.
+    ["fold self-equality (b == b + 5 - 5)", "assertEq(b, b + 5 - 5);"],
+    ["fold self-equality (b == b * 2 - b)", "assertEq(b, b * 2 - b);"],
+    [
+      "duplicate view read (assertEq(t.balance(), t.balance()))",
+      "assertEq(t.balance(), t.balance());",
+    ],
+    // Obfuscated reflexive bound (foldConst evaluates the constant expression):
+    // `type(uint256).max - 1 + 1` and `2 ** 256 - 1` both fold to the universal max.
+    [
+      "obfuscated max bound (assertLe(b, type(uint256).max - 1 + 1))",
+      "assertLe(b, type(uint256).max - 1 + 1);",
+    ],
+    ["power-spelled max (assertLe(b, 2 ** 256 - 1))", "assertLe(b, 2 ** 256 - 1);"],
+    // Width-dependent spellings of the extreme (foldConst folds ~ and neg-cast wrap):
+    ["complement-spelled max (assertLe(b, ~uint256(0)))", "assertLe(b, ~uint256(0));"],
+    ["neg-cast-wrap max (assertLe(b, uint256(int256(-1))))", "assertLe(b, uint256(int256(-1)));"],
+    // Scientific-notation spellings (foldConst parses `<m>e<exp>`): `0e0` == 0.
+    ["exponent-spelled zero (assertGe(b, 0e0))", "assertGe(b, 0e0);"],
+    [
+      "exponent-spelled max (assertLe(b, 1157...e0))",
+      "assertLe(b, 115792089237316195423570985008687907853269984665640564039457584007913129639935e0);",
+    ],
+    // A MUTATING target call laundered as the 'independent' operand (touches the target).
+    [
+      "mutating call as independent (assertEq(t.balance(), t.resetAndReturn()))",
+      "assertEq(t.balance(), t.resetAndReturn());",
+    ],
+    // The built-in `assert(cond)` (not just assertTrue/assertFalse) must also be
+    // tautology-checked: `assert(b >= 0e0)` is always true.
+    ["built-in assert reflexive (assert(b >= 0e0))", "assert(b >= 0e0);"],
+  ] as const) {
+    notStrongConfirmed(
+      label,
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        ${assertLine}`),
+    );
+  }
+
+  // Positive guard: a LOAD-BEARING booleanized bound must STILL earn Tier-1
+  // (the tautology guard must not over-reject legitimate comparisons).
+  it("a load-bearing booleanized bound (assertTrue(b > 5)) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertTrue(b > 5);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // A NEGATED load-bearing bound (`!(b < 5)` ≡ `b >= 5`) is still load-bearing:
+  // the polarity peel must not over-reject it.
+  it("a load-bearing negated bound (assertTrue(!(b < 5))) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertTrue(!(b < 5));`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // A load-bearing assertNotEq against a CONSTANT (not an offset of the read)
+  // must still earn Tier-1 — the offset-inequality guard must not over-reject.
+  it("a load-bearing assertNotEq(b, 5) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertNotEq(b, 5);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // The bare target read may be compared against a target-independent CONSTANT
+  // EXPRESSION (`5 + 5`) — the strict rule keys on the read side being bare and
+  // the other side being target-independent, not on the other side being atomic.
+  it("a bare read vs a constant expression (assertEq(b, 5 + 5)) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertEq(b, 5 + 5);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // A genuine near-max threshold (`type().max - 100`) is load-bearing — it folds
+  // to a value BELOW the universal max, so foldConst must NOT over-reject it.
+  it("a near-max threshold (assertLe(b, type(uint256).max - 100)) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertLe(b, type(uint256).max - 100);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+});
+
+describe("staticGatePoc — audit fixtures", () => {
+  it("accepts an aliased target import (import {Vault as V})", () => {
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault as V} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        V t = new V();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = gate(src);
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+  });
+
+  it("rejects an overloaded name where the zero-arg call is a view (ambiguous drive/read)", () => {
+    const OVL = `pragma solidity ^0.8.0;
+contract Ovl {
+    uint256 public total;
+    function balance() external view returns (uint256) { return total; }
+    function balance(uint256 x) external { total += x; }
+}
+`;
+    const target = {
+      path: "src/Ovl.sol",
+      symbol: "Ovl",
+      kind: "contract" as const,
+      derivation: "t",
+    };
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Ovl} from "src/Ovl.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Ovl t = new Ovl();
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(src, { evidence: [] }, target, closure({ "src/Ovl.sol": OVL }));
+    expect(r.passed).toBe(false);
+  });
+
+  it("rejects a closure mock used as a target dependency", () => {
+    const MOCK = `pragma solidity ^0.8.0;\ncontract MockOracle { function price() external pure returns (uint256){ return 1; } }\n`;
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+import {MockOracle} from "test/mocks/MockOracle.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        MockOracle o = new MockOracle();
+        o;
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(
+      src,
+      { evidence: [] },
+      TARGET,
+      closure({ "test/mocks/MockOracle.sol": MOCK }),
+    );
+    expect(r.passed).toBe(false);
+  });
+});
+
+describe("staticGatePoc — Tier-2 harness path (§3.3.B)", () => {
+  // §3.3.A requires vendored scaffolding to resolve under lib/**; provide the
+  // repo's remappings so `@uniswap/...` resolves to a proven real-dependency root.
+  const RM: readonly (readonly [string, string])[] = [
+    ["@uniswap/v4-core/", "lib/v4-core/"],
+    ["@uniswap/v4-periphery/", "lib/v4-periphery/"],
+    ["solmate/", "lib/solmate/"],
+  ];
+  const g2 = (src: string) => staticGatePoc(src, { evidence: [] }, TARGET, closure(), RM);
+  const H2 = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+import {Vault} from "src/Vault.sol";
+`;
+  const harness = (fields: string, setup: string, body: string, extraImports = "") =>
+    `${H2}${extraImports}contract AuditPoc is Test, Deployers {
+    Vault hook;
+${fields}
+    function setUp() public { hook = new Vault(); ${setup} }
+    function testAuditPoc() public {
+${body}
+    }
+}
+`;
+
+  it("callback drive + selector expectRevert → harness-driven, revert, with a harnessDriveSpan", () => {
+    const r = g2(harness("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`));
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+    expect(r.assertionForm).toBe("revert");
+    expect(r.binding).toBeUndefined();
+    expect(r.harnessDriveSpan?.end).toBeGreaterThan(r.harnessDriveSpan?.start ?? 0);
+  });
+
+  it("drive + post-drive target view read → harness-driven, target-read", () => {
+    const r = g2(
+      harness(
+        "",
+        "",
+        `        hook.deposit(1);\n        uint256 b = hook.balance();\n        assertGt(b, 1000);`,
+      ),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+    expect(r.assertionForm).toBe("target-read");
+  });
+
+  it("selectorless expectRevert → non-terminal no-revert", () => {
+    const r = g2(harness("", "", `        vm.expectRevert();\n        hook.drain();`));
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.assertionForm).toBe("no-revert");
+  });
+
+  it("drive + assertTrue(true) → non-terminal no-revert", () => {
+    const r = g2(harness("", "", `        hook.deposit(1);\n        assertTrue(true);`));
+    expect(r.assertionForm).toBe("no-revert");
+  });
+
+  it("a mined-salt target deploy is admitted (§3.3.A CREATE2 carve-out)", () => {
+    const r = g2(
+      `${H2}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public {
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), _code(), "");
+        hook = new Vault{salt: s}();
+    }
+    function _code() internal pure returns (bytes memory) { return hex"00"; }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+  });
+
+  it("a bespoke test-authored contract in the harness declines (not test-authored)", () => {
+    const r = g2(
+      `${H2}contract Fake { function p() external pure returns (uint256){ return 1; } }
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); Fake f = new Fake(); f; }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("an unknown-specifier base declines (unrecognized scaffolding)", () => {
+    const r = g2(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Weird} from "someunknownpkg/Weird.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test, Weird {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/non-allowlisted base|out-of-allowlist|unrecognized/u);
+  });
+
+  it("a repo-src (non-target) import declines (closed-symbol / repo-src dependency)", () => {
+    const r = g2(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+import {Vault} from "src/Vault.sol";
+import {Helper} from "src/Helper.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function testAuditPoc() public {
+        Helper.doThing(address(hook));
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|out-of-allowlist/u);
+  });
+
+  it("a fabrication cheat (vm.store) declines even on the harness path", () => {
+    const r = g2(
+      harness(
+        "",
+        "vm.store(address(hook), bytes32(0), bytes32(uint256(1)));",
+        `        vm.expectRevert(bytes("x"));\n        hook.drain();`,
+      ),
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  // --- impl-audit hardening regressions (must not regress) ------------------
+
+  it("a helper-rooted drive is NOT a valid harness drive (declines)", () => {
+    const r = g2(
+      `${H2}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function prime() internal { hook.drain(); }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        prime();
+    }
+}
+`,
+    );
+    expect(r.tier === "harness-driven" && r.assertionForm === "revert").toBe(false);
+  });
+
+  it("a stray vm.expectRevert in setUp declines (only the B4 guard is allowed)", () => {
+    const r = g2(
+      harness(
+        "",
+        `vm.expectRevert(bytes("y"));`,
+        `        vm.expectRevert(bytes("x"));\n        hook.drain();`,
+      ),
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("a literal salt declines (§3.3.A HookMiner-derived only)", () => {
+    const r = g2(
+      `${H2}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault{salt: bytes32(uint256(1))}(); }
+    function testAuditPoc() public { vm.expectRevert(bytes("x")); hook.drain(); }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("vendored scaffolding that remaps into the repo (vendor/) declines", () => {
+    const r = staticGatePoc(
+      harness("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [["@uniswap/v4-core/", "vendor/v4-core/"]], // repo-authored root, not lib/
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  // Aliased `Vm` import defeats the literal-name Vm guard: `import {Vm as X}` +
+  // `X(<any-spelling-of-HEVM-addr>).store(...)` fabricates target storage. The
+  // fabrication guard now bans every local name bound to the forge-std Vm type,
+  // regardless of how the cheatcode address is spelled (hex/decimal/address(vm)).
+  it("aliased Vm import + cheat.store fabrication declines (any address spelling)", () => {
+    const decAddr = "645326474426547203313410069153905908525362434349"; // 0x7109…DD12D
+    for (const ctor of [
+      "CheatCodes(address(uint160(" + decAddr + ")))",
+      "CheatCodes(address(vm))",
+      "CheatCodes(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D)",
+    ]) {
+      const src = `${H2}import {Vm as CheatCodes} from "forge-std/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    CheatCodes cheats = ${ctor};
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public {
+        hook.deposit(1);
+        uint256 b = hook.balance();
+        assertGt(b, 1000);
+    }
+}
+`;
+      const r = g2(src);
+      expect(r.passed, `ctor=${ctor} reasons=${r.reasons.join(" | ")}`).toBe(false);
+    }
+  });
+
+  // Re-audit: the exact-path Vm guard missed forge-std/src/Vm.sol and namespace
+  // imports. Provenance is now anchored (`forge-std/…` specifier or lib/ root) and
+  // the HEVM address is caught in ANY numeric spelling, so every Vm-handle route
+  // to a fabrication cheat declines regardless of import path/shape.
+  it("aliased Vm from forge-std/src/Vm.sol and namespace imports decline", () => {
+    const decAddr = "645326474426547203313410069153905908525362434349";
+    const variants = [
+      `import {Vm as CheatCodes} from "forge-std/src/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook; CheatCodes cheats = CheatCodes(address(uint160(${decAddr})));
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public { hook.deposit(1); uint256 b = hook.balance(); assertGt(b, 1000); }
+}`,
+      `import * as stdvm from "forge-std/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook; stdvm.Vm cheats = stdvm.Vm(address(uint160(${decAddr})));
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public { hook.deposit(1); uint256 b = hook.balance(); assertGt(b, 1000); }
+}`,
+    ];
+    for (const v of variants) {
+      const r = g2(`${H2}${v}\n`);
+      expect(r.passed, `reasons=${r.reasons.join(" | ")}`).toBe(false);
+    }
+  });
+
+  // Re-audit HIGH-2 (Tier-1, trace-invisible): a repo-authored `fake/forge-std/`
+  // path with a no-op assertEq spoofed forge-std provenance (the check did path
+  // -contains, not an anchored specifier) → a hollow CONFIRMED. Provenance is now
+  // anchored: only the canonical `forge-std/…` specifier or a real lib/ root.
+  it("a repo-authored fake forge-std path (fake/forge-std/Test.sol) declines", () => {
+    const FAKE_TEST = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract Test { function assertEq(uint256 a, uint256 b) internal {} }
+`;
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "fake/forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(
+      src,
+      { evidence: [] },
+      TARGET,
+      closure({ "fake/forge-std/Test.sol": FAKE_TEST }),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(false);
+  });
+
+  // Re-audit: the canonical `forge-std/Test.sol` specifier REMAPPED into a repo
+  // path (`forge-std/ → fake/forge-std/`) must not spoof provenance either.
+  it("forge-std specifier remapped into the repo tree declines", () => {
+    const FAKE_TEST = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract Test { function assertEq(uint256 a, uint256 b) internal {} }
+`;
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(
+      src,
+      { evidence: [] },
+      TARGET,
+      closure({ "fake/forge-std/Test.sol": FAKE_TEST }),
+      [["forge-std/", "fake/forge-std/"]],
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(false);
+  });
+
+  // Re-audit: namespace-imported Vm (`import * as stdvm`) constructed from
+  // `address(vm)` (no HEVM literal) — the qualified `stdvm.Vm` type is banned.
+  it("namespace Vm import + address(vm) fabrication declines", () => {
+    const src = `${H2}import * as stdvm from "forge-std/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    stdvm.Vm cheats = stdvm.Vm(address(vm));
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public { hook.deposit(1); uint256 b = hook.balance(); assertGt(b, 1000); }
+}
+`;
+    expect(g2(src).passed).toBe(false);
+  });
+
+  // Re-audit (recall): a direct `lib/forge-std/` root is genuine provenance and
+  // must still earn Tier-1 (the anchored provenance must not over-reject it).
+  it("a direct lib/forge-std/Test.sol import still earns Tier-1", () => {
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "lib/forge-std/src/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(src, { evidence: [] }, TARGET, closure());
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("static-bound");
+  });
+});
+
+describe("staticGatePoc — closed-symbol invariant (Tier-1 CRITICAL)", () => {
+  it("a repo Test smuggled via the target-path import declines (not static-bound)", () => {
+    const r = gate(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test, Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+    );
+    expect(r.tier).not.toBe("static-bound");
+  });
+
+  it("a repo src/ free-function import declines on both tiers", () => {
+    const r = gate(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+import {seed} from "src/Helper.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        seed(address(t));
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("a short-circuited / helper-laundered read is not load-bearing (not static-bound)", () => {
+    const shortCircuit = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertTrue(true || t.balance() == 0);`),
+    );
+    expect(shortCircuit.tier).not.toBe("static-bound");
+  });
+});
+
+describe("resolvePocTarget — interface evidence must not fall through to an unrelated contract", () => {
+  it("declines when the cited file mixes an interface (cited) with an unrelated concrete contract", () => {
+    const SRC = `pragma solidity ^0.8.0;
+interface IFoo { function bad() external; }
+contract Unrelated { function ping() external {} }
+`;
+    const t = resolvePocTarget(
+      {
+        evidence: [
+          { path: "src/Mixed.sol", startLine: 2, endLine: 2, symbol: "IFoo", quote: null },
+        ],
+      },
+      { entries: ["src/Mixed.sol"] },
+      closure({ "src/Mixed.sol": SRC }),
+    );
+    expect(t).toBeNull();
+  });
+});
+
+describe("promoteWithPoc truth table", () => {
+  const pursue: PromotionDecision = { verdict: "PURSUE", reason: "survived" };
+  const drop: PromotionDecision = { verdict: "DROP", reason: "killed" };
+
+  const rec = (over: Partial<PocRecord>): PocRecord => ({
+    generated: true,
+    rationale: null,
+    tier: "static-bound",
+    assertionForm: "target-read",
+    label: null,
+    target: TARGET,
+    binding: null,
+    harnessDriveSpan: null,
+    testPath: "test/AuditPoc_x.t.sol",
+    testContents: VALID,
+    staticGate: { passed: true, reasons: [] },
+    executed: false,
+    execution: null,
+    humanGated: true,
+    runSpecific: true,
+    ...over,
+  });
+  const staticGo = { enableStatic: true, enableHarness: false };
+  const harnessGo = { enableStatic: false, enableHarness: true };
+
+  it("DROP base is unchanged (never touched)", () => {
+    expect(promoteWithPoc({ base: drop, poc: rec({}) }).verdict).toBe("DROP");
+  });
+
+  it("generation-only (not executed) stays PURSUE", () => {
+    expect(promoteWithPoc({ base: pursue, poc: rec({ executed: false }) }).verdict).toBe("PURSUE");
+  });
+
+  it("declined PoC stays PURSUE", () => {
+    expect(
+      promoteWithPoc({ base: pursue, poc: rec({ generated: false, rationale: "needs fork" }) })
+        .verdict,
+    ).toBe("PURSUE");
+  });
+
+  it("static-gate failure stays PURSUE", () => {
+    expect(
+      promoteWithPoc({
+        base: pursue,
+        poc: rec({ staticGate: { passed: false, reasons: ["x"] } }),
+      }).verdict,
+    ).toBe("PURSUE");
+  });
+
+  it("static-bound + executed + drove + path-match + enableStatic → CONFIRMED", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: staticGo,
+      poc: rec({
+        executed: true,
+        execution: {
+          executed: true,
+          compiled: true,
+          passed: true,
+          drove: true,
+          targetFrameObserved: true,
+          driveKind: null,
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+      }),
+    });
+    expect(v.verdict).toBe("CONFIRMED");
+  });
+
+  it("static-bound evidence but NO GO (activeGo absent) → PURSUE (tier-not-enabled)", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      poc: rec({
+        executed: true,
+        execution: {
+          executed: true,
+          compiled: true,
+          passed: true,
+          drove: true,
+          targetFrameObserved: true,
+          driveKind: null,
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+      }),
+    });
+    expect(v.verdict).toBe("PURSUE");
+    expect(v.reason).toContain("tier-not-enabled-by-spike");
+  });
+
+  it("harness-driven + callback frame + enableHarness → POC_EXECUTED", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: harnessGo,
+      poc: rec({
+        tier: "harness-driven",
+        assertionForm: "revert",
+        execution: {
+          executed: true,
+          compiled: true,
+          passed: true,
+          drove: false,
+          targetFrameObserved: true,
+          driveKind: "callback",
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+        executed: true,
+      }),
+    });
+    expect(v.verdict).toBe("POC_EXECUTED");
+  });
+
+  it("harness-driven evidence but CONFIRMED-only GO → PURSUE (tier-not-enabled)", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: staticGo,
+      poc: rec({
+        tier: "harness-driven",
+        assertionForm: "target-read",
+        execution: {
+          executed: true,
+          compiled: true,
+          passed: true,
+          drove: false,
+          targetFrameObserved: true,
+          driveKind: "callback",
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+        executed: true,
+      }),
+    });
+    expect(v.verdict).toBe("PURSUE");
+    expect(v.reason).toContain("tier-not-enabled-by-spike");
+  });
+
+  it("no-revert assertionForm never promotes (even executed+passed, with GO)", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: { enableStatic: true, enableHarness: true },
+      poc: rec({
+        tier: "harness-driven",
+        assertionForm: "no-revert",
+        execution: {
+          executed: true,
+          compiled: true,
+          passed: true,
+          drove: false,
+          targetFrameObserved: true,
+          driveKind: "callback",
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+        executed: true,
+      }),
+    });
+    expect(v.verdict).toBe("PURSUE");
+    expect(v.reason).toContain("no-revert only");
+  });
+
+  it("passed but no drive stays PURSUE", () => {
+    expect(
+      promoteWithPoc({
+        base: pursue,
+        poc: rec({
+          executed: true,
+          execution: {
+            executed: true,
+            compiled: true,
+            passed: true,
+            drove: false,
+            targetFrameObserved: true,
+            driveKind: "callback",
+            deployedTargetPath: VAULT_PATH,
+            reason: "ok",
+          },
+        }),
+      }).verdict,
+    ).toBe("PURSUE");
+  });
+
+  it("target-path mismatch stays PURSUE", () => {
+    expect(
+      promoteWithPoc({
+        base: pursue,
+        poc: rec({
+          executed: true,
+          execution: {
+            executed: true,
+            compiled: true,
+            passed: true,
+            drove: true,
+            targetFrameObserved: true,
+            driveKind: null,
+            deployedTargetPath: "other/Vault.sol",
+            reason: "ok",
+          },
+        }),
+      }).verdict,
+    ).toBe("PURSUE");
+  });
+
+  it("assertion did not hold stays PURSUE", () => {
+    expect(
+      promoteWithPoc({
+        base: pursue,
+        poc: rec({
+          executed: true,
+          execution: {
+            executed: true,
+            compiled: true,
+            passed: false,
+            drove: true,
+            targetFrameObserved: true,
+            driveKind: null,
+            deployedTargetPath: VAULT_PATH,
+            reason: "fail",
+          },
+        }),
+      }).verdict,
+    ).toBe("PURSUE");
+  });
+});
