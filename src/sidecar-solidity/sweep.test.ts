@@ -406,19 +406,19 @@ describe("buildDedupedPursueMarkdown", () => {
   });
 });
 
-describe("buildSweepSummary — PoC coverage counters (#179 §4)", () => {
-  const outcome = (
-    o: Partial<import("./sweep.js").SweepEntryOutcome>,
-  ): import("./sweep.js").SweepEntryOutcome => ({
-    entry: "E.sol",
-    status: "ran",
-    pursue: 1,
-    drop: 0,
-    findings: 1,
-    truncated: false,
-    ...o,
-  });
+const outcome = (
+  o: Partial<import("./sweep.js").SweepEntryOutcome>,
+): import("./sweep.js").SweepEntryOutcome => ({
+  entry: "E.sol",
+  status: "ran",
+  pursue: 1,
+  drop: 0,
+  findings: 1,
+  truncated: false,
+  ...o,
+});
 
+describe("buildSweepSummary — PoC coverage counters (#179 §4)", () => {
   it("omits PoC totals entirely on a non-`--poc` sweep (byte-identical)", () => {
     const s = buildSweepSummary({
       ranAt: "t",

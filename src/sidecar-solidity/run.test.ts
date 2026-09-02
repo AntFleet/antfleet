@@ -417,6 +417,30 @@ contract AuditPoc is Test {
 
 const genValid = async () => ({ testContents: VALID_POC, shape: null, rationale: null });
 
+const execPass = async () => ({
+  executed: true,
+  compiled: true,
+  passed: true,
+  drove: true,
+  targetFrameObserved: true,
+  driveKind: null,
+  deployedTargetPath: "src/Vault.sol",
+  reason: "ok",
+});
+const execFail = async () => ({
+  executed: true,
+  compiled: true,
+  passed: false,
+  drove: true,
+  targetFrameObserved: true,
+  driveKind: null,
+  deployedTargetPath: "src/Vault.sol",
+  reason: "assertion held (no bug)",
+});
+const execThrow = async () => {
+  throw new Error("docker unavailable");
+};
+
 describe("runFinder — PoC stage", () => {
   it("generation-only tier keeps a gate-passing PoC at PURSUE (CANDIDATE)", async () => {
     const result = await runFinder(
@@ -438,16 +462,6 @@ describe("runFinder — PoC stage", () => {
   });
 
   it("a passing execution + enableStatic GO promotes PURSUE → CONFIRMED", async () => {
-    const execPass = async () => ({
-      executed: true,
-      compiled: true,
-      passed: true,
-      drove: true,
-      targetFrameObserved: true,
-      driveKind: null,
-      deployedTargetPath: "src/Vault.sol",
-      reason: "ok",
-    });
     const result = await runFinder(
       vaultInput,
       async () => handled({ findings: [vaultFinding] }),
@@ -465,16 +479,6 @@ describe("runFinder — PoC stage", () => {
   });
 
   it("a passing execution WITHOUT a GO stays PURSUE (tier-not-enabled)", async () => {
-    const execPass = async () => ({
-      executed: true,
-      compiled: true,
-      passed: true,
-      drove: true,
-      targetFrameObserved: true,
-      driveKind: null,
-      deployedTargetPath: "src/Vault.sol",
-      reason: "ok",
-    });
     const result = await runFinder(
       vaultInput,
       async () => handled({ findings: [vaultFinding] }),
@@ -505,16 +509,6 @@ describe("runFinder — PoC stage", () => {
   });
 
   it("an execution that does not hold stays PURSUE", async () => {
-    const execFail = async () => ({
-      executed: true,
-      compiled: true,
-      passed: false,
-      drove: true,
-      targetFrameObserved: true,
-      driveKind: null,
-      deployedTargetPath: "src/Vault.sol",
-      reason: "assertion held (no bug)",
-    });
     const result = await runFinder(
       vaultInput,
       async () => handled({ findings: [vaultFinding] }),
@@ -527,9 +521,6 @@ describe("runFinder — PoC stage", () => {
   });
 
   it("a thrown executor never crashes the run; finding stays PURSUE", async () => {
-    const execThrow = async () => {
-      throw new Error("docker unavailable");
-    };
     const result = await runFinder(
       vaultInput,
       async () => handled({ findings: [vaultFinding] }),

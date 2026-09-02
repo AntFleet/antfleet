@@ -950,6 +950,23 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
   close #179** — it delivers a drafting aid, not a verdict change; a Phase-2 NO-GO keeps
   #179 open (or re-scopes it to "PoC-scaffold assist"), never closes it. Phase-1 PR
   title/body says "(Phase 1 of #179 — does not close it)".
+  - **Phase-1 tier scope (descope 2026-09-02).** Since Phase 1 is generation-only (no
+    executor → no promotion), the impl-audit soundness bar is scoped by tier:
+    - **Tier-1 (`CONFIRMED`, static-bound) is the airtight promotable path** — its static
+      gate must be 0 C/H/M (a hollow `CONFIRMED` is unacceptable). It is small and defensible:
+      target-only instantiation, straight-line, closed-symbol + fabrication-surface guards, a
+      view-only load-bearing assertion, decidable-tautology rejection.
+    - **Tier-2 (`POC_EXECUTED`, harness-driven) is a BEST-EFFORT CANDIDATE classifier in
+      Phase 1** — the gate classifies `tier:"harness-driven"` so a der-sc-style PoC is attached
+      as a human-reviewable CANDIDATE, but it is **never promotable in Phase 1** and its static
+      gate is explicitly best-effort (a hand-rolled static AST allowlist over arbitrary
+      scaffolding code is an adversarially open surface). **Residual static-smuggling on the
+      Tier-2 path is acceptable in Phase 1** (it cannot mint a verdict) and is **closed at
+      Phase 3**, where the executor's runtime `-vvvv` trace (`targetFrameObserved` + build-info
+      bytecode identity) co-validates the static gate — the trace, not the static AST scan, is
+      the load-bearing guard for `POC_EXECUTED`. Hardening the Tier-2 static gate to airtight
+      is therefore **deferred to the Phase-3 executor increment**, done alongside the trace
+      co-validator rather than as an unbounded static-only exercise now.
 - **Phase 2 (SPIKE GATE):** run the model **blind, finding-scoped** over an **unfiltered
   PURSUE sample** (not a curated local-deployable slice — so prevalence is measured, not
   assumed), graded by a human who did **not** have a reference PoC. **Committed

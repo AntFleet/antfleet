@@ -616,12 +616,14 @@ ${body}
 
   it("a mined-salt target deploy is admitted (§3.3.A CREATE2 carve-out)", () => {
     const r = g2(
-      `${H2}contract AuditPoc is Test, Deployers {
+      `${H2}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+contract AuditPoc is Test, Deployers {
     Vault hook;
     function setUp() public {
-        bytes32 s = keccak256("mined");
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), _code(), "");
         hook = new Vault{salt: s}();
     }
+    function _code() internal pure returns (bytes memory) { return hex"00"; }
     function testAuditPoc() public {
         vm.expectRevert(bytes("x"));
         hook.drain();
@@ -837,6 +839,8 @@ describe("promoteWithPoc truth table", () => {
     assertionForm: "target-read",
     label: null,
     target: TARGET,
+    binding: null,
+    harnessDriveSpan: null,
     testPath: "test/AuditPoc_x.t.sol",
     testContents: VALID,
     staticGate: { passed: true, reasons: [] },

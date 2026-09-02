@@ -552,6 +552,8 @@ async function runPocStage(args: {
     assertionForm: null,
     label: null,
     target: null,
+    binding: null,
+    harnessDriveSpan: null,
     testPath: null,
     testContents: null,
     staticGate: { passed: false, reasons: [] },
@@ -605,6 +607,8 @@ async function runPocStage(args: {
       testContents: out.testContents,
       tier: gate.tier,
       assertionForm: gate.assertionForm ?? null,
+      binding: gate.binding ?? null,
+      harnessDriveSpan: gate.harnessDriveSpan ?? null,
       staticGate: { passed: true, reasons: [] },
     };
     if (args.executePoc === undefined) {

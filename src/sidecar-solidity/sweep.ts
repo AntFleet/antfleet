@@ -701,11 +701,14 @@ export function pursueFindingDedupKey(finding: AuditFinding): string {
  * The per-entry breakdown lives in {@link buildPursueMarkdown}; the CLI writes
  * this union first so the operator reads the deduped whole-system picture up top.
  */
+/** Strength rank of a terminal PoC verdict (CONFIRMED > POC_EXECUTED > other). */
+function verdictRank(v: ScoredFinding["verdict"]): number {
+  return v === "CONFIRMED" ? 2 : v === "POC_EXECUTED" ? 1 : 0;
+}
+
 export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings[]): string {
   // Track the STRONGEST verdict tier across the group so the union never collapses
   // a CONFIRMED and a POC_EXECUTED of the same finding into an untagged row.
-  const verdictRank = (v: ScoredFinding["verdict"]): number =>
-    v === "CONFIRMED" ? 2 : v === "POC_EXECUTED" ? 1 : 0;
   type Group = {
     rep: ScoredFinding;
     severityRank: number;

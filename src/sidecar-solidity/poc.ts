@@ -12,6 +12,7 @@
 // (§3.4) and terminal CONFIRMED promotion are Phase 3, gated behind the §7 spike.
 // promoteWithPoc is implemented in full so Phase 3 only wires the executor.
 
+import nodePath from "node:path";
 import { parse } from "@solidity-parser/parser";
 import type { AuditFinding } from "./finding-schema.js";
 import type { PromotionDecision } from "./scoring.js";
@@ -65,6 +66,14 @@ const FORBIDDEN_FORGE_STD_SUBSTR = ["StdStorage", "StdCheats", "/Vm.sol"];
 
 /** Base contracts the single test contract may inherit (forge-std assertion surface). */
 const ALLOWED_TEST_BASES = new Set(["Test", "StdAssertions", "DSTest"]);
+
+/** Reserved names that MUST have forge-std provenance — never test-declared,
+ * aliased from a non-forge-std source, or bound to the target. Smuggling a fake
+ * `Test`/`assertEq`/`Vm` surface is a hollow-verdict vector. */
+const RESERVED_FORGE_STD_NAMES = new Set(["Test", "StdAssertions", "DSTest", "Vm", "vm"]);
+function isAssertName(name: string): boolean {
+  return name === "assert" || name.startsWith("assert");
+}
 
 /** The HEVM cheatcode address, literal + its keccak derivation string. */
 const HEVM_ADDRESS_LOWER = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
@@ -267,11 +276,20 @@ function enclosingContractAtLine(ast: ClosureAst, line: number): ClosureContract
 
 // --- Static gates (§3.3 staticGatePoc) ---------------------------------------
 
+/** AST char-range [start,end] of a statement (for Phase-3 trace scoping). */
+export type PocSpan = { start: number; end: number };
+
 export type PocBinding = {
   targetSymbol: string;
   targetPath: string;
   /** The single local variable holding the deployed target instance. */
   deployedVar: string;
+  /** Statement ranges the executor uses to scope `drove` to the bound direct
+   * drive + post-drive assertion (§3.3/§3.4). Best-effort; may be undefined when
+   * a range is unavailable. */
+  constructorSpan?: PocSpan;
+  driveSpan?: PocSpan;
+  assertSpan?: PocSpan;
 };
 
 /** The AST char-range of the single top-level Tier-2 drive statement (§3.3.B B5),
@@ -424,6 +442,10 @@ function tryStaticBound(
   if (csErr !== null) {
     return fail(csErr);
   }
+  const fabErr = checkFabricationSurface(ast, testContract);
+  if (fabErr !== null) {
+    return fail(fabErr);
+  }
 
   // Gate 2/3: forbidden constructs (Tier-1 bans the salt option entirely).
   const forbidden = scanForbiddenConstructs(body);
@@ -487,13 +509,41 @@ function tryStaticBound(
     return fail(`assertion is a decidable tautology (${taut})`);
   }
 
-  return {
-    passed: true,
-    reasons: [],
-    tier: "static-bound",
-    assertionForm: "target-read",
-    binding: { targetSymbol: pocTarget.symbol, targetPath: pocTarget.path, deployedVar },
+  // Emit the statement spans the Phase-3 executor uses to scope `drove`/the
+  // post-drive assertion to exactly the bound direct drive (§3.4).
+  const rangeOf = (stmt: unknown): PocSpan | undefined => {
+    const r = asArray((stmt as Record<string, unknown> | null)?.["range"]);
+    return r.length === 2 && typeof r[0] === "number" && typeof r[1] === "number"
+      ? { start: r[0], end: r[1] }
+      : undefined;
   };
+  const ctorIdx = statements.findIndex((s) => varDeclInit(s)?.name === deployedVar);
+  const assertIdx = statements.findIndex((s, i) => {
+    if (i <= driveIdx) {
+      return false;
+    }
+    const c = topLevelCall(s);
+    const nm = c === null ? null : calleeIdentifierName(c);
+    return nm !== null && nm.startsWith("assert");
+  });
+  const binding: PocBinding = {
+    targetSymbol: pocTarget.symbol,
+    targetPath: pocTarget.path,
+    deployedVar,
+  };
+  const ctorSpan = ctorIdx >= 0 ? rangeOf(statements[ctorIdx]) : undefined;
+  const driveSpan = rangeOf(statements[driveIdx]);
+  const assertSpan = assertIdx >= 0 ? rangeOf(statements[assertIdx]) : undefined;
+  if (ctorSpan !== undefined) {
+    binding.constructorSpan = ctorSpan;
+  }
+  if (driveSpan !== undefined) {
+    binding.driveSpan = driveSpan;
+  }
+  if (assertSpan !== undefined) {
+    binding.assertSpan = assertSpan;
+  }
+  return { passed: true, reasons: [], tier: "static-bound", assertionForm: "target-read", binding };
 }
 
 // --- Tier-2 harness-driven path (§3.3.B) -------------------------------------
@@ -532,39 +582,45 @@ function applyRemappings(
 
 /** §3.3.A: an import specifier is vendored scaffolding iff it matches the
  * allowlist AND does not resolve into the repo's own src/test/script. */
-/** A resolved import path is a proven real-dependency root iff it is NOT rooted
- * at the repo's own src/test/script AND has a `lib/` or `node_modules/` segment
- * at the root (not merely somewhere inside, so `src/lib/…` does NOT qualify). */
-function isRealDepRoot(resolved: string): boolean {
-  const p = resolved.replace(/^\.?\//u, "");
-  if (/^(src|test|script)\//u.test(p)) {
+/** POSIX-normalize a resolved import path (collapses `a/../b`, keeps a leading
+ * `../` that escapes the repo root instead of textually deleting it). */
+function posixNormalize(p: string): string {
+  return nodePath.posix.normalize(p).replace(/^\.\//u, "");
+}
+
+/** A resolved (already POSIX-normalized) path is a proven real-dependency root
+ * iff it does NOT escape the repo (`../`), is NOT absolute, is NOT rooted at the
+ * repo's own src/test/script, AND is rooted at `lib/` or `node_modules/` (a
+ * nested `.../node_modules/…` also qualifies; a mid-path `/lib/` does NOT). */
+function isRealDepRoot(normalized: string): boolean {
+  if (normalized.startsWith("../") || normalized.startsWith("/")) {
+    return false; // escapes the repo root / absolute
+  }
+  if (/^(src|test|script|vendor)\//u.test(normalized)) {
     return false; // repo-authored root
   }
-  return /^(lib|node_modules)\//u.test(p) || /\/node_modules\//u.test(p);
+  return /^(lib|node_modules)\//u.test(normalized) || /\/node_modules\//u.test(normalized);
 }
 
 function specifierIsVendored(
   importPath: string,
   remappings: readonly (readonly [string, string])[],
 ): boolean {
-  const resolved = stripDotSegments(applyRemappings(importPath, remappings));
-  // forge-std is the canonical test framework — always benign scaffolding, even
-  // without a lib/ remapping (its assertion/vm/console surface is bounded).
-  if (/(^|\/)forge-std\//u.test(importPath) || /(^|\/)forge-std\//u.test(resolved)) {
-    return true;
-  }
-  // The allowlist patterns are specific vendored-package specifiers; a repo-src
-  // import (e.g. `src/Helper.sol`) matches none of them, so it is never vendored.
-  const matched = SCAFFOLD_SPECIFIER_ALLOWLIST.some(
-    (re) => re.test(importPath) || re.test(resolved),
-  );
+  // The ORIGINAL specifier must itself match the allowlist — resolving-then-
+  // matching would let `evil/Fake.sol` remap INTO `lib/v4-core/test/utils/…`.
+  const matched = SCAFFOLD_SPECIFIER_ALLOWLIST.some((re) => re.test(importPath));
   if (!matched) {
     return false;
   }
-  // Non-forge-std vendored scaffolding MUST resolve (through remappings /
-  // dot-normalization) to a proven lib/node_modules ROOT — a remapping into the
-  // repo's own `vendor/`/`src/` tree, or a relative `../src/lib/…`, is rejected.
-  return isRealDepRoot(resolved);
+  const normalized = posixNormalize(applyRemappings(importPath, remappings));
+  // forge-std may match by specifier, but still must not resolve into the repo's
+  // own src/test/script (a `src/forge-std/Test.sol` fake is rejected).
+  if (/(^|\/)forge-std\//u.test(importPath)) {
+    return !normalized.startsWith("../") && !/^(src|test|script|vendor)\//u.test(normalized);
+  }
+  // Non-forge-std vendored scaffolding MUST resolve to a proven lib/node_modules
+  // ROOT (a remap into repo vendor/src, or a `../`-escape, is rejected).
+  return isRealDepRoot(normalized);
 }
 
 /** Classify an instantiated / inherited symbol against §3.3.A. */
@@ -603,6 +659,65 @@ function isHarnessShaped(ast: unknown): boolean {
 /** Closed-symbol invariant (§3.3): every import must resolve to the target, the
  * forge-std assertion/console surface, or §3.3.A-allowlisted vendored scaffolding
  * — never a repo src/test/script import (other than the target). */
+/** Structural fabrication-surface guard (BOTH tiers) — closes the smuggling of a
+ * fake assertion/cheat surface that a bare-name allowlist misses:
+ *  - no `Vm` type anywhere (import, cast `Vm(...)`, or a `Vm`-typed decl/param) —
+ *    only the canonical `vm` from the Test base may exist, and a `Vm` handle would
+ *    reach forbidden cheats receiver-agnostically;
+ *  - no test-declared function named `assert*`/`expectRevert` (a fake no-op assert
+ *    shadows the real one → a trivially-passing test);
+ *  - no import binds a RESERVED name (Test/StdAssertions/DSTest/Vm/vm/assert*) from
+ *    a non-forge-std source (e.g. `import {Vault as Test}` or `{assertEq}` from src). */
+function checkFabricationSurface(
+  ast: unknown,
+  testContract: Record<string, unknown>,
+): string | null {
+  // 1. Reserved-name imports must come from forge-std only.
+  for (const imp of collectImports(ast)) {
+    const fromForgeStd = /(^|\/)forge-std\//u.test(imp.path);
+    for (const local of imp.symbols.keys()) {
+      if ((RESERVED_FORGE_STD_NAMES.has(local) || isAssertName(local)) && !fromForgeStd) {
+        return `import binds a reserved name \`${local}\` from a non-forge-std source \`${imp.path}\``;
+      }
+    }
+  }
+  // 2. No test-declared assert*/expectRevert function (fake assertion surface).
+  for (const sub of asArray(testContract["subNodes"])) {
+    if (nodeType(sub) === "FunctionDefinition") {
+      const nm = (sub as Record<string, unknown>)["name"];
+      if (typeof nm === "string" && (isAssertName(nm) || nm === "expectRevert")) {
+        return `test declares a reserved function \`${nm}\` (fake assertion/cheat surface)`;
+      }
+    }
+  }
+  // 3. No `Vm` type usage anywhere (import Vm.sol, `Vm(...)` cast, `Vm x`/param).
+  let vmType: string | null = null;
+  walk(ast, (n) => {
+    if (vmType !== null) {
+      return;
+    }
+    const t = nodeType(n);
+    const rec = n as Record<string, unknown>;
+    if (t === "UserDefinedTypeName" && rec["namePath"] === "Vm") {
+      vmType = "declares/uses a `Vm` type (only the canonical `vm` is allowed)";
+    }
+    // `Vm(addr)` cast — a FunctionCall whose callee is the identifier `Vm`.
+    if (t === "FunctionCall") {
+      const callee = rec["expression"];
+      if (
+        nodeType(callee) === "Identifier" &&
+        (callee as Record<string, unknown>)["name"] === "Vm"
+      ) {
+        vmType = "casts to `Vm(...)` (only the canonical `vm` is allowed)";
+      }
+    }
+  });
+  if (vmType !== null) {
+    return vmType;
+  }
+  return null;
+}
+
 function checkClosedSymbol(
   ast: unknown,
   pocTarget: PocTarget,
@@ -633,12 +748,18 @@ function checkClosedSymbol(
       ALLOWED_LOG_SPECIFIER.test(path) ||
       /(^|\/)forge-std\/(Test|StdAssertions|Vm|console2?)\.sol$/u.test(path)
     ) {
+      // forge-std surface — but it must NOT resolve into the repo's own tree
+      // (a `src/forge-std/Test.sol` fake, or a remap of forge-std into src/).
+      const norm = posixNormalize(applyRemappings(path, remappings));
+      if (norm.startsWith("../") || /^(src|test|script|vendor)\//u.test(norm)) {
+        return `forge-std import \`${path}\` resolves into the repo tree (\`${norm}\`) — not the real toolchain`;
+      }
       continue; // forge-std assertion / vm / console surface ONLY
     }
     if (specifierIsVendored(path, remappings)) {
       continue; // §3.3.A vendored scaffolding (real-dep root proven)
     }
-    const resolved = stripDotSegments(applyRemappings(path, remappings));
+    const resolved = posixNormalize(applyRemappings(path, remappings));
     if (REPO_SRC_RE.test(resolved) || path.startsWith("./") || path.startsWith("../")) {
       return `imports a repo-src symbol from \`${path}\` (requires a repo-src dependency instantiation)`;
     }
@@ -693,6 +814,10 @@ function tryHarnessDriven(
   if (csErr !== null) {
     return fail(csErr);
   }
+  const fabErr = checkFabricationSurface(ast, testContract);
+  if (fabErr !== null) {
+    return fail(fabErr);
+  }
 
   // B2 hard invariants: cheatcode/exfil denylist over the WHOLE contract, WITH the
   // §3.3.A CREATE2/HookMiner salt carve-out and the vm.expectRevert revert-form.
@@ -725,7 +850,7 @@ function tryHarnessDriven(
       // one), never a bare literal — a literal salt is spec-drift (the realistic
       // hook case mines the flag-encoded address).
       const salt = extractSaltValue(rec["expression"]);
-      if (salt !== undefined && !saltIsHookMinerDerived(salt)) {
+      if (salt !== undefined && !saltIsHookMinerDerived(salt, testContract)) {
         anchorProblem = `\`new ${newSym}{salt:…}\` salt is not HookMiner-derived (literal salt not allowed)`;
         return;
       }
@@ -827,24 +952,43 @@ function extractSaltValue(newExpr: unknown): unknown {
 
 /** True when a salt expression references `HookMiner` or a local identifier
  * (assumed computed) — i.e. it is NOT a bare literal / literal-only cast. */
-function saltIsHookMinerDerived(salt: unknown): boolean {
-  let ok = false;
+function saltIsHookMinerDerived(salt: unknown, scope: unknown): boolean {
+  // The salt must NOT be a bare literal / literal-only cast — it references a
+  // local (the mined value) or HookMiner directly.
+  let hasIdentifier = nodeType(salt) === "Identifier";
   walk(salt, (n) => {
-    const t = nodeType(n);
-    if (t === "Identifier") {
+    if (nodeType(n) === "Identifier") {
       const nm = (n as Record<string, unknown>)["name"];
-      // A local variable or a `HookMiner` reference — either is acceptable
-      // (a literal-only salt has no Identifier at all, only NumberLiteral/casts).
       if (typeof nm === "string" && nm !== "bytes32" && nm !== "uint256" && nm !== "bytes") {
-        ok = true;
+        hasIdentifier = true;
       }
     }
   });
-  // The top expression itself being a bare Identifier also counts.
-  if (nodeType(salt) === "Identifier") {
-    ok = true;
+  if (!hasIdentifier) {
+    return false;
   }
-  return ok;
+  // AND a `HookMiner.find(...)` call must exist in the enclosing scope (the salt
+  // is the mined value; a keccak/arbitrary local is not HookMiner-derived).
+  let hasHookMinerFind = false;
+  walk(scope, (n) => {
+    if (nodeType(n) !== "FunctionCall") {
+      return;
+    }
+    const callee = (n as Record<string, unknown>)["expression"];
+    if (
+      nodeType(callee) === "MemberAccess" &&
+      (callee as Record<string, unknown>)["memberName"] === "find"
+    ) {
+      const obj = (callee as Record<string, unknown>)["expression"];
+      if (
+        nodeType(obj) === "Identifier" &&
+        (obj as Record<string, unknown>)["name"] === "HookMiner"
+      ) {
+        hasHookMinerFind = true;
+      }
+    }
+  });
+  return hasHookMinerFind;
 }
 
 /** Count `vm.expectRevert(...)` calls anywhere in a scope. */
@@ -1107,17 +1251,25 @@ function assertHasForbiddenHelperCall(
 function isTautologyAssert(call: Record<string, unknown>): boolean {
   const name = calleeIdentifierName(call);
   const args = asArray(call["arguments"]);
-  // Binary comparators with two structurally-identical operands.
+  // Binary comparators with two operands that are equal AFTER stripping identity
+  // arithmetic / casts (`assertEq(x, x + 0)`, `assertEq(x, uint256(x))`).
   if (
     name !== null &&
     (name === "assertEq" || name === "assertNotEq" || name === "assertApproxEqAbs") &&
     args.length >= 2 &&
-    exprKey(args[0]) === exprKey(args[1])
+    exprKey(canonExpr(args[0])) === exprKey(canonExpr(args[1]))
   ) {
     return true;
   }
-  // `>= 0` / `<= max` reflexive predicates.
-  if ((name === "assertGe" || name === "assertLe") && args.length >= 2 && isZeroLiteral(args[1])) {
+  // Reflexive numeric bounds: `>= 0` / `>= type(uintN).min` / `<= type(uintN).max`.
+  if (
+    name === "assertGe" &&
+    args.length >= 2 &&
+    (isZeroLiteral(args[1]) || isTypeBound(args[1], "min"))
+  ) {
+    return true;
+  }
+  if (name === "assertLe" && args.length >= 2 && isTypeBound(args[1], "max")) {
     return true;
   }
   // A single-arg assertTrue/assertFalse over a self-comparison or const-collapse.
@@ -1126,8 +1278,67 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
       return true;
     }
   }
-  // Any operand with a constant-collapsing arithmetic (`x*0`, `x-x`).
+  // Any operand with a constant-collapsing / identity arithmetic (`x*0`, `x-x`).
   return args.some((a) => hasConstCollapse(a));
+}
+
+/** Strip value-preserving identity wrappers: `x + 0`, `x - 0`, `x * 1`, `x / 1`,
+ * and numeric casts `uintN(x)` / `bytesN(x)` — so a launder like `x + 0` compares
+ * equal to `x`. */
+function canonExpr(node: unknown): unknown {
+  const t = nodeType(node);
+  const rec = node as Record<string, unknown>;
+  if (t === "BinaryOperation") {
+    const op = rec["operator"];
+    const l = canonExpr(rec["left"]);
+    const r = canonExpr(rec["right"]);
+    if ((op === "+" || op === "-" || op === "|" || op === "^") && isZeroLiteral(rec["right"])) {
+      return l;
+    }
+    if (op === "+" && isZeroLiteral(rec["left"])) {
+      return r;
+    }
+    if ((op === "*" || op === "/") && isOneLiteral(rec["right"])) {
+      return l;
+    }
+    if (op === "*" && isOneLiteral(rec["left"])) {
+      return r;
+    }
+    return { type: "BinaryOperation", operator: op, left: l, right: r };
+  }
+  // A cast `uintN(x)` / `bytesN(x)` — FunctionCall on an elementary type name.
+  if (t === "FunctionCall") {
+    const callee = rec["expression"];
+    const args = asArray(rec["arguments"]);
+    if (nodeType(callee) === "ElementaryTypeName" && args.length === 1) {
+      return canonExpr(args[0]);
+    }
+  }
+  return node;
+}
+
+function isOneLiteral(node: unknown): boolean {
+  return (
+    nodeType(node) === "NumberLiteral" &&
+    String((node as Record<string, unknown>)["number"] ?? "").replace(/_/gu, "") === "1"
+  );
+}
+
+/** `type(uintN).max` / `type(uintN).min` — a reflexive numeric bound. */
+function isTypeBound(node: unknown, which: "max" | "min"): boolean {
+  if (nodeType(node) !== "MemberAccess") {
+    return false;
+  }
+  const rec = node as Record<string, unknown>;
+  if (rec["memberName"] !== which) {
+    return false;
+  }
+  const obj = rec["expression"];
+  return (
+    nodeType(obj) === "FunctionCall" &&
+    nodeType((obj as Record<string, unknown>)["expression"]) === "Identifier" &&
+    ((obj as Record<string, unknown>)["expression"] as Record<string, unknown>)["name"] === "type"
+  );
 }
 
 function isSelfComparison(node: unknown): boolean {
@@ -1178,7 +1389,7 @@ function exprKey(node: unknown): string {
   const rec = node as Record<string, unknown>;
   const keys = Object.keys(rec)
     .filter((k) => k !== "range" && k !== "loc")
-    .sort();
+    .toSorted();
   return `{${keys.map((k) => `${k}:${exprKey(rec[k])}`).join(",")}}`;
 }
 
@@ -1235,6 +1446,11 @@ export type PocRecord = {
   /** The atomic §1 caveat string co-carried in the serialized record. */
   label: string | null;
   target: PocTarget | null;
+  /** Static-bound (Tier-1) binding with the drive/assert spans; undefined on the
+   * harness path. Serialized so a Phase-3 executor / receipt can scope the trace. */
+  binding: PocBinding | null;
+  /** Harness-driven (Tier-2) drive span; undefined on the static path. */
+  harnessDriveSpan: PocHarnessDriveSpan | null;
   testPath: string | null;
   testContents: string | null;
   staticGate: { passed: boolean; reasons: string[] };
@@ -1284,7 +1500,7 @@ export function wouldPromotePoc(args: {
   if (poc.target === null || e.deployedTargetPath !== poc.target.path) {
     return null;
   }
-  if (poc.tier === "static-bound" && e.drove) {
+  if (poc.tier === "static-bound" && poc.assertionForm === "target-read" && e.drove) {
     return "static-bound";
   }
   if (
@@ -1328,19 +1544,22 @@ export function promoteWithPoc(args: {
       reason: `PoC failed static gate: ${poc.staticGate.reasons.join("; ")}`,
     };
   }
-  if (poc.assertionForm === "no-revert") {
-    return {
-      verdict: "PURSUE",
-      reason: "harness ran, no-revert only (not a terminal verdict)",
-    };
-  }
-  if (!poc.executed || execution === null) {
+  // "not executed" is checked BEFORE the no-revert reason so a generation-only
+  // (Phase-1) harness PoC is not misreported as having run.
+  const executedOk = poc.executed && execution !== null && execution.executed;
+  if (!executedOk) {
     return {
       verdict: "PURSUE",
       reason:
         poc.tier === "harness-driven"
           ? "harness PoC awaiting execution"
           : "PoC generated + statically gated, not executed (executor off)",
+    };
+  }
+  if (poc.assertionForm === "no-revert") {
+    return {
+      verdict: "PURSUE",
+      reason: "harness ran, no-revert only (not a terminal verdict)",
     };
   }
   const e = execution;
