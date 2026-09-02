@@ -1355,10 +1355,15 @@ function constTruth(lRaw: unknown, op: string, rRaw: unknown): "T" | "F" | null 
   // expression (`type(uint256).max - 1 + 1`, `2 ** 256 - 1`), which closes the
   // obfuscated-bound tautology without a spelling arms race (constant expressions
   // are fully decidable). `foldConst` returns null for anything non-constant.
-  const lowL = isZeroLiteral(l) || isTypeBound(l, "min") || foldConst(l) === 0n;
-  const lowR = isZeroLiteral(r) || isTypeBound(r, "min") || foldConst(r) === 0n;
-  const maxL = isTypeBound(l, "max") || foldConst(l) === UINT256_MAX;
-  const maxR = isTypeBound(r, "max") || foldConst(r) === UINT256_MAX;
+  // Fold the RAW operands (not `canonExpr`'d ones): canonExpr strips numeric casts
+  // as value-preserving, which would discard the 2's-complement wrap in
+  // `uint256(int256(-1))` before foldConst can evaluate it.
+  const foldL = foldConst(lRaw);
+  const foldR = foldConst(rRaw);
+  const lowL = isZeroLiteral(l) || isTypeBound(l, "min") || foldL === 0n;
+  const lowR = isZeroLiteral(r) || isTypeBound(r, "min") || foldR === 0n;
+  const maxL = isTypeBound(l, "max") || foldL === UINT256_MAX;
+  const maxR = isTypeBound(r, "max") || foldR === UINT256_MAX;
   switch (op) {
     case "==": {
       return self ? "T" : null;
@@ -1413,11 +1418,21 @@ function foldConst(node: unknown): bigint | null {
     return typeBoundValue(n);
   }
   if (t === "FunctionCall") {
-    // A numeric cast `uintN(expr)` is value-preserving for an in-range constant.
     const callee = rec["expression"];
     const args = asArray(rec["arguments"]);
     if (nodeType(callee) === "ElementaryTypeName" && args.length === 1) {
-      return foldConst(args[0]);
+      const v = foldConst(args[0]);
+      if (v === null) {
+        return null;
+      }
+      // A `uintN(neg)` cast wraps 2's-complement: `uint256(int256(-1))` == 2**256-1.
+      // Wrap into the 256-bit unsigned range (the widest — this over-approximates a
+      // narrower cast toward the extreme, which only ever OVER-rejects a bound).
+      const typeName = String((callee as Record<string, unknown>)["name"] ?? "");
+      if (/^uint\d*$/u.test(typeName) && v < 0n) {
+        return ((v % (UINT256_MAX + 1n)) + (UINT256_MAX + 1n)) % (UINT256_MAX + 1n);
+      }
+      return v;
     }
     return null;
   }
@@ -1426,7 +1441,16 @@ function foldConst(node: unknown): bigint | null {
     if (v === null) {
       return null;
     }
-    return rec["operator"] === "-" ? -v : null; // `~` is width-dependent → not folded
+    if (rec["operator"] === "-") {
+      return -v;
+    }
+    // 256-bit bitwise complement (`~uint256(0)` == 2**256-1). Using the widest
+    // width over-approximates a narrower `~uintN(x)` toward the extreme — sound
+    // because it can only OVER-reject a bound, never miss a real load-bearing one.
+    if (rec["operator"] === "~") {
+      return UINT256_MAX - v;
+    }
+    return null;
   }
   if (t === "BinaryOperation") {
     const l = foldConst(rec["left"]);

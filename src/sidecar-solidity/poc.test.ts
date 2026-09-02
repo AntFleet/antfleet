@@ -537,6 +537,9 @@ contract AuditPoc is Vault, Test {
       "assertLe(b, type(uint256).max - 1 + 1);",
     ],
     ["power-spelled max (assertLe(b, 2 ** 256 - 1))", "assertLe(b, 2 ** 256 - 1);"],
+    // Width-dependent spellings of the extreme (foldConst folds ~ and neg-cast wrap):
+    ["complement-spelled max (assertLe(b, ~uint256(0)))", "assertLe(b, ~uint256(0));"],
+    ["neg-cast-wrap max (assertLe(b, uint256(int256(-1))))", "assertLe(b, uint256(int256(-1)));"],
   ] as const) {
     notStrongConfirmed(
       label,
