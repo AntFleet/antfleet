@@ -138,30 +138,47 @@ export function parseClosureFile(path: string, source: string): ClosureAst | nul
     const rec = node as Record<string, unknown>;
     const name = typeof rec["name"] === "string" ? rec["name"] : "";
     const rawKind = typeof rec["kind"] === "string" ? rec["kind"] : "contract";
-    const isAbstract = rec["abstract"] === true;
+    // `@solidity-parser/parser` marks an abstract contract with `kind:"abstract"`
+    // (NOT an `abstract:true` flag), so key on the kind — otherwise an abstract
+    // (non-deployable) contract is misclassified `"contract"` and could be
+    // resolved as a `new`-able target.
     const kind: ClosureContractDecl["kind"] =
       rawKind === "interface"
         ? "interface"
         : rawKind === "library"
           ? "library"
-          : isAbstract
+          : rawKind === "abstract" || rec["abstract"] === true
             ? "abstract"
             : "contract";
     const bases = baseContractNames(rec);
     const functions = new Map<string, (string | null)[]>();
-    for (const sub of asArray(rec["subNodes"])) {
-      if (nodeType(sub) !== "FunctionDefinition") {
-        continue;
-      }
-      const f = sub as Record<string, unknown>;
-      const fname = typeof f["name"] === "string" ? f["name"] : "";
-      if (fname.length === 0 || f["isConstructor"] === true) {
-        continue;
-      }
-      const mut = typeof f["stateMutability"] === "string" ? f["stateMutability"] : null;
+    const addMut = (fname: string, mut: string | null): void => {
       const list = functions.get(fname) ?? [];
       list.push(mut);
       functions.set(fname, list);
+    };
+    for (const sub of asArray(rec["subNodes"])) {
+      const st = nodeType(sub);
+      const f = sub as Record<string, unknown>;
+      if (st === "FunctionDefinition") {
+        const fname = typeof f["name"] === "string" ? f["name"] : "";
+        if (fname.length === 0 || f["isConstructor"] === true) {
+          continue;
+        }
+        const raw = typeof f["stateMutability"] === "string" ? f["stateMutability"] : null;
+        // Legacy `function f() constant` is a view getter.
+        addMut(fname, raw === "constant" ? "view" : raw);
+      } else if (st === "StateVariableDeclaration") {
+        // A `public` state variable compiles to an external VIEW getter of its
+        // name — the most common target read, so register it as a view function.
+        for (const v of asArray(f["variables"])) {
+          const vr = v as Record<string, unknown>;
+          const vname = typeof vr["name"] === "string" ? vr["name"] : "";
+          if (vr["visibility"] === "public" && vname.length > 0) {
+            addMut(vname, "view");
+          }
+        }
+      }
     }
     contracts.push({ path, name, kind, bases, functions });
   }
@@ -228,13 +245,16 @@ export function resolvePocTarget(
       if (entryAst === undefined || isNonRealDepPath(entryPath)) {
         continue;
       }
+      // A concrete deployable entry that DECLARES the cited symbol by name.
+      // (Resolving an entry that merely INHERITS the cited abstract/interface code
+      // via the closure linearization is a future recall enhancement, not yet done.)
       const match = entryAst.contracts.find((c) => c.kind === "contract" && c.name === symbol);
       if (match !== undefined) {
         hits.push({
           path: match.path,
           symbol: match.name,
           kind: "contract",
-          derivation: "resolved deployable target reaching cited code",
+          derivation: "unique concrete deployable entry declaring the cited symbol",
         });
       }
     }
@@ -741,6 +761,22 @@ function checkFabricationSurface(
     }
   }
   // 3. No `Vm` type usage anywhere (import Vm.sol, `Vm(...)` cast, `Vm x`/param).
+  // A `Vm` handle reaches forbidden cheats (`store`/`etch`/`load`/`mockCall*`)
+  // receiver-agnostically, so a fabricated-storage PoC needs one. The type may be
+  // ALIASED (`import {Vm as CheatCodes} from "forge-std/Vm.sol"`) and the handle
+  // constructed from the HEVM address in ANY spelling (hex, decimal, `address(vm)`),
+  // so we ban every LOCAL NAME bound to the forge-std `Vm` type — not just the
+  // literal `Vm` — and reject its use as a type or a cast callee.
+  const vmNames = new Set<string>(["Vm"]);
+  for (const imp of collectImports(ast)) {
+    if (/(^|\/)forge-std\/Vm\.sol$/u.test(imp.path)) {
+      for (const [local, original] of imp.symbols) {
+        if (original === "Vm") {
+          vmNames.add(local);
+        }
+      }
+    }
+  }
   let vmType: string | null = null;
   walk(ast, (n) => {
     if (vmType !== null) {
@@ -748,15 +784,15 @@ function checkFabricationSurface(
     }
     const t = nodeType(n);
     const rec = n as Record<string, unknown>;
-    if (t === "UserDefinedTypeName" && rec["namePath"] === "Vm") {
+    if (t === "UserDefinedTypeName" && vmNames.has(String(rec["namePath"]))) {
       vmType = "declares/uses a `Vm` type (only the canonical `vm` is allowed)";
     }
-    // `Vm(addr)` cast — a FunctionCall whose callee is the identifier `Vm`.
+    // `Vm(addr)` cast — a FunctionCall whose callee is a Vm-bound identifier.
     if (t === "FunctionCall") {
       const callee = rec["expression"];
       if (
         nodeType(callee) === "Identifier" &&
-        (callee as Record<string, unknown>)["name"] === "Vm"
+        vmNames.has(String((callee as Record<string, unknown>)["name"]))
       ) {
         vmType = "casts to `Vm(...)` (only the canonical `vm` is allowed)";
       }

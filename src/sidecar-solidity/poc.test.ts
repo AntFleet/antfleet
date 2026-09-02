@@ -94,6 +94,16 @@ describe("resolvePocTarget", () => {
     expect(t).toBeNull();
   });
 
+  it("declines an ABSTRACT contract (non-deployable — parser emits kind:abstract)", () => {
+    const ABS = `pragma solidity ^0.8.0;\nabstract contract Abs { function f() external virtual; }\n`;
+    const t = resolvePocTarget(
+      { evidence: [{ path: "src/Abs.sol", startLine: 2, endLine: 2, symbol: "Abs", quote: null }] },
+      { entries: ["src/Abs.sol"] },
+      closure({ "src/Abs.sol": ABS }),
+    );
+    expect(t).toBeNull();
+  });
+
   it("declines when two entries declare the same concrete symbol (ambiguous)", () => {
     const A = `pragma solidity ^0.8.0;\ncontract Dup { function f() external {} }\n`;
     const B = `pragma solidity ^0.8.0;\ncontract Dup { function g() external {} }\n`;
@@ -112,6 +122,21 @@ describe("staticGatePoc — a valid local-deploy PoC passes", () => {
     expect(r.passed, r.reasons.join(" | ")).toBe(true);
     expect(r.binding?.deployedVar).toBe("t");
     expect(r.binding?.targetSymbol).toBe("Vault");
+  });
+
+  // A PUBLIC STATE VARIABLE getter (`uint256 public total` → `total()`) is the
+  // most common target read; it must resolve as a view getter (was missed when
+  // only FunctionDefinition subnodes were indexed).
+  it("a public state-variable getter (t.total()) is a Tier-1 view read", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.total();
+        assertEq(b, 0);`),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
   });
 });
 
@@ -928,6 +953,34 @@ contract AuditPoc is Test, Deployers {
       [["@uniswap/v4-core/", "vendor/v4-core/"]], // repo-authored root, not lib/
     );
     expect(r.passed).toBe(false);
+  });
+
+  // Aliased `Vm` import defeats the literal-name Vm guard: `import {Vm as X}` +
+  // `X(<any-spelling-of-HEVM-addr>).store(...)` fabricates target storage. The
+  // fabrication guard now bans every local name bound to the forge-std Vm type,
+  // regardless of how the cheatcode address is spelled (hex/decimal/address(vm)).
+  it("aliased Vm import + cheat.store fabrication declines (any address spelling)", () => {
+    const decAddr = "645326474426547203313410069153905908525362434349"; // 0x7109…DD12D
+    for (const ctor of [
+      "CheatCodes(address(uint160(" + decAddr + ")))",
+      "CheatCodes(address(vm))",
+      "CheatCodes(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D)",
+    ]) {
+      const src = `${H2}import {Vm as CheatCodes} from "forge-std/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    CheatCodes cheats = ${ctor};
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public {
+        hook.deposit(1);
+        uint256 b = hook.balance();
+        assertGt(b, 1000);
+    }
+}
+`;
+      const r = g2(src);
+      expect(r.passed, `ctor=${ctor} reasons=${r.reasons.join(" | ")}`).toBe(false);
+    }
   });
 });
 

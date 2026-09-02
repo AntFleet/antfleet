@@ -1040,7 +1040,20 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
     executor MUST source the assertion framework only from the pinned image and drop target
     remappings of it (spec'd in §3.4); (ii) an executor-enabled **non-terminal-render
     consistency** nit — `sweep.ts`/`run.ts` label an executed-but-unpromoted PoC generically
-    without checking `executed` (harmless while `executePoc` is undefined).
+    without checking `executed` (harmless while `executePoc` is undefined); (iii) **Tier-2
+    drive-receiver validation** — `classifyHarnessB4` accepts any top-level non-`vm`/non-assert
+    call as the harness drive without resolving its receiver, so a `console2.log(...)` can be
+    mislabeled the drive of a `revert`-form CANDIDATE. This is a Tier-2 CANDIDATE-quality issue,
+    **trace-visible** (a logging "drive" yields no `drove`/`targetFrameObserved`, so the Phase-3
+    trace co-validator rejects it — it can never mint a `POC_EXECUTED`), so it falls under the
+    accepted Tier-2 static residual; Phase 3 should require the drive receiver to be a target var
+    or §3.3.A scaffolding and exclude console/logging. **The full pre-merge 3-lane audit
+    (2026-09-02) additionally fixed, on the Tier-1/shared surface:** an aliased-`Vm` fabrication
+    surface (`import {Vm as X}` + `X(<hevm-addr, any spelling>).store(…)` — the fabrication guard
+    now bans every local name bound to the forge-std `Vm` type, **trace-invisible so fixed not
+    deferred**); abstract-contract mis-classification (parser emits `kind:"abstract"`); public
+    state-variable + legacy `constant` getters not resolved as view reads; and executor-throw
+    accounting (a thrown executor is a skipped-infra CANDIDATE, not a "generation failed" record).
 - **Phase 2 (SPIKE GATE):** run the model **blind, finding-scoped** over an **unfiltered
   PURSUE sample** (not a curated local-deployable slice — so prevalence is measured, not
   assumed), graded by a human who did **not** have a reference PoC. **Committed

@@ -520,7 +520,7 @@ describe("runFinder — PoC stage", () => {
     expect(result.scored[0]!.verdict).toBe("PURSUE");
   });
 
-  it("a thrown executor never crashes the run; finding stays PURSUE", async () => {
+  it("a thrown executor is a skipped-infra CANDIDATE, not a generation failure", async () => {
     const result = await runFinder(
       vaultInput,
       async () => handled({ findings: [vaultFinding] }),
@@ -531,6 +531,16 @@ describe("runFinder — PoC stage", () => {
     );
     expect(result.scored[0]!.verdict).toBe("PURSUE");
     expect(result.findings).toHaveLength(1);
+    // The executor THREW: the gated candidate record must be PRESERVED (not
+    // collapsed to the empty "generation failed" base) and counted as skipped-infra.
+    const poc = result.scored[0]!.poc!;
+    expect(poc.generated).toBe(true);
+    expect(poc.target).not.toBeNull();
+    expect(poc.staticGate.passed).toBe(true);
+    expect(poc.label).toContain("CANDIDATE — generated");
+    expect(poc.rationale).toContain("executor error");
+    expect(result.pocSkippedInfraCount).toBe(1);
+    expect(result.pocRanCount).toBe(0);
   });
 
   it("a DROP finding is never given a PoC", async () => {

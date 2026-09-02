@@ -446,7 +446,6 @@ export async function runFinder(
       pocCounters.attempted += 1;
       s.poc = await runPocStage({
         finding: s.finding,
-        baseReason: s.reason,
         entries: input.entries,
         files: input.files,
         programRules: input.programRules,
@@ -534,7 +533,6 @@ function pocSlug(title: string): string {
  */
 async function runPocStage(args: {
   finding: AuditFinding;
-  baseReason: string;
   entries: readonly string[];
   files: readonly { path: string; contents: string }[];
   programRules: string;
@@ -615,12 +613,26 @@ async function runPocStage(args: {
       args.onSkippedInfra(); // executor off (Phase 1): CANDIDATE only, stays PURSUE
       return { ...gatedBase, label: CANDIDATE_LABEL };
     }
-    const execution = await args.executePoc({
-      testContents: out.testContents,
-      binding: gate.binding,
-      harnessDriveSpan: gate.harnessDriveSpan,
-      pocTarget: target,
-    });
+    let execution: PocExecution;
+    try {
+      execution = await args.executePoc({
+        testContents: out.testContents,
+        binding: gate.binding,
+        harnessDriveSpan: gate.harnessDriveSpan,
+        pocTarget: target,
+      });
+    } catch (execErr) {
+      // An executor THROW is an INFRA skip, not a generation failure: count it as
+      // skipped-infra and PRESERVE the gated candidate record (target, testContents,
+      // static gate) rather than collapsing to the empty "generation failed" base.
+      args.onSkippedInfra();
+      return {
+        ...gatedBase,
+        executed: false,
+        label: CANDIDATE_LABEL,
+        rationale: `executor error: ${execErr instanceof Error ? execErr.message : String(execErr)}`,
+      };
+    }
     // An infra/gating skip (deps unavailable, GO missing) returns executed:false
     // and never promotes — count it as skipped, not run (§3.4).
     if (!execution.executed) {
