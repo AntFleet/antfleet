@@ -473,12 +473,34 @@ assembly stays banned on both tiers.
    (the "non-triviality rule", referenced by Tier-2 B4(ii)): a **unary** `assert*` on a
    **non-constant target bool getter** (`assertTrue(target.isBroken())`, `assertFalse(
    target.solvent())` — the strongest, fully load-bearing form) **passes**; but a **binary
-   comparison** must have the target-read on one side and an **independent** operand (a
-   literal/constant, a pre-drive snapshot, or a *distinct* read) on the other. A self-comparison
-   (`assertEq(x,x)`, `assertTrue(x==x)`), a type-reflexive predicate (`assertGe(uintGetter(),0)`,
-   `assertTrue(x==x)`), or a constant-collapsing arithmetic operand (`x*0`, `x|const`, `x-x`) is
-   **not** load-bearing → decline. The rule targets **only decidable tautologies**; semantic
-   bug-relevance beyond it is the human-gated residual (§1(a)), not machine-enforced.
+   comparison** must pit the target read against an **independent** operand. This is enforced by
+   a **STRICT structural rule** (the airtight promotable shape, not a blacklist of laundering
+   spellings) plus a **decidable-constant rejector**:
+   - **Strict bare-vs-independent binding** (`hasBoundAssertion`/`isBareTargetRead`): the
+     promotable comparison must pit a **BARE target read** (the view read itself, modulo
+     value-preserving casts / identity arithmetic / parens under `canonExpr`, and the
+     straight-line local binder) against a **target-INDEPENDENT** operand. **A comparison where
+     BOTH sides read the target is rejected** — this closes the entire self-referential family
+     (`assertEq(b, b + 5 - 5)`, `assertGe(b, uint256(b))`, `assertEq(t.a(), t.b())`) in one rule,
+     with no constant-folding arms race. A legit cross-view invariant (`assertEq(t.totalSupply(),
+     t.reserve())`) is intentionally **not promotable** here (safe false-negative → Tier-2
+     CANDIDATE); a `CONFIRMED` asserts a target read against a fixed expectation.
+   - **Decidable-constant rejection** (`constTruth` + `foldConst`): the comparison must not be
+     decidably always-true. `constTruth` decides self-comparison, reflexive numeric bounds
+     (`>= 0`, `<= type().max`), and offset-inequality (`x != x + k`) over `canonExpr`-normalized
+     operands, backed by `foldConst` — a **complete BigInt integer-constant evaluator** (number
+     literals, `type(uintN/intN).max/min`, casts with 2's-complement wrap, unary `-`/`~`, and all
+     binary arithmetic/bitwise/shift ops) — so every arithmetic *spelling* of a type extreme
+     (`type(uint256).max - 1 + 1`, `2 ** 256 - 1`, `~uint256(0)`, `uint256(int256(-1))`) is
+     decided, not enumerated. A **unary** bool getter still passes (load-bearing). Approximate
+     equality (`assertApproxEqAbs/Rel`) is **excluded from Tier-1** entirely (its model-supplied
+     tolerance is not statically verifiable; a too-large delta always passes) → Tier-2 CANDIDATE.
+     `hasConstCollapse` additionally rejects any bitwise/boolean combinator (`& | ^ << >> && ||`)
+     or arithmetic annihilator (`x*0`, `x-x`) on an operand.
+   Together these are **complete decision procedures** for the decidable-constant and
+   self-referential classes (bounded — a Tier-1 assertion is one straight-line comparison of a
+   target read); semantic bug-relevance beyond a *load-bearing* assertion is the human-gated
+   residual (§1(a)), not machine-enforced.
 
 **Tier-2 harness path (§3.3.B) — mints `POC_EXECUTED`** (only when gates 1/7/8 fail *for
 shape reasons* while every §3.3.A hard invariant holds). The harness path CANNOT bind the
@@ -981,21 +1003,30 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
       the load-bearing guard for `POC_EXECUTED`. Hardening the Tier-2 static gate to airtight
       is therefore **deferred to the Phase-3 executor increment**, done alongside the trace
       co-validator rather than as an unbounded static-only exercise now.
-  - **Focused Tier-1 re-audit (2026-09-02) — CONFIRMED path.** A 3-lane codex re-audit of the
-    combined impl diff, scoped to the promotable path, found and CLOSED two Tier-1 static-gate
-    holes (both verified against the real classifier, both fixed in `poc.ts` `hasConstCollapse`
-    / `isTautologyAssert` with regression tests): (a) **annihilator / self-cancel tautologies**
-    (`b | type(uint).max`, `b & 0`, `b ^ b`, `b % 1`, `b ** 0`, `b / b`, `0 << b`) that buried a
-    non-load-bearing target read inside a constant-collapsing operand; (b) **booleanized
-    reflexive bounds** (`assertTrue(b >= 0)` / `assertFalse(b < 0)` — the `assertGe(x,0)` twins).
-    The wiring lane found **no Phase-1 blocker** (promotion gated behind `execution.executed`,
-    `activeGo` honored, counters consistent, no static/harness tier-crossing). **Deferred to
-    Phase 3** (not Phase-1-reachable — generation-only, no executor): (i) **trusted
-    assertion-framework provenance** — a hostile audited repo could remap `forge-std/` to a
-    no-op `assertEq`; the executor MUST source the assertion framework only from the pinned
-    image and drop target remappings of it (spec'd in §3.4); (ii) an executor-enabled
-    **non-terminal-render consistency** nit — `sweep.ts`/`run.ts` label an executed-but-unpromoted
-    PoC generically without checking `executed` (harmless while `executePoc` is undefined).
+  - **Focused Tier-1 re-audit (2026-09-02) — CONFIRMED path.** An iterated adversarial codex
+    re-audit of the combined impl diff, scoped to the promotable path, drove the Tier-1 assertion
+    gate to soundness. Each hollow-`CONFIRMED` vector was reproduced against the REAL classifier
+    before fixing (codex fabricated its sample JSON repeatedly — always verify). The finding
+    sequence was a single class (a decidably-constant / non-load-bearing assertion) in escalating
+    spellings: annihilator/self-cancel + whole bitwise/boolean class; booleanized & negation/
+    paren-laundered reflexive bounds; cast/identity/comparator-family self-comparison;
+    offset-inequality; approx-eq tolerance; constant-folded self (`b + 5 - 5`); and arithmetic/
+    width-dependent spellings of a type extreme (`type().max - 1 + 1`, `2 ** 256 - 1`,
+    `~uint256(0)`, `uint256(int256(-1))`). Rather than patch spellings, the gate was rebuilt into
+    the **two complete decision procedures of §3.3 gate 8** — the STRICT bare-vs-independent
+    binding (closes the self-referential family) and `constTruth`+`foldConst` (a complete BigInt
+    constant evaluator, closes every constant spelling) — plus approx-eq exclusion. **Lesson:
+    when adversarial lanes keep finding the same class, stop patching instances and build the
+    decision procedure; a Tier-1 assertion is one straight-line comparison of a target read, so
+    the class is bounded and closable (unlike the Tier-2 scaffolding surface).** The wiring lane
+    found **no Phase-1 blocker** (promotion gated behind `execution.executed`, `activeGo` honored,
+    counters consistent, no static/harness tier-crossing). **Deferred to Phase 3** (not
+    Phase-1-reachable — generation-only, no executor): (i) **trusted assertion-framework
+    provenance** — a hostile audited repo could remap `forge-std/` to a no-op `assertEq`; the
+    executor MUST source the assertion framework only from the pinned image and drop target
+    remappings of it (spec'd in §3.4); (ii) an executor-enabled **non-terminal-render
+    consistency** nit — `sweep.ts`/`run.ts` label an executed-but-unpromoted PoC generically
+    without checking `executed` (harmless while `executePoc` is undefined).
 - **Phase 2 (SPIKE GATE):** run the model **blind, finding-scoped** over an **unfiltered
   PURSUE sample** (not a curated local-deployable slice — so prevalence is measured, not
   assumed), graded by a human who did **not** have a reference PoC. **Committed
