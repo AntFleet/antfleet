@@ -77,6 +77,9 @@ function isAssertName(name: string): boolean {
 
 /** The HEVM cheatcode address, literal + its keccak derivation string. */
 const HEVM_ADDRESS_LOWER = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
+/** The same address as a BigInt, to catch NON-hex spellings (decimal, arithmetic,
+ * `address(uint160(<dec>))`) that a substring scan of the hex literal misses. */
+const HEVM_ADDRESS_VALUE = BigInt(HEVM_ADDRESS_LOWER);
 
 /** assert* helpers whose FIRST arg only is the checked condition. */
 const ASSERT_CONDITION_ONLY = new Set(["assertTrue", "assertFalse", "assert"]);
@@ -462,7 +465,7 @@ function tryStaticBound(
   if (csErr !== null) {
     return fail(csErr);
   }
-  const fabErr = checkFabricationSurface(ast, testContract);
+  const fabErr = checkFabricationSurface(ast, testContract, remappings);
   if (fabErr !== null) {
     return fail(fabErr);
   }
@@ -634,8 +637,6 @@ const SCAFFOLD_SPECIFIER_ALLOWLIST: readonly RegExp[] = [
   /(^|\/)(?:openzeppelin[^/]*|@openzeppelin[^/]*)\/.*\/mocks\//u,
 ];
 
-/** forge-std console loggers — benign under the closed-symbol invariant. */
-const ALLOWED_LOG_SPECIFIER = /(^|\/)forge-std\/console2?\.sol$/u;
 const REPO_SRC_RE = /(^|\/)(src|test|script)\//u;
 
 function applyRemappings(
@@ -682,15 +683,33 @@ function specifierIsVendored(
   if (!matched) {
     return false;
   }
-  const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  // forge-std may match by specifier, but still must not resolve into the repo's
-  // own src/test/script (a `src/forge-std/Test.sol` fake is rejected).
-  if (/(^|\/)forge-std\//u.test(importPath)) {
-    return !normalized.startsWith("../") && !/^(src|test|script|vendor)\//u.test(normalized);
+  if (isForgeStdProvenance(importPath, remappings)) {
+    return true;
   }
+  const normalized = posixNormalize(applyRemappings(importPath, remappings));
   // Non-forge-std vendored scaffolding MUST resolve to a proven lib/node_modules
   // ROOT (a remap into repo vendor/src, or a `../`-escape, is rejected).
   return isRealDepRoot(normalized);
+}
+
+/** Genuine forge-std provenance: the CANONICAL `forge-std/...` specifier, or a
+ * normalized path under a real dependency root (`lib/forge-std/` |
+ * `node_modules/forge-std/`). A specifier that merely CONTAINS `/forge-std/`
+ * (`fake/forge-std/Test.sol`, `src/forge-std/…`) is repo-authored — it could ship
+ * a no-op `assertEq` (hollow CONFIRMED) or a cheat handle — and is rejected. Uses
+ * the ORIGINAL specifier for the canonical form (before remapping) plus the
+ * normalized path for the real-dep root, and never accepts a repo-tree landing. */
+function isForgeStdProvenance(
+  importPath: string,
+  remappings: readonly (readonly [string, string])[],
+): boolean {
+  const normalized = posixNormalize(applyRemappings(importPath, remappings));
+  if (normalized.startsWith("../") || /^(src|test|script|vendor)\//u.test(normalized)) {
+    return false;
+  }
+  return (
+    importPath.startsWith("forge-std/") || /^(lib|node_modules)\/forge-std\//u.test(normalized)
+  );
 }
 
 /** Classify an instantiated / inherited symbol against §3.3.A. */
@@ -741,10 +760,13 @@ function isHarnessShaped(ast: unknown): boolean {
 function checkFabricationSurface(
   ast: unknown,
   testContract: Record<string, unknown>,
+  remappings: readonly (readonly [string, string])[] = [],
 ): string | null {
-  // 1. Reserved-name imports must come from forge-std only.
+  // 1. Reserved-name imports must come from forge-std only (genuine provenance —
+  // a repo-authored `fake/forge-std/Test.sol` with a no-op `assertEq` is NOT
+  // forge-std and is rejected here).
   for (const imp of collectImports(ast)) {
-    const fromForgeStd = /(^|\/)forge-std\//u.test(imp.path);
+    const fromForgeStd = isForgeStdProvenance(imp.path, remappings);
     for (const local of imp.symbols.keys()) {
       if ((RESERVED_FORGE_STD_NAMES.has(local) || isAssertName(local)) && !fromForgeStd) {
         return `import binds a reserved name \`${local}\` from a non-forge-std source \`${imp.path}\``;
@@ -769,7 +791,7 @@ function checkFabricationSurface(
   // literal `Vm` — and reject its use as a type or a cast callee.
   const vmNames = new Set<string>(["Vm"]);
   for (const imp of collectImports(ast)) {
-    if (/(^|\/)forge-std\/Vm\.sol$/u.test(imp.path)) {
+    if (isForgeStdProvenance(imp.path, remappings) && /(^|\/)Vm\.sol$/u.test(imp.path)) {
       for (const [local, original] of imp.symbols) {
         if (original === "Vm") {
           vmNames.add(local);
@@ -830,15 +852,14 @@ function checkClosedSymbol(
     if (/(^|\/)forge-std\/(StdCheats|StdStorage|StdUtils)\.sol$/u.test(path)) {
       return `imports a forge-std fabrication module from \`${path}\` (not allowlisted)`;
     }
-    if (
-      ALLOWED_LOG_SPECIFIER.test(path) ||
-      /(^|\/)forge-std\/(Test|StdAssertions|Vm|console2?)\.sol$/u.test(path)
-    ) {
-      // forge-std surface — but it must NOT resolve into the repo's own tree
-      // (a `src/forge-std/Test.sol` fake, or a remap of forge-std into src/).
-      const norm = posixNormalize(applyRemappings(path, remappings));
-      if (norm.startsWith("../") || /^(src|test|script|vendor)\//u.test(norm)) {
-        return `forge-std import \`${path}\` resolves into the repo tree (\`${norm}\`) — not the real toolchain`;
+    if (/(^|\/)(Test|StdAssertions|Vm|console2?)\.sol$/u.test(path)) {
+      // The forge-std assertion / vm / console surface — but ONLY with genuine
+      // provenance (canonical `forge-std/…` specifier or a real lib/node_modules
+      // root). A repo-authored `fake/forge-std/Test.sol` / `src/forge-std/…` fake
+      // (which could ship a no-op `assertEq` → hollow CONFIRMED) is rejected.
+      if (!isForgeStdProvenance(path, remappings)) {
+        const norm = posixNormalize(applyRemappings(path, remappings));
+        return `forge-std import \`${path}\` lacks genuine forge-std provenance (\`${norm}\`) — not the real toolchain`;
       }
       continue; // forge-std assertion / vm / console surface ONLY
     }
@@ -900,7 +921,7 @@ function tryHarnessDriven(
   if (csErr !== null) {
     return fail(csErr);
   }
-  const fabErr = checkFabricationSurface(ast, testContract);
+  const fabErr = checkFabricationSurface(ast, testContract, remappings);
   if (fabErr !== null) {
     return fail(fabErr);
   }
@@ -2148,6 +2169,15 @@ function scanForbiddenConstructs(
     if (t === "NumberLiteral" || t === "HexLiteral" || t === "StringLiteral") {
       const raw = String(rec["number"] ?? rec["value"] ?? "").toLowerCase();
       if (raw.replace(/_/gu, "").includes(HEVM_ADDRESS_LOWER)) {
+        problem = "constructs/uses the HEVM cheatcode address";
+      }
+    }
+    // The HEVM address in ANY numeric spelling (decimal, arithmetic,
+    // `address(uint160(<dec>))`) — a cheatcode handle cannot be built without it,
+    // so this closes aliased-`Vm`/lookalike-interface fabrication regardless of
+    // how the handle TYPE is imported or named.
+    if (t === "NumberLiteral" || t === "FunctionCall") {
+      if (foldConst(n) === HEVM_ADDRESS_VALUE) {
         problem = "constructs/uses the HEVM cheatcode address";
       }
     }

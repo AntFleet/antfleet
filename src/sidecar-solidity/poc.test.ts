@@ -982,6 +982,63 @@ contract AuditPoc is Test, Deployers {
       expect(r.passed, `ctor=${ctor} reasons=${r.reasons.join(" | ")}`).toBe(false);
     }
   });
+
+  // Re-audit: the exact-path Vm guard missed forge-std/src/Vm.sol and namespace
+  // imports. Provenance is now anchored (`forge-std/…` specifier or lib/ root) and
+  // the HEVM address is caught in ANY numeric spelling, so every Vm-handle route
+  // to a fabrication cheat declines regardless of import path/shape.
+  it("aliased Vm from forge-std/src/Vm.sol and namespace imports decline", () => {
+    const decAddr = "645326474426547203313410069153905908525362434349";
+    const variants = [
+      `import {Vm as CheatCodes} from "forge-std/src/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook; CheatCodes cheats = CheatCodes(address(uint160(${decAddr})));
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public { hook.deposit(1); uint256 b = hook.balance(); assertGt(b, 1000); }
+}`,
+      `import * as stdvm from "forge-std/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook; stdvm.Vm cheats = stdvm.Vm(address(uint160(${decAddr})));
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public { hook.deposit(1); uint256 b = hook.balance(); assertGt(b, 1000); }
+}`,
+    ];
+    for (const v of variants) {
+      const r = g2(`${H2}${v}\n`);
+      expect(r.passed, `reasons=${r.reasons.join(" | ")}`).toBe(false);
+    }
+  });
+
+  // Re-audit HIGH-2 (Tier-1, trace-invisible): a repo-authored `fake/forge-std/`
+  // path with a no-op assertEq spoofed forge-std provenance (the check did path
+  // -contains, not an anchored specifier) → a hollow CONFIRMED. Provenance is now
+  // anchored: only the canonical `forge-std/…` specifier or a real lib/ root.
+  it("a repo-authored fake forge-std path (fake/forge-std/Test.sol) declines", () => {
+    const FAKE_TEST = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract Test { function assertEq(uint256 a, uint256 b) internal {} }
+`;
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "fake/forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(
+      src,
+      { evidence: [] },
+      TARGET,
+      closure({ "fake/forge-std/Test.sol": FAKE_TEST }),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(false);
+  });
 });
 
 describe("staticGatePoc — closed-symbol invariant (Tier-1 CRITICAL)", () => {
