@@ -150,7 +150,13 @@ its post-drive state passed — NOT a proof of the specific exploit."*; Tier 2: 
 (harness-driven, human-review-required): a passing Foundry PoC deployed the real cited contract
 from source and its bytecode executed in the test drive, but the target was driven indirectly
 and/or the proof is a bound revert-assertion rather than a direct-drive state read — NOT a
-direct-drive assertion and NOT a proof of the specific exploit."* There is **no
+direct-drive assertion and NOT a proof of the specific exploit."* **For a non-terminal PURSUE
+that still carries a PoC** (a `tier-not-enabled-by-spike` finding, or a `no-revert-only`
+finding), `poc.label` is a **non-terminal** string — e.g. *"PoC attached (tier-earned but not
+enabled in this build / no-revert only): treated as PURSUE, for human review — NOT a terminal
+verdict"* — and is **never** the `CONFIRMED`/`POC_EXECUTED` caveat string, so a JSON consumer
+keying on `poc.label` cannot read a terminal-sounding label beside a `verdict:"PURSUE"`. There
+is **no
 programmatic consumer of `verdict` in v1** (no auto-submission); the spec REQUIRES any
 future programmatic consumer (a merge gate) to treat **neither** `verdict==="CONFIRMED"`
 **nor** `verdict==="POC_EXECUTED"` as exploitability except in conjunction with `humanGated`,
@@ -350,9 +356,23 @@ residual-(e) (a doctored vendored mock) can never touch the strong tier.
 **Hard invariants (BOTH tiers — a violation is a decline, never a tier downgrade):** the
 cheatcode/exfil denylist (gate 2, minus the CREATE2/salt carve-out below), the funding-cheat
 constraint (gate 3: only `vm.deal(EOA,uint256)`; never `deal(token,…)`/`stdstore`/`vm.sign`),
-**no repo-/test-authored logic contract** (§3.3.A), size (gate 4), and the build-info
-ground-truth target identity (§3.4, enforced at execution). The Tier-2 relaxation is
-*structural only* (shape + binding), never a relaxation of what may fabricate state.
+**no repo-/test-authored logic contract** (§3.3.A), the **closed-symbol invariant** (next
+paragraph), size (gate 4), and the build-info ground-truth target identity (§3.4, enforced at
+execution). The Tier-2 relaxation is *structural only* (shape + binding), never a relaxation
+of what may fabricate state.
+
+**Closed-symbol invariant (BOTH tiers — the fabrication floor extends past contracts).**
+§3.3.A closes *instantiated contracts and bases*, but logic can also enter through **free
+functions, `using`-libraries, imported constants, and any imported symbol**. So: **every
+`import` and every referenced non-local symbol/call in `testContents` must resolve to exactly
+one of** (a) the cited target (its constructor/drive/getter members), (b) the forge-std
+assertion surface + the allowlisted `vm.*` cheat members (gate 3), or (c) §3.3.A-allowlisted
+vendored scaffolding (its members/`using` functions). **Any import from a repo `src/`/`test/`/
+`script/` path, any call to a test-file-declared or imported free function/library not on the
+§3.3.A allowlist, or any unresolved nonlocal symbol → DECLINE** ("out-of-allowlist symbol
+`<name>`"). This makes §5's "out-of-allowlist import" rejection a decidable gate, and closes a
+Tier-1 `CONFIRMED` that imports a repo helper library which configures the target or deploys a
+hidden collaborator before the drive.
 
 **§3.3.A — real-dependency anchor (the harness allowlist).** Every contract *instantiated*
 in the test (`new X`, `new X{salt:…}`, or a base the test `is`) must be exactly one of:
@@ -447,7 +467,14 @@ assembly stays banned on both tiers.
    over `closureAstByPath` — to a **`view`/`pure` (non-mutating) getter** (a mutating call as
    the asserted operand, e.g. `assertTrue(target.setFlagAndReturnTrue())`, would let the
    assertion create its own passing state; unresolved mutability → decline). Reject
-   constant-only, deployment-only, pre-drive reads.
+   constant-only, deployment-only, pre-drive reads. **Reject decidable tautologies**
+   (the "non-triviality rule", referenced by Tier-2 B4(ii)):
+   the asserted comparison must have the target-read on one side and an **independent** operand
+   (a literal/constant, a pre-drive snapshot, or a *distinct* read) on the other; a
+   self-comparison (`assertEq(x,x)`, `assertTrue(x==x)`), a type-reflexive predicate
+   (`assertGe(uintGetter(),0)`), or a constant-collapsing arithmetic operand (`x*0`, `x|const`,
+   `x-x`) is **not** load-bearing → decline. Semantic bug-relevance beyond this decidable check
+   is the human-gated residual (§1(a)), not machine-enforced.
 
 **Tier-2 harness path (§3.3.B) — mints `POC_EXECUTED`** (only when gates 1/7/8 fail *for
 shape reasons* while every §3.3.A hard invariant holds). The harness path CANNOT bind the
@@ -493,10 +520,13 @@ direct `target.f()`), so its soundness is **deferred to the §3.4 runtime trace*
     read value, literals/constants, and the `assert*` call itself. **A user-defined helper call,
     or any non-target/scaffolding call, in the assertion's dataflow is forbidden** (it would let
     a `pure` helper swallow the read — `assertTrue(alwaysTrue(target.getX()))` returns true
-    regardless of `getX()` → the target read is non-load-bearing). Such a PoC is recorded
-    `"no-revert"` (non-terminal) — the read must actually determine the assertion's truth. This
-    mirrors Tier-1 gate 8's data-dependence rule; Tier-1 needs no helper ban because gate 1
-    forbids helper declarations, but B1 permits them, so the ban is stated here.
+    regardless of `getX()` → the target read is non-load-bearing). It is also subject to the
+    **gate-8 decidable-tautology rejection / non-triviality rule** (self-comparison,
+    type-reflexive predicate, or constant-collapsing arithmetic → not load-bearing). Such a PoC is recorded `"no-revert"`
+    (non-terminal) — the read must **syntactically participate and the assertion must not be a
+    decidable tautology** (semantic bug-relevance beyond that is the human-gated residual
+    §1(a), not machine-enforced). This mirrors Tier-1 gate 8; Tier-1 needs no helper ban
+    because gate 1 forbids helper declarations, but B1 permits them, so the ban is stated here.
   `poc.assertionForm ∈ {"revert","target-read"}` is recorded for a promotable pair;
   `"no-revert"` for a PoC that has a top-level drive but only a non-(i)/(ii) assertion (bare
   `assertTrue(true)`, selectorless `expectRevert`, or a mutating/unresolved read) —
@@ -506,7 +536,15 @@ direct `target.f()`), so its soundness is **deferred to the §3.4 runtime trace*
   for many bug classes the *opposite* of the expected signal — so it must never share the
   terminal bucket with a bound assertion). `"none"` for a test with **no top-level drive** or
   **no assertion at all** → **declines** (`staticGate.passed:false`, not executed).
-- **B5. No static binding emitted** — `binding` is `undefined`; `tier:"harness-driven"`.
+- **B5. Emit `harnessDriveSpan`, no full binding** — the full static `binding` is `undefined`
+  (no static drive/assert binding), but the gate **does** emit `poc.harnessDriveSpan` = the AST
+  span of **the single top-level B4 drive statement** (the allowlisted-scaffolding/target call
+  that the assertion is bound to), and `tier:"harness-driven"`. The executor's
+  `targetFrameObserved` (§3.4) is scoped to the dynamic subtree rooted at **exactly this
+  `harnessDriveSpan` call** — NOT any other test-body statement. A target frame reached via a
+  **user-defined helper call** (`prime(){target.touch();}` invoked from the body) or any
+  non-`harnessDriveSpan` statement does **not** satisfy `targetFrameObserved` (a helper call is
+  never a valid drive-frame root; the drive must be the B4-recognized top-level call itself).
 
 **`wouldPromotePoc({poc, execution}) → "static-bound" | "harness-driven" | null`** is the
 **GO-independent** terminal-evidence predicate (the tier a PoC's execution *earns* on its own
@@ -603,12 +641,14 @@ reason:"executor error: <bounded>"}` — never throws.**
   the `testAuditPoc()` subtree:
   - **`drove` (Tier-1)** = a **direct** non-static call from the test contract to the target —
     the statically bound `binding.driveSpan`.
-  - **`targetFrameObserved` (Tier-2)** = a non-STATICCALL target frame that is **causally
-    downstream of a call originating in the `testAuditPoc()` body** (the harness drive), i.e.
-    the frame appears inside the dynamic subtree rooted at a test-body call statement. It may
+  - **`targetFrameObserved` (Tier-2)** = a non-STATICCALL target frame inside the dynamic
+    subtree rooted at **exactly the `poc.harnessDriveSpan` call** (§3.3.B B5 — the single
+    top-level B4 drive the assertion is bound to), NOT any other test-body statement. It may
     be reached **indirectly** (`swapRouter → PoolManager → hook.beforeSwap`), which is why
-    `POC_EXECUTED` ranks below `CONFIRMED`. A **bare value-transfer into `receive()`/`fallback`
-    from the test body does NOT count** (it is not a driven code path). For the
+    `POC_EXECUTED` ranks below `CONFIRMED`. A target frame reached from a **user-defined helper
+    call** or any non-`harnessDriveSpan` statement, or a **bare value-transfer into
+    `receive()`/`fallback`**, does **NOT** count (a helper is never a valid drive-frame root; a
+    bare transfer is not a driven code path). For the
     **revert-assertion form**, the target frame must appear inside the `vm.expectRevert`-guarded
     drive's subtree AND **the matched revert must originate in (propagate out of) the target
     frame** — a revert thrown by scaffolding (a router/PoolManager) *before* control reaches the
@@ -697,10 +737,14 @@ generation failure (never a crash that loses the finding — §4).
    overload, **`vm.deal(address(target), x)` / `vm.deal` to a deployed-contract instance**,
    `vm.sign(...)`, `assembly{ create2(...) }` / `type(X).creationCode`, a bespoke
    `contract Fake`, an `import {Target as T}` + same-basename-different-path stub, a
-   non-`.sol`/out-of-allowlist import, a fake local `function assertEq(...)` helper. Each
-   **accepted** (Tier-1): `vm.prank`/`vm.startPrank`/`vm.stopPrank`, `vm.deal(addr,uint)`
-   (2-arg), `vm.warp`, `vm.roll`. A valid straight-line **target-only** deploy→(optional
-   warp)→non-view-drive→post-drive-read→assert PoC passes with `tier:"static-bound"` and
+   non-`.sol`/out-of-allowlist import, a fake local `function assertEq(...)` helper,
+   **a decidable tautology (`assertEq(x,x)`, `assertGe(uintGetter(),0)`, `assertTrue(x*0==0)`)
+   → decline**, **an `import` of / call to a repo-`src/` free function or `using`-library not
+   on the §3.3.A allowlist → decline ("out-of-allowlist symbol")** (the closed-symbol
+   invariant). Each **accepted** (Tier-1): `vm.prank`/`vm.startPrank`/`vm.stopPrank`,
+   `vm.deal(addr,uint)` (2-arg), `vm.warp`, `vm.roll`. A valid straight-line **target-only**
+   deploy→(optional warp)→non-view-drive→post-drive-read→**assert against an independent
+   literal/constant** PoC passes with `tier:"static-bound"` and
    yields a `PocBinding`. **Fall-through (not decline) cases** — a straight-line PoC that is
    Tier-1-shaped except it (a) instantiates vendored `MockERC20`, or (b) uses a selector
    `vm.expectRevert` guarding a direct target drive, routes to `tier:"harness-driven"`, NOT
@@ -783,8 +827,12 @@ generation failure (never a crash that loses the finding — §4).
    **POC_EXECUTED** (the canonical der-sc shape); **a fixture whose ONLY non-static target
    frame is in `setUp()`** (a `HookMiner`-salted deploy triggering `beforeInitialize`, or a
    `receive()` from a setUp ETH send) with a trivial `testAuditPoc` → `targetFrameObserved:false`
-   → PURSUE ("no-target-frame") — the load-bearing scoping test; a fixture whose target address
-   appears in the trace **only under STATICCALL** → `targetFrameObserved:false` → PURSUE; a
+   → PURSUE ("no-target-frame") — the load-bearing scoping test; **a fixture whose only target
+   frame is under a user-defined helper called from the body (`prime(){target.touch();}`) while
+   the `harnessDriveSpan` drive is unrelated scaffolding → `targetFrameObserved:false` → PURSUE**
+   (the frame must be in the exact `harnessDriveSpan` subtree, not a helper); a fixture whose
+   target address appears in the trace **only under STATICCALL** → `targetFrameObserved:false`
+   → PURSUE; a
    fixture where the test-body drive enters the target directly → `drove:true` **and**
    `targetFrameObserved:true` (pins the `drove ⇒ targetFrameObserved` invariant; assert the
    executor never emits `drove:true, targetFrameObserved:false`); a `CREATE2` mined-salt target
@@ -793,11 +841,15 @@ generation failure (never a crash that loses the finding — §4).
    targetFrameObserved ∧ assertionForm:"target-read"`) returns `"harness-driven"` with **no
    `activeGo`** (proves the spike's `promoted` is non-circular), while a no-revert row returns
    `null`. Plus a `validateSpikeGoArtifact` unit test with a negative fixture per GO predicate
-   (incl. a schema-valid `verdict:"GO"` whose recomputed predicates fail → rejected; **an
-   artifact whose recorded `enableStatic`/`enableHarness` disagrees with the value recomputed
-   from the per-finding array → rejected** (flags are not trusted inputs); an artifact faking
-   yield by marking **ineligible** rows `humanConfirmedGenuine`/`attempted` → rejected by the
-   eligible-subset recompute; a row-consistency violation such as
+   (incl. a schema-valid `verdict:"GO"` whose recomputed predicates fail → rejected; **a row
+   claiming genuineness with `receipt:null` or a `receipt` whose `wouldPromotePoc` recompute
+   returns `null` (e.g. `assertionForm:"no-revert"`, or `targetFrameObserved:false`) →
+   rejected** (the validator derives `promoted`/`achievedTier` from the receipt, never a trusted
+   boolean); **a missing `artifact.offlineBuild` or one whose `targetId` does not resolve →
+   rejected**; **an artifact whose recorded `enableStatic`/`enableHarness` disagrees with the
+   value recomputed from the per-finding array → rejected** (flags are not trusted inputs); an
+   artifact faking yield by marking **ineligible** rows `humanConfirmedGenuine`/`attempted` →
+   rejected by the eligible-subset recompute; a row-consistency violation such as
    `humanConfirmedGenuine ∧ ¬executed`, or a **promoted row left `humanConfirmedGenuine:false ∧
    acceptedHollow:false`** (the promoted-XOR gap) → rejected; an artifact where **all genuine
    yield comes from `E_s` but the rows are marked `eligibleTier:"harness-driven"`** (or the
@@ -903,19 +955,22 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
     orphan finding, and — see the shared GO predicate — target diversity is computed over the
     eligible rows' targets, so an orphan `targets` row cannot manufacture diversity).
   - `findings: [{ id, targetId, eligible: boolean, eligibleTier: "static-bound" |
-    "harness-driven" | null, ineligibleClass: <§2-class|null>, attempted, gatePassed,
-    achievedTier: "static-bound" | "harness-driven" | null, executed, promoted: boolean,
-    humanConfirmedGenuine, acceptedHollow }]` — `eligible` and `eligibleTier` are graded by
-    the **same blind human**, **independent of the model's own decline** (a model
-    under-declining cannot inflate them); `achievedTier` is the tier `staticGatePoc` minted
-    (null if the gate declined); **`promoted` is recomputed from the gate+executor output as
-    `wouldPromotePoc({poc, execution}) !== null`** — the **GO-independent** terminal-evidence
-    predicate (§3.3), NOT `promoteWithPoc` (which needs `activeGo`, the very thing the spike is
-    computing — using it here would be circular). So a no-revert-only PoC has `promoted:false`
-    even though it `executed`, and a genuine harness row is `promoted:true` during the spike
-    with no prior GO. Row-consistency
-    (below) requires `eligible ⇔ eligibleTier !== null`, `gatePassed ⇒ achievedTier !== null`,
-    and — the key anti-gaming rule — **every promoted row is classified exactly once:
+    "harness-driven" | null, ineligibleClass: <§2-class|null>, attempted,
+    **receipt: { staticGate:{passed}, tier, assertionForm, execution:{compiled, passed,
+    deployedTargetPath, drove, targetFrameObserved} } | null**, humanConfirmedGenuine,
+    acceptedHollow }]` — `eligible`/`eligibleTier`/`humanConfirmedGenuine`/`acceptedHollow` are
+    the **human** grade (blind, independent of the model's decline); **`receipt` is the
+    machine transcript emitted by the actual gate+executor run** for the finding (null if not
+    attempted). The validator **DERIVES** `gatePassed = receipt?.staticGate.passed === true`,
+    `achievedTier = receipt?.tier ?? null`, `executed = receipt?.execution != null`, and
+    **`promoted = wouldPromotePoc({poc: receipt, execution: receipt.execution}) !== null`** —
+    the **GO-independent** terminal-evidence predicate (§3.3), NOT `promoteWithPoc` (which needs
+    `activeGo`, the very thing the spike computes — circular). It never trusts a raw `promoted`
+    boolean; a row that omits `receipt` but claims genuineness → rejected. So a no-revert-only
+    receipt has `promoted:false` even though executed, and a genuine harness receipt is
+    `promoted:true` during the spike with no prior GO. Row-consistency (below) requires
+    `eligible ⇔ eligibleTier !== null`, `gatePassed ⇒ achievedTier !== null`, and — the key
+    anti-gaming rule — **every promoted row is classified exactly once:
     `promoted ⇒ (humanConfirmedGenuine XOR acceptedHollow)`** (a promoted row left in neither
     bucket is a validation error, not a free pass).
   `validateSpikeGoArtifact(artifact)` **derives every predicate over the ELIGIBLE subset
@@ -942,7 +997,11 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
     targetById[f.targetId].hasReferencePoc === false` (an orphan `targets[]` row not referenced
     by any eligible finding can NOT satisfy this), `E.every(f => f.attempted)`, `acceptedHollow
     === 0` across BOTH tiers (a promoted-then-hollow row anywhere → NO-GO for BOTH),
-    `offlineBuildOk` on a real target, `prevalence ≥ 0.10`. Any shared failure → global NO-GO.
+    `artifact.offlineBuild.ok === true` (a declared top-level artifact field
+    `offlineBuild: { targetId, ok: boolean }` recording that a real target's whole-project
+    closure built offline; validated present, and its `targetId` must resolve to a `targets`
+    row — for a harness-enabling GO it must be an `E_h` target), `prevalence ≥ 0.10`. Any
+    shared failure → global NO-GO.
   - **(Tier-1 / `CONFIRMED` enable)** additionally: `|E_s| ≥ 3` ∧ `confirmedStaticEligible/|E_s|
     ≥ 0.30`.
   - **(Tier-2 / `POC_EXECUTED` enable)** additionally: `|E_h| ≥ 3` ∧ `pocExecutedHarnessEligible/|E_h|
@@ -958,7 +1017,11 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
     trusted inputs). If neither enables → global NO-GO (ship Phase 1, keep #179 open). If only
     `enableStatic` → Phase 3 ships **`CONFIRMED`-only**; the harness executor path stays behind
     a dedicated follow-up harness spike, and `POC_EXECUTED` is never mintable until a later
-    GO sets `enableHarness`.
+    GO sets `enableHarness`. **A `enableStatic ∧ ¬enableHarness` Phase 3 does NOT close #179**
+    — #179's re-scoped deliverable (§Goal) covers the harness/callback class (der-sc) via
+    `POC_EXECUTED`, so a static-only increment leaves the motivating class unsolved: its PR
+    title/body must say "Phase 3 static-only — harness/der-sc (#179) remains open," and **only
+    a GO with `enableHarness===true` may close the re-scoped #179.**
 - **Phase 3 (post-GO only):** `dockerPocExecutor` (§3.4) + execution wiring + terminal states,
   **each tier gated by its own `enable*` flag**; `SIDECAR_POC_EXEC` refuses to run unless
   `validateSpikeGoArtifact()` passes on the committed `SPIKE_RESULT.json` (schema-valid AND
