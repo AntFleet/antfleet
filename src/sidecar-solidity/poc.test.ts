@@ -122,6 +122,20 @@ describe("staticGatePoc — rejections", () => {
       expect(r.passed, `expected reject; reasons: ${r.reasons.join(" | ")}`).toBe(false);
     });
 
+  // Two-tier successor to a single-tier rejection: the PoC must NEVER become a
+  // strong static-bound CONFIRMED. It may fall through to a weaker harness result
+  // (target-read is human-gated POC_EXECUTED; no-revert is non-terminal) or
+  // decline — but a static-bound target-read (Tier-1 CONFIRMED) is forbidden.
+  const notStrongConfirmed = (label: string, src: string) =>
+    it(label, () => {
+      const r = gate(src);
+      const strongConfirmed = r.tier === "static-bound" && r.assertionForm === "target-read";
+      expect(
+        strongConfirmed,
+        `must not be a strong static-bound CONFIRMED; tier=${String(r.tier)} form=${String(r.assertionForm)} reasons=${r.reasons.join(" | ")}`,
+      ).toBe(false);
+    });
+
   reject(
     "vm.store fabrication",
     poc(`        Vault t = new Vault();
@@ -210,7 +224,7 @@ contract AuditPoc is Test {
 `,
   );
 
-  reject(
+  notStrongConfirmed(
     "a helper function declaration",
     `${HEADER}contract AuditPoc is Test {
     function helper() internal pure returns (uint256){ return 1; }
@@ -240,7 +254,7 @@ contract AuditPoc is Test {
         assertEq(b, 0);`),
   );
 
-  reject(
+  notStrongConfirmed(
     "a ternary",
     poc(`        Vault t = new Vault();
         t.deposit(1);
@@ -316,14 +330,14 @@ contract AuditPoc is Test {
         assertEq(b, 0);`),
   );
 
-  reject(
+  notStrongConfirmed(
     "a deployment-only assertion",
     poc(`        Vault t = new Vault();
         t.deposit(1);
         assertTrue(address(t) != address(0));`),
   );
 
-  reject(
+  notStrongConfirmed(
     "assertTrue(true)",
     poc(`        Vault t = new Vault();
         t.deposit(1);
@@ -420,14 +434,14 @@ contract AuditPoc is Vault, Test {
 `,
   );
 
-  reject(
+  notStrongConfirmed(
     "assertion binds only via the message arg",
     poc(`        Vault t = new Vault();
         t.deposit(1);
         assertEq(uint256(0), uint256(0), string(abi.encodePacked(t.balance())));`),
   );
 
-  reject(
+  notStrongConfirmed(
     "assertion read is a mutating call",
     poc(`        Vault t = new Vault();
         t.deposit(1);
@@ -536,6 +550,145 @@ contract AuditPoc is Test {
       { evidence: [] },
       TARGET,
       closure({ "test/mocks/MockOracle.sol": MOCK }),
+    );
+    expect(r.passed).toBe(false);
+  });
+});
+
+describe("staticGatePoc — Tier-2 harness path (§3.3.B)", () => {
+  const H2 = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+import {Vault} from "src/Vault.sol";
+`;
+  const harness = (fields: string, setup: string, body: string, extraImports = "") =>
+    `${H2}${extraImports}contract AuditPoc is Test, Deployers {
+    Vault hook;
+${fields}
+    function setUp() public { hook = new Vault(); ${setup} }
+    function testAuditPoc() public {
+${body}
+    }
+}
+`;
+
+  it("callback drive + selector expectRevert → harness-driven, revert, with a harnessDriveSpan", () => {
+    const r = gate(harness("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`));
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+    expect(r.assertionForm).toBe("revert");
+    expect(r.binding).toBeUndefined();
+    expect(r.harnessDriveSpan?.end).toBeGreaterThan(r.harnessDriveSpan?.start ?? 0);
+  });
+
+  it("drive + post-drive target view read → harness-driven, target-read", () => {
+    const r = gate(
+      harness(
+        "",
+        "",
+        `        hook.deposit(1);\n        uint256 b = hook.balance();\n        assertGt(b, 1000);`,
+      ),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+    expect(r.assertionForm).toBe("target-read");
+  });
+
+  it("selectorless expectRevert → non-terminal no-revert", () => {
+    const r = gate(harness("", "", `        vm.expectRevert();\n        hook.drain();`));
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.assertionForm).toBe("no-revert");
+  });
+
+  it("drive + assertTrue(true) → non-terminal no-revert", () => {
+    const r = gate(harness("", "", `        hook.deposit(1);\n        assertTrue(true);`));
+    expect(r.assertionForm).toBe("no-revert");
+  });
+
+  it("a mined-salt target deploy is admitted (§3.3.A CREATE2 carve-out)", () => {
+    const r = gate(
+      `${H2}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault{salt: bytes32(uint256(1))}(); }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+  });
+
+  it("a bespoke test-authored contract in the harness declines (not test-authored)", () => {
+    const r = gate(
+      `${H2}contract Fake { function p() external pure returns (uint256){ return 1; } }
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); Fake f = new Fake(); f; }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("an unknown-specifier base declines (unrecognized scaffolding)", () => {
+    const r = gate(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Weird} from "someunknownpkg/Weird.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test, Weird {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/non-allowlisted base|out-of-allowlist|unrecognized/u);
+  });
+
+  it("a repo-src (non-target) import declines (closed-symbol / repo-src dependency)", () => {
+    const r = gate(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+import {Vault} from "src/Vault.sol";
+import {Helper} from "src/Helper.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function testAuditPoc() public {
+        Helper.doThing(address(hook));
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|out-of-allowlist/u);
+  });
+
+  it("a fabrication cheat (vm.store) declines even on the harness path", () => {
+    const r = gate(
+      harness(
+        "",
+        "vm.store(address(hook), bytes32(0), bytes32(uint256(1)));",
+        `        vm.expectRevert(bytes("x"));\n        hook.drain();`,
+      ),
     );
     expect(r.passed).toBe(false);
   });

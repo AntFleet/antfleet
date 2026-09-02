@@ -285,9 +285,53 @@ type ImportAlias = { original: string; path: string };
  * disallowed cheat / out-of-allowlist import / non-target creation / shadowed
  * assertion. Any unresolvable fact fails the gate (fail-safe → PURSUE).
  */
+/**
+ * Two-tier orchestrator (§3.3). Parses once, then tries the strong Tier-1
+ * static-bound path; on failure, the Tier-2 harness-driven path (§3.3.B). A PoC
+ * that passes neither DECLINES (fail-safe → PURSUE). Precedence: static-bound
+ * wins (a target-only direct-drive PoC never routes to the weaker tier).
+ */
 export function staticGatePoc(
   testContents: string,
   _finding: Pick<AuditFinding, "evidence">,
+  pocTarget: PocTarget,
+  closureAstByPath: ReadonlyMap<string, ClosureAst>,
+  remappings: readonly (readonly [string, string])[] = [],
+): PocStaticGate {
+  // Gate 4: size (shared hard invariant).
+  if (Buffer.byteLength(testContents, "utf8") > POC_FILE_MAX_BYTES) {
+    return { passed: false, reasons: [`test exceeds POC_FILE_MAX_BYTES (${POC_FILE_MAX_BYTES})`] };
+  }
+  let ast: unknown;
+  try {
+    ast = parse(testContents, { tolerant: false, range: true });
+  } catch (err) {
+    return {
+      passed: false,
+      reasons: [`test does not parse: ${err instanceof Error ? err.message : String(err)}`],
+    };
+  }
+
+  const sb = tryStaticBound(ast, pocTarget, closureAstByPath);
+  if (sb.passed) {
+    return sb;
+  }
+  const hd = tryHarnessDriven(ast, pocTarget, closureAstByPath, remappings);
+  if (hd.passed) {
+    return hd;
+  }
+  // Decline: report the tier whose gates the PoC actually engaged. A
+  // harness-shaped PoC (setUp / >1 function / a non-forge-std base) gets the
+  // Tier-2 reasons; an otherwise Tier-1-shaped PoC gets the Tier-1 reasons.
+  return isHarnessShaped(ast) ? hd : sb;
+}
+
+/** Tier-1 static-bound path (§3.3 gates 1–8) — target-only instantiation, a
+ * direct non-view drive, and a post-drive VIEW read asserted against an
+ * INDEPENDENT operand (no decidable tautology). Any non-target `new` or any
+ * harness shape fails here (→ orchestrator tries Tier-2). */
+function tryStaticBound(
+  ast: unknown,
   pocTarget: PocTarget,
   closureAstByPath: ReadonlyMap<string, ClosureAst>,
 ): PocStaticGate {
@@ -297,40 +341,24 @@ export function staticGatePoc(
     return { passed: false, reasons };
   };
 
-  // Gate 4: size.
-  if (Buffer.byteLength(testContents, "utf8") > POC_FILE_MAX_BYTES) {
-    return fail(`test exceeds POC_FILE_MAX_BYTES (${POC_FILE_MAX_BYTES})`);
-  }
-
-  let ast: unknown;
-  try {
-    ast = parse(testContents, { tolerant: false });
-  } catch (err) {
-    return fail(`test does not parse: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // Gate 1 (shape): NO top-level free functions/modifiers; exactly one contract;
-  // exactly one function `testAuditPoc` (public, no args, no modifiers) inside it.
+  // Gate 1 (shape): no top-level free functions/modifiers; exactly one contract;
+  // exactly one function `testAuditPoc` (public, no args, no modifiers).
   const topLevel = childNodes(ast);
   if (
     topLevel.some(
       (n) => nodeType(n) === "FunctionDefinition" || nodeType(n) === "ModifierDefinition",
     )
   ) {
-    return fail("test declares a file-scope (free) function/modifier (can shadow assertions)");
+    return fail("test declares a file-scope (free) function/modifier");
   }
   const contracts = topLevel.filter((n) => nodeType(n) === "ContractDefinition");
   if (contracts.length !== 1) {
     return fail(`test must declare exactly one contract (found ${contracts.length})`);
   }
   const testContract = contracts[0] as Record<string, unknown>;
-  // Gate 5b: the test contract may inherit ONLY the forge-std assertion surface —
-  // never a closure/test-authored base that could shadow assert* (§gate 8 soundness).
   for (const base of baseContractNames(testContract)) {
     if (!ALLOWED_TEST_BASES.has(base)) {
-      return fail(
-        `test contract inherits a non-forge-std base \`${base}\` (could shadow assertions)`,
-      );
+      return fail(`test contract inherits a non-forge-std base \`${base}\` (harness-shaped)`);
     }
   }
   const subNodes = asArray(testContract["subNodes"]);
@@ -360,29 +388,27 @@ export function staticGatePoc(
   }
   const statements = asArray(body["statements"]);
 
-  // Straight-line: no control flow / assembly / ternary / early return|revert anywhere.
   const controlViolation = findControlFlow(body);
   if (controlViolation !== null) {
     return fail(`testAuditPoc body is not straight-line (contains ${controlViolation})`);
   }
 
-  // Import alias map + import allowlist (gate 3 forge-std + gate 5/6 closure paths).
   const aliases = collectImportAliases(ast);
   const importErr = checkImports(ast, pocTarget, closureAstByPath);
   if (importErr !== null) {
     return fail(importErr);
   }
 
-  // Gate 2/3: forbidden constructs (fabrication, HEVM addr, low-level calls, Vm
-  // aliases, stdstore chains, non-allowlisted vm.*, non-`new` creation).
+  // Gate 2/3: forbidden constructs (Tier-1 bans the salt option entirely).
   const forbidden = scanForbiddenConstructs(body);
   if (forbidden !== null) {
     return fail(forbidden);
   }
 
-  // Straight-line symbol table (taint) + the single target instance (gate 5/6).
+  // Gate 6: TARGET-ONLY instantiation. Any other `new X` (vendored scaffolding
+  // OR a repo collaborator) fails Tier-1 — the orchestrator then tries Tier-2,
+  // where §3.3.A admits vendored scaffolding and rejects repo/test-authored code.
   const taints = new Map<string, Taint>();
-  const instantiableNames = collectRealClosureContractNames(closureAstByPath);
   let deployedVar: string | null = null;
   let deployCount = 0;
   for (const stmt of statements) {
@@ -392,16 +418,14 @@ export function staticGatePoc(
     }
     const cls = classifyRhs(decl.init, taints);
     if (cls.newSymbol !== undefined) {
-      // Gate 6: every `new X` must be the target or a REAL (non-mock) cited
-      // closure contract, imported from a real closure path.
       const resolved = resolveNewTarget(cls.newSymbol, aliases);
       const isTarget =
         resolved.original === pocTarget.symbol && pathMatches(resolved.path, pocTarget.path);
       if (isTarget) {
         deployCount += 1;
         deployedVar = decl.name;
-      } else if (!instantiableNames.has(resolved.original)) {
-        return fail(`\`new ${cls.newSymbol}\` is not the target or a real cited closure contract`);
+      } else {
+        return fail(`\`new ${cls.newSymbol}\` is not the cited target (Tier-1 is target-only)`);
       }
     }
     taints.set(decl.name, cls.taint);
@@ -412,29 +436,29 @@ export function staticGatePoc(
     );
   }
 
-  // Gate 5: the deployed symbol must be imported from pocTarget.path (canonical).
   if (!importBindsTargetFromPath(ast, pocTarget, aliases)) {
     return fail(`${pocTarget.symbol} is not imported from ${pocTarget.path}`);
   }
 
-  // Gate 3 (vm.deal): arity 2 + recipient is a proven EOA actor (never the target
-  // / a deployed instance / any deployed-derived value).
   const dealErr = checkVmDealRecipients(body, taints);
   if (dealErr !== null) {
     return fail(dealErr);
   }
 
-  // Gate 7 (drive): a call on the deployed var whose EVERY overload is
-  // non-view/non-pure, before the asserted read. Mutability over inheritance.
   const driveIdx = findDriveStatementIndex(statements, deployedVar, pocTarget, closureAstByPath);
   if (driveIdx < 0) {
     return fail("no resolved non-view drive call on the deployed target before the assertion");
   }
 
   // Gate 8 (assertion-binding): a forge-std assert* after the drive whose CHECKED
-  // operand data-depends on a post-drive VIEW read of the deployed target.
+  // operand data-depends on a post-drive VIEW read of the deployed target …
   if (!hasBoundAssertion(statements, driveIdx, deployedVar, pocTarget, closureAstByPath)) {
     return fail("no assertion after the drive reads the deployed target's post-drive view state");
+  }
+  // … and is NOT a decidable tautology (self-comparison / reflexive / const-collapse).
+  const taut = findDecidableTautology(statements, driveIdx);
+  if (taut !== null) {
+    return fail(`assertion is a decidable tautology (${taut})`);
   }
 
   return {
@@ -444,6 +468,574 @@ export function staticGatePoc(
     assertionForm: "target-read",
     binding: { targetSymbol: pocTarget.symbol, targetPath: pocTarget.path, deployedVar },
   };
+}
+
+// --- Tier-2 harness-driven path (§3.3.B) -------------------------------------
+
+/** §3.3.A import-specifier allowlist for vendored scaffolding. A symbol whose
+ * import specifier matches one of these (and does not resolve into the repo's
+ * own src/test/script) is benign vendored scaffolding: Deployers / MockERC20 /
+ * HookMiner / OZ mocks. The pinned constant — adding an entry is a spec change. */
+const SCAFFOLD_SPECIFIER_ALLOWLIST: readonly RegExp[] = [
+  /(^|\/)forge-std\//u,
+  /(^|\/)v4-core\/(?:.*\/)?test\/utils\//u,
+  /^@uniswap\/v4-core\/(?:.*\/)?test\/utils\//u,
+  /(^|\/)v4-periphery\/.*HookMiner/u,
+  /^@uniswap\/v4-periphery\/.*HookMiner/u,
+  /(^|\/)HookMiner\.sol$/u,
+  /(^|\/)solmate\/.*\/mocks\/MockERC20/u,
+  /^solmate\/.*\/mocks\/MockERC20/u,
+  /(^|\/)(?:openzeppelin[^/]*|@openzeppelin[^/]*)\/.*\/mocks\//u,
+];
+
+/** forge-std console loggers — benign under the closed-symbol invariant. */
+const ALLOWED_LOG_SPECIFIER = /(^|\/)forge-std\/console2?\.sol$/u;
+const REPO_SRC_RE = /(^|\/)(src|test|script)\//u;
+const REAL_DEP_RE = /(^|\/)(lib|node_modules)\//u;
+
+function applyRemappings(
+  importPath: string,
+  remappings: readonly (readonly [string, string])[],
+): string {
+  for (const [from, to] of remappings) {
+    if (importPath.startsWith(from)) {
+      return to + importPath.slice(from.length);
+    }
+  }
+  return importPath;
+}
+
+/** §3.3.A: an import specifier is vendored scaffolding iff it matches the
+ * allowlist AND does not resolve into the repo's own src/test/script. */
+function specifierIsVendored(
+  importPath: string,
+  remappings: readonly (readonly [string, string])[],
+): boolean {
+  const resolved = applyRemappings(importPath, remappings);
+  // The allowlist patterns are specific vendored-package specifiers; a repo-src
+  // import (e.g. `src/Helper.sol`) matches none of them, so it is never vendored.
+  const matched = SCAFFOLD_SPECIFIER_ALLOWLIST.some(
+    (re) => re.test(importPath) || re.test(resolved),
+  );
+  if (!matched) {
+    return false;
+  }
+  // A relative import is only vendored if it resolves under lib/node_modules
+  // (a relative path into the repo's own tree is never vendored scaffolding).
+  if (importPath.startsWith("./") || importPath.startsWith("../")) {
+    return REAL_DEP_RE.test(resolved);
+  }
+  // A bare/remapped package specifier that matched the allowlist and does NOT
+  // remap into the repo's own root src/test/script is vendored.
+  return !/^(src|test|script)\//u.test(resolved);
+}
+
+/** Classify an instantiated / inherited symbol against §3.3.A. */
+function classifyAnchor(
+  sym: string,
+  aliases: Map<string, ImportAlias>,
+  remappings: readonly (readonly [string, string])[],
+  pocTarget: PocTarget,
+): "target" | "vendored" | "forbidden" {
+  const resolved = resolveNewTarget(sym, aliases);
+  if (resolved.original === pocTarget.symbol && pathMatches(resolved.path, pocTarget.path)) {
+    return "target";
+  }
+  if (resolved.path !== "" && specifierIsVendored(resolved.path, remappings)) {
+    return "vendored";
+  }
+  return "forbidden";
+}
+
+/** Cheap shape probe used only to pick which tier's decline reasons to surface. */
+function isHarnessShaped(ast: unknown): boolean {
+  const contracts = childNodes(ast).filter((n) => nodeType(n) === "ContractDefinition");
+  if (contracts.length !== 1) {
+    return true;
+  }
+  const c = contracts[0] as Record<string, unknown>;
+  for (const base of baseContractNames(c)) {
+    if (!ALLOWED_TEST_BASES.has(base)) {
+      return true;
+    }
+  }
+  const funcs = asArray(c["subNodes"]).filter((s) => nodeType(s) === "FunctionDefinition");
+  return funcs.length > 1;
+}
+
+/** Closed-symbol invariant (§3.3): every import must resolve to the target, the
+ * forge-std assertion/console surface, or §3.3.A-allowlisted vendored scaffolding
+ * — never a repo src/test/script import (other than the target). */
+function checkClosedSymbol(
+  ast: unknown,
+  pocTarget: PocTarget,
+  remappings: readonly (readonly [string, string])[],
+): string | null {
+  for (const imp of collectImports(ast)) {
+    const path = imp.path;
+    if (pathMatches(path, pocTarget.path)) {
+      continue; // the cited target
+    }
+    if (
+      ALLOWED_LOG_SPECIFIER.test(path) ||
+      /(^|\/)forge-std\/(Test|StdAssertions|Vm|console2?)\.sol$/u.test(path)
+    ) {
+      continue; // forge-std assertion / vm / console surface ONLY
+    }
+    // A forge-std fabrication module (StdCheats/StdStorage/StdUtils) is NOT
+    // allowlisted — it exposes deal(token)/hoax/deployCode/stdstore.
+    if (/(^|\/)forge-std\/(StdCheats|StdStorage|StdUtils)\.sol$/u.test(path)) {
+      return `imports a forge-std fabrication module from \`${path}\` (not allowlisted)`;
+    }
+    if (specifierIsVendored(path, remappings)) {
+      continue; // §3.3.A vendored scaffolding
+    }
+    const resolved = applyRemappings(path, remappings);
+    if (REPO_SRC_RE.test(resolved) || path.startsWith("./") || path.startsWith("../")) {
+      return `imports a repo-src symbol from \`${path}\` (requires a repo-src dependency instantiation)`;
+    }
+    return `imports out-of-allowlist symbol from \`${path}\``;
+  }
+  return null;
+}
+
+/** Tier-2 harness-driven path (§3.3.B) — mints POC_EXECUTED. Admits setUp +
+ * helpers + control flow and §3.3.A vendored scaffolding, but binds the terminal
+ * verdict to a top-level drive (harnessDriveSpan) + a bound assertion. */
+function tryHarnessDriven(
+  ast: unknown,
+  pocTarget: PocTarget,
+  closureAstByPath: ReadonlyMap<string, ClosureAst>,
+  remappings: readonly (readonly [string, string])[],
+): PocStaticGate {
+  const reasons: string[] = [];
+  const fail = (r: string): PocStaticGate => {
+    reasons.push(r);
+    return { passed: false, reasons };
+  };
+  const topLevel = childNodes(ast);
+  if (
+    topLevel.some(
+      (n) => nodeType(n) === "FunctionDefinition" || nodeType(n) === "ModifierDefinition",
+    )
+  ) {
+    return fail("test declares a file-scope (free) function/modifier");
+  }
+  const contracts = topLevel.filter((n) => nodeType(n) === "ContractDefinition");
+  if (contracts.length !== 1) {
+    return fail(`test must declare exactly one contract (found ${contracts.length})`);
+  }
+  const testContract = contracts[0] as Record<string, unknown>;
+  const aliases = collectImportAliases(ast);
+
+  // B1: bases must be forge-std OR §3.3.A vendored scaffolding.
+  for (const base of baseContractNames(testContract)) {
+    if (ALLOWED_TEST_BASES.has(base)) {
+      continue;
+    }
+    if (classifyAnchor(base, aliases, remappings, pocTarget) !== "vendored") {
+      return fail(
+        `test inherits a non-allowlisted base \`${base}\` (requires a test-authored contract)`,
+      );
+    }
+  }
+
+  // Closed-symbol invariant (both tiers; enforced here for the harness path).
+  const csErr = checkClosedSymbol(ast, pocTarget, remappings);
+  if (csErr !== null) {
+    return fail(csErr);
+  }
+
+  // B2 hard invariants: cheatcode/exfil denylist over the WHOLE contract, WITH the
+  // §3.3.A CREATE2/HookMiner salt carve-out and the vm.expectRevert revert-form.
+  const forbidden = scanForbiddenConstructs(testContract, {
+    allowSaltOption: true,
+    allowExpectRevert: true,
+  });
+  if (forbidden !== null) {
+    return fail(forbidden);
+  }
+
+  // §3.3.A: every `new X` / `new X{salt}` anywhere is the target or vendored.
+  let targetInstances = 0;
+  let anchorProblem: string | null = null;
+  const targetVars = new Set<string>();
+  walk(testContract, (n) => {
+    if (anchorProblem !== null || nodeType(n) !== "FunctionCall") {
+      return;
+    }
+    const rec = n as Record<string, unknown>;
+    const newSym = newExpressionSymbol(rec["expression"]);
+    if (newSym === null) {
+      return;
+    }
+    const cls = classifyAnchor(newSym, aliases, remappings, pocTarget);
+    if (cls === "target") {
+      targetInstances += 1;
+      const assignedTo = enclosingAssignedVar(rec, testContract);
+      for (const v of assignedTo) {
+        targetVars.add(v);
+      }
+    } else if (cls === "forbidden") {
+      const resolved = resolveNewTarget(newSym, aliases);
+      anchorProblem =
+        resolved.path === "" || REPO_SRC_RE.test(applyRemappings(resolved.path, remappings))
+          ? `\`new ${newSym}\` is a repo-/test-authored contract (requires a test-authored contract)`
+          : `\`new ${newSym}\` is unrecognized scaffolding (\`${resolved.path}\`)`;
+    }
+  });
+  if (anchorProblem !== null) {
+    return fail(anchorProblem);
+  }
+
+  // B3: the cited target is imported from its path and instantiated ≥1.
+  if (!importBindsTargetFromPath(ast, pocTarget, aliases)) {
+    return fail(`${pocTarget.symbol} is not imported from ${pocTarget.path}`);
+  }
+  if (targetInstances < 1) {
+    return fail("no deployable cited target instance (`new <target>` not found)");
+  }
+
+  // B4: the promotable drive+assertion pair in testAuditPoc().
+  const subNodes = asArray(testContract["subNodes"]);
+  const funcs = subNodes.filter((s) => nodeType(s) === "FunctionDefinition");
+  const testFn = funcs.find((f) => (f as Record<string, unknown>)["name"] === "testAuditPoc") as
+    | Record<string, unknown>
+    | undefined;
+  if (testFn === undefined) {
+    return fail("no testAuditPoc function");
+  }
+  const b = classifyHarnessB4(testFn, pocTarget, targetVars, closureAstByPath);
+  if ("reason" in b) {
+    return fail(b.reason);
+  }
+  return {
+    passed: true,
+    reasons: [],
+    tier: "harness-driven",
+    assertionForm: b.assertionForm,
+    harnessDriveSpan: b.span,
+  };
+}
+
+/** The symbol of a `new X(...)` / `new X{salt:…}(...)` FunctionCall expression,
+ * else null. Handles both the plain `NewExpression` callee and the
+ * `{salt}`-optioned `FunctionCallOptions`/`NameValueExpression` wrapper. */
+function newExpressionSymbol(expr: unknown): string | null {
+  let e = expr;
+  const t0 = nodeType(e);
+  if (t0 === "FunctionCallOptions" || t0 === "NameValueExpression") {
+    e = (e as Record<string, unknown>)["expression"];
+  }
+  if (nodeType(e) !== "NewExpression") {
+    return null;
+  }
+  const tn = (e as Record<string, unknown>)["typeName"];
+  if (tn !== null && typeof tn === "object") {
+    const np =
+      (tn as Record<string, unknown>)["namePath"] ?? (tn as Record<string, unknown>)["name"];
+    if (typeof np === "string") {
+      return np;
+    }
+  }
+  return null;
+}
+
+/** Best-effort: the local/state variable(s) a `new` FunctionCall is assigned to
+ * (`X x = new X()` or `x = new X()`), for tracking the deployed target instance. */
+function enclosingAssignedVar(call: Record<string, unknown>, scope: unknown): Set<string> {
+  const out = new Set<string>();
+  const callRange = asArray(call["range"]);
+  walk(scope, (n) => {
+    // `Type v = new …` declaration
+    const decl = varDeclInit(n);
+    if (decl !== null && rangeContains(decl.init, callRange)) {
+      out.add(decl.name);
+    }
+    // `v = new …` assignment
+    if (nodeType(n) === "BinaryOperation" && (n as Record<string, unknown>)["operator"] === "=") {
+      const left = (n as Record<string, unknown>)["left"];
+      const right = (n as Record<string, unknown>)["right"];
+      if (
+        nodeType(left) === "Identifier" &&
+        typeof (left as Record<string, unknown>)["name"] === "string" &&
+        rangeContains(right, callRange)
+      ) {
+        out.add((left as Record<string, unknown>)["name"] as string);
+      }
+    }
+  });
+  return out;
+}
+
+function rangeContains(node: unknown, inner: unknown[]): boolean {
+  const r = asArray((node as Record<string, unknown> | null)?.["range"]);
+  return (
+    r.length === 2 &&
+    inner.length === 2 &&
+    typeof r[0] === "number" &&
+    typeof inner[0] === "number" &&
+    r[0] <= (inner[0] as number) &&
+    (r[1] as number) >= (inner[1] as number)
+  );
+}
+
+/** B4 assertion-shape classification over testAuditPoc's TOP-LEVEL statements. */
+function classifyHarnessB4(
+  testFn: Record<string, unknown>,
+  pocTarget: PocTarget,
+  targetVars: Set<string>,
+  closureAstByPath: ReadonlyMap<string, ClosureAst>,
+): { assertionForm: PocAssertionForm; span: PocHarnessDriveSpan } | { reason: string } {
+  const body = testFn["body"] as Record<string, unknown> | null;
+  if (body === null || nodeType(body) !== "Block") {
+    return { reason: "testAuditPoc has no body" };
+  }
+  const statements = asArray(body["statements"]);
+
+  // Top-level drive candidates: an ExpressionStatement whose expression is a
+  // FunctionCall that is NOT a vm.* cheat, NOT an assert*, and NOT expectRevert.
+  const drives: { idx: number; range: number[] }[] = [];
+  statements.forEach((stmt, idx) => {
+    const call = topLevelCall(stmt);
+    if (call === null) {
+      return;
+    }
+    const name = calleeIdentifierName(call);
+    if (isVmMemberCall(call) || (name !== null && ASSERT_NAMES.has(name))) {
+      return;
+    }
+    drives.push({ idx, range: asArray(call["range"]) as number[] });
+  });
+  if (drives.length === 0) {
+    return { reason: "no top-level drive call in testAuditPoc (assertionForm none)" };
+  }
+  if (drives.length > 1) {
+    return { reason: "more than one top-level drive call in testAuditPoc (ambiguous drive root)" };
+  }
+  const drive = drives[0]!;
+  const span: PocHarnessDriveSpan = {
+    start: (drive.range[0] as number) ?? 0,
+    end: (drive.range[1] as number) ?? 0,
+    deployedVar: [...targetVars][0] ?? "",
+  };
+
+  // (i) revert form: a top-level vm.expectRevert(<selector>) IMMEDIATELY before
+  // the drive, with a selector argument (bare selectorless → not promotable).
+  const prev = drive.idx > 0 ? statements[drive.idx - 1] : null;
+  if (prev !== null && isExpectRevert(prev)) {
+    return hasExpectRevertSelector(prev)
+      ? { assertionForm: "revert", span }
+      : { assertionForm: "no-revert", span }; // selectorless → non-terminal
+  }
+
+  // (ii) target-read: an assert* AFTER the drive whose CHECKED operand
+  // data-depends (through local assignments — reusing the Tier-1 binder) on a
+  // post-drive VIEW read of a target instance, with NO helper/non-target call in
+  // the assertion dataflow and NOT a decidable tautology.
+  let sawAssert = false;
+  let helperSwallowed = false;
+  for (let i = drive.idx + 1; i < statements.length; i++) {
+    const call = topLevelCall(statements[i]);
+    if (call === null) {
+      continue;
+    }
+    const name = calleeIdentifierName(call);
+    if (name === null || !ASSERT_NAMES.has(name)) {
+      continue;
+    }
+    sawAssert = true;
+    if (assertHasForbiddenHelperCall(call, targetVars)) {
+      helperSwallowed = true;
+    }
+  }
+  const boundView = [...targetVars].some((v) =>
+    hasBoundAssertion(statements, drive.idx, v, pocTarget, closureAstByPath),
+  );
+  const tautology = findDecidableTautology(statements, drive.idx) !== null;
+  // `sawAssert` requires a TOP-LEVEL assert* — a nested (control-flow-wrapped)
+  // assertion never mints a target-read (B4 top-level-unconditional rule).
+  if (boundView && sawAssert && !helperSwallowed && !tautology) {
+    return { assertionForm: "target-read", span };
+  }
+  // A drive plus a non-(i)/(ii) assertion → no-revert (non-terminal); a drive with
+  // no assertion at all → none (decline).
+  return sawAssert
+    ? { assertionForm: "no-revert", span }
+    : { reason: "testAuditPoc has a drive but no assertion (assertionForm none)" };
+}
+
+const ASSERT_NAMES: ReadonlySet<string> = new Set([
+  "assertTrue",
+  "assertFalse",
+  "assertEq",
+  "assertNotEq",
+  "assertGt",
+  "assertGe",
+  "assertLt",
+  "assertLe",
+  "assertApproxEqAbs",
+  "assertApproxEqRel",
+  "assert",
+]);
+
+/** The FunctionCall of an ExpressionStatement (top-level call), else null. */
+function topLevelCall(stmt: unknown): Record<string, unknown> | null {
+  if (nodeType(stmt) !== "ExpressionStatement") {
+    return null;
+  }
+  const expr = (stmt as Record<string, unknown>)["expression"];
+  return nodeType(expr) === "FunctionCall" ? (expr as Record<string, unknown>) : null;
+}
+
+function isVmMemberCall(call: Record<string, unknown>): boolean {
+  const callee = call["expression"];
+  if (nodeType(callee) !== "MemberAccess") {
+    return false;
+  }
+  const obj = (callee as Record<string, unknown>)["expression"];
+  return nodeType(obj) === "Identifier" && (obj as Record<string, unknown>)["name"] === "vm";
+}
+
+function isExpectRevert(stmt: unknown): boolean {
+  const call = topLevelCall(stmt);
+  if (call === null || !isVmMemberCall(call)) {
+    return false;
+  }
+  const callee = call["expression"] as Record<string, unknown>;
+  return callee["memberName"] === "expectRevert";
+}
+
+function hasExpectRevertSelector(stmt: unknown): boolean {
+  const call = topLevelCall(stmt);
+  return call !== null && asArray(call["arguments"]).length > 0;
+}
+
+/** True when the assertion's operands contain a user-defined helper call or a
+ * non-target/non-vm/non-assert call — which would let a helper swallow the read. */
+function assertHasForbiddenHelperCall(
+  call: Record<string, unknown>,
+  targetVars: Set<string>,
+): boolean {
+  let bad = false;
+  for (const arg of asArray(call["arguments"])) {
+    walk(arg, (n) => {
+      if (bad || nodeType(n) !== "FunctionCall") {
+        return;
+      }
+      const rec = n as Record<string, unknown>;
+      const callee = rec["expression"];
+      if (nodeType(callee) === "MemberAccess") {
+        const obj = (callee as Record<string, unknown>)["expression"];
+        const objName =
+          nodeType(obj) === "Identifier" ? (obj as Record<string, unknown>)["name"] : undefined;
+        // A member call on a NON-target instance in the assertion dataflow.
+        if (typeof objName === "string" && !targetVars.has(objName)) {
+          bad = true;
+        }
+      } else if (nodeType(callee) === "Identifier") {
+        // A bare identifier call = a user-defined helper / free function.
+        bad = true;
+      }
+    });
+  }
+  return bad;
+}
+
+/** Decidable-tautology detector: self-comparison, type-reflexive (`>=0`), or a
+ * constant-collapsing arithmetic operand. Unary `assertTrue(target.isBroken())`
+ * on a non-constant bool getter is load-bearing and passes. */
+function isTautologyAssert(call: Record<string, unknown>): boolean {
+  const name = calleeIdentifierName(call);
+  const args = asArray(call["arguments"]);
+  // Binary comparators with two structurally-identical operands.
+  if (
+    name !== null &&
+    (name === "assertEq" || name === "assertNotEq" || name === "assertApproxEqAbs") &&
+    args.length >= 2 &&
+    exprKey(args[0]) === exprKey(args[1])
+  ) {
+    return true;
+  }
+  // `>= 0` / `<= max` reflexive predicates.
+  if ((name === "assertGe" || name === "assertLe") && args.length >= 2 && isZeroLiteral(args[1])) {
+    return true;
+  }
+  // A single-arg assertTrue/assertFalse over a self-comparison or const-collapse.
+  if ((name === "assertTrue" || name === "assertFalse") && args.length >= 1) {
+    if (isSelfComparison(args[0]) || hasConstCollapse(args[0])) {
+      return true;
+    }
+  }
+  // Any operand with a constant-collapsing arithmetic (`x*0`, `x-x`).
+  return args.some((a) => hasConstCollapse(a));
+}
+
+function isSelfComparison(node: unknown): boolean {
+  if (nodeType(node) !== "BinaryOperation") {
+    return false;
+  }
+  const rec = node as Record<string, unknown>;
+  const op = rec["operator"];
+  if (op !== "==" && op !== ">=" && op !== "<=") {
+    return false;
+  }
+  return exprKey(rec["left"]) === exprKey(rec["right"]);
+}
+
+function hasConstCollapse(node: unknown): boolean {
+  let bad = false;
+  walk(node, (n) => {
+    if (bad || nodeType(n) !== "BinaryOperation") {
+      return;
+    }
+    const rec = n as Record<string, unknown>;
+    const op = rec["operator"];
+    if (op === "*" && (isZeroLiteral(rec["left"]) || isZeroLiteral(rec["right"]))) {
+      bad = true;
+    }
+    if (op === "-" && exprKey(rec["left"]) === exprKey(rec["right"])) {
+      bad = true; // x - x
+    }
+  });
+  return bad;
+}
+
+function isZeroLiteral(node: unknown): boolean {
+  return (
+    nodeType(node) === "NumberLiteral" &&
+    String((node as Record<string, unknown>)["number"] ?? "").replace(/_/gu, "") === "0"
+  );
+}
+
+/** Structural, position-free key for expression equality (ignores range/loc). */
+function exprKey(node: unknown): string {
+  if (node === null || typeof node !== "object") {
+    return JSON.stringify(node);
+  }
+  if (Array.isArray(node)) {
+    return `[${node.map(exprKey).join(",")}]`;
+  }
+  const rec = node as Record<string, unknown>;
+  const keys = Object.keys(rec)
+    .filter((k) => k !== "range" && k !== "loc")
+    .sort();
+  return `{${keys.map((k) => `${k}:${exprKey(rec[k])}`).join(",")}}`;
+}
+
+/** Tier-1 decidable-tautology check over the post-drive assert* statements. */
+function findDecidableTautology(statements: unknown[], driveIdx: number): string | null {
+  for (let i = driveIdx + 1; i < statements.length; i++) {
+    const call = topLevelCall(statements[i]);
+    if (call === null) {
+      continue;
+    }
+    const name = calleeIdentifierName(call);
+    if (name !== null && ASSERT_NAMES.has(name) && isTautologyAssert(call)) {
+      return "self-comparison / reflexive / const-collapse";
+    }
+  }
+  return null;
 }
 
 // --- Promotion (§3.3 promoteWithPoc) -----------------------------------------
@@ -719,7 +1311,10 @@ function findControlFlow(body: unknown): string | null {
  * creation, forbidden StdCheats/StdStorage helpers (bare OR member-chain),
  * bound-`Vm` aliases, and non-allowlisted vm.* members.
  */
-function scanForbiddenConstructs(body: unknown): string | null {
+function scanForbiddenConstructs(
+  body: unknown,
+  opts: { allowSaltOption?: boolean; allowExpectRevert?: boolean } = {},
+): string | null {
   // First pass: identify variables bound to the canonical `vm` (Vm aliases).
   const vmAliases = new Set<string>();
   walk(body, (n) => {
@@ -801,7 +1396,10 @@ function scanForbiddenConstructs(body: unknown): string | null {
         const objName =
           nodeType(obj) === "Identifier" ? (obj as Record<string, unknown>)["name"] : undefined;
         if (objName === "vm") {
-          if (typeof mn === "string" && !ALLOWED_VM_CHEATS.has(mn)) {
+          const allowed =
+            (typeof mn === "string" && ALLOWED_VM_CHEATS.has(mn)) ||
+            (opts.allowExpectRevert === true && mn === "expectRevert");
+          if (typeof mn === "string" && !allowed) {
             problem = `uses a non-allowlisted cheat vm.${mn}`;
           }
         } else if (typeof objName === "string" && vmAliases.has(objName)) {
@@ -816,33 +1414,46 @@ function scanForbiddenConstructs(body: unknown): string | null {
     }
 
     if (t === "FunctionCallOptions" || t === "NameValueExpression") {
-      problem = "uses call/creation options (e.g. `new X{salt:…}` / `{value:…}`)";
+      // Tier-2 permits `new X{salt:…}` (HookMiner-mined), validated by §3.3.A;
+      // Tier-1 bans all creation/call options.
+      if (!opts.allowSaltOption || !isSaltOnlyOption(n)) {
+        problem = "uses call/creation options (e.g. `new X{salt:…}` / `{value:…}`)";
+      }
+    }
+
+    // Inline assembly is a hard-invariant ban on BOTH tiers (Tier-1 also catches
+    // it via the straight-line gate; Tier-2 allows control flow, so it must be
+    // rejected here — assembly can fabricate arbitrary state).
+    if (t === "InlineAssemblyStatement" || t === "AssemblyBlock" || t === "InlineAssembly") {
+      problem = "uses inline assembly";
     }
   });
   return problem;
 }
 
+/** True when a `{…}` call/creation option is ONLY `{salt: …}` (the Tier-2
+ * HookMiner carve-out) — never `{value:…}`/`{gas:…}` which stay banned. */
+function isSaltOnlyOption(node: unknown): boolean {
+  const rec = node as Record<string, unknown>;
+  // NameValueExpression nests the option names under `arguments` (a NameValueList
+  // with a `names: string[]`); FunctionCallOptions exposes `names` directly.
+  const direct = asArray(rec["names"]).filter((n): n is string => typeof n === "string");
+  if (direct.length > 0) {
+    return direct.every((n) => n === "salt");
+  }
+  const nvl = rec["arguments"];
+  if (nvl !== null && typeof nvl === "object" && !Array.isArray(nvl)) {
+    const names = asArray((nvl as Record<string, unknown>)["names"]).filter(
+      (n): n is string => typeof n === "string",
+    );
+    return names.length > 0 && names.every((n) => n === "salt");
+  }
+  return false;
+}
+
 /** True when an expression IS the canonical `vm` identifier. */
 function isVmExpression(expr: unknown): boolean {
   return nodeType(expr) === "Identifier" && (expr as Record<string, unknown>)["name"] === "vm";
-}
-
-/** Real (non-mock/test/script) closure contract names — the instantiable set (gate 6). */
-function collectRealClosureContractNames(
-  closureAstByPath: ReadonlyMap<string, ClosureAst>,
-): Set<string> {
-  const names = new Set<string>();
-  for (const ast of closureAstByPath.values()) {
-    if (isNonRealDepPath(ast.path)) {
-      continue;
-    }
-    for (const c of ast.contracts) {
-      if (c.kind === "contract") {
-        names.add(c.name);
-      }
-    }
-  }
-  return names;
 }
 
 type ImportInfo = {

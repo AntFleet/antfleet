@@ -223,6 +223,9 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
       entries: args.entries,
       files: closure.blocks,
       programRules: args.programRules,
+      // §3.3.A anchor (PoC stage only) resolves vendored-scaffolding imports
+      // against the repo's remappings; harmless/unused when --poc is off.
+      remappings: args.remappings,
       systemContext,
       closureStats: {
         truncated: closure.truncated,

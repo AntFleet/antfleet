@@ -55,6 +55,10 @@ export type RunFinderInput = {
   /** Closure blocks in keep-priority order (component A output). */
   files: readonly { path: string; contents: string }[];
   programRules: string;
+  /** Foundry remappings (specifier → path) — used ONLY by the PoC stage's §3.3.A
+   * real-dependency anchor to resolve vendored-scaffolding imports to lib/
+   * node_modules paths. Unused when --poc is off (byte-identical preserved). */
+  remappings?: readonly (readonly [string, string])[] | undefined;
   /** Phase 0 DESCRIPTIVE system context (docs/NatSpec) for the finder. Recall-safe. */
   systemContext?: string | undefined;
   closureStats?: {
@@ -443,6 +447,7 @@ export async function runFinder(
         entries: input.entries,
         files: input.files,
         programRules: input.programRules,
+        remappings: input.remappings ?? [],
         closureAstByPath,
         generatePoc,
         executePoc,
@@ -518,6 +523,7 @@ async function runPocStage(args: {
   entries: readonly string[];
   files: readonly { path: string; contents: string }[];
   programRules: string;
+  remappings: readonly (readonly [string, string])[];
   closureAstByPath: Map<string, ClosureAst>;
   generatePoc: GeneratePocCallback;
   executePoc?: ExecutePocCallback | undefined;
@@ -558,7 +564,13 @@ async function runPocStage(args: {
     if (out.testContents === null) {
       return { ...base, target, rationale: out.rationale ?? "model declined without a rationale" };
     }
-    const gate = staticGatePoc(out.testContents, args.finding, target, args.closureAstByPath);
+    const gate = staticGatePoc(
+      out.testContents,
+      args.finding,
+      target,
+      args.closureAstByPath,
+      args.remappings,
+    );
     const testPath = `test/AuditPoc_${pocSlug(args.finding.title)}.t.sol`;
     if (!gate.passed || gate.tier === undefined) {
       return {
