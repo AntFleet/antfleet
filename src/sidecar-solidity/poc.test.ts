@@ -308,6 +308,15 @@ contract AuditPoc is Test {
   );
 
   notStrongConfirmed(
+    "parenthesized-LHS reassignment of the deployed-target variable ((t) = ...)",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        (t) = new Vault();
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
+  notStrongConfirmed(
     "a ternary",
     poc(`        Vault t = new Vault();
         t.deposit(1);
@@ -593,6 +602,17 @@ contract AuditPoc is Vault, Test {
     // Width-dependent spellings of the extreme (foldConst folds ~ and neg-cast wrap):
     ["complement-spelled max (assertLe(b, ~uint256(0)))", "assertLe(b, ~uint256(0));"],
     ["neg-cast-wrap max (assertLe(b, uint256(int256(-1))))", "assertLe(b, uint256(int256(-1)));"],
+    // Scientific-notation spellings (foldConst parses `<m>e<exp>`): `0e0` == 0.
+    ["exponent-spelled zero (assertGe(b, 0e0))", "assertGe(b, 0e0);"],
+    [
+      "exponent-spelled max (assertLe(b, 1157...e0))",
+      "assertLe(b, 115792089237316195423570985008687907853269984665640564039457584007913129639935e0);",
+    ],
+    // A MUTATING target call laundered as the 'independent' operand (touches the target).
+    [
+      "mutating call as independent (assertEq(t.balance(), t.resetAndReturn()))",
+      "assertEq(t.balance(), t.resetAndReturn());",
+    ],
   ] as const) {
     notStrongConfirmed(
       label,
@@ -1038,6 +1058,71 @@ contract AuditPoc is Test {
       closure({ "fake/forge-std/Test.sol": FAKE_TEST }),
     );
     expect(r.passed, r.reasons.join(" | ")).toBe(false);
+  });
+
+  // Re-audit: the canonical `forge-std/Test.sol` specifier REMAPPED into a repo
+  // path (`forge-std/ → fake/forge-std/`) must not spoof provenance either.
+  it("forge-std specifier remapped into the repo tree declines", () => {
+    const FAKE_TEST = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract Test { function assertEq(uint256 a, uint256 b) internal {} }
+`;
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(
+      src,
+      { evidence: [] },
+      TARGET,
+      closure({ "fake/forge-std/Test.sol": FAKE_TEST }),
+      [["forge-std/", "fake/forge-std/"]],
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(false);
+  });
+
+  // Re-audit: namespace-imported Vm (`import * as stdvm`) constructed from
+  // `address(vm)` (no HEVM literal) — the qualified `stdvm.Vm` type is banned.
+  it("namespace Vm import + address(vm) fabrication declines", () => {
+    const src = `${H2}import * as stdvm from "forge-std/Vm.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    stdvm.Vm cheats = stdvm.Vm(address(vm));
+    function setUp() public { hook = new Vault(); cheats.store(address(hook), bytes32(0), bytes32(uint256(5))); }
+    function testAuditPoc() public { hook.deposit(1); uint256 b = hook.balance(); assertGt(b, 1000); }
+}
+`;
+    expect(g2(src).passed).toBe(false);
+  });
+
+  // Re-audit (recall): a direct `lib/forge-std/` root is genuine provenance and
+  // must still earn Tier-1 (the anchored provenance must not over-reject it).
+  it("a direct lib/forge-std/Test.sol import still earns Tier-1", () => {
+    const src = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "lib/forge-std/src/Test.sol";
+import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`;
+    const r = staticGatePoc(src, { evidence: [] }, TARGET, closure());
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("static-bound");
   });
 });
 

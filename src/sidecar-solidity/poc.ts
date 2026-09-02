@@ -608,15 +608,26 @@ function isVarReassigned(body: unknown, varName: string): boolean {
       return;
     }
     const rec = n as Record<string, unknown>;
-    if (!ASSIGN_OPS.has(String(rec["operator"]))) {
-      return;
-    }
-    const lhs = rec["left"];
-    if (nodeType(lhs) === "Identifier" && (lhs as Record<string, unknown>)["name"] === varName) {
+    if (ASSIGN_OPS.has(String(rec["operator"])) && assignmentTargetsVar(rec["left"], varName)) {
       found = true;
     }
   });
   return found;
+}
+
+/** Whether an assignment LHS writes `varName` — through redundant parens (`(t) =`)
+ * or a tuple destructuring (`(a, t) = …`), not only a bare identifier. */
+function assignmentTargetsVar(lhs: unknown, varName: string): boolean {
+  const u = unwrapParens(lhs);
+  if (nodeType(u) === "Identifier") {
+    return (u as Record<string, unknown>)["name"] === varName;
+  }
+  if (nodeType(u) === "TupleExpression") {
+    return asArray((u as Record<string, unknown>)["components"]).some(
+      (c) => c !== null && c !== undefined && assignmentTargetsVar(c, varName),
+    );
+  }
+  return false;
 }
 
 // --- Tier-2 harness-driven path (§3.3.B) -------------------------------------
@@ -704,12 +715,15 @@ function isForgeStdProvenance(
   remappings: readonly (readonly [string, string])[],
 ): boolean {
   const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  if (normalized.startsWith("../") || /^(src|test|script|vendor)\//u.test(normalized)) {
-    return false;
+  // A real dependency root always qualifies.
+  if (/^(lib|node_modules)\/forge-std\//u.test(normalized)) {
+    return true;
   }
-  return (
-    importPath.startsWith("forge-std/") || /^(lib|node_modules)\/forge-std\//u.test(normalized)
-  );
+  // The canonical `forge-std/…` specifier qualifies ONLY if it did NOT remap into
+  // some repo-local tree (`forge-std/ → fake/forge-std/`, `src/forge-std/…`): the
+  // normalized path must still be `forge-std/…`. Anything else is repo-authored and
+  // could ship a no-op `assertEq` (hollow CONFIRMED) / a cheat handle.
+  return importPath.startsWith("forge-std/") && normalized.startsWith("forge-std/");
 }
 
 /** Classify an instantiated / inherited symbol against §3.3.A. */
@@ -797,6 +811,11 @@ function checkFabricationSurface(
           vmNames.add(local);
         }
       }
+      // A namespace import (`import * as stdvm from "forge-std/Vm.sol"`) binds the
+      // Vm type as `stdvm.Vm` — ban that qualified name too.
+      if (imp.unitAlias !== null) {
+        vmNames.add(`${imp.unitAlias}.Vm`);
+      }
     }
   }
   let vmType: string | null = null;
@@ -809,13 +828,17 @@ function checkFabricationSurface(
     if (t === "UserDefinedTypeName" && vmNames.has(String(rec["namePath"]))) {
       vmType = "declares/uses a `Vm` type (only the canonical `vm` is allowed)";
     }
-    // `Vm(addr)` cast — a FunctionCall whose callee is a Vm-bound identifier.
+    // `Vm(addr)` / `stdvm.Vm(addr)` cast — a FunctionCall whose callee is a
+    // Vm-bound identifier OR a Vm-bound namespace member.
     if (t === "FunctionCall") {
       const callee = rec["expression"];
-      if (
-        nodeType(callee) === "Identifier" &&
-        vmNames.has(String((callee as Record<string, unknown>)["name"]))
-      ) {
+      const calleeName =
+        nodeType(callee) === "Identifier"
+          ? String((callee as Record<string, unknown>)["name"])
+          : nodeType(callee) === "MemberAccess"
+            ? `${String(((callee as Record<string, unknown>)["expression"] as Record<string, unknown>)?.["name"])}.${String((callee as Record<string, unknown>)["memberName"])}`
+            : "";
+      if (vmNames.has(calleeName)) {
         vmType = "casts to `Vm(...)` (only the canonical `vm` is allowed)";
       }
     }
@@ -1506,6 +1529,36 @@ const UINT256_MAX = 2n ** 256n - 1n;
  * unsupported form, or a division by zero / oversized power). Closes obfuscated
  * reflexive bounds like `type(uint256).max - 1 + 1` or `2 ** 256 - 1` that spell a
  * type extreme through arithmetic. Terminating: constant expressions are finite. */
+/** Parse a Solidity integer number literal to its BigInt value — decimal, hex,
+ * underscore-grouped, AND scientific notation (`0e0`, `1e18`, `1.5e18`) which
+ * `BigInt()` alone cannot parse. Returns null for a non-integer or unparseable
+ * literal (so an exponent-spelled bound like `0e0` / `<max>e0` no longer slips
+ * past `constTruth`'s reflexive check). */
+function parseSolidityIntLiteral(raw: string): bigint | null {
+  const s = raw.replace(/_/gu, "").toLowerCase();
+  if (/^0x[0-9a-f]+$/u.test(s)) {
+    try {
+      return BigInt(s);
+    } catch {
+      return null;
+    }
+  }
+  const m = /^(\d+)(?:\.(\d+))?(?:e(\d+))?$/u.exec(s);
+  if (m === null) {
+    return null;
+  }
+  const digits = m[1]! + (m[2] ?? "");
+  const scale = (m[3] === undefined ? 0 : Number(m[3])) - (m[2]?.length ?? 0);
+  if (scale < 0) {
+    // A fractional mantissa scaled below an integer (`1.23e0`) — only integral if
+    // the trailing digits divide out exactly; otherwise not a valid int constant.
+    const divisor = 10n ** BigInt(-scale);
+    const v = BigInt(digits);
+    return v % divisor === 0n ? v / divisor : null;
+  }
+  return BigInt(digits) * 10n ** BigInt(scale);
+}
+
 function foldConst(node: unknown): bigint | null {
   const n = unwrapParens(node);
   const t = nodeType(n);
@@ -1515,11 +1568,7 @@ function foldConst(node: unknown): bigint | null {
     if (typeof rec["subdenomination"] === "string") {
       return null;
     }
-    try {
-      return BigInt(String(rec["number"] ?? "").replace(/_/gu, ""));
-    } catch {
-      return null;
-    }
+    return parseSolidityIntLiteral(String(rec["number"] ?? ""));
   }
   if (t === "MemberAccess") {
     return typeBoundValue(n);
@@ -2305,6 +2354,8 @@ type ImportInfo = {
   path: string;
   symbols: Map<string, string> /* localName -> originalName */;
   whole: boolean;
+  /** `import * as X from "…"` namespace alias (`X`), else null. */
+  unitAlias: string | null;
 };
 
 function collectImports(ast: unknown): ImportInfo[] {
@@ -2328,7 +2379,13 @@ function collectImports(ast: unknown): ImportInfo[] {
         }
       }
     }
-    out.push({ path, symbols, whole: !Array.isArray(aliases) || aliases.length === 0 });
+    const unitAlias = typeof rec["unitAlias"] === "string" ? rec["unitAlias"] : null;
+    out.push({
+      path,
+      symbols,
+      whole: !Array.isArray(aliases) || aliases.length === 0,
+      unitAlias,
+    });
   }
   return out;
 }
@@ -2365,8 +2422,11 @@ function checkImports(
     if (FORBIDDEN_FORGE_STD_SUBSTR.some((s) => p.includes(s))) {
       return `import ${p} is a forbidden forge-std module (assertion surface only)`;
     }
-    if (p.startsWith("forge-std/")) {
-      if (!ALLOWED_FORGE_STD_IMPORTS.has(p)) {
+    // The forge-std assertion surface — the canonical `forge-std/…` specifier OR a
+    // direct real-dependency root (`lib/forge-std/…`, `node_modules/forge-std/…`),
+    // restricted to the allowed assertion modules (Test / StdAssertions).
+    if (p.startsWith("forge-std/") || /^(lib|node_modules)\/forge-std\//u.test(p)) {
+      if (!ALLOWED_FORGE_STD_IMPORTS.has(p) && !/(^|\/)(Test|StdAssertions)\.sol$/u.test(p)) {
         return `import ${p} is not an allowed forge-std module`;
       }
       continue;
@@ -2712,9 +2772,15 @@ function hasBoundAssertion(
     exprReadsViewTarget(expr, deployedVar, pocTarget, closureAstByPath, targetDerived);
   const isBare = (expr: unknown): boolean =>
     isBareTargetRead(expr, deployedVar, pocTarget, closureAstByPath, bareDerived);
+  // The "independent" operand must not TOUCH the target at all — not merely avoid a
+  // VIEW read. A MUTATING target call (`t.resetAndReturn()`) is not a view read, so
+  // `readsTarget` misses it, yet it is not independent: `assertEq(t.balance(),
+  // t.resetAndReturn())` would pass as a hollow target-read.
+  const mentionsTarget = (expr: unknown): boolean =>
+    exprMentionsTarget(expr, deployedVar, targetDerived);
   // Exactly one side is a BARE target read and the OTHER is target-independent.
   const oneSideBare = (a: unknown, b: unknown): boolean =>
-    (isBare(a) && !readsTarget(b)) || (isBare(b) && !readsTarget(a));
+    (isBare(a) && !mentionsTarget(b)) || (isBare(b) && !mentionsTarget(a));
   for (let i = driveIdx; i < statements.length; i++) {
     const decl = varDeclInit(statements[i]);
     if (decl !== null) {
@@ -2802,6 +2868,29 @@ function isBareTargetRead(
     return typeof nm === "string" && bareDerived.has(nm);
   }
   return false;
+}
+
+/** True when an expression TOUCHES the deployed target in ANY way — a member
+ * access/call on the target var (view OR mutating) or a reference to a
+ * target-derived local. Used to reject a non-independent "other" operand
+ * (a mutating target call laundered as independent). Broader than
+ * `exprReadsViewTarget`, which is view-only. */
+function exprMentionsTarget(
+  expr: unknown,
+  deployedVar: string,
+  targetDerived: ReadonlySet<string>,
+): boolean {
+  let found = false;
+  walk(expr, (n) => {
+    if (found || nodeType(n) !== "Identifier") {
+      return;
+    }
+    const nm = (n as Record<string, unknown>)["name"];
+    if (typeof nm === "string" && (nm === deployedVar || targetDerived.has(nm))) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 /**

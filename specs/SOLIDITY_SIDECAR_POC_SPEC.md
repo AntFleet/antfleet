@@ -1054,6 +1054,23 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
     deferred**); abstract-contract mis-classification (parser emits `kind:"abstract"`); public
     state-variable + legacy `constant` getters not resolved as view reads; and executor-throw
     accounting (a thrown executor is a skipped-infra CANDIDATE, not a "generation failed" record).
+  - **Two confirming re-audits (2026-09-02) closed the remaining Tier-1 hollows** (each
+    reproduced against the real classifier): **forge-std provenance** must be an ANCHORED
+    specifier (`isForgeStdProvenance`: canonical `forge-std/…` that does not remap into the repo,
+    or a real `lib/node_modules/forge-std/` root) — a `fake/forge-std/Test.sol` or a `forge-std/ →
+    fake/forge-std/` remap with a no-op `assertEq` is rejected; the **HEVM cheatcode address** is
+    caught in ANY numeric spelling (`foldConst` scan) so a cheat handle cannot be built regardless
+    of how the `Vm` type is imported/aliased/namespaced; `foldConst` now parses **scientific-
+    notation** literals (`0e0`, `<max>e0`); the **"independent" assertion operand** must not TOUCH
+    the target at all (a MUTATING target call laundered as independent is rejected); and the
+    single-assignment `deployedVar` guard covers **parenthesized/tuple LHS** rebinds. **KEY Phase-3
+    note — the runtime `-vvvv` trace does NOT catch cheatcode STORAGE fabrication** (`vm.store` in
+    `setUp` sets the real target's storage; the trace + build-info confirm the real contract but
+    not that its storage was externally seeded). So the Phase-3 "Tier-2 residuals closed by the
+    trace" assumption is INCOMPLETE for fabrication: **the Phase-3 executor MUST add an explicit
+    cheatcode-CALL detector** (reject a run whose trace shows a call into the HEVM precompile) in
+    addition to pinning trusted forge-std — the static gate closes the known handle-construction
+    routes, but a belt-and-braces runtime detector is required for the harness path.
 - **Phase 2 (SPIKE GATE):** run the model **blind, finding-scoped** over an **unfiltered
   PURSUE sample** (not a curated local-deployable slice — so prevalence is measured, not
   assumed), graded by a human who did **not** have a reference PoC. **Committed
