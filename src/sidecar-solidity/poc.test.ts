@@ -500,6 +500,12 @@ contract AuditPoc is Vault, Test {
     ["booleanized >= type().min", "assertTrue(b >= type(uint256).min);"],
     ["booleanized <= type().max", "assertTrue(b <= type(uint256).max);"],
     ["booleanized assertFalse(b < 0)", "assertFalse(b < 0);"],
+    // Negation- / paren-laundered reflexive bounds (peeled by unwrapParens +
+    // the isLogicalNot polarity flip): assertTrue(!(x<0)) ≡ assertTrue(x>=0).
+    ["negation-laundered !(b < 0)", "assertTrue(!(b < 0));"],
+    ["negation-laundered assertFalse(!(b >= 0))", "assertFalse(!(b >= 0));"],
+    ["double-negation !!(b >= 0)", "assertTrue(!!(b >= 0));"],
+    ["paren-laundered (b) >= (0)", "assertTrue((b) >= (0));"],
   ] as const) {
     notStrongConfirmed(
       label,
@@ -518,6 +524,20 @@ contract AuditPoc is Vault, Test {
         t.deposit(100);
         uint256 b = t.balance();
         assertTrue(b > 5);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // A NEGATED load-bearing bound (`!(b < 5)` ≡ `b >= 5`) is still load-bearing:
+  // the polarity peel must not over-reject it.
+  it("a load-bearing negated bound (assertTrue(!(b < 5))) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertTrue(!(b < 5));`),
     );
     expect(r.tier).toBe("static-bound");
     expect(r.assertionForm).toBe("target-read");

@@ -1275,21 +1275,50 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
   // A single-arg assertTrue/assertFalse over a self-comparison, a const-collapse,
   // or a BOOLEANIZED reflexive bound (`assertTrue(x >= 0)` / `assertFalse(x < 0)`
   // — the booleanized twin of the `assertGe(x, 0)` cases above, which otherwise
-  // slips a non-load-bearing target read into a Tier-1 target-read).
+  // slips a non-load-bearing target read into a Tier-1 target-read). Logical
+  // negations are peeled first (flipping the expected polarity each time), so
+  // `assertTrue(!(x < 0))` / `assertTrue(!!(x >= 0))` cannot launder the bound.
   if ((name === "assertTrue" || name === "assertFalse") && args.length >= 1) {
-    if (isSelfComparison(args[0]) || hasConstCollapse(args[0])) {
+    let expr: unknown = unwrapParens(args[0]);
+    let expectTrue = name === "assertTrue";
+    while (isLogicalNot(expr)) {
+      expr = unwrapParens((expr as Record<string, unknown>)["subExpression"]);
+      expectTrue = !expectTrue;
+    }
+    // Polarity-independent collapses (a constant operand fixes the bool value;
+    // over-rejecting an always-FAILING assert here is a harmless false-negative).
+    if (isSelfComparison(expr) || hasConstCollapse(expr)) {
       return true;
     }
-    const refl = boolComparisonReflexive(args[0]);
-    if (
-      (name === "assertTrue" && refl === "always-true") ||
-      (name === "assertFalse" && refl === "always-false")
-    ) {
+    const refl = boolComparisonReflexive(expr);
+    if ((expectTrue && refl === "always-true") || (!expectTrue && refl === "always-false")) {
       return true;
     }
   }
   // Any operand with a constant-collapsing / identity arithmetic (`x*0`, `x-x`).
   return args.some((a) => hasConstCollapse(a));
+}
+
+/** A prefix logical-NOT (`!expr`) — the wrapper a decidable bound hides behind. */
+function isLogicalNot(node: unknown): boolean {
+  return (
+    nodeType(node) === "UnaryOperation" && (node as Record<string, unknown>)["operator"] === "!"
+  );
+}
+
+/** Strip redundant parentheses — a single-component `TupleExpression` (`(x)`,
+ * `((x))`) — so paren-laundered tautologies (`!(x < 0)`, `(x) >= (0)`) canonicalize
+ * to the bare expression. Multi-component tuples `(a, b)` are left intact. */
+function unwrapParens(node: unknown): unknown {
+  let n = node;
+  while (nodeType(n) === "TupleExpression") {
+    const comps = asArray((n as Record<string, unknown>)["components"]);
+    if (comps.length !== 1 || comps[0] === null || comps[0] === undefined) {
+      break;
+    }
+    n = comps[0];
+  }
+  return n;
 }
 
 /** Classifies a comparison `BinaryOperation` that is decidably constant — the
@@ -1299,13 +1328,14 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
  * `assertGe(x, 0)` detector, which also rejects `>= 0` regardless of sign): a
  * safe FALSE-NEGATIVE on the promotable path, never a hollow CONFIRMED. */
 function boolComparisonReflexive(node: unknown): "always-true" | "always-false" | null {
-  if (nodeType(node) !== "BinaryOperation") {
+  const inner = unwrapParens(node);
+  if (nodeType(inner) !== "BinaryOperation") {
     return null;
   }
-  const rec = node as Record<string, unknown>;
+  const rec = inner as Record<string, unknown>;
   const op = rec["operator"];
-  const left = rec["left"];
-  const right = rec["right"];
+  const left = unwrapParens(rec["left"]);
+  const right = unwrapParens(rec["right"]);
   const lowBound = (n: unknown): boolean => isZeroLiteral(n) || isTypeBound(n, "min");
   const maxBound = (n: unknown): boolean => isTypeBound(n, "max");
   // always-true bounds.
@@ -1335,6 +1365,7 @@ function boolComparisonReflexive(node: unknown): "always-true" | "always-false" 
  * and numeric casts `uintN(x)` / `bytesN(x)` — so a launder like `x + 0` compares
  * equal to `x`. */
 function canonExpr(node: unknown): unknown {
+  node = unwrapParens(node);
   const t = nodeType(node);
   const rec = node as Record<string, unknown>;
   if (t === "BinaryOperation") {
