@@ -2470,11 +2470,13 @@ function resolveImportToClosureKey(
 /** True when an import path canonicalizes to the target's closure path (§gate 5;
  * safe directionality — target path ends with the import, never the reverse). */
 function pathMatches(importPath: string, targetPath: string): boolean {
-  // EXACT repo-relative match only. A basename/relative suffix (`./Vault.sol`,
-  // `Vault.sol`) must NOT bind `src/Vault.sol`: the generated test lives under
-  // `test/`, so `./Vault.sol` resolves to a DIFFERENT file (`test/Vault.sol`) — a
-  // same-name wrong-instance the loose `endsWith` suffix match let through.
-  return targetPath === stripDotSegments(importPath);
+  // LITERAL repo-relative equality — no dot-segment normalization. The generated
+  // test lives under `test/`, so a relative specifier (`./Vault.sol`,
+  // `./src/Vault.sol`, `../src/Vault.sol`) resolves to a DIFFERENT file than the
+  // repo-root target and must NOT bind it (a same-name wrong-instance). Stripping
+  // `./` before comparing would mis-bind `./src/Vault.sol` to `src/Vault.sol`, so
+  // the target MUST be imported by its exact repo-relative path.
+  return targetPath === importPath;
 }
 
 function importBindsTargetFromPath(

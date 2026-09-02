@@ -316,15 +316,17 @@ contract AuditPoc is Test {
         assertEq(b, 0);`),
   );
 
-  // A relative/basename import (`./Vault.sol`) must NOT bind the target `src/Vault.sol`:
-  // the generated test lives under test/, so it resolves to a DIFFERENT file — a
-  // same-name wrong-instance the loose `endsWith` path match let through.
-  notStrongConfirmed(
-    "relative same-name import (./Vault.sol) does not bind src/Vault.sol",
-    `// SPDX-License-Identifier: MIT
+  // A relative import (`./Vault.sol`, `./src/Vault.sol`, `../src/Vault.sol`) must
+  // NOT bind the target `src/Vault.sol`: the generated test lives under test/, so a
+  // relative specifier resolves to a DIFFERENT file — a same-name wrong-instance.
+  // pathMatches is LITERAL equality (no dot-segment normalization).
+  for (const relImport of ["./Vault.sol", "./src/Vault.sol", "../src/Vault.sol"]) {
+    notStrongConfirmed(
+      `relative import (${relImport}) does not bind src/Vault.sol`,
+      `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import {Test} from "forge-std/Test.sol";
-import {Vault} from "./Vault.sol";
+import {Vault} from "${relImport}";
 contract AuditPoc is Test {
     function testAuditPoc() public {
         Vault t = new Vault();
@@ -334,7 +336,8 @@ contract AuditPoc is Test {
     }
 }
 `,
-  );
+    );
+  }
 
   notStrongConfirmed(
     "a ternary",
