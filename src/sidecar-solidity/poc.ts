@@ -2409,8 +2409,18 @@ function findDriveStatementIndex(
   return -1;
 }
 
-/** Whether some statement after the drive contains a forge-std `assert*` whose
- * CHECKED operand data-depends on a post-drive VIEW read of the deployed target. */
+/** Whether some statement after the drive contains a forge-std `assert*` bound to
+ * the target under the STRICT structural rule: the assertion must compare a BARE
+ * target read (the target view read itself, modulo value-preserving casts/parens
+ * and the straight-line local binder) against a TARGET-INDEPENDENT operand — or be
+ * a bare target bool getter (`assertTrue(t.isBroken())`). This is the airtight
+ * promotable shape: it rejects the entire self-referential tautology family
+ * (`assertEq(b, b + 5 - 5)`, `assertGe(b, uint256(b))`) where BOTH sides read the
+ * target, without a constant-folding arms race. A legit cross-view invariant
+ * (`assertEq(t.a(), t.b())`) is intentionally NOT promotable here (safe
+ * false-negative → Tier-2 CANDIDATE); a security `CONFIRMED` asserts a target read
+ * against a fixed expectation. Reflexive-against-constant bounds (`b >= 0`) still
+ * bind here but are rejected by `findDecidableTautology` (`constTruth`). */
 function hasBoundAssertion(
   statements: unknown[],
   driveIdx: number,
@@ -2418,13 +2428,24 @@ function hasBoundAssertion(
   pocTarget: PocTarget,
   closureAstByPath: ReadonlyMap<string, ClosureAst>,
 ): boolean {
+  const targetDerived = new Set<string>();
+  const bareDerived = new Set<string>();
   const readsTarget = (expr: unknown): boolean =>
     exprReadsViewTarget(expr, deployedVar, pocTarget, closureAstByPath, targetDerived);
-  const targetDerived = new Set<string>();
+  const isBare = (expr: unknown): boolean =>
+    isBareTargetRead(expr, deployedVar, pocTarget, closureAstByPath, bareDerived);
+  // Exactly one side is a BARE target read and the OTHER is target-independent.
+  const oneSideBare = (a: unknown, b: unknown): boolean =>
+    (isBare(a) && !readsTarget(b)) || (isBare(b) && !readsTarget(a));
   for (let i = driveIdx; i < statements.length; i++) {
     const decl = varDeclInit(statements[i]);
-    if (decl !== null && readsTarget(decl.init)) {
-      targetDerived.add(decl.name);
+    if (decl !== null) {
+      if (readsTarget(decl.init)) {
+        targetDerived.add(decl.name);
+      }
+      if (isBare(decl.init)) {
+        bareDerived.add(decl.name);
+      }
     }
     // Only a TOP-LEVEL assert* statement can bind — a nested (control-flow-
     // wrapped) assertion never counts (§3.3.B top-level-unconditional rule; also
@@ -2437,15 +2458,70 @@ function hasBoundAssertion(
     if (name === null || !name.startsWith("assert")) {
       continue;
     }
-    // Callee-aware: inspect only the CHECKED operands, never the message arg.
     const argsAll = asArray(n["arguments"]);
-    const checked = ASSERT_CONDITION_ONLY.has(name) ? argsAll.slice(0, 1) : argsAll.slice(0, 2);
-    if (name === "assertTrue" && isBooleanLiteral(argsAll[0])) {
-      continue; // assertTrue(true) / assertTrue(false) never binds
+    // Condition-only asserts (assertTrue/assertFalse/assert): peel negations/parens,
+    // then accept a bare target bool getter OR a comparison with one bare side.
+    if (ASSERT_CONDITION_ONLY.has(name)) {
+      let expr: unknown = unwrapParens(argsAll[0]);
+      while (isLogicalNot(expr)) {
+        expr = unwrapParens((expr as Record<string, unknown>)["subExpression"]);
+      }
+      if (isBare(expr)) {
+        return true;
+      }
+      if (
+        nodeType(expr) === "BinaryOperation" &&
+        oneSideBare(
+          (expr as Record<string, unknown>)["left"],
+          (expr as Record<string, unknown>)["right"],
+        )
+      ) {
+        return true;
+      }
+      continue;
     }
-    if (checked.some((arg) => readsTarget(arg))) {
+    // Two-arg comparator asserts: exactly one side a bare target read.
+    if (
+      assertSuccessOp(name) !== null &&
+      argsAll.length >= 2 &&
+      oneSideBare(argsAll[0], argsAll[1])
+    ) {
       return true;
     }
+  }
+  return false;
+}
+
+/** A BARE target read: the expression's value IS a target view read, modulo
+ * value-preserving casts / identity arithmetic / parens (`canonExpr`) and the
+ * straight-line local binder. A target read combined with anything else
+ * (`b | mask`, `b + other`) is NOT bare. */
+function isBareTargetRead(
+  expr: unknown,
+  deployedVar: string,
+  pocTarget: PocTarget,
+  closureAstByPath: ReadonlyMap<string, ClosureAst>,
+  bareDerived: ReadonlySet<string>,
+): boolean {
+  const c = canonExpr(expr);
+  const t = nodeType(c);
+  if (t === "FunctionCall") {
+    const callee = (c as Record<string, unknown>)["expression"];
+    if (nodeType(callee) === "MemberAccess") {
+      const obj = (callee as Record<string, unknown>)["expression"];
+      const mn = (callee as Record<string, unknown>)["memberName"];
+      return (
+        nodeType(obj) === "Identifier" &&
+        (obj as Record<string, unknown>)["name"] === deployedVar &&
+        typeof mn === "string" &&
+        isViewRead(resolveMutabilitySet(pocTarget.symbol, mn, closureAstByPath))
+      );
+    }
+    return false;
+  }
+  if (t === "Identifier") {
+    const nm = (c as Record<string, unknown>)["name"];
+    return typeof nm === "string" && bareDerived.has(nm);
   }
   return false;
 }
@@ -2510,8 +2586,4 @@ function exprReadsViewTarget(
 
 function isConstBool(node: unknown): boolean {
   return nodeType(node) === "BooleanLiteral";
-}
-
-function isBooleanLiteral(arg: unknown): boolean {
-  return nodeType(arg) === "BooleanLiteral";
 }

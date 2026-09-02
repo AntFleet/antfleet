@@ -522,6 +522,14 @@ contract AuditPoc is Vault, Test {
     ["approx-eq max delta", "assertApproxEqAbs(b, 0, type(uint256).max);"],
     ["approx-eq small delta (still Tier-2)", "assertApproxEqAbs(b, 100, 1);"],
     ["approx-eq rel", "assertApproxEqRel(b, 100, 1e18);"],
+    // STRICT bare-vs-independent rule (both sides read the target → not
+    // promotable): constant-fold self (`b + 5 - 5` ≡ b) and duplicate view read.
+    ["fold self-equality (b == b + 5 - 5)", "assertEq(b, b + 5 - 5);"],
+    ["fold self-equality (b == b * 2 - b)", "assertEq(b, b * 2 - b);"],
+    [
+      "duplicate view read (assertEq(t.balance(), t.balance()))",
+      "assertEq(t.balance(), t.balance());",
+    ],
   ] as const) {
     notStrongConfirmed(
       label,
@@ -568,6 +576,21 @@ contract AuditPoc is Vault, Test {
         t.deposit(100);
         uint256 b = t.balance();
         assertNotEq(b, 5);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // The bare target read may be compared against a target-independent CONSTANT
+  // EXPRESSION (`5 + 5`) — the strict rule keys on the read side being bare and
+  // the other side being target-independent, not on the other side being atomic.
+  it("a bare read vs a constant expression (assertEq(b, 5 + 5)) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertEq(b, 5 + 5);`),
     );
     expect(r.tier).toBe("static-bound");
     expect(r.assertionForm).toBe("target-read");
