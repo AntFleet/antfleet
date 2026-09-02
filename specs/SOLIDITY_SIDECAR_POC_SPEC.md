@@ -499,8 +499,22 @@ assembly stays banned on both tiers.
      or arithmetic annihilator (`x*0`, `x-x`) on an operand.
    Together these are **complete decision procedures** for the decidable-constant and
    self-referential classes (bounded — a Tier-1 assertion is one straight-line comparison of a
-   target read); semantic bug-relevance beyond a *load-bearing* assertion is the human-gated
-   residual (§1(a)), not machine-enforced.
+   target read). The **deployed-target variable is single-assignment** (`isVarReassigned`): a
+   rebind (`t = Vault(address(this))`) would re-point the name-keyed drive/read gates at a
+   different instance, so any reassignment of `deployedVar` declines — closing the wrong-instance
+   hollow. **Machine-gated vs. human-gated boundary (deliberate).** The gates close the
+   **deceptive** hollows — where the assertion passes *regardless of the target's real state or
+   reads the wrong instance* (a human reviewer can miss `assertLe(b, ~uint256(0))` or a rebind
+   that looks like a target read). The remaining, softer residual is **drive/assertion
+   bug-relevance** — a *load-bearing* assertion on the real target whose **drive does not exercise
+   what is asserted**: a **no-op drive** (`t.noop(); assertEq(t.balance(), 0)`) or a **pre-drive
+   snapshot of a field the drive never touches** (`uint x = t.balance(); t.deposit(…);
+   assertEq(t.balance(), x)`). These are **TRANSPARENT** to the mandatory human gate (§1(a)) — the
+   drive plainly does nothing / reads an unrelated field — and would be co-checked by the Phase-3
+   runtime trace, so they are **the human-gated residual, not machine-enforced** (machine-enforcing
+   drive→read coupling would need inter-procedural write/read data-flow, which the spike/executor
+   phases can revisit if prevalence warrants). This is the principled line: the machine closes what
+   a human could be fooled by; the human gate closes what is obvious on inspection.
 
 **Tier-2 harness path (§3.3.B) — mints `POC_EXECUTED`** (only when gates 1/7/8 fail *for
 shape reasons* while every §3.3.A hard invariant holds). The harness path CANNOT bind the
