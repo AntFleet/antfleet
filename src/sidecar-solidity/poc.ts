@@ -1272,14 +1272,63 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
   if (name === "assertLe" && args.length >= 2 && isTypeBound(args[1], "max")) {
     return true;
   }
-  // A single-arg assertTrue/assertFalse over a self-comparison or const-collapse.
+  // A single-arg assertTrue/assertFalse over a self-comparison, a const-collapse,
+  // or a BOOLEANIZED reflexive bound (`assertTrue(x >= 0)` / `assertFalse(x < 0)`
+  // — the booleanized twin of the `assertGe(x, 0)` cases above, which otherwise
+  // slips a non-load-bearing target read into a Tier-1 target-read).
   if ((name === "assertTrue" || name === "assertFalse") && args.length >= 1) {
     if (isSelfComparison(args[0]) || hasConstCollapse(args[0])) {
+      return true;
+    }
+    const refl = boolComparisonReflexive(args[0]);
+    if (
+      (name === "assertTrue" && refl === "always-true") ||
+      (name === "assertFalse" && refl === "always-false")
+    ) {
       return true;
     }
   }
   // Any operand with a constant-collapsing / identity arithmetic (`x*0`, `x-x`).
   return args.some((a) => hasConstCollapse(a));
+}
+
+/** Classifies a comparison `BinaryOperation` that is decidably constant — the
+ * booleanized form of the reflexive numeric bounds (`x >= 0`, `x >= type().min`,
+ * `x <= type().max` → always true; `x < 0`, `x > type().max` → always false;
+ * `x == x` / `x != x`). Signedness is treated conservatively (matching the
+ * `assertGe(x, 0)` detector, which also rejects `>= 0` regardless of sign): a
+ * safe FALSE-NEGATIVE on the promotable path, never a hollow CONFIRMED. */
+function boolComparisonReflexive(node: unknown): "always-true" | "always-false" | null {
+  if (nodeType(node) !== "BinaryOperation") {
+    return null;
+  }
+  const rec = node as Record<string, unknown>;
+  const op = rec["operator"];
+  const left = rec["left"];
+  const right = rec["right"];
+  const lowBound = (n: unknown): boolean => isZeroLiteral(n) || isTypeBound(n, "min");
+  const maxBound = (n: unknown): boolean => isTypeBound(n, "max");
+  // always-true bounds.
+  if (op === ">=" && (lowBound(right) || maxBound(left))) {
+    return "always-true"; // x >= 0 | x >= type().min | type().max >= x
+  }
+  if (op === "<=" && (lowBound(left) || maxBound(right))) {
+    return "always-true"; // 0 <= x | type().min <= x | x <= type().max
+  }
+  if (op === "==" && exprKey(left) === exprKey(right)) {
+    return "always-true";
+  }
+  // always-false bounds.
+  if (op === "<" && lowBound(right)) {
+    return "always-false"; // x < 0 | x < type().min
+  }
+  if (op === ">" && maxBound(right)) {
+    return "always-false"; // x > type().max
+  }
+  if (op === "!=" && exprKey(left) === exprKey(right)) {
+    return "always-false";
+  }
+  return null;
 }
 
 /** Strip value-preserving identity wrappers: `x + 0`, `x - 0`, `x * 1`, `x / 1`,
@@ -1353,6 +1402,16 @@ function isSelfComparison(node: unknown): boolean {
   return exprKey(rec["left"]) === exprKey(rec["right"]);
 }
 
+/** Detects an operand that renders a variable subterm (e.g. a target read)
+ * non-load-bearing: an arithmetic annihilator (`x*0`, `x%1`, `x**0`, `1**x`), a
+ * self-cancel (`x-x`, `x/x`, `x%x`), or ANY bitwise/boolean combinator
+ * (`& | ^ << >> && ||`). A Tier-1 numeric/bool assertion has no legitimate use
+ * for a bitwise/boolean operator on a target-read operand, so we reject that
+ * whole class STRUCTURALLY rather than chase constant spellings (`type(uintN).max`,
+ * `~uint(0)`, a hex all-ones literal) — this closes the `b | type(uint256).max`
+ * tautology airtight (any spelling of the annihilator constant). Rejecting a rare
+ * legit bit-masked compare is a safe FALSE-NEGATIVE on the promotable path (it
+ * declines to Tier-2/PURSUE), never a hollow CONFIRMED. */
 function hasConstCollapse(node: unknown): boolean {
   let bad = false;
   walk(node, (n) => {
@@ -1361,11 +1420,37 @@ function hasConstCollapse(node: unknown): boolean {
     }
     const rec = n as Record<string, unknown>;
     const op = rec["operator"];
-    if (op === "*" && (isZeroLiteral(rec["left"]) || isZeroLiteral(rec["right"]))) {
+    const left = rec["left"];
+    const right = rec["right"];
+    // Bitwise / boolean combinators: no load-bearing role in a Tier-1 assertion
+    // operand. Reject the whole class regardless of operand spelling — annihilator
+    // (`x&0`, `x|type(uintN).max`), self-cancel (`x^x`), shift-away (`0<<x`), and
+    // short-circuit (`x||true`) all collapse a variable subterm to a constant.
+    if (
+      op === "&" ||
+      op === "|" ||
+      op === "^" ||
+      op === "<<" ||
+      op === ">>" ||
+      op === "&&" ||
+      op === "||"
+    ) {
       bad = true;
+      return;
     }
-    if (op === "-" && exprKey(rec["left"]) === exprKey(rec["right"])) {
-      bad = true; // x - x
+    // Arithmetic annihilators.
+    if (op === "*" && (isZeroLiteral(left) || isZeroLiteral(right))) {
+      bad = true; // x*0
+    }
+    if (op === "%" && isOneLiteral(right)) {
+      bad = true; // x%1 → 0
+    }
+    if (op === "**" && (isZeroLiteral(right) || isOneLiteral(left))) {
+      bad = true; // x**0 → 1, 1**x → 1
+    }
+    // Self-cancel: identical operands under a canceling operator.
+    if ((op === "-" || op === "/" || op === "%") && exprKey(left) === exprKey(right)) {
+      bad = true; // x-x → 0, x/x → 1, x%x → 0
     }
   });
   return bad;

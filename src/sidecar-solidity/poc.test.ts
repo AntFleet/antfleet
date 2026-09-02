@@ -476,6 +476,53 @@ contract AuditPoc is Vault, Test {
         assertEq(b, 0);
         // ${"x".repeat(25000)}`),
   );
+
+  // --- audit round 3 (focused Tier-1 re-audit): annihilator / self-cancel
+  // tautologies. Each buries the post-drive target read (`b = t.balance()`)
+  // inside an operand that collapses to a compile-time constant, so the
+  // assertion passes for every `b` — a hollow CONFIRMED. hasConstCollapse now
+  // rejects the whole bitwise/boolean class + arithmetic annihilators, so these
+  // must NOT reach a strong static-bound target-read (they fall to Tier-2). --
+  for (const [label, assertLine] of [
+    [
+      "bitwise-OR annihilator (b | type(uint256).max)",
+      "assertEq(b | type(uint256).max, type(uint256).max);",
+    ],
+    ["bitwise-AND-zero annihilator (b & 0)", "assertEq(b & 0, 0);"],
+    ["XOR self-cancel (b ^ b)", "assertEq(b ^ b, 0);"],
+    ["modulo-1 collapse (b % 1)", "assertEq(b % 1, 0);"],
+    ["power-zero collapse (b ** 0)", "assertEq(b ** 0, 1);"],
+    ["div self-cancel (b / b)", "assertEq(b / b, 1);"],
+    ["shift-away annihilator (0 << b)", "assertEq(uint256(0) << b, 0);"],
+    // Booleanized reflexive bounds — the `assertTrue(x OP bound)` twins of the
+    // `assertGe(x, 0)` numeric-bound tautologies (unsigned `>= 0` etc.).
+    ["booleanized >= 0", "assertTrue(b >= 0);"],
+    ["booleanized >= type().min", "assertTrue(b >= type(uint256).min);"],
+    ["booleanized <= type().max", "assertTrue(b <= type(uint256).max);"],
+    ["booleanized assertFalse(b < 0)", "assertFalse(b < 0);"],
+  ] as const) {
+    notStrongConfirmed(
+      label,
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        ${assertLine}`),
+    );
+  }
+
+  // Positive guard: a LOAD-BEARING booleanized bound must STILL earn Tier-1
+  // (the tautology guard must not over-reject legitimate comparisons).
+  it("a load-bearing booleanized bound (assertTrue(b > 5)) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertTrue(b > 5);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
 });
 
 describe("staticGatePoc — audit fixtures", () => {

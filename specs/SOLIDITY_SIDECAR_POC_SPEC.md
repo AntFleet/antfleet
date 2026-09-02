@@ -613,6 +613,20 @@ reason:"executor error: <bounded>"}` — never throws.**
 - **Merged `foundry.toml`**: preserve remappings/`solc_version`/optimizer/`via_ir`/`src`/
   `libs`; force only `ffi=false`, `fs_permissions=[]`; strip `[rpc_endpoints]`/
   `eth_rpc_url`/fuzz seeds.
+- **Trusted assertion-framework provenance (executor trust boundary — the audited
+  repo is UNTRUSTED).** The static gate recognizes `forge-std` `assert*`/`Vm` **by import
+  specifier and by name** (§3.3 gate 3); it cannot see the *bytes* those specifiers resolve
+  to. A hostile target repo can ship a `remappings.txt` (or `lib/`) that redirects
+  `forge-std/` to target-controlled source whose `assertEq`/`assertTrue` is a **no-op** — a
+  gate-passing, load-bearing-looking assertion whose forge PASS is meaningless (a hollow
+  `CONFIRMED`). Therefore the executor **MUST** source the entire assertion framework
+  (`forge-std`, and any built-in assertion surface) **only from the pinned image**, and
+  **MUST drop/override every target-supplied remapping whose left-hand side resolves the
+  assertion framework** (`forge-std/`, `Vm`, `StdAssertions`, `Test`) rather than preserving
+  it, and **never copies a target-tree `forge-std`** into the scratch. The audited repo's
+  `forge-std` bytes never participate. (Static classification stays unchanged — this is an
+  executor-provisioning invariant, co-validated by the build-info bytecode identity below;
+  a fake framework cannot forge the pinned image's `Test.sol` artifact hash.)
 - **Pinned toolchain**: the image (`<IMAGE@sha256:…>`) pins a specific forge + forge-std
   version; the trace/summary parser is written against that version and §5.7 proves it.
 - **Fixed non-model argv**: `docker run --rm --network none --user <non-root> --cpus=2
@@ -967,6 +981,21 @@ it must exercise and grade **both** the static-bound (`CONFIRMED`) and harness-d
       the load-bearing guard for `POC_EXECUTED`. Hardening the Tier-2 static gate to airtight
       is therefore **deferred to the Phase-3 executor increment**, done alongside the trace
       co-validator rather than as an unbounded static-only exercise now.
+  - **Focused Tier-1 re-audit (2026-09-02) — CONFIRMED path.** A 3-lane codex re-audit of the
+    combined impl diff, scoped to the promotable path, found and CLOSED two Tier-1 static-gate
+    holes (both verified against the real classifier, both fixed in `poc.ts` `hasConstCollapse`
+    / `isTautologyAssert` with regression tests): (a) **annihilator / self-cancel tautologies**
+    (`b | type(uint).max`, `b & 0`, `b ^ b`, `b % 1`, `b ** 0`, `b / b`, `0 << b`) that buried a
+    non-load-bearing target read inside a constant-collapsing operand; (b) **booleanized
+    reflexive bounds** (`assertTrue(b >= 0)` / `assertFalse(b < 0)` — the `assertGe(x,0)` twins).
+    The wiring lane found **no Phase-1 blocker** (promotion gated behind `execution.executed`,
+    `activeGo` honored, counters consistent, no static/harness tier-crossing). **Deferred to
+    Phase 3** (not Phase-1-reachable — generation-only, no executor): (i) **trusted
+    assertion-framework provenance** — a hostile audited repo could remap `forge-std/` to a
+    no-op `assertEq`; the executor MUST source the assertion framework only from the pinned
+    image and drop target remappings of it (spec'd in §3.4); (ii) an executor-enabled
+    **non-terminal-render consistency** nit — `sweep.ts`/`run.ts` label an executed-but-unpromoted
+    PoC generically without checking `executed` (harmless while `executePoc` is undefined).
 - **Phase 2 (SPIKE GATE):** run the model **blind, finding-scoped** over an **unfiltered
   PURSUE sample** (not a curated local-deployable slice — so prevalence is measured, not
   assumed), graded by a human who did **not** have a reference PoC. **Committed
