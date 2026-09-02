@@ -1,14 +1,52 @@
 # Solidity sidecar — PoC generation + local-container verification (post-PURSUE)
 
-Status: UNDER RE-AUDIT (two-tier redesign) — the single-tier v8 had converged to zero C/H/M
-over eight rounds, but the 2026-09-02 reversal that admits the harness/callback class
-(`POC_EXECUTED`, Tier 2) re-opened the soundness surface. A fresh 5-lane audit round flagged
-the trace-scoping and spike-yield holes now fixed in this revision; **re-running all five
-lanes until 0 C/H/M before the gates are rebuilt.** Phase-1 code still implements the
-single-tier model. · implements
-[issue #179](https://github.com/AntFleet/antfleet/issues/179) (closure is a **Phase-3**
-outcome — see §7) · extends `specs/SOLIDITY_SIDECAR_SPEC.md` and
+implements [issue #179](https://github.com/AntFleet/antfleet/issues/179) (closure is a
+**Phase-3** outcome — see §7) · extends `specs/SOLIDITY_SIDECAR_SPEC.md` and
 `specs/SOLIDITY_SIDECAR_PHASE0_SPEC.md`.
+
+## Production status (2026-09-02) — Phase 1 SHIPPED (PR #183, does NOT close #179)
+
+**USABLE NOW — Phase 1, generation-only (opt-in `--poc`, off by default, honored only under
+`--live`).** For a finding the scoring gate already returned **PURSUE**, the sidecar can ask a
+model to author a minimal Foundry PoC, then **statically classify** it into Tier-1
+(`CONFIRMED`-shape, static-bound) or Tier-2 (`POC_EXECUTED`-shape, harness-driven) and attach
+it as a **human-review CANDIDATE**. **It never moves a verdict:** `executePoc` is always
+undefined, so `promoteWithPoc`/`wouldPromotePoc` never promote (they require
+`execution.executed`). A `--poc` run is a drafting aid; a no-`--poc` run is byte-identical to
+before. This is what merged in PR #183.
+
+**NOT BUILT YET (deferred, gated).**
+- **Phase 2 — SPIKE GATE (§7):** a blind, finding-scoped generation spike over an unfiltered
+  PURSUE sample, human-graded, committed `SPIKE_RESULT.json`, validated by
+  `validateSpikeGoArtifact()`. GO/NO-GO decision before any executor is built.
+- **Phase 3 — executor + terminal verdicts (post-GO):** `dockerPocExecutor`, terminal
+  `CONFIRMED`/`POC_EXECUTED` promotion, the runtime `-vvvv` trace + build-info identity
+  co-validator, the **cheatcode-CALL detector** (the load-bearing fabrication backstop — see
+  below), trusted-forge-std pinning, and the hardened Tier-2 static gate. **Closing #179 is a
+  Phase-3 outcome.**
+
+**KNOWN RESIDUALS (documented; NOT Phase-1-exploitable — generation-only, human-gated, no
+promotion).** A hand-rolled static AST gate over arbitrary adversarial Solidity is not provably
+airtight, and iterating it is not the right use of effort. The 2026-09-02 audit rounds closed
+the realistic + most adversarial vectors and converged the two classes that a runtime backstop
+CANNOT catch — **decidable-assertion** (tautology/constant; `constTruth`+`foldConst`+strict
+binding) and **wrong-instance** (rebind/alias/relative-path; single-assignment `deployedVar` +
+literal `pathMatches`) — with one small residual in each carried to Phase 3:
+- **Class-A residual:** a target-derived local REASSIGNED before the assert
+  (`uint b = t.balance(); b = 0; assertEq(b, 0)`) — the same class as the `deployedVar`
+  single-assignment guard; extend that guard to invalidate target-derived locals on
+  reassignment (Phase 3).
+- **Fabrication surface** (fake assertion framework / cheat handle) is an unbounded static
+  arms race and is deliberately NOT closed statically to a fixed point; it is best-effort
+  static + the **Phase-3 executor cheatcode-CALL detector** as the airtight guard (a
+  fabrication run calls the HEVM precompile; the executor rejects any such trace — the `-vvvv`
+  trace does NOT catch storage fabrication on its own, so this explicit detector is required).
+- **Drive-relevance** (no-op drive; pre-drive snapshot of an unrelated field) is the
+  human-gated residual (§1(a) — the mandatory human gate sees them plainly).
+
+**WHY THIS IS SHIPPABLE.** Phase 1 mints no verdict, so no residual static-gate hollow can
+cause harm: the gate's Phase-1 job is to classify a human-reviewed CANDIDATE, not to gate a
+verdict. Every terminal verdict is Phase-3, human-gated, and behind the §7 spike GO artifact.
 
 ## Problem
 

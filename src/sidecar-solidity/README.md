@@ -43,6 +43,9 @@ Implements [`specs/SOLIDITY_SIDECAR_SPEC.md`](../../specs/SOLIDITY_SIDECAR_SPEC.
   an isolated sandbox). The container executor and the terminal **`CONFIRMED`** state
   are **Phase 3**, gated behind a machine-validated generation spike (§7); until then
   nothing here executes a PoC or confirms exploitability.
+  See the **Production status** block at the top of `specs/SOLIDITY_SIDECAR_POC_SPEC.md`
+  for exactly what is usable now, what is deferred to Phase 2/3, and the documented
+  static-gate residuals (all human-gated and non-promoting in Phase 1).
 
 ## Usage
 
