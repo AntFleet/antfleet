@@ -556,6 +556,14 @@ contract AuditPoc is Test {
 });
 
 describe("staticGatePoc — Tier-2 harness path (§3.3.B)", () => {
+  // §3.3.A requires vendored scaffolding to resolve under lib/**; provide the
+  // repo's remappings so `@uniswap/...` resolves to a proven real-dependency root.
+  const RM: readonly (readonly [string, string])[] = [
+    ["@uniswap/v4-core/", "lib/v4-core/"],
+    ["@uniswap/v4-periphery/", "lib/v4-periphery/"],
+    ["solmate/", "lib/solmate/"],
+  ];
+  const g2 = (src: string) => staticGatePoc(src, { evidence: [] }, TARGET, closure(), RM);
   const H2 = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import {Test} from "forge-std/Test.sol";
@@ -574,7 +582,7 @@ ${body}
 `;
 
   it("callback drive + selector expectRevert → harness-driven, revert, with a harnessDriveSpan", () => {
-    const r = gate(harness("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`));
+    const r = g2(harness("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`));
     expect(r.passed, r.reasons.join(" | ")).toBe(true);
     expect(r.tier).toBe("harness-driven");
     expect(r.assertionForm).toBe("revert");
@@ -583,7 +591,7 @@ ${body}
   });
 
   it("drive + post-drive target view read → harness-driven, target-read", () => {
-    const r = gate(
+    const r = g2(
       harness(
         "",
         "",
@@ -596,21 +604,24 @@ ${body}
   });
 
   it("selectorless expectRevert → non-terminal no-revert", () => {
-    const r = gate(harness("", "", `        vm.expectRevert();\n        hook.drain();`));
+    const r = g2(harness("", "", `        vm.expectRevert();\n        hook.drain();`));
     expect(r.passed, r.reasons.join(" | ")).toBe(true);
     expect(r.assertionForm).toBe("no-revert");
   });
 
   it("drive + assertTrue(true) → non-terminal no-revert", () => {
-    const r = gate(harness("", "", `        hook.deposit(1);\n        assertTrue(true);`));
+    const r = g2(harness("", "", `        hook.deposit(1);\n        assertTrue(true);`));
     expect(r.assertionForm).toBe("no-revert");
   });
 
   it("a mined-salt target deploy is admitted (§3.3.A CREATE2 carve-out)", () => {
-    const r = gate(
+    const r = g2(
       `${H2}contract AuditPoc is Test, Deployers {
     Vault hook;
-    function setUp() public { hook = new Vault{salt: bytes32(uint256(1))}(); }
+    function setUp() public {
+        bytes32 s = keccak256("mined");
+        hook = new Vault{salt: s}();
+    }
     function testAuditPoc() public {
         vm.expectRevert(bytes("x"));
         hook.drain();
@@ -623,7 +634,7 @@ ${body}
   });
 
   it("a bespoke test-authored contract in the harness declines (not test-authored)", () => {
-    const r = gate(
+    const r = g2(
       `${H2}contract Fake { function p() external pure returns (uint256){ return 1; } }
 contract AuditPoc is Test, Deployers {
     Vault hook;
@@ -639,7 +650,7 @@ contract AuditPoc is Test, Deployers {
   });
 
   it("an unknown-specifier base declines (unrecognized scaffolding)", () => {
-    const r = gate(
+    const r = g2(
       `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import {Test} from "forge-std/Test.sol";
@@ -660,7 +671,7 @@ contract AuditPoc is Test, Weird {
   });
 
   it("a repo-src (non-target) import declines (closed-symbol / repo-src dependency)", () => {
-    const r = gate(
+    const r = g2(
       `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import {Test} from "forge-std/Test.sol";
@@ -683,7 +694,7 @@ contract AuditPoc is Test, Deployers {
   });
 
   it("a fabrication cheat (vm.store) declines even on the harness path", () => {
-    const r = gate(
+    const r = g2(
       harness(
         "",
         "vm.store(address(hook), bytes32(0), bytes32(uint256(1)));",
@@ -691,6 +702,108 @@ contract AuditPoc is Test, Deployers {
       ),
     );
     expect(r.passed).toBe(false);
+  });
+
+  // --- impl-audit hardening regressions (must not regress) ------------------
+
+  it("a helper-rooted drive is NOT a valid harness drive (declines)", () => {
+    const r = g2(
+      `${H2}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function prime() internal { hook.drain(); }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        prime();
+    }
+}
+`,
+    );
+    expect(r.tier === "harness-driven" && r.assertionForm === "revert").toBe(false);
+  });
+
+  it("a stray vm.expectRevert in setUp declines (only the B4 guard is allowed)", () => {
+    const r = g2(
+      harness(
+        "",
+        `vm.expectRevert(bytes("y"));`,
+        `        vm.expectRevert(bytes("x"));\n        hook.drain();`,
+      ),
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("a literal salt declines (§3.3.A HookMiner-derived only)", () => {
+    const r = g2(
+      `${H2}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault{salt: bytes32(uint256(1))}(); }
+    function testAuditPoc() public { vm.expectRevert(bytes("x")); hook.drain(); }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("vendored scaffolding that remaps into the repo (vendor/) declines", () => {
+    const r = staticGatePoc(
+      harness("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [["@uniswap/v4-core/", "vendor/v4-core/"]], // repo-authored root, not lib/
+    );
+    expect(r.passed).toBe(false);
+  });
+});
+
+describe("staticGatePoc — closed-symbol invariant (Tier-1 CRITICAL)", () => {
+  it("a repo Test smuggled via the target-path import declines (not static-bound)", () => {
+    const r = gate(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test, Vault} from "src/Vault.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+    );
+    expect(r.tier).not.toBe("static-bound");
+  });
+
+  it("a repo src/ free-function import declines on both tiers", () => {
+    const r = gate(
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Vault} from "src/Vault.sol";
+import {seed} from "src/Helper.sol";
+contract AuditPoc is Test {
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        seed(address(t));
+        t.deposit(1);
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+  });
+
+  it("a short-circuited / helper-laundered read is not load-bearing (not static-bound)", () => {
+    const shortCircuit = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(1);
+        assertTrue(true || t.balance() == 0);`),
+    );
+    expect(shortCircuit.tier).not.toBe("static-bound");
   });
 });
 
@@ -767,6 +880,7 @@ describe("promoteWithPoc truth table", () => {
       poc: rec({
         executed: true,
         execution: {
+          executed: true,
           compiled: true,
           passed: true,
           drove: true,
@@ -786,6 +900,7 @@ describe("promoteWithPoc truth table", () => {
       poc: rec({
         executed: true,
         execution: {
+          executed: true,
           compiled: true,
           passed: true,
           drove: true,
@@ -808,6 +923,7 @@ describe("promoteWithPoc truth table", () => {
         tier: "harness-driven",
         assertionForm: "revert",
         execution: {
+          executed: true,
           compiled: true,
           passed: true,
           drove: false,
@@ -830,6 +946,7 @@ describe("promoteWithPoc truth table", () => {
         tier: "harness-driven",
         assertionForm: "target-read",
         execution: {
+          executed: true,
           compiled: true,
           passed: true,
           drove: false,
@@ -853,6 +970,7 @@ describe("promoteWithPoc truth table", () => {
         tier: "harness-driven",
         assertionForm: "no-revert",
         execution: {
+          executed: true,
           compiled: true,
           passed: true,
           drove: false,
@@ -875,9 +993,12 @@ describe("promoteWithPoc truth table", () => {
         poc: rec({
           executed: true,
           execution: {
+            executed: true,
             compiled: true,
             passed: true,
             drove: false,
+            targetFrameObserved: true,
+            driveKind: "callback",
             deployedTargetPath: VAULT_PATH,
             reason: "ok",
           },
@@ -893,9 +1014,12 @@ describe("promoteWithPoc truth table", () => {
         poc: rec({
           executed: true,
           execution: {
+            executed: true,
             compiled: true,
             passed: true,
             drove: true,
+            targetFrameObserved: true,
+            driveKind: null,
             deployedTargetPath: "other/Vault.sol",
             reason: "ok",
           },
@@ -911,9 +1035,12 @@ describe("promoteWithPoc truth table", () => {
         poc: rec({
           executed: true,
           execution: {
+            executed: true,
             compiled: true,
             passed: false,
             drove: true,
+            targetFrameObserved: true,
+            driveKind: null,
             deployedTargetPath: VAULT_PATH,
             reason: "fail",
           },

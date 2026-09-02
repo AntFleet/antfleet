@@ -40,6 +40,9 @@ import {
   staticGatePoc,
   promoteWithPoc,
   CANDIDATE_LABEL,
+  CONFIRMED_LABEL,
+  POC_EXECUTED_LABEL,
+  NON_TERMINAL_POC_LABEL,
   type ActiveGo,
   type ClosureAst,
   type PocExecution,
@@ -462,6 +465,18 @@ export async function runFinder(
       });
       s.verdict = promoted.verdict;
       s.reason = promoted.reason;
+      // Co-carry the atomic §1 caveat label in the serialized record (§3.1), so a
+      // JSON consumer keying on verdict also sees the honest tier caveat beside it.
+      if (s.poc.generated) {
+        s.poc.label =
+          s.verdict === "CONFIRMED"
+            ? CONFIRMED_LABEL
+            : s.verdict === "POC_EXECUTED"
+              ? POC_EXECUTED_LABEL
+              : s.poc.executed
+                ? NON_TERMINAL_POC_LABEL // executed but not promoted (tier-not-enabled / no-revert)
+                : CANDIDATE_LABEL; // generation-only (Phase 1)
+      }
     }
   }
 
@@ -602,6 +617,12 @@ async function runPocStage(args: {
       harnessDriveSpan: gate.harnessDriveSpan,
       pocTarget: target,
     });
+    // An infra/gating skip (deps unavailable, GO missing) returns executed:false
+    // and never promotes — count it as skipped, not run (§3.4).
+    if (!execution.executed) {
+      args.onSkippedInfra();
+      return { ...gatedBase, executed: false, execution, label: CANDIDATE_LABEL };
+    }
     args.onExecuted();
     return { ...gatedBase, executed: true, execution };
   } catch (err) {

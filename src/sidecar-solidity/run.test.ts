@@ -415,7 +415,7 @@ contract AuditPoc is Test {
 }
 `;
 
-const genValid = async () => ({ testContents: VALID_POC, rationale: null });
+const genValid = async () => ({ testContents: VALID_POC, shape: null, rationale: null });
 
 describe("runFinder — PoC stage", () => {
   it("generation-only tier keeps a gate-passing PoC at PURSUE (CANDIDATE)", async () => {
@@ -439,6 +439,7 @@ describe("runFinder — PoC stage", () => {
 
   it("a passing execution + enableStatic GO promotes PURSUE → CONFIRMED", async () => {
     const execPass = async () => ({
+      executed: true,
       compiled: true,
       passed: true,
       drove: true,
@@ -465,6 +466,7 @@ describe("runFinder — PoC stage", () => {
 
   it("a passing execution WITHOUT a GO stays PURSUE (tier-not-enabled)", async () => {
     const execPass = async () => ({
+      executed: true,
       compiled: true,
       passed: true,
       drove: true,
@@ -494,7 +496,7 @@ describe("runFinder — PoC stage", () => {
       async () => handled({ findings: [vaultFinding] }),
       refuteSurvives,
       undefined,
-      async () => ({ testContents: null, rationale: "requires live fork" }),
+      async () => ({ testContents: null, shape: null, rationale: "requires live fork" }),
     );
     const s = result.scored[0]!;
     expect(s.verdict).toBe("PURSUE");
@@ -504,9 +506,12 @@ describe("runFinder — PoC stage", () => {
 
   it("an execution that does not hold stays PURSUE", async () => {
     const execFail = async () => ({
+      executed: true,
       compiled: true,
       passed: false,
       drove: true,
+      targetFrameObserved: true,
+      driveKind: null,
       deployedTargetPath: "src/Vault.sol",
       reason: "assertion held (no bug)",
     });
@@ -556,8 +561,8 @@ describe("runFinder — PoC stage", () => {
       async () => handled({ findings: [vaultFinding] }),
       refuteSurvives,
     );
-    expect(result.confirmedCount).toBeUndefined();
-    expect(result.pocAttempted).toBeUndefined();
+    expect(result.confirmedVerdictCount).toBeUndefined();
+    expect(result.pocAttemptedCount).toBeUndefined();
     expect("confirmedCount" in result).toBe(false);
     expect(result.scored[0]!.poc).toBeUndefined();
   });

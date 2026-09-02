@@ -702,7 +702,16 @@ export function pursueFindingDedupKey(finding: AuditFinding): string {
  * this union first so the operator reads the deduped whole-system picture up top.
  */
 export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings[]): string {
-  type Group = { rep: ScoredFinding; severityRank: number; entries: Set<string> };
+  // Track the STRONGEST verdict tier across the group so the union never collapses
+  // a CONFIRMED and a POC_EXECUTED of the same finding into an untagged row.
+  const verdictRank = (v: ScoredFinding["verdict"]): number =>
+    v === "CONFIRMED" ? 2 : v === "POC_EXECUTED" ? 1 : 0;
+  type Group = {
+    rep: ScoredFinding;
+    severityRank: number;
+    bestVerdict: ScoredFinding["verdict"];
+    entries: Set<string>;
+  };
   const groups = new Map<string, Group>();
   let rawPursue = 0;
   for (const { entry, scored } of entries) {
@@ -715,13 +724,21 @@ export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings
       const rank = SEVERITY_ORDER[s.finding.severity] ?? 0;
       const existing = groups.get(key);
       if (existing === undefined) {
-        groups.set(key, { rep: s, severityRank: rank, entries: new Set([entry]) });
+        groups.set(key, {
+          rep: s,
+          severityRank: rank,
+          bestVerdict: s.verdict,
+          entries: new Set([entry]),
+        });
         continue;
       }
       existing.entries.add(entry);
       if (rank > existing.severityRank) {
         existing.rep = s;
         existing.severityRank = rank; // keep the highest-severity representative
+      }
+      if (verdictRank(s.verdict) > verdictRank(existing.bestVerdict)) {
+        existing.bestVerdict = s.verdict; // keep the strongest tier seen
       }
     }
   }
@@ -744,9 +761,15 @@ export function buildDedupedPursueMarkdown(entries: readonly EntryPursueFindings
     lines.push("No PURSUE findings.");
     return lines.join("\n");
   }
-  for (const { rep, entries: surfacedFrom } of uniques) {
+  for (const { rep, bestVerdict, entries: surfacedFrom } of uniques) {
     const f = rep.finding;
-    lines.push(`## **[${f.severity}]** ${f.title}`);
+    const tierTag =
+      bestVerdict === "CONFIRMED"
+        ? " _(CONFIRMED)_"
+        : bestVerdict === "POC_EXECUTED"
+          ? " _(POC_EXECUTED)_"
+          : "";
+    lines.push(`## **[${f.severity}]** ${f.title}${tierTag}`);
     lines.push(`- surfaced from: ${[...surfacedFrom].toSorted().join(", ")}`);
     for (const e of f.evidence) {
       lines.push(`- evidence: \`${e.path}:${e.startLine ?? "?"}-${e.endLine ?? "?"}\``);
