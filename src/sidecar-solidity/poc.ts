@@ -715,8 +715,17 @@ function isForgeStdProvenance(
   remappings: readonly (readonly [string, string])[],
 ): boolean {
   const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  // A real dependency root always qualifies.
-  if (/^(lib|node_modules)\/forge-std\//u.test(normalized)) {
+  // A real dependency root always qualifies — including a TRANSITIVELY-nested
+  // forge-std submodule (`lib/<dep>/lib/forge-std/…`, any nesting depth), which is
+  // how Foundry projects that depend on another Foundry library vendor forge-std
+  // (e.g. der-sc: `lib/uniswap-hooks/lib/forge-std/src/Test.sol`). The nesting
+  // MUST be through `lib/` segments (a `…/src/forge-std/` landing is repo-authored
+  // and stays rejected). node_modules forge-std qualifies at the top level or
+  // nested under a package (`…/node_modules/forge-std/`).
+  if (
+    /^lib\/(?:[^/]+\/lib\/)*forge-std\//u.test(normalized) ||
+    /(^|\/)node_modules\/forge-std\//u.test(normalized)
+  ) {
     return true;
   }
   // The canonical `forge-std/…` specifier qualifies ONLY if it did NOT remap into
@@ -890,6 +899,18 @@ function checkClosedSymbol(
       continue; // §3.3.A vendored scaffolding (real-dep root proven)
     }
     const resolved = posixNormalize(applyRemappings(path, remappings));
+    // A DEPENDENCY library/type import (resolves under a real `lib/`/`node_modules/`
+    // root) is legitimate PoC scaffolding, NOT first-party repo-src: a Uniswap v4
+    // hook PoC MUST import v4-core types/libraries (`Hooks`, `PoolKey`, `Currency`,
+    // `BalanceDelta`) to construct the pool key and drive the hook. These carry no
+    // hollow-verdict risk — the assertion/cheat surface is gated independently
+    // (`checkFabricationSurface`: forge-std provenance, `Vm`/reserved-name bans) and
+    // class-C fabrication is backstopped at runtime. `isRealDepRoot` rejects a
+    // `../`-escape, an absolute path, and a first-party `src|test|script|vendor/`
+    // landing, so a dep import that remaps INTO the repo tree is still caught below.
+    if (isRealDepRoot(resolved)) {
+      continue;
+    }
     if (REPO_SRC_RE.test(resolved) || path.startsWith("./") || path.startsWith("../")) {
       return `imports a repo-src symbol from \`${path}\` (requires a repo-src dependency instantiation)`;
     }
@@ -954,6 +975,7 @@ function tryHarnessDriven(
   const forbidden = scanForbiddenConstructs(testContract, {
     allowSaltOption: true,
     allowExpectRevert: true,
+    targetSymbol: pocTarget.symbol,
   });
   if (forbidden !== null) {
     return fail(forbidden);
@@ -2179,9 +2201,42 @@ function findControlFlow(body: unknown): string | null {
  * creation, forbidden StdCheats/StdStorage helpers (bare OR member-chain),
  * bound-`Vm` aliases, and non-allowlisted vm.* members.
  */
+/** The user-type symbol `X` of a `type(X)` expression, else null. Used to admit
+ * `type(<target>).creationCode` — the mandatory HookMiner input for CREATE2-mined
+ * deployment of a Uniswap v4 hook — while still rejecting `type(<other>).*`. */
+function typeArgSymbol(expr: unknown): string | null {
+  if (nodeType(expr) !== "FunctionCall") {
+    return null;
+  }
+  const rec = expr as Record<string, unknown>;
+  const callee = rec["expression"];
+  if (nodeType(callee) !== "Identifier" || (callee as Record<string, unknown>)["name"] !== "type") {
+    return null;
+  }
+  const arg = asArray(rec["arguments"])[0];
+  if (arg === null || typeof arg !== "object") {
+    return null;
+  }
+  const a = arg as Record<string, unknown>;
+  // `type(X)` where X is a user type parses its argument as either an Identifier
+  // (`name`) or a UserDefinedTypeName (`namePath`).
+  if (nodeType(a) === "Identifier" && typeof a["name"] === "string") {
+    return a["name"];
+  }
+  const tn = a["typeName"];
+  if (tn !== null && typeof tn === "object") {
+    const np = (tn as Record<string, unknown>)["namePath"];
+    if (typeof np === "string") {
+      return np;
+    }
+  }
+  const np = a["namePath"];
+  return typeof np === "string" ? np : null;
+}
+
 function scanForbiddenConstructs(
   body: unknown,
-  opts: { allowSaltOption?: boolean; allowExpectRevert?: boolean } = {},
+  opts: { allowSaltOption?: boolean; allowExpectRevert?: boolean; targetSymbol?: string } = {},
 ): string | null {
   // First pass: identify variables bound to the canonical `vm` (Vm aliases).
   const vmAliases = new Set<string>();
@@ -2258,7 +2313,17 @@ function scanForbiddenConstructs(
     if (t === "MemberAccess") {
       const m = rec["memberName"];
       if (m === "creationCode" || m === "runtimeCode") {
-        problem = "uses type(X).creationCode/runtimeCode (creation must be `new X`)";
+        // `type(<target>).creationCode` is the mandatory HookMiner input for a
+        // CREATE2-mined Uniswap v4 hook deploy: the bytes only feed HookMiner
+        // (pure address calc) or `new <target>{salt}()` (already target-restricted
+        // by §3.3.A) — inline assembly is hard-banned, so they cannot deploy a
+        // substitute. Any NON-target `type(X).creationCode` stays rejected.
+        const sym = typeArgSymbol(rec["expression"]);
+        if (
+          !(m === "creationCode" && opts.targetSymbol !== undefined && sym === opts.targetSymbol)
+        ) {
+          problem = "uses type(X).creationCode/runtimeCode (creation must be `new X`)";
+        }
       }
       // stdstore / checked_write / deal / … anywhere in a member chain — EXCEPT
       // the canonical `vm.<cheat>` surface (vm.deal is allowlisted; the arity/EOA
