@@ -517,6 +517,11 @@ contract AuditPoc is Vault, Test {
     ["assertGe cast self (assertGe(b, uint256(b)))", "assertGe(b, uint256(b));"],
     // Offset-inequality: assertNotEq(x, x + k) is always true (x != x + 1).
     ["offset inequality assertNotEq(b, b + 1)", "assertNotEq(b, b + 1);"],
+    // Approximate-equality is excluded from Tier-1 (model-supplied tolerance is
+    // not statically verifiable; a max delta always passes → hollow).
+    ["approx-eq max delta", "assertApproxEqAbs(b, 0, type(uint256).max);"],
+    ["approx-eq small delta (still Tier-2)", "assertApproxEqAbs(b, 100, 1);"],
+    ["approx-eq rel", "assertApproxEqRel(b, 100, 1e18);"],
   ] as const) {
     notStrongConfirmed(
       label,

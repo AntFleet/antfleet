@@ -1261,9 +1261,17 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
     return false;
   }
   const args = asArray(call["arguments"]);
+  // Approximate-equality is NOT a promotable Tier-1 form: its tolerance operand
+  // is model-supplied and not statically verifiable — a too-large delta (e.g.
+  // `assertApproxEqAbs(b, 0, type(uint256).max)`) always passes, so the target
+  // read is non-load-bearing. Bounding "too large" needs magnitude/type
+  // reasoning, so we conservatively reject the whole class from CONFIRMED (it
+  // stays a valid Tier-2 CANDIDATE). A security CONFIRMED needs an EXACT assertion.
+  if (name === "assertApproxEqAbs" || name === "assertApproxEqRel") {
+    return true;
+  }
   // Two-arg comparator asserts: the assert PASSES iff `arg0 <op> arg1` holds, so
-  // a decidably-true comparison is a tautology (`assertEq`/`Ge`/`Le`/`Gt`/`Lt`/
-  // `NotEq`/`ApproxEq*`).
+  // a decidably-true comparison is a tautology (`assertEq`/`Ge`/`Le`/`Gt`/`Lt`/`NotEq`).
   const op = assertSuccessOp(name);
   if (op !== null && args.length >= 2 && constTruth(args[0], op, args[1]) === "T") {
     return true;
@@ -1306,9 +1314,7 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
  * condition (`assertEq(a,b)` passes iff `a == b`); null for non-comparators. */
 function assertSuccessOp(name: string): string | null {
   switch (name) {
-    case "assertEq":
-    case "assertApproxEqAbs":
-    case "assertApproxEqRel": {
+    case "assertEq": {
       return "==";
     }
     case "assertNotEq": {
