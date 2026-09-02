@@ -1245,39 +1245,33 @@ function assertHasForbiddenHelperCall(
   return bad;
 }
 
-/** Decidable-tautology detector: self-comparison, type-reflexive (`>=0`), or a
- * constant-collapsing arithmetic operand. Unary `assertTrue(target.isBroken())`
- * on a non-constant bool getter is load-bearing and passes. */
+/** Decidable-tautology detector (§3.3 gate 8). An assertion is a tautology when
+ * its PASS condition is decidably always-satisfied — so the target read it
+ * appears to check is not load-bearing (a hollow `CONFIRMED`). Rather than a
+ * blacklist of laundering shapes, this normalizes every comparison through a
+ * single `constTruth` over the CLOSED comparator set, evaluated on
+ * `canonExpr`-canonicalized operands (casts / identity arithmetic / parens
+ * stripped) — so `assertEq(x, uint256(x))`, `assertGe(x, x)`, `assertTrue(x>=0)`,
+ * `assertTrue(!(x<0))`, and `x | type(uint).max` all reduce to the same handful
+ * of decidable facts. Unary `assertTrue(target.isBroken())` on a non-constant
+ * bool getter stays load-bearing and passes. */
 function isTautologyAssert(call: Record<string, unknown>): boolean {
   const name = calleeIdentifierName(call);
+  if (name === null) {
+    return false;
+  }
   const args = asArray(call["arguments"]);
-  // Binary comparators with two operands that are equal AFTER stripping identity
-  // arithmetic / casts (`assertEq(x, x + 0)`, `assertEq(x, uint256(x))`).
-  if (
-    name !== null &&
-    (name === "assertEq" || name === "assertNotEq" || name === "assertApproxEqAbs") &&
-    args.length >= 2 &&
-    exprKey(canonExpr(args[0])) === exprKey(canonExpr(args[1]))
-  ) {
+  // Two-arg comparator asserts: the assert PASSES iff `arg0 <op> arg1` holds, so
+  // a decidably-true comparison is a tautology (`assertEq`/`Ge`/`Le`/`Gt`/`Lt`/
+  // `NotEq`/`ApproxEq*`).
+  const op = assertSuccessOp(name);
+  if (op !== null && args.length >= 2 && constTruth(args[0], op, args[1]) === "T") {
     return true;
   }
-  // Reflexive numeric bounds: `>= 0` / `>= type(uintN).min` / `<= type(uintN).max`.
-  if (
-    name === "assertGe" &&
-    args.length >= 2 &&
-    (isZeroLiteral(args[1]) || isTypeBound(args[1], "min"))
-  ) {
-    return true;
-  }
-  if (name === "assertLe" && args.length >= 2 && isTypeBound(args[1], "max")) {
-    return true;
-  }
-  // A single-arg assertTrue/assertFalse over a self-comparison, a const-collapse,
-  // or a BOOLEANIZED reflexive bound (`assertTrue(x >= 0)` / `assertFalse(x < 0)`
-  // — the booleanized twin of the `assertGe(x, 0)` cases above, which otherwise
-  // slips a non-load-bearing target read into a Tier-1 target-read). Logical
-  // negations are peeled first (flipping the expected polarity each time), so
-  // `assertTrue(!(x < 0))` / `assertTrue(!!(x >= 0))` cannot launder the bound.
+  // Booleanized assertTrue/assertFalse: peel logical negations (flipping the
+  // expected polarity each step) and redundant parens, then decide the inner
+  // comparison / const-collapse under that polarity. `assertTrue(!(x<0))` ≡
+  // `assertFalse(x<0)`; `assertTrue(!!(x>=0))` ≡ `assertTrue(x>=0)`.
   if ((name === "assertTrue" || name === "assertFalse") && args.length >= 1) {
     let expr: unknown = unwrapParens(args[0]);
     let expectTrue = name === "assertTrue";
@@ -1285,18 +1279,120 @@ function isTautologyAssert(call: Record<string, unknown>): boolean {
       expr = unwrapParens((expr as Record<string, unknown>)["subExpression"]);
       expectTrue = !expectTrue;
     }
-    // Polarity-independent collapses (a constant operand fixes the bool value;
-    // over-rejecting an always-FAILING assert here is a harmless false-negative).
-    if (isSelfComparison(expr) || hasConstCollapse(expr)) {
+    // A constant-collapsing operand fixes the bool value (over-rejecting an
+    // always-FAILING assert here is a harmless false-negative on the promotable path).
+    if (hasConstCollapse(expr)) {
       return true;
     }
-    const refl = boolComparisonReflexive(expr);
-    if ((expectTrue && refl === "always-true") || (!expectTrue && refl === "always-false")) {
-      return true;
+    if (nodeType(expr) === "BinaryOperation") {
+      const bop = (expr as Record<string, unknown>)["operator"];
+      if (typeof bop === "string") {
+        const truth = constTruth(
+          (expr as Record<string, unknown>)["left"],
+          bop,
+          (expr as Record<string, unknown>)["right"],
+        );
+        if ((expectTrue && truth === "T") || (!expectTrue && truth === "F")) {
+          return true;
+        }
+      }
     }
   }
-  // Any operand with a constant-collapsing / identity arithmetic (`x*0`, `x-x`).
+  // Any operand with a constant-collapsing / identity arithmetic (`x*0`, `x|max`).
   return args.some((a) => hasConstCollapse(a));
+}
+
+/** The comparison operator whose truth equals a two-arg comparator assert's PASS
+ * condition (`assertEq(a,b)` passes iff `a == b`); null for non-comparators. */
+function assertSuccessOp(name: string): string | null {
+  switch (name) {
+    case "assertEq":
+    case "assertApproxEqAbs":
+    case "assertApproxEqRel": {
+      return "==";
+    }
+    case "assertNotEq": {
+      return "!=";
+    }
+    case "assertGt": {
+      return ">";
+    }
+    case "assertGe": {
+      return ">=";
+    }
+    case "assertLt": {
+      return "<";
+    }
+    case "assertLe": {
+      return "<=";
+    }
+    default: {
+      return null;
+    }
+  }
+}
+
+/** Decidable truth of `l <op> r` after canonicalization — `"T"` (always true),
+ * `"F"` (always false), or `null` (depends on runtime values, i.e. load-bearing).
+ * Covers self-comparison (`x == x`), reflexive numeric bounds (`x >= 0`,
+ * `x <= type().max`), and provable offset-inequality (`x != x + 1`). Signedness
+ * is treated conservatively (matching the historical `assertGe(x, 0)` detector,
+ * which rejected `>= 0` regardless of sign): a safe FALSE-NEGATIVE on the
+ * promotable path, never a hollow CONFIRMED. */
+function constTruth(lRaw: unknown, op: string, rRaw: unknown): "T" | "F" | null {
+  const l = canonExpr(lRaw);
+  const r = canonExpr(rRaw);
+  const self = exprKey(l) === exprKey(r);
+  const lowL = isZeroLiteral(l) || isTypeBound(l, "min");
+  const lowR = isZeroLiteral(r) || isTypeBound(r, "min");
+  const maxL = isTypeBound(l, "max");
+  const maxR = isTypeBound(r, "max");
+  switch (op) {
+    case "==": {
+      return self ? "T" : null;
+    }
+    case "!=": {
+      if (self) {
+        return "F";
+      }
+      return offsetDistinct(l, r) ? "T" : null;
+    }
+    case ">=": {
+      return self || lowR || maxL ? "T" : null; // x>=x | x>=0/min | type().max>=x
+    }
+    case "<=": {
+      return self || lowL || maxR ? "T" : null; // x<=x | 0/min<=x | x<=type().max
+    }
+    case ">": {
+      return self || maxR || lowL ? "F" : null; // x>x | x>type().max | type().min>x
+    }
+    case "<": {
+      return self || lowR || maxL ? "F" : null; // x<x | x<0/min | type().max<x
+    }
+    default: {
+      return null;
+    }
+  }
+}
+
+/** `a` and `b` provably differ (`x` vs `x + k` / `x - k`, `k` a nonzero literal),
+ * so `a != b` is always true (`assertNotEq(x, x + 1)`). Operands are already
+ * canonicalized. */
+function offsetDistinct(a: unknown, b: unknown): boolean {
+  const isBaseOffset = (node: unknown, other: unknown): boolean => {
+    if (nodeType(node) !== "BinaryOperation") {
+      return false;
+    }
+    const rec = node as Record<string, unknown>;
+    const bop = rec["operator"];
+    if (bop !== "+" && bop !== "-") {
+      return false;
+    }
+    const lit = rec["right"];
+    const litIsNonzero = nodeType(lit) === "NumberLiteral" && !isZeroLiteral(lit);
+    return litIsNonzero && exprKey(canonExpr(rec["left"])) === exprKey(other);
+  };
+  return isBaseOffset(a, b) || isBaseOffset(b, a);
 }
 
 /** A prefix logical-NOT (`!expr`) — the wrapper a decidable bound hides behind. */
@@ -1319,46 +1415,6 @@ function unwrapParens(node: unknown): unknown {
     n = comps[0];
   }
   return n;
-}
-
-/** Classifies a comparison `BinaryOperation` that is decidably constant — the
- * booleanized form of the reflexive numeric bounds (`x >= 0`, `x >= type().min`,
- * `x <= type().max` → always true; `x < 0`, `x > type().max` → always false;
- * `x == x` / `x != x`). Signedness is treated conservatively (matching the
- * `assertGe(x, 0)` detector, which also rejects `>= 0` regardless of sign): a
- * safe FALSE-NEGATIVE on the promotable path, never a hollow CONFIRMED. */
-function boolComparisonReflexive(node: unknown): "always-true" | "always-false" | null {
-  const inner = unwrapParens(node);
-  if (nodeType(inner) !== "BinaryOperation") {
-    return null;
-  }
-  const rec = inner as Record<string, unknown>;
-  const op = rec["operator"];
-  const left = unwrapParens(rec["left"]);
-  const right = unwrapParens(rec["right"]);
-  const lowBound = (n: unknown): boolean => isZeroLiteral(n) || isTypeBound(n, "min");
-  const maxBound = (n: unknown): boolean => isTypeBound(n, "max");
-  // always-true bounds.
-  if (op === ">=" && (lowBound(right) || maxBound(left))) {
-    return "always-true"; // x >= 0 | x >= type().min | type().max >= x
-  }
-  if (op === "<=" && (lowBound(left) || maxBound(right))) {
-    return "always-true"; // 0 <= x | type().min <= x | x <= type().max
-  }
-  if (op === "==" && exprKey(left) === exprKey(right)) {
-    return "always-true";
-  }
-  // always-false bounds.
-  if (op === "<" && lowBound(right)) {
-    return "always-false"; // x < 0 | x < type().min
-  }
-  if (op === ">" && maxBound(right)) {
-    return "always-false"; // x > type().max
-  }
-  if (op === "!=" && exprKey(left) === exprKey(right)) {
-    return "always-false";
-  }
-  return null;
 }
 
 /** Strip value-preserving identity wrappers: `x + 0`, `x - 0`, `x * 1`, `x / 1`,
@@ -1419,18 +1475,6 @@ function isTypeBound(node: unknown, which: "max" | "min"): boolean {
     nodeType((obj as Record<string, unknown>)["expression"]) === "Identifier" &&
     ((obj as Record<string, unknown>)["expression"] as Record<string, unknown>)["name"] === "type"
   );
-}
-
-function isSelfComparison(node: unknown): boolean {
-  if (nodeType(node) !== "BinaryOperation") {
-    return false;
-  }
-  const rec = node as Record<string, unknown>;
-  const op = rec["operator"];
-  if (op !== "==" && op !== ">=" && op !== "<=") {
-    return false;
-  }
-  return exprKey(rec["left"]) === exprKey(rec["right"]);
 }
 
 /** Detects an operand that renders a variable subterm (e.g. a target read)

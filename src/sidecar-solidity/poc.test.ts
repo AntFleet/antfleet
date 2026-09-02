@@ -506,6 +506,17 @@ contract AuditPoc is Vault, Test {
     ["negation-laundered assertFalse(!(b >= 0))", "assertFalse(!(b >= 0));"],
     ["double-negation !!(b >= 0)", "assertTrue(!!(b >= 0));"],
     ["paren-laundered (b) >= (0)", "assertTrue((b) >= (0));"],
+    // Cast / identity self-comparison (constTruth canonicalizes both sides):
+    // `b == uint256(b)`, `b >= b + 0` are reflexive despite distinct spellings.
+    ["cast self-comparison assertTrue(b == uint256(b))", "assertTrue(b == uint256(b));"],
+    ["cast self-comparison assertEq(b, uint256(b))", "assertEq(b, uint256(b));"],
+    ["identity self assertTrue(b == b + 0)", "assertTrue(b == b + 0);"],
+    // Comparator-family self-comparison (not just assertEq): always-true.
+    ["assertGe self (assertGe(b, b))", "assertGe(b, b);"],
+    ["assertLe self (assertLe(b, b))", "assertLe(b, b);"],
+    ["assertGe cast self (assertGe(b, uint256(b)))", "assertGe(b, uint256(b));"],
+    // Offset-inequality: assertNotEq(x, x + k) is always true (x != x + 1).
+    ["offset inequality assertNotEq(b, b + 1)", "assertNotEq(b, b + 1);"],
   ] as const) {
     notStrongConfirmed(
       label,
@@ -538,6 +549,20 @@ contract AuditPoc is Vault, Test {
         t.deposit(100);
         uint256 b = t.balance();
         assertTrue(!(b < 5));`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // A load-bearing assertNotEq against a CONSTANT (not an offset of the read)
+  // must still earn Tier-1 — the offset-inequality guard must not over-reject.
+  it("a load-bearing assertNotEq(b, 5) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertNotEq(b, 5);`),
     );
     expect(r.tier).toBe("static-bound");
     expect(r.assertionForm).toBe("target-read");
