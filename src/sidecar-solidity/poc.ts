@@ -1349,10 +1349,16 @@ function constTruth(lRaw: unknown, op: string, rRaw: unknown): "T" | "F" | null 
   const l = canonExpr(lRaw);
   const r = canonExpr(rRaw);
   const self = exprKey(l) === exprKey(r);
-  const lowL = isZeroLiteral(l) || isTypeBound(l, "min");
-  const lowR = isZeroLiteral(r) || isTypeBound(r, "min");
-  const maxL = isTypeBound(l, "max");
-  const maxR = isTypeBound(r, "max");
+  // A bound is "low" if it decidably equals 0 (the universal unsigned minimum) and
+  // "max" if it decidably equals 2**256-1 (the universal maximum) — recognized
+  // either syntactically (`0`, `type(uintN).min/max`) OR by folding a constant
+  // expression (`type(uint256).max - 1 + 1`, `2 ** 256 - 1`), which closes the
+  // obfuscated-bound tautology without a spelling arms race (constant expressions
+  // are fully decidable). `foldConst` returns null for anything non-constant.
+  const lowL = isZeroLiteral(l) || isTypeBound(l, "min") || foldConst(l) === 0n;
+  const lowR = isZeroLiteral(r) || isTypeBound(r, "min") || foldConst(r) === 0n;
+  const maxL = isTypeBound(l, "max") || foldConst(l) === UINT256_MAX;
+  const maxR = isTypeBound(r, "max") || foldConst(r) === UINT256_MAX;
   switch (op) {
     case "==": {
       return self ? "T" : null;
@@ -1379,6 +1385,138 @@ function constTruth(lRaw: unknown, op: string, rRaw: unknown): "T" | "F" | null 
       return null;
     }
   }
+}
+
+const UINT256_MAX = 2n ** 256n - 1n;
+
+/** Evaluate a compile-time-constant integer expression to its BigInt value, or
+ * `null` if it is not a decidable constant (contains a read/identifier, an
+ * unsupported form, or a division by zero / oversized power). Closes obfuscated
+ * reflexive bounds like `type(uint256).max - 1 + 1` or `2 ** 256 - 1` that spell a
+ * type extreme through arithmetic. Terminating: constant expressions are finite. */
+function foldConst(node: unknown): bigint | null {
+  const n = unwrapParens(node);
+  const t = nodeType(n);
+  const rec = n as Record<string, unknown>;
+  if (t === "NumberLiteral") {
+    // Reject values carrying a denomination unit (wei/ether/days/…) — not a pure int.
+    if (typeof rec["subdenomination"] === "string") {
+      return null;
+    }
+    try {
+      return BigInt(String(rec["number"] ?? "").replace(/_/gu, ""));
+    } catch {
+      return null;
+    }
+  }
+  if (t === "MemberAccess") {
+    return typeBoundValue(n);
+  }
+  if (t === "FunctionCall") {
+    // A numeric cast `uintN(expr)` is value-preserving for an in-range constant.
+    const callee = rec["expression"];
+    const args = asArray(rec["arguments"]);
+    if (nodeType(callee) === "ElementaryTypeName" && args.length === 1) {
+      return foldConst(args[0]);
+    }
+    return null;
+  }
+  if (t === "UnaryOperation") {
+    const v = foldConst(rec["subExpression"]);
+    if (v === null) {
+      return null;
+    }
+    return rec["operator"] === "-" ? -v : null; // `~` is width-dependent → not folded
+  }
+  if (t === "BinaryOperation") {
+    const l = foldConst(rec["left"]);
+    const r = foldConst(rec["right"]);
+    if (l === null || r === null) {
+      return null;
+    }
+    return foldBinary(String(rec["operator"]), l, r);
+  }
+  return null;
+}
+
+/** Fold a binary op over two constant BigInts; null for div-by-zero or an
+ * oversized shift/power (capped so a pathological `2 ** huge` cannot blow up). */
+function foldBinary(op: string, l: bigint, r: bigint): bigint | null {
+  switch (op) {
+    case "+": {
+      return l + r;
+    }
+    case "-": {
+      return l - r;
+    }
+    case "*": {
+      return l * r;
+    }
+    case "/": {
+      return r === 0n ? null : l / r;
+    }
+    case "%": {
+      return r === 0n ? null : l % r;
+    }
+    case "**": {
+      return r < 0n || r > 256n ? null : l ** r;
+    }
+    case "<<": {
+      return r < 0n || r > 256n ? null : l << r;
+    }
+    case ">>": {
+      return r < 0n || r > 256n ? null : l >> r;
+    }
+    case "&": {
+      return l & r;
+    }
+    case "|": {
+      return l | r;
+    }
+    case "^": {
+      return l ^ r;
+    }
+    default: {
+      return null;
+    }
+  }
+}
+
+/** The BigInt value of a `type(uintN).max/min` / `type(intN).max/min` member, or
+ * null for any other member access. */
+function typeBoundValue(node: unknown): bigint | null {
+  if (nodeType(node) !== "MemberAccess") {
+    return null;
+  }
+  const rec = node as Record<string, unknown>;
+  const member = rec["memberName"];
+  if (member !== "max" && member !== "min") {
+    return null;
+  }
+  const call = rec["expression"];
+  if (
+    nodeType(call) !== "FunctionCall" ||
+    nodeType((call as Record<string, unknown>)["expression"]) !== "Identifier" ||
+    ((call as Record<string, unknown>)["expression"] as Record<string, unknown>)["name"] !== "type"
+  ) {
+    return null;
+  }
+  const args = asArray((call as Record<string, unknown>)["arguments"]);
+  if (args.length !== 1 || nodeType(args[0]) !== "ElementaryTypeName") {
+    return null;
+  }
+  const typeName = String((args[0] as Record<string, unknown>)["name"] ?? "");
+  const uintMatch = /^uint(\d+)?$/u.exec(typeName);
+  if (uintMatch !== null) {
+    const bits = uintMatch[1] === undefined ? 256 : Number(uintMatch[1]);
+    return member === "max" ? 2n ** BigInt(bits) - 1n : 0n;
+  }
+  const intMatch = /^int(\d+)?$/u.exec(typeName);
+  if (intMatch !== null) {
+    const bits = intMatch[1] === undefined ? 256 : Number(intMatch[1]);
+    return member === "max" ? 2n ** BigInt(bits - 1) - 1n : -(2n ** BigInt(bits - 1));
+  }
+  return null;
 }
 
 /** `a` and `b` provably differ (`x` vs `x + k` / `x - k`, `k` a nonzero literal),

@@ -530,6 +530,13 @@ contract AuditPoc is Vault, Test {
       "duplicate view read (assertEq(t.balance(), t.balance()))",
       "assertEq(t.balance(), t.balance());",
     ],
+    // Obfuscated reflexive bound (foldConst evaluates the constant expression):
+    // `type(uint256).max - 1 + 1` and `2 ** 256 - 1` both fold to the universal max.
+    [
+      "obfuscated max bound (assertLe(b, type(uint256).max - 1 + 1))",
+      "assertLe(b, type(uint256).max - 1 + 1);",
+    ],
+    ["power-spelled max (assertLe(b, 2 ** 256 - 1))", "assertLe(b, 2 ** 256 - 1);"],
   ] as const) {
     notStrongConfirmed(
       label,
@@ -591,6 +598,20 @@ contract AuditPoc is Vault, Test {
         t.deposit(100);
         uint256 b = t.balance();
         assertEq(b, 5 + 5);`),
+    );
+    expect(r.tier).toBe("static-bound");
+    expect(r.assertionForm).toBe("target-read");
+    expect(r.passed).toBe(true);
+  });
+
+  // A genuine near-max threshold (`type().max - 100`) is load-bearing — it folds
+  // to a value BELOW the universal max, so foldConst must NOT over-reject it.
+  it("a near-max threshold (assertLe(b, type(uint256).max - 100)) still passes Tier-1", () => {
+    const r = gate(
+      poc(`        Vault t = new Vault();
+        t.deposit(100);
+        uint256 b = t.balance();
+        assertLe(b, type(uint256).max - 100);`),
     );
     expect(r.tier).toBe("static-bound");
     expect(r.assertionForm).toBe("target-read");
