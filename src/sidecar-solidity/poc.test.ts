@@ -254,6 +254,34 @@ contract AuditPoc is Test {
         assertEq(b, 0);`),
   );
 
+  // Deployed-target variable rebound to a NON-target before the assertion: the
+  // drive hits the real Vault, but `t = Vault(address(this))` rebinds the tracked
+  // name so `t.balance()` reads AuditPoc's own getter (a hollow CONFIRMED). The
+  // single-assignment guard rejects it from the promotable Tier-1 path.
+  notStrongConfirmed(
+    "deployed-target variable reassignment (rebind to non-target)",
+    `${HEADER}contract AuditPoc is Test {
+    uint256 public balance;
+    function testAuditPoc() public {
+        Vault t = new Vault();
+        t.deposit(1);
+        t = Vault(address(this));
+        uint256 b = t.balance();
+        assertEq(b, 0);
+    }
+}
+`,
+  );
+
+  notStrongConfirmed(
+    "any reassignment of the deployed-target variable (t = t)",
+    poc(`        Vault t = new Vault();
+        t.deposit(1);
+        t = t;
+        uint256 b = t.balance();
+        assertEq(b, 0);`),
+  );
+
   notStrongConfirmed(
     "a ternary",
     poc(`        Vault t = new Vault();

@@ -484,6 +484,18 @@ function tryStaticBound(
     );
   }
 
+  // The deployed-target variable must be SINGLE-ASSIGNMENT: any reassignment
+  // (`t = Vault(address(this))`) rebinds the tracked name to a different instance,
+  // so a later `t.view()` reads a NON-target contract while the name-based gates
+  // still bind it as the target — a hollow CONFIRMED. Static drive/read binding
+  // keys on the variable NAME, so an aliased instance under the same name defeats
+  // it; reject reassignment outright (a legit Tier-1 PoC never rebinds the target).
+  if (isVarReassigned(body, deployedVar)) {
+    return fail(
+      `the deployed target variable \`${deployedVar}\` is reassigned after construction (Tier-1 requires a single-assignment target binding)`,
+    );
+  }
+
   if (!importBindsTargetFromPath(ast, pocTarget, aliases)) {
     return fail(`${pocTarget.symbol} is not imported from ${pocTarget.path}`);
   }
@@ -544,6 +556,44 @@ function tryStaticBound(
     binding.assertSpan = assertSpan;
   }
   return { passed: true, reasons: [], tier: "static-bound", assertionForm: "target-read", binding };
+}
+
+/** Solidity assignment operators (`BinaryOperation` operators that write the LHS). */
+const ASSIGN_OPS: ReadonlySet<string> = new Set([
+  "=",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "|=",
+  "&=",
+  "^=",
+  "<<=",
+  ">>=",
+  "**=",
+]);
+
+/** Whether `varName` is the target of an assignment anywhere in `body` — a
+ * REASSIGNMENT after its declaration (the declaration itself is a
+ * `VariableDeclarationStatement`, not an assignment `BinaryOperation`, so it is
+ * not counted). */
+function isVarReassigned(body: unknown, varName: string): boolean {
+  let found = false;
+  walk(body, (n) => {
+    if (found || nodeType(n) !== "BinaryOperation") {
+      return;
+    }
+    const rec = n as Record<string, unknown>;
+    if (!ASSIGN_OPS.has(String(rec["operator"]))) {
+      return;
+    }
+    const lhs = rec["left"];
+    if (nodeType(lhs) === "Identifier" && (lhs as Record<string, unknown>)["name"] === varName) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 // --- Tier-2 harness-driven path (§3.3.B) -------------------------------------
