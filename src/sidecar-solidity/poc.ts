@@ -640,6 +640,17 @@ const SCAFFOLD_SPECIFIER_ALLOWLIST: readonly RegExp[] = [
   /(^|\/)forge-std\//u,
   /(^|\/)v4-core\/(?:.*\/)?test\/utils\//u,
   /^@uniswap\/v4-core\/(?:.*\/)?test\/utils\//u,
+  // The v4-core / v4-periphery `src/` TYPE + LIBRARY + INTERFACE surface: a
+  // Uniswap-v4 hook PoC cannot be built without importing PoolKey/Currency/Hooks/
+  // BalanceDelta/SwapParams etc. These are non-repo-controllable (the real
+  // Uniswap dependency, resolved under `lib/`/`node_modules/` — enforced by the
+  // isRealDepRoot check in `specifierIsVendored`), so they carry no fake-drive /
+  // fake-assertion risk. Anchored to `v4-core`/`v4-periphery` so an arbitrary
+  // repo-controlled dep (`@dep/src/Boom.sol`) is NOT admitted here.
+  /(^|\/)v4-core\/src\//u,
+  /^@uniswap\/v4-core\/src\//u,
+  /(^|\/)v4-periphery\/src\//u,
+  /^@uniswap\/v4-periphery\/src\//u,
   /(^|\/)v4-periphery\/.*HookMiner/u,
   /^@uniswap\/v4-periphery\/.*HookMiner/u,
   /(^|\/)HookMiner\.sol$/u,
@@ -715,16 +726,19 @@ function isForgeStdProvenance(
   remappings: readonly (readonly [string, string])[],
 ): boolean {
   const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  // A real dependency root always qualifies — including a TRANSITIVELY-nested
-  // forge-std submodule (`lib/<dep>/lib/forge-std/…`, any nesting depth), which is
-  // how Foundry projects that depend on another Foundry library vendor forge-std
-  // (e.g. der-sc: `lib/uniswap-hooks/lib/forge-std/src/Test.sol`). The nesting
-  // MUST be through `lib/` segments (a `…/src/forge-std/` landing is repo-authored
-  // and stays rejected). node_modules forge-std qualifies at the top level or
-  // nested under a package (`…/node_modules/forge-std/`).
+  // A real dependency root qualifies — including a TRANSITIVELY-nested forge-std
+  // submodule (`lib/<dep>/lib/forge-std/…`, any nesting depth), which is how a
+  // Foundry project that depends on another Foundry library vendors forge-std
+  // (e.g. der-sc: `lib/uniswap-hooks/lib/forge-std/src/Test.sol`). `isRealDepRoot`
+  // is the gate: it rejects a `../`-escape, an absolute path, and any first-party
+  // `src|test|script|vendor/` landing, so a repo-authored
+  // `src/…/node_modules/forge-std/` fake CANNOT forge provenance. The nesting for
+  // the `lib/` form must be through `lib/` segments (a `…/src/forge-std/` landing
+  // is repo-authored and stays rejected).
   if (
-    /^lib\/(?:[^/]+\/lib\/)*forge-std\//u.test(normalized) ||
-    /(^|\/)node_modules\/forge-std\//u.test(normalized)
+    isRealDepRoot(normalized) &&
+    (/^lib\/(?:[^/]+\/lib\/)*forge-std\//u.test(normalized) ||
+      /(^|\/)node_modules\/forge-std\//u.test(normalized))
   ) {
     return true;
   }
@@ -899,18 +913,6 @@ function checkClosedSymbol(
       continue; // §3.3.A vendored scaffolding (real-dep root proven)
     }
     const resolved = posixNormalize(applyRemappings(path, remappings));
-    // A DEPENDENCY library/type import (resolves under a real `lib/`/`node_modules/`
-    // root) is legitimate PoC scaffolding, NOT first-party repo-src: a Uniswap v4
-    // hook PoC MUST import v4-core types/libraries (`Hooks`, `PoolKey`, `Currency`,
-    // `BalanceDelta`) to construct the pool key and drive the hook. These carry no
-    // hollow-verdict risk — the assertion/cheat surface is gated independently
-    // (`checkFabricationSurface`: forge-std provenance, `Vm`/reserved-name bans) and
-    // class-C fabrication is backstopped at runtime. `isRealDepRoot` rejects a
-    // `../`-escape, an absolute path, and a first-party `src|test|script|vendor/`
-    // landing, so a dep import that remaps INTO the repo tree is still caught below.
-    if (isRealDepRoot(resolved)) {
-      continue;
-    }
     if (REPO_SRC_RE.test(resolved) || path.startsWith("./") || path.startsWith("../")) {
       return `imports a repo-src symbol from \`${path}\` (requires a repo-src dependency instantiation)`;
     }
@@ -975,7 +977,7 @@ function tryHarnessDriven(
   const forbidden = scanForbiddenConstructs(testContract, {
     allowSaltOption: true,
     allowExpectRevert: true,
-    targetSymbol: pocTarget.symbol,
+    isTargetType: (sym) => classifyAnchor(sym, aliases, remappings, pocTarget) === "target",
   });
   if (forbidden !== null) {
     return fail(forbidden);
@@ -2236,7 +2238,14 @@ function typeArgSymbol(expr: unknown): string | null {
 
 function scanForbiddenConstructs(
   body: unknown,
-  opts: { allowSaltOption?: boolean; allowExpectRevert?: boolean; targetSymbol?: string } = {},
+  opts: {
+    allowSaltOption?: boolean;
+    allowExpectRevert?: boolean;
+    /** Resolves a `type(X)` local symbol to whether it binds the cited target
+     * (via the same alias/path resolution as `new X`, NOT a textual name match) —
+     * set only by the Tier-2 caller to admit `type(<target>).creationCode`. */
+    isTargetType?: (localSymbol: string) => boolean;
+  } = {},
 ): string | null {
   // First pass: identify variables bound to the canonical `vm` (Vm aliases).
   const vmAliases = new Set<string>();
@@ -2317,11 +2326,12 @@ function scanForbiddenConstructs(
         // CREATE2-mined Uniswap v4 hook deploy: the bytes only feed HookMiner
         // (pure address calc) or `new <target>{salt}()` (already target-restricted
         // by §3.3.A) — inline assembly is hard-banned, so they cannot deploy a
-        // substitute. Any NON-target `type(X).creationCode` stays rejected.
+        // substitute. Target identity is resolved through import aliases + path
+        // (same as `new X`), so an aliased target is admitted and a non-target
+        // imported under the target's local NAME is not. runtimeCode and any
+        // non-target creationCode stay rejected.
         const sym = typeArgSymbol(rec["expression"]);
-        if (
-          !(m === "creationCode" && opts.targetSymbol !== undefined && sym === opts.targetSymbol)
-        ) {
+        if (!(m === "creationCode" && sym !== null && opts.isTargetType?.(sym) === true)) {
           problem = "uses type(X).creationCode/runtimeCode (creation must be `new X`)";
         }
       }

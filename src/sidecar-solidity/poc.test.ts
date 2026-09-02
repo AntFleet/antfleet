@@ -1579,3 +1579,124 @@ contract AuditPoc is Test, Deployers {
     expect(r.reasons.join(" ")).toMatch(/runtimeCode|creationCode/);
   });
 });
+
+describe("staticGatePoc — post-audit hardening (dep-import / provenance bypass probes)", () => {
+  const HDR = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+import {Vault} from "src/Vault.sol";
+`;
+  const body = `        vm.expectRevert(bytes("x"));\n        hook.drain();`;
+  const harness = (extraImports: string, setup: string, drive = body) =>
+    `${HDR}${extraImports}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); ${setup} }
+    function testAuditPoc() public {
+${drive}
+    }
+}
+`;
+
+  it("CRITICAL fix: a repo-authored src/.../node_modules/forge-std/ fake is rejected", () => {
+    const r = staticGatePoc(harness("", ""), { evidence: [] }, TARGET, closure(), [
+      ["forge-std/", "src/node_modules/forge-std/src/"],
+      ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+      ["src/", "src/"],
+    ]);
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/forge-std|provenance/i);
+  });
+
+  it("HIGH fix: an arbitrary dep helper (@dep/src/Boom.sol) cannot serve as the drive", () => {
+    const r = staticGatePoc(
+      harness(
+        `import {Boom} from "@dep/src/Boom.sol";\n`,
+        "",
+        `        vm.expectRevert(bytes("x"));\n        Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@dep/", "lib/dep/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist|drive/i);
+  });
+
+  it("MEDIUM fix: a ./ relative import that normalizes under lib/ is still rejected", () => {
+    const r = staticGatePoc(
+      harness(`import {Hooks} from "./lib/fake/src/libraries/Hooks.sol";\n`, ""),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src/i);
+  });
+
+  it("HIGH fix: a non-target imported under the target's local NAME is not admitted as creationCode", () => {
+    const r = staticGatePoc(
+      `${HDR}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+import {Vault as RealVault} from "src/Vault.sol";
+import {Vault} from "@uniswap/v4-core/src/Vault.sol";
+contract AuditPoc is Test, Deployers {
+    RealVault hook;
+    function setUp() public {
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), type(Vault).creationCode, "");
+        hook = new RealVault{salt: s}();
+    }
+    function testAuditPoc() public { vm.expectRevert(bytes("x")); hook.drain(); }
+}
+`,
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@uniswap/v4-periphery/", "lib/dep/v4-periphery/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/creationCode/);
+  });
+
+  it("MEDIUM fix: an ALIASED target's creationCode IS admitted (no false-positive)", () => {
+    const r = staticGatePoc(
+      `${HDR}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+import {Vault as Hook} from "src/Vault.sol";
+contract AuditPoc is Test, Deployers {
+    Hook hook;
+    function setUp() public {
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), type(Hook).creationCode, "");
+        hook = new Hook{salt: s}();
+    }
+    function testAuditPoc() public { vm.expectRevert(bytes("x")); hook.drain(); }
+}
+`,
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@uniswap/v4-periphery/", "lib/dep/v4-periphery/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+  });
+});
