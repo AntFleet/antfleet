@@ -257,7 +257,20 @@ export type PocBinding = {
   deployedVar: string;
 };
 
-export type PocStaticGate = { passed: boolean; reasons: string[]; binding?: PocBinding };
+/** The AST char-range of the single top-level Tier-2 drive statement (§3.3.B B5),
+ * consumed by the executor to scope `targetFrameObserved` (§3.4). */
+export type PocHarnessDriveSpan = { start: number; end: number; deployedVar: string };
+
+export type PocStaticGate = {
+  passed: boolean;
+  reasons: string[];
+  tier?: PocTier;
+  /** Static-bound (Tier-1) only. */
+  binding?: PocBinding;
+  /** Harness-driven (Tier-2) only. */
+  harnessDriveSpan?: PocHarnessDriveSpan;
+  assertionForm?: PocAssertionForm;
+};
 
 /** Straight-line taint of a local variable. */
 type Taint = "deployed" | "eoa" | "other";
@@ -427,23 +440,45 @@ export function staticGatePoc(
   return {
     passed: true,
     reasons: [],
+    tier: "static-bound",
+    assertionForm: "target-read",
     binding: { targetSymbol: pocTarget.symbol, targetPath: pocTarget.path, deployedVar },
   };
 }
 
 // --- Promotion (§3.3 promoteWithPoc) -----------------------------------------
 
+export type PocTier = "static-bound" | "harness-driven";
+export type PocAssertionForm = "revert" | "target-read" | "no-revert" | "none";
+export type PocDriveKind = "direct-revert" | "callback";
+
+/** The validated Phase-2 GO artifact's per-tier enablement flags (§7). */
+export type ActiveGo = { enableStatic: boolean; enableHarness: boolean };
+
 export type PocExecution = {
   compiled: boolean;
   passed: boolean;
+  /** Tier-1: a direct non-static drive frame. Implies targetFrameObserved. */
   drove: boolean;
+  /**
+   * The §3.4 trace proof: a non-STATICCALL frame at the deployed target's
+   * address inside the `harnessDriveSpan` subtree (Tier-2) or the direct drive
+   * (Tier-1). Required for POC_EXECUTED.
+   */
+  targetFrameObserved: boolean;
   deployedTargetPath: string | null;
+  /** callback (drove===false ∧ frame) vs direct-revert; null when not applicable. */
+  driveKind: PocDriveKind | null;
   reason: string;
 };
 
 export type PocRecord = {
   generated: boolean;
   rationale: string | null;
+  tier: PocTier | null;
+  assertionForm: PocAssertionForm | null;
+  /** The atomic §1 caveat string co-carried in the serialized record. */
+  label: string | null;
   target: PocTarget | null;
   testPath: string | null;
   testContents: string | null;
@@ -454,17 +489,78 @@ export type PocRecord = {
   runSpecific: boolean;
 };
 
+export const CONFIRMED_LABEL =
+  "CONFIRMED (PoC-executed, human-review-required): deployed the real cited contract, drove it " +
+  "directly, an assertion over its post-drive state passed — NOT a proof of the specific exploit";
+export const POC_EXECUTED_LABEL =
+  "POC_EXECUTED (harness-driven, human-review-required): a passing Foundry PoC deployed the real " +
+  "cited contract from source and its bytecode executed in the test drive, but the target was " +
+  "driven indirectly and/or the proof is a bound revert-assertion rather than a direct-drive " +
+  "state read — NOT a direct-drive assertion and NOT a proof of the specific exploit";
+/** Phase-1 CANDIDATE label (§6) — generated, not executed. */
+export const CANDIDATE_LABEL =
+  "CANDIDATE — generated, NOT executed, correctness AND relevance unverified; run only in an " +
+  "isolated sandbox (offline, non-root); never against a checkout containing real secrets/keys — " +
+  "the static gate is a best-effort scrub, not an execution-safety guarantee";
+/** Non-terminal label for a PURSUE that still carries a PoC (§1). */
+export const NON_TERMINAL_POC_LABEL =
+  "PoC attached (tier-earned but not enabled in this build / no-revert only): treated as PURSUE, " +
+  "for human review — NOT a terminal verdict";
+
 /**
- * THE post-PURSUE promotion gate. CONFIRMED requires a passing, deploy-verified,
- * driving execution; anything else STAYS PURSUE with a reason (never DROP). In
- * Phase 1 no executor runs, so `poc.executed` is false and this always returns
- * PURSUE — CONFIRMED becomes reachable only when Phase 3 wires the executor.
+ * GO-INDEPENDENT terminal-evidence predicate (§3.3). Returns the tier a PoC's
+ * execution earns on its own merits, independent of any spike enablement — this
+ * is what the §7 spike grades (`promoted`) and what `validateSpikeGoArtifact`
+ * recomputes `enable*` from, so the GO decision is NOT circular. Returns null
+ * when the evidence does not back either terminal tier.
  */
-export function promoteWithPoc(args: { base: PromotionDecision; poc: PocRecord }): {
-  verdict: "CONFIRMED" | "PURSUE" | "DROP";
+export function wouldPromotePoc(args: {
+  poc: Pick<PocRecord, "tier" | "assertionForm" | "staticGate" | "target">;
+  execution: PocExecution | null;
+}): PocTier | null {
+  const { poc, execution } = args;
+  if (!poc.staticGate.passed || execution === null) {
+    return null;
+  }
+  const e = execution;
+  if (!e.compiled || !e.passed) {
+    return null;
+  }
+  if (poc.target === null || e.deployedTargetPath !== poc.target.path) {
+    return null;
+  }
+  if (poc.tier === "static-bound" && e.drove) {
+    return "static-bound";
+  }
+  if (
+    poc.tier === "harness-driven" &&
+    (poc.assertionForm === "revert" || poc.assertionForm === "target-read") &&
+    e.targetFrameObserved
+  ) {
+    return "harness-driven";
+  }
+  return null;
+}
+
+/**
+ * THE post-PURSUE promotion gate (§3.3). `wouldPromotePoc` evidence GATED by the
+ * matching `activeGo.enable*` flag: CONFIRMED needs enableStatic, POC_EXECUTED
+ * needs enableHarness. Anything else STAYS PURSUE with a reason (never DROP). In
+ * Phase 1 no executor runs (`execution` null) and no `activeGo` is threaded, so
+ * this always returns PURSUE — the terminal tiers become reachable only when
+ * Phase 3 wires the executor and a valid GO artifact.
+ */
+export function promoteWithPoc(args: {
+  base: PromotionDecision;
+  poc: PocRecord;
+  execution?: PocExecution | null | undefined;
+  activeGo?: ActiveGo | undefined;
+}): {
+  verdict: "CONFIRMED" | "POC_EXECUTED" | "PURSUE" | "DROP";
   reason: string;
 } {
-  const { base, poc } = args;
+  const { base, poc, activeGo } = args;
+  const execution = args.execution ?? poc.execution;
   if (base.verdict !== "PURSUE") {
     return base; // only PURSUE is eligible; DROP / dry-run pass through
   }
@@ -477,13 +573,22 @@ export function promoteWithPoc(args: { base: PromotionDecision; poc: PocRecord }
       reason: `PoC failed static gate: ${poc.staticGate.reasons.join("; ")}`,
     };
   }
-  if (!poc.executed || poc.execution === null) {
+  if (poc.assertionForm === "no-revert") {
     return {
       verdict: "PURSUE",
-      reason: "PoC generated + statically gated, not executed (executor off)",
+      reason: "harness ran, no-revert only (not a terminal verdict)",
     };
   }
-  const e = poc.execution;
+  if (!poc.executed || execution === null) {
+    return {
+      verdict: "PURSUE",
+      reason:
+        poc.tier === "harness-driven"
+          ? "harness PoC awaiting execution"
+          : "PoC generated + statically gated, not executed (executor off)",
+    };
+  }
+  const e = execution;
   if (!e.compiled) {
     return { verdict: "PURSUE", reason: `PoC did not compile: ${e.reason}` };
   }
@@ -493,18 +598,27 @@ export function promoteWithPoc(args: { base: PromotionDecision; poc: PocRecord }
   if (poc.target !== null && e.deployedTargetPath !== poc.target.path) {
     return { verdict: "PURSUE", reason: "PoC target-path mismatch (build-info)" };
   }
-  if (!e.drove) {
+  const earned = wouldPromotePoc({ poc, execution });
+  if (earned === null) {
     return {
       verdict: "PURSUE",
-      reason: "PoC did not drive the target (no non-static call in trace)",
+      reason:
+        poc.tier === "static-bound"
+          ? "PoC did not drive the target (no non-static call in trace)"
+          : "PoC target frame not observed in the drive subtree",
     };
   }
-  return {
-    verdict: "CONFIRMED",
-    reason:
-      "CONFIRMED (PoC-executed, human-review-required): deployed the real cited contract, drove it, " +
-      "an assertion over its post-drive state passed — NOT a proof of the specific exploit",
-  };
+  if (earned === "static-bound") {
+    if (activeGo?.enableStatic !== true) {
+      return { verdict: "PURSUE", reason: "tier-not-enabled-by-spike (static)" };
+    }
+    return { verdict: "CONFIRMED", reason: CONFIRMED_LABEL };
+  }
+  // earned === "harness-driven"
+  if (activeGo?.enableHarness !== true) {
+    return { verdict: "PURSUE", reason: "tier-not-enabled-by-spike (harness)" };
+  }
+  return { verdict: "POC_EXECUTED", reason: POC_EXECUTED_LABEL };
 }
 
 // --- AST helpers -------------------------------------------------------------

@@ -432,15 +432,18 @@ describe("runFinder — PoC stage", () => {
     expect(s.poc?.generated).toBe(true);
     expect(s.poc?.staticGate.passed, s.poc?.staticGate.reasons.join(" | ")).toBe(true);
     expect(s.poc?.executed).toBe(false);
-    expect(result.confirmedCount).toBe(0);
-    expect(result.pocAttempted).toBe(1);
+    expect(s.poc?.tier).toBe("static-bound");
+    expect(result.confirmedVerdictCount).toBe(0);
+    expect(result.pocAttemptedCount).toBe(1);
   });
 
-  it("a passing execution promotes PURSUE → CONFIRMED", async () => {
+  it("a passing execution + enableStatic GO promotes PURSUE → CONFIRMED", async () => {
     const execPass = async () => ({
       compiled: true,
       passed: true,
       drove: true,
+      targetFrameObserved: true,
+      driveKind: null,
       deployedTargetPath: "src/Vault.sol",
       reason: "ok",
     });
@@ -451,12 +454,38 @@ describe("runFinder — PoC stage", () => {
       undefined,
       genValid,
       execPass,
+      { enableStatic: true, enableHarness: false },
     );
     const s = result.scored[0]!;
     expect(s.verdict).toBe("CONFIRMED");
     expect(s.poc?.humanGated).toBe(true);
-    expect(result.confirmedCount).toBe(1);
-    expect(result.pocExecuted).toBe(1);
+    expect(result.confirmedVerdictCount).toBe(1);
+    expect(result.pocRanCount).toBe(1);
+  });
+
+  it("a passing execution WITHOUT a GO stays PURSUE (tier-not-enabled)", async () => {
+    const execPass = async () => ({
+      compiled: true,
+      passed: true,
+      drove: true,
+      targetFrameObserved: true,
+      driveKind: null,
+      deployedTargetPath: "src/Vault.sol",
+      reason: "ok",
+    });
+    const result = await runFinder(
+      vaultInput,
+      async () => handled({ findings: [vaultFinding] }),
+      refuteSurvives,
+      undefined,
+      genValid,
+      execPass,
+      // no activeGo → generation/exec ran but nothing terminal
+    );
+    const s = result.scored[0]!;
+    expect(s.verdict).toBe("PURSUE");
+    expect(s.reason).toContain("tier-not-enabled-by-spike");
+    expect(result.confirmedVerdictCount).toBe(0);
   });
 
   it("a declined PoC stays PURSUE", async () => {

@@ -567,6 +567,9 @@ describe("promoteWithPoc truth table", () => {
   const rec = (over: Partial<PocRecord>): PocRecord => ({
     generated: true,
     rationale: null,
+    tier: "static-bound",
+    assertionForm: "target-read",
+    label: null,
     target: TARGET,
     testPath: "test/AuditPoc_x.t.sol",
     testContents: VALID,
@@ -577,6 +580,8 @@ describe("promoteWithPoc truth table", () => {
     runSpecific: true,
     ...over,
   });
+  const staticGo = { enableStatic: true, enableHarness: false };
+  const harnessGo = { enableStatic: false, enableHarness: true };
 
   it("DROP base is unchanged (never touched)", () => {
     expect(promoteWithPoc({ base: drop, poc: rec({}) }).verdict).toBe("DROP");
@@ -602,7 +607,27 @@ describe("promoteWithPoc truth table", () => {
     ).toBe("PURSUE");
   });
 
-  it("executed + compiled + passed + drove + path-match → CONFIRMED", () => {
+  it("static-bound + executed + drove + path-match + enableStatic → CONFIRMED", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: staticGo,
+      poc: rec({
+        executed: true,
+        execution: {
+          compiled: true,
+          passed: true,
+          drove: true,
+          targetFrameObserved: true,
+          driveKind: null,
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+      }),
+    });
+    expect(v.verdict).toBe("CONFIRMED");
+  });
+
+  it("static-bound evidence but NO GO (activeGo absent) → PURSUE (tier-not-enabled)", () => {
     const v = promoteWithPoc({
       base: pursue,
       poc: rec({
@@ -611,12 +636,83 @@ describe("promoteWithPoc truth table", () => {
           compiled: true,
           passed: true,
           drove: true,
+          targetFrameObserved: true,
+          driveKind: null,
           deployedTargetPath: VAULT_PATH,
           reason: "ok",
         },
       }),
     });
-    expect(v.verdict).toBe("CONFIRMED");
+    expect(v.verdict).toBe("PURSUE");
+    expect(v.reason).toContain("tier-not-enabled-by-spike");
+  });
+
+  it("harness-driven + callback frame + enableHarness → POC_EXECUTED", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: harnessGo,
+      poc: rec({
+        tier: "harness-driven",
+        assertionForm: "revert",
+        execution: {
+          compiled: true,
+          passed: true,
+          drove: false,
+          targetFrameObserved: true,
+          driveKind: "callback",
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+        executed: true,
+      }),
+    });
+    expect(v.verdict).toBe("POC_EXECUTED");
+  });
+
+  it("harness-driven evidence but CONFIRMED-only GO → PURSUE (tier-not-enabled)", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: staticGo,
+      poc: rec({
+        tier: "harness-driven",
+        assertionForm: "target-read",
+        execution: {
+          compiled: true,
+          passed: true,
+          drove: false,
+          targetFrameObserved: true,
+          driveKind: "callback",
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+        executed: true,
+      }),
+    });
+    expect(v.verdict).toBe("PURSUE");
+    expect(v.reason).toContain("tier-not-enabled-by-spike");
+  });
+
+  it("no-revert assertionForm never promotes (even executed+passed, with GO)", () => {
+    const v = promoteWithPoc({
+      base: pursue,
+      activeGo: { enableStatic: true, enableHarness: true },
+      poc: rec({
+        tier: "harness-driven",
+        assertionForm: "no-revert",
+        execution: {
+          compiled: true,
+          passed: true,
+          drove: false,
+          targetFrameObserved: true,
+          driveKind: "callback",
+          deployedTargetPath: VAULT_PATH,
+          reason: "ok",
+        },
+        executed: true,
+      }),
+    });
+    expect(v.verdict).toBe("PURSUE");
+    expect(v.reason).toContain("no-revert only");
   });
 
   it("passed but no drive stays PURSUE", () => {

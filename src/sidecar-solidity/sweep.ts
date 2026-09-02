@@ -275,13 +275,15 @@ export function renderLiveReport(args: {
   }
   lines.push(
     `- Findings: ${result.findings.length} (${result.pursueCount} PURSUE / ${result.droppedCount} DROP` +
-      `${result.confirmedCount !== undefined ? ` / ${result.confirmedCount} CONFIRMED` : ""})`,
+      `${result.confirmedVerdictCount !== undefined ? ` / ${result.confirmedVerdictCount} CONFIRMED` : ""}` +
+      `${result.pocExecutedVerdictCount !== undefined ? ` / ${result.pocExecutedVerdictCount} POC_EXECUTED` : ""})`,
   );
-  if (result.pocAttempted !== undefined) {
+  if (result.pocAttemptedCount !== undefined) {
     lines.push(
-      `- PoC stage: ${result.pocAttempted} attempted, ${result.pocExecuted ?? 0} executed, ${result.pocSkippedInfra ?? 0} skipped (executor off / infra). ` +
-        `CONFIRMED reflects local-deploy verifiability only; absence does not lower severity ` +
-        `(fork / multi-contract / substituted-dependency / token-balance / signature / revert-demo classes cannot earn it).`,
+      `- PoC stage: ${result.pocAttemptedCount} attempted, ${result.pocRanCount ?? 0} executed, ${result.pocSkippedInfraCount ?? 0} skipped (executor off / infra). ` +
+        `CONFIRMED = direct-drive, executed (strong); POC_EXECUTED = harness-driven, executed (weaker); ` +
+        `both are human-review-required and local-deploy only; absence does not lower severity ` +
+        `(fork / test-authored attacker or dependency / repo-src collaborator / token-balance / signature classes cannot earn either).`,
     );
   }
   if (result.rejectedRaw.length > 0) {
@@ -305,7 +307,11 @@ export function renderLiveReport(args: {
     if (s.poc !== undefined) {
       if (s.verdict === "CONFIRMED") {
         lines.push(
-          `- PoC: CONFIRMED — executed & deploy-verified (human-review-required); test \`${s.poc.testPath}\``,
+          `- PoC: CONFIRMED — direct-drive, executed & deploy-verified (strong, human-review-required); test \`${s.poc.testPath}\``,
+        );
+      } else if (s.verdict === "POC_EXECUTED") {
+        lines.push(
+          `- PoC: POC_EXECUTED — harness-driven, executed & deploy-verified (weaker than CONFIRMED, human-review-required); test \`${s.poc.testPath}\``,
         );
       } else if (s.poc.staticGate.passed) {
         lines.push(
@@ -538,11 +544,13 @@ export type SweepEntryOutcome = {
   findings: number;
   truncated: boolean;
   error?: string;
-  /** PoC-stage counters — present only on a --poc run (§4 coverage). */
-  confirmed?: number;
-  pocAttempted?: number;
-  pocExecuted?: number;
-  pocSkippedInfra?: number;
+  /** PoC-stage counters — present only on a --poc run (§4 coverage). Canonical
+   * names: verdict tallies vs executions run are never conflated. */
+  confirmedVerdictCount?: number;
+  pocExecutedVerdictCount?: number;
+  pocAttemptedCount?: number;
+  pocRanCount?: number;
+  pocSkippedInfraCount?: number;
 };
 
 export type SweepSummary = {
@@ -557,10 +565,11 @@ export type SweepSummary = {
     drop: number;
     errors: number;
     /** PoC-stage totals — present only when some entry ran the --poc stage. */
-    confirmed?: number;
-    pocAttempted?: number;
-    pocExecuted?: number;
-    pocSkippedInfra?: number;
+    confirmedVerdictCount?: number;
+    pocExecutedVerdictCount?: number;
+    pocAttemptedCount?: number;
+    pocRanCount?: number;
+    pocSkippedInfraCount?: number;
   };
 };
 
@@ -579,13 +588,14 @@ export function buildSweepSummary(args: {
   };
   // PoC totals are added ONLY when at least one entry ran the --poc stage, so a
   // non-`--poc` sweep summary is byte-identical to before (§4).
-  if (args.outcomes.some((o) => o.pocAttempted !== undefined)) {
+  if (args.outcomes.some((o) => o.pocAttemptedCount !== undefined)) {
     const sum = (pick: (o: SweepEntryOutcome) => number | undefined): number =>
       args.outcomes.reduce((acc, o) => acc + (pick(o) ?? 0), 0);
-    totals.confirmed = sum((o) => o.confirmed);
-    totals.pocAttempted = sum((o) => o.pocAttempted);
-    totals.pocExecuted = sum((o) => o.pocExecuted);
-    totals.pocSkippedInfra = sum((o) => o.pocSkippedInfra);
+    totals.confirmedVerdictCount = sum((o) => o.confirmedVerdictCount);
+    totals.pocExecutedVerdictCount = sum((o) => o.pocExecutedVerdictCount);
+    totals.pocAttemptedCount = sum((o) => o.pocAttemptedCount);
+    totals.pocRanCount = sum((o) => o.pocRanCount);
+    totals.pocSkippedInfraCount = sum((o) => o.pocSkippedInfraCount);
   }
   return {
     ranAt: args.ranAt,
@@ -606,7 +616,7 @@ const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2
  * CONFIRMED (§4 — CONFIRMED must never be dropped by a `verdict === "PURSUE"`
  * filter). No-op in the generation-only tier, which never produces CONFIRMED. */
 function isRolledUp(s: ScoredFinding): boolean {
-  return s.verdict === "PURSUE" || s.verdict === "CONFIRMED";
+  return s.verdict === "PURSUE" || s.verdict === "CONFIRMED" || s.verdict === "POC_EXECUTED";
 }
 
 /**
@@ -642,7 +652,11 @@ export function buildPursueMarkdown(entries: readonly EntryPursueFindings[]): st
     lines.push("");
     for (const s of pursue) {
       const tag =
-        s.verdict === "CONFIRMED" ? " _(CONFIRMED — PoC-executed, human-review-required)_" : "";
+        s.verdict === "CONFIRMED"
+          ? " _(CONFIRMED — direct-drive PoC-executed, human-review-required)_"
+          : s.verdict === "POC_EXECUTED"
+            ? " _(POC_EXECUTED — harness-driven, executed, weaker than CONFIRMED, human-review-required)_"
+            : "";
       lines.push(`- **[${s.finding.severity}]** ${s.finding.title}${tag}`);
       for (const e of s.finding.evidence) {
         lines.push(`  - evidence: \`${e.path}:${e.startLine ?? "?"}-${e.endLine ?? "?"}\``);
@@ -772,12 +786,13 @@ export async function runSweepAudits(args: {
           truncated: result.truncated,
           // PoC counters ride along ONLY when the --poc stage ran (undefined
           // otherwise → omitted from JSON, byte-identical no-`--poc` summary).
-          ...(result.pocAttempted !== undefined
+          ...(result.pocAttemptedCount !== undefined
             ? {
-                confirmed: result.confirmedCount ?? 0,
-                pocAttempted: result.pocAttempted,
-                pocExecuted: result.pocExecuted ?? 0,
-                pocSkippedInfra: result.pocSkippedInfra ?? 0,
+                confirmedVerdictCount: result.confirmedVerdictCount ?? 0,
+                pocExecutedVerdictCount: result.pocExecutedVerdictCount ?? 0,
+                pocAttemptedCount: result.pocAttemptedCount,
+                pocRanCount: result.pocRanCount ?? 0,
+                pocSkippedInfraCount: result.pocSkippedInfraCount ?? 0,
               }
             : {}),
         },

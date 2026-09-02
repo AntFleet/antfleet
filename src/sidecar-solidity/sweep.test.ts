@@ -440,23 +440,26 @@ describe("buildSweepSummary — PoC coverage counters (#179 §4)", () => {
       outcomes: [
         outcome({
           entry: "A.sol",
-          confirmed: 1,
-          pocAttempted: 2,
-          pocExecuted: 1,
-          pocSkippedInfra: 1,
+          confirmedVerdictCount: 1,
+          pocExecutedVerdictCount: 1,
+          pocAttemptedCount: 2,
+          pocRanCount: 1,
+          pocSkippedInfraCount: 1,
         }),
         outcome({
           entry: "B.sol",
-          confirmed: 0,
-          pocAttempted: 3,
-          pocExecuted: 0,
-          pocSkippedInfra: 3,
+          confirmedVerdictCount: 0,
+          pocExecutedVerdictCount: 0,
+          pocAttemptedCount: 3,
+          pocRanCount: 0,
+          pocSkippedInfraCount: 3,
         }),
       ],
     });
-    expect(s.totals.confirmed).toBe(1);
-    expect(s.totals.pocAttempted).toBe(5);
-    expect(s.totals.pocExecuted).toBe(1);
-    expect(s.totals.pocSkippedInfra).toBe(4);
+    expect(s.totals.confirmedVerdictCount).toBe(1);
+    expect(s.totals.pocExecutedVerdictCount).toBe(1);
+    expect(s.totals.pocAttemptedCount).toBe(5);
+    expect(s.totals.pocRanCount).toBe(1);
+    expect(s.totals.pocSkippedInfraCount).toBe(4);
   });
 });

@@ -39,6 +39,8 @@ import {
   resolvePocTarget,
   staticGatePoc,
   promoteWithPoc,
+  CANDIDATE_LABEL,
+  type ActiveGo,
   type ClosureAst,
   type PocExecution,
   type PocRecord,
@@ -92,9 +94,10 @@ export type CrossFileDependency = { symbol: string; reason: string };
 
 export type ScoredFinding = {
   finding: AuditFinding;
-  /** CONFIRMED is reachable ONLY from PURSUE via promoteWithPoc after execution
-   * (Phase 3). In the generation-only tier it never appears. */
-  verdict: "CONFIRMED" | "PURSUE" | "DROP";
+  /** CONFIRMED (Tier-1) and POC_EXECUTED (Tier-2) are reachable ONLY from PURSUE
+   * via promoteWithPoc after execution + a valid GO (Phase 3). In the
+   * generation-only tier neither appears. */
+  verdict: "CONFIRMED" | "POC_EXECUTED" | "PURSUE" | "DROP";
   reason: string;
   /** Advisory metadata from the finder model. Never gates promotion. */
   advisory: string;
@@ -113,10 +116,13 @@ export type GeneratePocCallback = (args: {
 }) => Promise<PocGenerationOutput>;
 
 /** Injected PoC execution callback. UNSET in Phase 1 (executor is Phase 3, gated
- * behind the §7 spike) — so CONFIRMED is unreachable until it is wired. */
+ * behind the §7 spike) — so the terminal tiers are unreachable until it is wired.
+ * `binding` is set for the static-bound tier; `harnessDriveSpan` for the
+ * harness-driven tier (§3.4). */
 export type ExecutePocCallback = (args: {
   testContents: string;
-  binding: NonNullable<ReturnType<typeof staticGatePoc>["binding"]>;
+  binding: NonNullable<ReturnType<typeof staticGatePoc>["binding"]> | undefined;
+  harnessDriveSpan: NonNullable<ReturnType<typeof staticGatePoc>["harnessDriveSpan"]> | undefined;
   pocTarget: PocTarget;
 }) => Promise<PocExecution>;
 
@@ -138,11 +144,14 @@ export type FinderRunResult = {
   resolvedDependencies: string[];
   focusedPrompts: string[];
   /** PoC-stage counters — UNDEFINED (omitted from JSON) when --poc is off, so a
-   * no-`--poc` run is byte-identical to today (§3.1). */
-  confirmedCount?: number;
-  pocAttempted?: number;
-  pocExecuted?: number;
-  pocSkippedInfra?: number;
+   * no-`--poc` run is byte-identical to today (§3.1). Canonical names (§3.1/§4):
+   * "got the verdict" (`*VerdictCount`) is never confused with "was run"
+   * (`pocRanCount`). */
+  confirmedVerdictCount?: number;
+  pocExecutedVerdictCount?: number;
+  pocAttemptedCount?: number;
+  pocRanCount?: number;
+  pocSkippedInfraCount?: number;
 };
 
 const DECLARATION_AT_REGEX = /\b(?:abstract\s+)?(?:contract|interface|library)\s+SYMBOL\b/u;
@@ -255,6 +264,7 @@ export async function runFinder(
   confirm?: ConfirmCallback | undefined,
   generatePoc?: GeneratePocCallback | undefined,
   executePoc?: ExecutePocCallback | undefined,
+  activeGo?: ActiveGo | undefined,
 ): Promise<FinderRunResult> {
   const closureStats = input.closureStats ?? {
     truncated: false,
@@ -442,6 +452,8 @@ export async function runFinder(
       const promoted = promoteWithPoc({
         base: { verdict: "PURSUE", reason: s.reason },
         poc: s.poc,
+        execution: s.poc.execution,
+        activeGo,
       });
       s.verdict = promoted.verdict;
       s.reason = promoted.reason;
@@ -461,10 +473,11 @@ export async function runFinder(
     focusedPrompts,
     ...(generatePoc !== undefined
       ? {
-          confirmedCount: scored.filter((s) => s.verdict === "CONFIRMED").length,
-          pocAttempted: pocCounters.attempted,
-          pocExecuted: pocCounters.executed,
-          pocSkippedInfra: pocCounters.skippedInfra,
+          confirmedVerdictCount: scored.filter((s) => s.verdict === "CONFIRMED").length,
+          pocExecutedVerdictCount: scored.filter((s) => s.verdict === "POC_EXECUTED").length,
+          pocAttemptedCount: pocCounters.attempted,
+          pocRanCount: pocCounters.executed,
+          pocSkippedInfraCount: pocCounters.skippedInfra,
         }
       : {}),
   };
@@ -514,6 +527,9 @@ async function runPocStage(args: {
   const base: PocRecord = {
     generated: false,
     rationale: null,
+    tier: null,
+    assertionForm: null,
+    label: null,
     target: null,
     testPath: null,
     testContents: null,
@@ -544,7 +560,7 @@ async function runPocStage(args: {
     }
     const gate = staticGatePoc(out.testContents, args.finding, target, args.closureAstByPath);
     const testPath = `test/AuditPoc_${pocSlug(args.finding.title)}.t.sol`;
-    if (!gate.passed || gate.binding === undefined) {
+    if (!gate.passed || gate.tier === undefined) {
       return {
         ...base,
         generated: true,
@@ -554,35 +570,28 @@ async function runPocStage(args: {
         staticGate: { passed: false, reasons: gate.reasons },
       };
     }
+    const gatedBase = {
+      ...base,
+      generated: true,
+      target,
+      testPath,
+      testContents: out.testContents,
+      tier: gate.tier,
+      assertionForm: gate.assertionForm ?? null,
+      staticGate: { passed: true, reasons: [] },
+    };
     if (args.executePoc === undefined) {
       args.onSkippedInfra(); // executor off (Phase 1): CANDIDATE only, stays PURSUE
-      return {
-        ...base,
-        generated: true,
-        target,
-        testPath,
-        testContents: out.testContents,
-        staticGate: { passed: true, reasons: [] },
-      };
+      return { ...gatedBase, label: CANDIDATE_LABEL };
     }
     const execution = await args.executePoc({
       testContents: out.testContents,
       binding: gate.binding,
+      harnessDriveSpan: gate.harnessDriveSpan,
       pocTarget: target,
     });
     args.onExecuted();
-    return {
-      generated: true,
-      rationale: null,
-      target,
-      testPath,
-      testContents: out.testContents,
-      staticGate: { passed: true, reasons: [] },
-      executed: true,
-      execution,
-      humanGated: true,
-      runSpecific: true,
-    };
+    return { ...gatedBase, executed: true, execution };
   } catch (err) {
     return {
       ...base,
