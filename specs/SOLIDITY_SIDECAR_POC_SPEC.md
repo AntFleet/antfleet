@@ -43,6 +43,22 @@ literal `pathMatches`) — with one small residual in each carried to Phase 3:
   trace does NOT catch storage fabrication on its own, so this explicit detector is required).
 - **Drive-relevance** (no-op drive; pre-drive snapshot of an unrelated field) is the
   human-gated residual (§1(a) — the mandatory human gate sees them plainly).
+- **Adversarial-remapping provenance residual (Phase-3 blocker):** forge-std and
+  vendored-scaffolding provenance is judged from the *resolved path shape*
+  (root-anchored `^lib/(<dep>/lib/)*forge-std/` / `^node_modules/…`, canonical
+  allowlisted specifiers, no `..`, root-anchored dep root). Because the **target
+  repo's own remappings** resolve those specifiers, a repo that places a fake
+  forge-std or fake dependency under a real-LOOKING top-level dep root
+  (`lib/fake/v4-core/…`, `lib/x/lib/forge-std/…`) is **path-indistinguishable**
+  from a genuine dependency — this cannot be closed by static analysis. It is
+  PRE-EXISTING (the gate has always trusted `lib/forge-std/`) and best-effort
+  static, backstopped by the Phase-3 executor target-frame trace (a fake drive
+  never produces a target frame) + human review. **Phase-3 blocker:** the executor
+  MUST NOT auto-promote a PoC whose forge-std / vendored provenance rests on a
+  repo-controlled remapping until dep provenance is made airtight (content-pinned
+  trusted forge-std, and/or an out-of-band trusted remapping set) — a hollow
+  no-op-`assertEq` under a fake forge-std is a genuine hollow-verdict vector that
+  neither path analysis nor the target-frame trace alone rejects.
 
 **WHY THIS IS SHIPPABLE.** Phase 1 mints no verdict, so no residual static-gate hollow can
 cause harm: the gate's Phase-1 job is to classify a human-reviewed CANDIDATE, not to gate a
