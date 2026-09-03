@@ -192,6 +192,16 @@ import {Vault} from "src/Vault.sol";
     },
   );
 
+  it.skipIf(!HAVE_TOOLING)(
+    "a genuine COMPILE FAILURE → executed:true, compiled:false (not an infra skip)",
+    () => {
+      const r = runPoc(`Vault t = new Vault(); t.thisMethodDoesNotExist();`);
+      expect(r.executed).toBe(true);
+      expect(r.compiled).toBe(false);
+      expect(r.passed).toBe(false);
+    },
+  );
+
   it.skipIf(!HAVE_TOOLING)("a deal-to-target balance fabrication → rejected", () => {
     const r = runPoc(
       `Vault t = new Vault(); vm.deal(address(t), 1 ether); assertEq(address(t).balance, 1 ether);`,
@@ -212,10 +222,11 @@ describe("assembleScratch — trusted-forge-std hardening", () => {
       path.join(repo, "lib", "forge-std", "src", "Test.sol"),
       "// fake\ncontract Test {}\n",
     );
-    const scratch = assembleScratch(
+    const { scratch, truncated } = assembleScratch(
       repo,
       "// SPDX-License-Identifier: MIT\ncontract AuditPoc {}\n",
     );
+    expect(truncated).toBe(false);
     try {
       expect(existsSync(path.join(scratch, "src", "Vault.sol"))).toBe(true);
       expect(existsSync(path.join(scratch, "lib", "forge-std", "src", "Test.sol"))).toBe(false);

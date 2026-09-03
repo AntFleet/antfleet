@@ -271,7 +271,9 @@ async function main(): Promise<void> {
     allPaths,
     remappings,
     live: cli.live,
-    poc: cli.poc,
+    // SIDECAR_POC_EXEC=1 is equivalent to --poc-exec: it implies --poc (execution needs a
+    // generated PoC) AND enables execution.
+    poc: cli.poc || process.env["SIDECAR_POC_EXEC"] === "1",
     pocExec: cli.pocExec || process.env["SIDECAR_POC_EXEC"] === "1",
     pocImage: process.env["SIDECAR_POC_IMAGE"],
     pocModel: process.env["SIDECAR_POC_MODEL"],
@@ -579,7 +581,8 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
         allPaths,
         remappings,
         live: cli.live,
-        poc: cli.poc,
+        // SIDECAR_POC_EXEC=1 ≡ --poc-exec: implies --poc + enables execution.
+        poc: cli.poc || process.env["SIDECAR_POC_EXEC"] === "1",
         pocExec: cli.pocExec || process.env["SIDECAR_POC_EXEC"] === "1",
         pocImage: process.env["SIDECAR_POC_IMAGE"],
         pocModel: process.env["SIDECAR_POC_MODEL"],

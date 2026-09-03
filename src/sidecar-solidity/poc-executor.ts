@@ -91,9 +91,11 @@ const FABRICATION_CHEATS = new Set([
   "setEnv",
 ]);
 
-/** Cap on the assembled scratch tree (a bounded `.sol` copy from an untrusted repo),
- * enforced DURING the copy in `assembleScratch`. */
+/** Caps on the assembled scratch tree (a bounded `.sol` copy from an untrusted repo),
+ * enforced DURING the copy in `assembleScratch` — bytes bound host disk, entries bound
+ * host inodes/dir-count. */
 const SCRATCH_MAX_BYTES = 200 * 1024 * 1024;
+const SCRATCH_MAX_ENTRIES = 50_000;
 
 const NON_EXEC = (reason: string): PocExecution => ({
   executed: false,
@@ -309,13 +311,19 @@ function pocSlug(): string {
  * rejected (via `lstat`, no-follow): a repo `remappings.txt`→host-file symlink would
  * otherwise be followed by `writeFoundryOverride`/the test write and read/clobber a host
  * file BEFORE the sandbox starts. `cpSync` copies real files only. */
-export function assembleScratch(targetRoot: string, testContents: string): string {
+export function assembleScratch(
+  targetRoot: string,
+  testContents: string,
+): { scratch: string; truncated: boolean } {
   const scratch = mkdtempSync(path.join(tmpdir(), "poc-exec-"));
-  // Enforce the byte budget DURING the copy (in the filter), not after — a hostile repo
-  // must not be able to fill host `/tmp` before a post-copy check trips. Once the budget
-  // is exhausted, remaining files are skipped → a truncated project → forge compile fails
-  // → PURSUE (safe: never a false pass).
+  // Enforce a byte budget AND a directory/entry count budget DURING the copy (in the
+  // filter), not after — a hostile repo must not fill host `/tmp` (disk OR inodes) before
+  // a post-copy check trips. Once either budget is exhausted, further entries (files AND
+  // directories) are rejected and `truncated` is set; the executor then fails CLOSED
+  // ({executed:false}) rather than compiling a partial project.
   let remainingBytes = SCRATCH_MAX_BYTES;
+  let remainingEntries = SCRATCH_MAX_ENTRIES;
+  let truncated = false;
   cpSync(targetRoot, scratch, {
     recursive: true,
     dereference: false,
@@ -323,6 +331,10 @@ export function assembleScratch(targetRoot: string, testContents: string): strin
       const base = path.basename(src);
       if (base === ".git" || base === "node_modules" || base === "out" || base === "cache") {
         return false;
+      }
+      if (remainingBytes < 0 || remainingEntries <= 0) {
+        truncated = true;
+        return false; // budget exhausted — admit nothing more (files or dirs)
       }
       // NEVER copy the repo's own forge-std (or any `forge-std` path): the assertion/cheat
       // framework must come ONLY from the pinned image (§3.4). Otherwise a repo could ship
@@ -344,15 +356,21 @@ export function assembleScratch(targetRoot: string, testContents: string): strin
         return false;
       }
       if (st.isDirectory()) {
-        return true; // descend into real directories only
+        remainingEntries -= 1;
+        return true; // descend into real directories only (counted, budget-bounded)
       }
       const admit = base.endsWith(".sol") || base === "foundry.toml" || base === "remappings.txt";
       if (!admit) {
         return false;
       }
-      // Budget check BEFORE the write: stop admitting files once the cap is exhausted.
+      // Budget check BEFORE the write: stop admitting files once a cap is exhausted.
       remainingBytes -= st.size;
-      return remainingBytes >= 0;
+      remainingEntries -= 1;
+      const ok = remainingBytes >= 0 && remainingEntries >= 0;
+      if (!ok) {
+        truncated = true;
+      }
+      return ok;
     },
   });
   const testDir = path.join(scratch, "test");
@@ -361,7 +379,7 @@ export function assembleScratch(targetRoot: string, testContents: string): strin
   const testPath = path.join(testDir, `AuditPoc_${pocSlug()}.t.sol`);
   rmSync(testPath, { force: true });
   writeFileSync(testPath, testContents, { encoding: "utf8", flag: "wx" });
-  return scratch;
+  return { scratch, truncated };
 }
 
 // --- The Docker executor ----------------------------------------------------
@@ -380,9 +398,13 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
   return (args: PocExecArgs): PocExecution => {
     let scratch: string | null = null;
     try {
-      // `assembleScratch` bounds the copied set to SCRATCH_MAX_BYTES DURING the copy
-      // (a hostile/huge repo cannot exceed it — see there), so no post-copy size check.
-      scratch = assembleScratch(args.targetRoot, args.testContents);
+      // `assembleScratch` bounds the copied set (bytes + entries) DURING the copy. If it
+      // had to TRUNCATE, fail closed — a partial project must never compile+pass by luck.
+      const assembled = assembleScratch(args.targetRoot, args.testContents);
+      scratch = assembled.scratch;
+      if (assembled.truncated) {
+        return NON_EXEC("scratch exceeded size/entry budget (repo too large)");
+      }
       // Force-safe foundry config: ffi off, no fs perms, forge-std from the image.
       writeFoundryOverride(scratch);
       // Run the container as the HOST uid:gid (non-root) so forge can write out/cache to
@@ -451,22 +473,26 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
       const stdout = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
       const summary = parseForgeSummary(stdout);
       const sawSuiteResult = /Suite result:/iu.test(stdout);
-      // An INFRA failure — a nonzero container exit / kill-signal with NO forge suite
-      // result (missing image, daemon/runtime error, OOM/timeout kill) — is a skip, NOT
-      // a compile/run outcome. Only a run that produced a forge suite result is "executed".
+      // A genuine COMPILE FAILURE (forge ran, solc rejected the sources) is an execution
+      // outcome, not an infra skip: forge emitted a compiler error, so `executed:true,
+      // compiled:false`. Check this BEFORE the infra-skip branch (a compile failure also
+      // exits nonzero with no suite result, but IS distinguishable by its compiler error).
+      if (!summary.compiled) {
+        return {
+          ...NON_EXEC("did not compile (solc rejected the sources / deps unavailable)"),
+          executed: true,
+          compiled: false,
+        };
+      }
+      // A true INFRA failure — no forge suite result AND no compiler error, with a nonzero
+      // exit / kill-signal (missing image, daemon/runtime error, OOM/timeout kill) — is a
+      // skip, NOT an execution outcome.
       if (!sawSuiteResult && (run.status !== 0 || run.signal !== null)) {
         return NON_EXEC(
           `executor error: forge produced no suite result (exit ${String(run.status)}${
             run.signal === null ? "" : `, signal ${run.signal}`
           }): ${redact(stdout)}`,
         );
-      }
-      if (!summary.compiled) {
-        return {
-          ...NON_EXEC("deps unavailable / did not compile"),
-          executed: true,
-          compiled: false,
-        };
       }
       const targetAddr = findTargetDeployment(stdout, args.pocTarget.symbol);
       const cheatReason = detectForbiddenCheats(stdout, targetAddr);

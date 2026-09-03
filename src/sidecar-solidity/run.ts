@@ -40,6 +40,7 @@ import {
   staticGatePoc,
   promoteWithPoc,
   CANDIDATE_LABEL,
+  EXECUTED_NONPASS_POC_LABEL,
   CONFIRMED_LABEL,
   POC_EXECUTED_LABEL,
   NON_TERMINAL_POC_LABEL,
@@ -473,7 +474,9 @@ export async function runFinder(
             : s.verdict === "POC_EXECUTED"
               ? POC_EXECUTED_LABEL
               : s.poc.executed
-                ? NON_TERMINAL_POC_LABEL // executed but not promoted (tier-not-enabled / no-revert)
+                ? s.poc.execution?.passed === true
+                  ? NON_TERMINAL_POC_LABEL // executed & passed but tier not enabled / no-revert
+                  : EXECUTED_NONPASS_POC_LABEL // executed but did not pass / did not compile
                 : CANDIDATE_LABEL; // generation-only (Phase 1)
       }
     }

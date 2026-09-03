@@ -2000,6 +2000,12 @@ export const CANDIDATE_LABEL =
 export const NON_TERMINAL_POC_LABEL =
   "PoC attached (tier-earned but not enabled in this build / no-revert only): treated as PURSUE, " +
   "for human review — NOT a terminal verdict";
+/** Executed but the test did NOT pass (assertion did not hold) or did NOT compile — the
+ * PoC ran, so it is a higher-signal PURSUE than generation-only, but it is neither a
+ * terminal verdict nor evidence the bug reproduces. */
+export const EXECUTED_NONPASS_POC_LABEL =
+  "PoC executed but did NOT pass (assertion did not hold / did not compile): treated as PURSUE, " +
+  "for human review — neither a terminal verdict nor a reproduction";
 
 /**
  * GO-INDEPENDENT terminal-evidence predicate (§3.3). Returns the tier a PoC's
