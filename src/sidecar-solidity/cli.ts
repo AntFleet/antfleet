@@ -116,6 +116,7 @@ type CliArgs = {
   outPath: string | null;
   live: boolean;
   poc: boolean;
+  pocExec: boolean;
   context: ContextCliArgs;
 };
 
@@ -134,10 +135,13 @@ the independent adversarial refuter (gpt-5.5) through the codex CLI on your
 ChatGPT subscription — no API key, but slow. Set SIDECAR_TRANSPORT=http (with
 OPENROUTER_API_KEY / SIDECAR_API_KEY) to use OpenRouter instead. Override models
 with SIDECAR_FINDER_MODEL / SIDECAR_CONFIRM_MODEL / SIDECAR_REFUTER_MODEL.
---poc (with --live) runs the post-PURSUE PoC GENERATION stage (§7 Phase 1): a
-local-deploy Foundry PoC is generated + statically gated per PURSUE finding and
-attached as a CANDIDATE (verdict does NOT move — the executor is Phase 3, gated
-behind the generation spike). SIDECAR_POC_MODEL overrides the generation model.`);
+--poc (with --live) runs the post-PURSUE PoC GENERATION stage: a local-deploy
+Foundry PoC is generated + statically gated per PURSUE finding and attached as a
+CANDIDATE. SIDECAR_POC_MODEL overrides the generation model.
+--poc-exec (implies --poc; with --live) also EXECUTES each gate-passing PoC in a
+Docker sandbox (§3.4) and attaches the runtime evidence. Execute-only until an
+enablement manifest is wired: the verdict does NOT move (executed CANDIDATE).
+SIDECAR_POC_EXEC=1 / SIDECAR_POC_IMAGE=<img> are equivalent env controls.`);
   process.exit(2);
 }
 
@@ -150,6 +154,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
     outPath: null,
     live: false,
     poc: false,
+    pocExec: false,
     context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
@@ -197,6 +202,11 @@ function parseArgs(argv: readonly string[]): CliArgs {
         break;
       case "--poc":
         args.poc = true;
+        i += 1;
+        break;
+      case "--poc-exec":
+        args.poc = true;
+        args.pocExec = true;
         i += 1;
         break;
       case "--docs":
@@ -261,7 +271,11 @@ async function main(): Promise<void> {
     allPaths,
     remappings,
     live: cli.live,
-    poc: cli.poc,
+    // SIDECAR_POC_EXEC=1 is equivalent to --poc-exec: it implies --poc (execution needs a
+    // generated PoC) AND enables execution.
+    poc: cli.poc || process.env["SIDECAR_POC_EXEC"] === "1",
+    pocExec: cli.pocExec || process.env["SIDECAR_POC_EXEC"] === "1",
+    pocImage: process.env["SIDECAR_POC_IMAGE"],
     pocModel: process.env["SIDECAR_POC_MODEL"],
     finderModel,
     confirmModel,
@@ -338,6 +352,7 @@ type SweepCliArgs = {
   budgetBytes: number;
   live: boolean;
   poc: boolean;
+  pocExec: boolean;
   context: ContextCliArgs;
 };
 
@@ -379,6 +394,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     budgetBytes: 400_000,
     live: false,
     poc: false,
+    pocExec: false,
     context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
@@ -437,6 +453,11 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
         break;
       case "--poc":
         args.poc = true;
+        i += 1;
+        break;
+      case "--poc-exec":
+        args.poc = true;
+        args.pocExec = true;
         i += 1;
         break;
       case "--docs":
@@ -524,6 +545,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     budgetBytes: args.budgetBytes,
     live: args.live,
     poc: args.poc,
+    pocExec: args.pocExec,
     context: args.context,
   };
 }
@@ -559,7 +581,10 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
         allPaths,
         remappings,
         live: cli.live,
-        poc: cli.poc,
+        // SIDECAR_POC_EXEC=1 ≡ --poc-exec: implies --poc + enables execution.
+        poc: cli.poc || process.env["SIDECAR_POC_EXEC"] === "1",
+        pocExec: cli.pocExec || process.env["SIDECAR_POC_EXEC"] === "1",
+        pocImage: process.env["SIDECAR_POC_IMAGE"],
         pocModel: process.env["SIDECAR_POC_MODEL"],
         finderModel: process.env["SIDECAR_FINDER_MODEL"],
         confirmModel: process.env["SIDECAR_CONFIRM_MODEL"],
