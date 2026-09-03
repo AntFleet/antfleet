@@ -1700,3 +1700,78 @@ contract AuditPoc is Test, Deployers {
     expect(r.tier).toBe("harness-driven");
   });
 });
+
+describe("staticGatePoc — round-2 hardening (anchored provenance + allowlist)", () => {
+  const base = (imp: string, drive: string) => `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+${imp}import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function testAuditPoc() public { ${drive} }
+}
+`;
+  const drain = `vm.expectRevert(bytes("x")); hook.drain();`;
+
+  it("CRITICAL fix: forge-std under a non-src first-party root (contracts/node_modules) is rejected", () => {
+    const r = staticGatePoc(base("", drain), { evidence: [] }, TARGET, closure(), [
+      ["forge-std/", "contracts/node_modules/forge-std/src/"],
+      ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+      ["src/", "src/"],
+    ]);
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/forge-std|provenance/i);
+  });
+
+  it("CRITICAL fix: forge-std under apps/web/node_modules is rejected", () => {
+    const r = staticGatePoc(base("", drain), { evidence: [] }, TARGET, closure(), [
+      ["forge-std/", "apps/web/node_modules/forge-std/src/"],
+      ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+      ["src/", "src/"],
+    ]);
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/forge-std|provenance/i);
+  });
+
+  it("HIGH fix: a spoofed @dep/v4-core/src/ package cannot become the Tier-2 drive", () => {
+    const r = staticGatePoc(
+      base(
+        `import {Boom} from "@dep/v4-core/src/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@dep/", "lib/dep/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist/i);
+  });
+
+  it("HIGH fix: a mid-path v4-core/src spoof (evil/v4-core/src) is rejected", () => {
+    const r = staticGatePoc(
+      base(
+        `import {Boom} from "evil/v4-core/src/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["evil/", "lib/evil/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist/i);
+  });
+});

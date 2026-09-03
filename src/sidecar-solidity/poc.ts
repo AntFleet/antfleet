@@ -642,15 +642,16 @@ const SCAFFOLD_SPECIFIER_ALLOWLIST: readonly RegExp[] = [
   /^@uniswap\/v4-core\/(?:.*\/)?test\/utils\//u,
   // The v4-core / v4-periphery `src/` TYPE + LIBRARY + INTERFACE surface: a
   // Uniswap-v4 hook PoC cannot be built without importing PoolKey/Currency/Hooks/
-  // BalanceDelta/SwapParams etc. These are non-repo-controllable (the real
-  // Uniswap dependency, resolved under `lib/`/`node_modules/` — enforced by the
-  // isRealDepRoot check in `specifierIsVendored`), so they carry no fake-drive /
-  // fake-assertion risk. Anchored to `v4-core`/`v4-periphery` so an arbitrary
-  // repo-controlled dep (`@dep/src/Boom.sol`) is NOT admitted here.
-  /(^|\/)v4-core\/src\//u,
+  // BalanceDelta/SwapParams etc. ROOT-ANCHORED to the canonical package
+  // specifiers ONLY (`^@uniswap/v4-core/src/`, `^v4-core/src/`): a `(^|/)`
+  // mid-path match would let a repo-controlled path SPOOF the package
+  // (`lib/evil/v4-core/src/Boom.sol`, `@dep/v4-core/src/Boom.sol`) and, via
+  // classifyHarnessB4, become the Tier-2 drive. Anchoring rejects those — only an
+  // import specifier that STARTS with the real Uniswap package prefix qualifies.
   /^@uniswap\/v4-core\/src\//u,
-  /(^|\/)v4-periphery\/src\//u,
+  /^v4-core\/src\//u,
   /^@uniswap\/v4-periphery\/src\//u,
+  /^v4-periphery\/src\//u,
   /(^|\/)v4-periphery\/.*HookMiner/u,
   /^@uniswap\/v4-periphery\/.*HookMiner/u,
   /(^|\/)HookMiner\.sol$/u,
@@ -726,19 +727,18 @@ function isForgeStdProvenance(
   remappings: readonly (readonly [string, string])[],
 ): boolean {
   const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  // A real dependency root qualifies — including a TRANSITIVELY-nested forge-std
-  // submodule (`lib/<dep>/lib/forge-std/…`, any nesting depth), which is how a
-  // Foundry project that depends on another Foundry library vendors forge-std
-  // (e.g. der-sc: `lib/uniswap-hooks/lib/forge-std/src/Test.sol`). `isRealDepRoot`
-  // is the gate: it rejects a `../`-escape, an absolute path, and any first-party
-  // `src|test|script|vendor/` landing, so a repo-authored
-  // `src/…/node_modules/forge-std/` fake CANNOT forge provenance. The nesting for
-  // the `lib/` form must be through `lib/` segments (a `…/src/forge-std/` landing
-  // is repo-authored and stays rejected).
+  // ROOT-ANCHORED dependency layouts ONLY: top-level or transitively-nested
+  // Foundry (`lib/(<dep>/lib/)*forge-std/`, e.g. der-sc's
+  // `lib/uniswap-hooks/lib/forge-std/`) or npm
+  // (`node_modules/(<pkg>/node_modules/)*forge-std/`). The `^` anchor plus the
+  // fixed `lib/`|`node_modules/` nesting segments are the guard: a first-party
+  // tree that merely CONTAINS a `.../node_modules/forge-std/` or `.../lib/forge-std/`
+  // segment (`contracts/node_modules/forge-std/`, `apps/web/node_modules/forge-std/`,
+  // `src/x/node_modules/forge-std/`, `src/lib/forge-std/`) is repo-authored, does
+  // NOT match, and cannot forge provenance to ship a no-op `assertEq` / cheat handle.
   if (
-    isRealDepRoot(normalized) &&
-    (/^lib\/(?:[^/]+\/lib\/)*forge-std\//u.test(normalized) ||
-      /(^|\/)node_modules\/forge-std\//u.test(normalized))
+    /^lib\/(?:[^/]+\/lib\/)*forge-std\//u.test(normalized) ||
+    /^node_modules\/(?:[^/]+\/node_modules\/)*forge-std\//u.test(normalized)
   ) {
     return true;
   }
