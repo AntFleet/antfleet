@@ -235,57 +235,61 @@ function escapeRe(s: string): string {
 
 // --- Build-info identity ----------------------------------------------------
 
-/** Map the deployed target to its artifact source path via forge's build output
- * (`out/<File>.sol/<Symbol>.json` records `ast.absolutePath` / metadata). Returns a
- * repo-relative POSIX path or null (fail closed on ambiguity). §3.4 build-info identity.
- * A first-cut name+artifact match; the metadata-stripped bytecode compare that
- * defeats same-name collisions is a documented refinement. */
+/** Map the deployed target symbol to its source path by scanning the copied repo
+ * sources for the file that DECLARES `<Symbol>`. Returns a repo-relative POSIX path
+ * or null (fail closed on 0 or >1 declaring files). §3.4 target-source binding.
+ *
+ * Resolved from the on-host source tree rather than forge's `out/` artifacts: the
+ * executor redirects every forge write (out/build-info/cache) onto the in-container
+ * tmpfs so untrusted input cannot amplify writes onto the host — so `out/` no longer
+ * exists on the host after the run. Both forms establish the SAME claim ("exactly one
+ * source declares this symbol"); neither ties the on-chain address to bytecode — that
+ * metadata-stripped bytecode identity is the documented before-promotion refinement,
+ * and it is unused here (execute-only: `activeGo` undefined, no verdict consumes it). */
 export function resolveDeployedTargetPath(
   scratchRoot: string,
   targetSymbol: string,
 ): string | null {
-  const outDir = path.join(scratchRoot, "out");
-  if (!existsSync(outDir)) {
+  if (targetSymbol === "" || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(targetSymbol)) {
     return null;
   }
+  // A top-of-line Solidity declaration of the symbol: `contract`/`library`/`interface`,
+  // optionally `abstract`. Anchored to line start (`m`) to skip most in-comment mentions.
+  const decl = new RegExp(
+    `^\\s*(?:abstract\\s+)?(?:contract|library|interface)\\s+${escapeRe(targetSymbol)}\\b`,
+    "mu",
+  );
   const hits: string[] = [];
-  walkJson(outDir, (file) => {
-    if (path.basename(file) !== `${targetSymbol}.json`) {
-      return;
-    }
+  walkSol(scratchRoot, (file) => {
     try {
-      const art = JSON.parse(readFileSync(file, "utf8")) as {
-        ast?: { absolutePath?: string };
-        metadata?: { settings?: { compilationTarget?: Record<string, string> } };
-      };
-      const abs = art.ast?.absolutePath;
-      const ct = art.metadata?.settings?.compilationTarget;
-      const fromMeta = ct ? Object.keys(ct)[0] : undefined;
-      const src = abs ?? fromMeta;
-      if (src) {
-        hits.push(toPosixRepoRel(src));
+      if (decl.test(readFileSync(file, "utf8"))) {
+        hits.push(toPosixRepoRel(path.relative(scratchRoot, file)));
       }
     } catch {
-      /* skip unreadable artifact */
+      /* skip unreadable source */
     }
   });
   const uniq = [...new Set(hits)];
   return uniq.length === 1 ? uniq[0]! : null;
 }
 
-function toPosixRepoRel(p: string): string {
-  return p.replace(/\\/gu, "/").replace(/^\.\//u, "");
-}
-
-function walkJson(dir: string, visit: (file: string) => void): void {
+function walkSol(dir: string, visit: (file: string) => void): void {
   for (const entry of safeReaddir(dir)) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkJson(full, visit);
-    } else if (entry.isFile() && full.endsWith(".json")) {
+      // `out`/`cache` never exist on host now, but skip the usual heavy dirs defensively.
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "out") {
+        continue;
+      }
+      walkSol(full, visit);
+    } else if (entry.isFile() && full.endsWith(".sol")) {
       visit(full);
     }
   }
+}
+
+function toPosixRepoRel(p: string): string {
+  return p.replace(/\\/gu, "/").replace(/^\.\//u, "");
 }
 
 function safeReaddir(dir: string): Dirent[] {
@@ -407,11 +411,12 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
       }
       // Force-safe foundry config: ffi off, no fs perms, forge-std from the image.
       writeFoundryOverride(scratch);
-      // Run the container as the HOST uid:gid (non-root) so forge can write out/cache to
-      // the host-owned scratch WITHOUT a world-writable `chmod 0777` (which opened a
+      // Run the container as the HOST uid:gid (non-root) so it can READ the host-owned
+      // scratch (mounted read-only) WITHOUT a world-readable `chmod` (which opened a
       // same-host race). If the sidecar itself runs as root (uid 0), fall back to a fixed
-      // non-root uid + a scoped chmod (the scratch is symlink-free + secret-free, isolated
-      // by `--network none`, and removed in `finally`).
+      // non-root uid + a scoped chmod so that uid can read the mount (the scratch is
+      // symlink-free + secret-free, isolated by `--network none`, and removed in
+      // `finally`). Nothing is written back to /work — every forge write goes to tmpfs.
       const hostUid = typeof process.getuid === "function" ? process.getuid() : 0;
       const hostGid = typeof process.getgid === "function" ? process.getgid() : 0;
       const runUser = hostUid > 0 ? `${hostUid}:${hostGid}` : "10001";
@@ -432,10 +437,17 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
           "--memory=2g",
           "--pids-limit=256",
           "--read-only",
+          // The ONLY writable surface is a size-capped tmpfs. tmpfs pages count against
+          // the container `--memory` cgroup, so a hostile compile that tries to amplify
+          // writes (huge `out/` artifacts, build-info) is bounded by the 2g memory limit
+          // and the explicit tmpfs cap — it can never fill the HOST disk/inodes.
           "--tmpfs",
-          "/tmp",
+          "/tmp:size=1024m,mode=1777,nr_inodes=131072",
+          // The audited repo is mounted READ-ONLY: forge only READS sources/config from
+          // /work. Every forge write is redirected onto the tmpfs (FOUNDRY_OUT + cache),
+          // so untrusted input cannot amplify writes onto the host-backed mount.
           "-v",
-          `${scratch}:/work:rw`,
+          `${scratch}:/work:ro`,
           "-w",
           "/work",
           "--env-file",
@@ -447,10 +459,20 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
           "-e",
           "FOUNDRY_FS_PERMISSIONS=[]",
           // HOME points at the image's world-readable solc cache (`/opt/svmhome/.svm`)
-          // so offline runs resolve solc under a read-only root; forge's writable cache
-          // goes to the tmpfs. The audited repo's compile output lands under /work.
+          // so offline runs resolve solc under a read-only root. Every forge write —
+          // compile artifacts (FOUNDRY_OUT, incl. build-info) and the build cache
+          // (FOUNDRY_CACHE_DIR) — is redirected to the size-capped tmpfs, never the
+          // host-backed /work mount. FOUNDRY_OUT (env) overrides any `out` a hostile
+          // repo foundry.toml sets, so input cannot steer writes back onto /work.
           "-e",
           "HOME=/opt/svmhome",
+          "-e",
+          "FOUNDRY_OUT=/tmp/out",
+          // Build cache (`cache_path`, default `<root>/cache`) → tmpfs, distinct from the
+          // chain-data cache (`FOUNDRY_CACHE_DIR`). Without this, forge tries to create
+          // `/work/cache` on the read-only mount and every run fails as an infra error.
+          "-e",
+          "FOUNDRY_CACHE_PATH=/tmp/cache",
           "-e",
           "FOUNDRY_CACHE_DIR=/tmp/fc",
           "--entrypoint",
