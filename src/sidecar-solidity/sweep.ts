@@ -19,10 +19,12 @@ import { auditModelCall, confirmModelCall, pocModelCall } from "./model-client.j
 import {
   runFinder,
   type ConfirmCallback,
+  type ExecutePocCallback,
   type FinderRunResult,
   type GeneratePocCallback,
   type RefuteCallback,
 } from "./run.js";
+import { makeDockerExecutePoc } from "./poc-executor.js";
 import { refuteFinding, refuterTransport } from "./refuter.js";
 import { buildFocusedConfirmPrompt } from "./prompt.js";
 import { buildPocGenerationPrompt, parsePocGenerationOutput } from "./poc-prompt.js";
@@ -64,6 +66,13 @@ export type AuditEntryArgs = {
   poc?: boolean | undefined;
   /** PoC generation model override (default gpt-5.5). */
   pocModel?: string | undefined;
+  /** Opt-in post-PURSUE PoC EXECUTION (--poc-exec / SIDECAR_POC_EXEC; requires --poc +
+   * --live). Runs the generated PoC in the Docker sandbox (§3.4). Without a valid
+   * enablement manifest (§4) it stays execute-only — an executed CANDIDATE is attached
+   * and the verdict does NOT move (tier-not-enabled-by-operator). */
+  pocExec?: boolean | undefined;
+  /** Executor image (default `antfleet-poc-exec:local` / $SIDECAR_POC_IMAGE). */
+  pocImage?: string | undefined;
   /** Defaults to console.error; injectable so sweep can label/silence lines. */
   log?: ((line: string) => void) | undefined;
 };
@@ -213,8 +222,23 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
           return parsePocGenerationOutput(payload);
         }
       : undefined;
+  // Phase-2 executor (opt-in --poc-exec): runs each gate-passing PoC in the Docker
+  // sandbox (§3.4). `activeGo` is left undefined until a valid enablement manifest
+  // (§4) is wired, so this is execute-only — executed CANDIDATE attached, verdict
+  // unchanged. Composed only with --live + --poc + --poc-exec.
+  const executePoc: ExecutePocCallback | undefined =
+    args.live && args.poc === true && args.pocExec === true
+      ? makeDockerExecutePoc({
+          image: args.pocImage ?? process.env["SIDECAR_POC_IMAGE"] ?? "antfleet-poc-exec:local",
+          targetRoot: args.root,
+        })
+      : undefined;
   if (args.live && args.poc === true) {
-    log("[audit-solidity] --poc: generation-only PoC stage active (executor is Phase 3, off)");
+    log(
+      executePoc === undefined
+        ? "[audit-solidity] --poc: generation-only PoC stage active (executor off; pass --poc-exec to run)"
+        : "[audit-solidity] --poc --poc-exec: sandboxed executor active (execute-only until an enablement manifest is wired)",
+    );
   }
 
   const result = await runFinder(
@@ -237,7 +261,7 @@ export async function auditEntry(args: AuditEntryArgs): Promise<AuditEntryResult
     refuterCallback,
     confirmCallback,
     generatePoc,
-    undefined, // executePoc — Phase 3 only
+    executePoc,
   );
 
   return { entries: args.entries, closure, result };

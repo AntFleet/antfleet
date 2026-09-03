@@ -116,6 +116,7 @@ type CliArgs = {
   outPath: string | null;
   live: boolean;
   poc: boolean;
+  pocExec: boolean;
   context: ContextCliArgs;
 };
 
@@ -150,6 +151,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
     outPath: null,
     live: false,
     poc: false,
+    pocExec: false,
     context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
@@ -197,6 +199,11 @@ function parseArgs(argv: readonly string[]): CliArgs {
         break;
       case "--poc":
         args.poc = true;
+        i += 1;
+        break;
+      case "--poc-exec":
+        args.poc = true;
+        args.pocExec = true;
         i += 1;
         break;
       case "--docs":
@@ -262,6 +269,8 @@ async function main(): Promise<void> {
     remappings,
     live: cli.live,
     poc: cli.poc,
+    pocExec: cli.pocExec || process.env["SIDECAR_POC_EXEC"] === "1",
+    pocImage: process.env["SIDECAR_POC_IMAGE"],
     pocModel: process.env["SIDECAR_POC_MODEL"],
     finderModel,
     confirmModel,
@@ -338,6 +347,7 @@ type SweepCliArgs = {
   budgetBytes: number;
   live: boolean;
   poc: boolean;
+  pocExec: boolean;
   context: ContextCliArgs;
 };
 
@@ -379,6 +389,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     budgetBytes: 400_000,
     live: false,
     poc: false,
+    pocExec: false,
     context: { ...EMPTY_CONTEXT_CLI },
   };
   let i = 0;
@@ -437,6 +448,11 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
         break;
       case "--poc":
         args.poc = true;
+        i += 1;
+        break;
+      case "--poc-exec":
+        args.poc = true;
+        args.pocExec = true;
         i += 1;
         break;
       case "--docs":
@@ -524,6 +540,7 @@ async function parseSweepArgs(argv: readonly string[]): Promise<SweepCliArgs> {
     budgetBytes: args.budgetBytes,
     live: args.live,
     poc: args.poc,
+    pocExec: args.pocExec,
     context: args.context,
   };
 }
@@ -560,6 +577,8 @@ async function runSweepCli(argv: readonly string[]): Promise<void> {
         remappings,
         live: cli.live,
         poc: cli.poc,
+        pocExec: cli.pocExec || process.env["SIDECAR_POC_EXEC"] === "1",
+        pocImage: process.env["SIDECAR_POC_IMAGE"],
         pocModel: process.env["SIDECAR_POC_MODEL"],
         finderModel: process.env["SIDECAR_FINDER_MODEL"],
         confirmModel: process.env["SIDECAR_CONFIRM_MODEL"],
