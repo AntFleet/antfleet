@@ -340,6 +340,11 @@ export function renderLiveReport(args: {
         lines.push(
           `- PoC: POC_EXECUTED — harness-driven, executed & deploy-verified (weaker than CONFIRMED, human-review-required); test \`${s.poc.testPath}\``,
         );
+      } else if (s.poc.staticGate.passed && s.poc.executed) {
+        lines.push(
+          `- PoC: **CANDIDATE — executed (passed) but its tier is not enabled this build**, so it ` +
+            `stays PURSUE (human-review-required); a higher-trust candidate than generated-only. test \`${s.poc.testPath}\``,
+        );
       } else if (s.poc.staticGate.passed) {
         lines.push(
           `- PoC: **CANDIDATE — generated, NOT executed, correctness AND relevance unverified**; ` +

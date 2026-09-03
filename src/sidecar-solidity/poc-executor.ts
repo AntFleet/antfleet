@@ -91,6 +91,27 @@ const FABRICATION_CHEATS = new Set([
   "setEnv",
 ]);
 
+/** Cap on the assembled scratch tree (a bounded `.sol` copy from an untrusted repo). */
+const SCRATCH_MAX_BYTES = 200 * 1024 * 1024;
+
+/** Total byte size of a directory tree (best-effort; unreadable entries skipped). */
+function dirSizeBytes(dir: string): number {
+  let total = 0;
+  for (const entry of safeReaddir(dir)) {
+    const full = path.join(dir, entry.name);
+    try {
+      if (entry.isDirectory()) {
+        total += dirSizeBytes(full);
+      } else if (entry.isFile()) {
+        total += lstatSync(full).size;
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return total;
+}
+
 const NON_EXEC = (reason: string): PocExecution => ({
   executed: false,
   compiled: false,
@@ -315,6 +336,14 @@ export function assembleScratch(targetRoot: string, testContents: string): strin
       if (base === ".git" || base === "node_modules" || base === "out" || base === "cache") {
         return false;
       }
+      // NEVER copy the repo's own forge-std (or any `forge-std` path): the assertion/cheat
+      // framework must come ONLY from the pinned image (§3.4). Otherwise a repo could ship
+      // a fake no-op `assertEq` under `lib/forge-std/` and a PoC could import it DIRECTLY
+      // (bypassing the `forge-std/`→/opt remap) to mint a hollow pass. With it excluded,
+      // such a direct import fails to compile → PURSUE.
+      if (src.split(path.sep).includes("forge-std")) {
+        return false;
+      }
       // Reject symlinks outright (no-follow): never copy a link that could redirect a
       // later host-side read/write outside the scratch.
       let st: ReturnType<typeof lstatSync>;
@@ -358,6 +387,12 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
     let scratch: string | null = null;
     try {
       scratch = assembleScratch(args.targetRoot, args.testContents);
+      // Bound the copied set: a broad `.sol` copy from a hostile/huge repo could DoS
+      // the host on disk/compile time. Over the cap → skip (not a compile "result").
+      const bytes = dirSizeBytes(scratch);
+      if (bytes > SCRATCH_MAX_BYTES) {
+        return NON_EXEC(`scratch copy too large (${bytes} > ${SCRATCH_MAX_BYTES} bytes)`);
+      }
       // Force-safe foundry config: ffi off, no fs perms, forge-std from the image.
       writeFoundryOverride(scratch);
       // Run the container as the HOST uid:gid (non-root) so forge can write out/cache to

@@ -251,7 +251,9 @@ export function validatePocEnablement(
   // Tier-1 (CONFIRMED): ≥1 genuine Tier-1 known-true corpus member.
   const staticCorpusPositive = corpusManifest.some(
     (f) =>
-      f.kind === "known-true" && byId(corpusResults, f.fixtureId)?.promotedTier === "static-bound",
+      f.kind === "known-true" &&
+      f.driveKind === "direct-revert" &&
+      byId(corpusResults, f.fixtureId)?.promotedTier === "static-bound",
   );
   // Tier-2 (POC_EXECUTED): ≥1 genuine CALLBACK known-true, AND ≥1 on a NON-der-sc target
   // (anti-overfit floor).
@@ -324,7 +326,9 @@ function validateCorpus(manifest: CorpusFixture[], results: CorpusResult[]): str
       reasons.push(`corpus known-false ${f.fixtureId} carries a promotedTier`);
     }
     if (f.kind === "known-true") {
-      if (r.promotedTier === null) {
+      if (f.driveKind === null) {
+        reasons.push(`corpus known-true ${f.fixtureId} has no driveKind`);
+      } else if (r.promotedTier === null) {
         reasons.push(`corpus known-true ${f.fixtureId} has no promotedTier`);
       } else if (f.driveKind === "callback" && r.promotedTier !== "harness-driven") {
         reasons.push(`corpus callback fixture ${f.fixtureId} did not promote harness-driven`);

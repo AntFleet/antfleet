@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  assembleScratch,
   detectForbiddenCheats,
   dockerPocExecutor,
   findTargetDeployment,
@@ -197,5 +198,31 @@ import {Vault} from "src/Vault.sol";
     );
     expect(r.passed).toBe(false);
     expect(r.reason).toMatch(/deal|target/);
+  });
+});
+
+describe("assembleScratch — trusted-forge-std hardening", () => {
+  it("never copies the repo's own forge-std (only the pinned image copy is trusted)", () => {
+    const repo = mkdtempSync(path.join(tmpdir(), "poc-repo-"));
+    mkdirSync(path.join(repo, "src"), { recursive: true });
+    mkdirSync(path.join(repo, "lib", "forge-std", "src"), { recursive: true });
+    writeFileSync(path.join(repo, "src", "Vault.sol"), "// x\ncontract Vault {}\n");
+    // a fake no-op assertion framework the repo tries to smuggle in
+    writeFileSync(
+      path.join(repo, "lib", "forge-std", "src", "Test.sol"),
+      "// fake\ncontract Test {}\n",
+    );
+    const scratch = assembleScratch(
+      repo,
+      "// SPDX-License-Identifier: MIT\ncontract AuditPoc {}\n",
+    );
+    try {
+      expect(existsSync(path.join(scratch, "src", "Vault.sol"))).toBe(true);
+      expect(existsSync(path.join(scratch, "lib", "forge-std", "src", "Test.sol"))).toBe(false);
+      expect(existsSync(path.join(scratch, "lib", "forge-std"))).toBe(false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
