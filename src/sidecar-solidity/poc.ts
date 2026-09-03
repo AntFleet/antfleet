@@ -640,6 +640,18 @@ const SCAFFOLD_SPECIFIER_ALLOWLIST: readonly RegExp[] = [
   /(^|\/)forge-std\//u,
   /(^|\/)v4-core\/(?:.*\/)?test\/utils\//u,
   /^@uniswap\/v4-core\/(?:.*\/)?test\/utils\//u,
+  // The v4-core / v4-periphery `src/` TYPE + LIBRARY + INTERFACE surface: a
+  // Uniswap-v4 hook PoC cannot be built without importing PoolKey/Currency/Hooks/
+  // BalanceDelta/SwapParams etc. ROOT-ANCHORED to the canonical package
+  // specifiers ONLY (`^@uniswap/v4-core/src/`, `^v4-core/src/`): a `(^|/)`
+  // mid-path match would let a repo-controlled path SPOOF the package
+  // (`lib/evil/v4-core/src/Boom.sol`, `@dep/v4-core/src/Boom.sol`) and, via
+  // classifyHarnessB4, become the Tier-2 drive. Anchoring rejects those — only an
+  // import specifier that STARTS with the real Uniswap package prefix qualifies.
+  /^@uniswap\/v4-core\/src\//u,
+  /^v4-core\/src\//u,
+  /^@uniswap\/v4-periphery\/src\//u,
+  /^v4-periphery\/src\//u,
   /(^|\/)v4-periphery\/.*HookMiner/u,
   /^@uniswap\/v4-periphery\/.*HookMiner/u,
   /(^|\/)HookMiner\.sol$/u,
@@ -694,13 +706,26 @@ function specifierIsVendored(
   if (!matched) {
     return false;
   }
+  // Reject a `..` escape in the ORIGINAL specifier: it can satisfy an anchored
+  // allowlist prefix yet resolve OUTSIDE the intended package
+  // (`@uniswap/v4-core/src/../../evil/Boom.sol` → `lib/dep/evil/Boom.sol`).
+  if (importPath.split("/").includes("..")) {
+    return false;
+  }
   if (isForgeStdProvenance(importPath, remappings)) {
     return true;
   }
   const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  // Non-forge-std vendored scaffolding MUST resolve to a proven lib/node_modules
-  // ROOT (a remap into repo vendor/src, or a `../`-escape, is rejected).
-  return isRealDepRoot(normalized);
+  // Non-forge-std vendored scaffolding MUST resolve to a ROOT-ANCHORED real
+  // dependency root (`^lib/` or `^node_modules/`). `isRealDepRoot` alone accepts a
+  // mid-path `/node_modules/` under a first-party tree
+  // (`contracts/node_modules/@uniswap/v4-core/`, `apps/web/node_modules/…`); the
+  // extra root anchor rejects those repo-authored landings. The IRREDUCIBLE
+  // residual — a repo that places a fake under a real-LOOKING top-level dep root
+  // (`lib/fake/v4-core/…`) — is path-indistinguishable from a genuine dependency
+  // and is the documented best-effort boundary (backstopped at runtime by the
+  // executor target-frame trace + human review; a PoC never auto-promotes here).
+  return isRealDepRoot(normalized) && /^(lib|node_modules)\//u.test(normalized);
 }
 
 /** Genuine forge-std provenance: the CANONICAL `forge-std/...` specifier, or a
@@ -715,8 +740,19 @@ function isForgeStdProvenance(
   remappings: readonly (readonly [string, string])[],
 ): boolean {
   const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  // A real dependency root always qualifies.
-  if (/^(lib|node_modules)\/forge-std\//u.test(normalized)) {
+  // ROOT-ANCHORED dependency layouts ONLY: top-level or transitively-nested
+  // Foundry (`lib/(<dep>/lib/)*forge-std/`, e.g. der-sc's
+  // `lib/uniswap-hooks/lib/forge-std/`) or npm
+  // (`node_modules/(<pkg>/node_modules/)*forge-std/`). The `^` anchor plus the
+  // fixed `lib/`|`node_modules/` nesting segments are the guard: a first-party
+  // tree that merely CONTAINS a `.../node_modules/forge-std/` or `.../lib/forge-std/`
+  // segment (`contracts/node_modules/forge-std/`, `apps/web/node_modules/forge-std/`,
+  // `src/x/node_modules/forge-std/`, `src/lib/forge-std/`) is repo-authored, does
+  // NOT match, and cannot forge provenance to ship a no-op `assertEq` / cheat handle.
+  if (
+    /^lib\/(?:[^/]+\/lib\/)*forge-std\//u.test(normalized) ||
+    /^node_modules\/(?:[^/]+\/node_modules\/)*forge-std\//u.test(normalized)
+  ) {
     return true;
   }
   // The canonical `forge-std/…` specifier qualifies ONLY if it did NOT remap into
@@ -954,6 +990,7 @@ function tryHarnessDriven(
   const forbidden = scanForbiddenConstructs(testContract, {
     allowSaltOption: true,
     allowExpectRevert: true,
+    isTargetType: (sym) => classifyAnchor(sym, aliases, remappings, pocTarget) === "target",
   });
   if (forbidden !== null) {
     return fail(forbidden);
@@ -2179,9 +2216,49 @@ function findControlFlow(body: unknown): string | null {
  * creation, forbidden StdCheats/StdStorage helpers (bare OR member-chain),
  * bound-`Vm` aliases, and non-allowlisted vm.* members.
  */
+/** The user-type symbol `X` of a `type(X)` expression, else null. Used to admit
+ * `type(<target>).creationCode` — the mandatory HookMiner input for CREATE2-mined
+ * deployment of a Uniswap v4 hook — while still rejecting `type(<other>).*`. */
+function typeArgSymbol(expr: unknown): string | null {
+  if (nodeType(expr) !== "FunctionCall") {
+    return null;
+  }
+  const rec = expr as Record<string, unknown>;
+  const callee = rec["expression"];
+  if (nodeType(callee) !== "Identifier" || (callee as Record<string, unknown>)["name"] !== "type") {
+    return null;
+  }
+  const arg = asArray(rec["arguments"])[0];
+  if (arg === null || typeof arg !== "object") {
+    return null;
+  }
+  const a = arg as Record<string, unknown>;
+  // `type(X)` where X is a user type parses its argument as either an Identifier
+  // (`name`) or a UserDefinedTypeName (`namePath`).
+  if (nodeType(a) === "Identifier" && typeof a["name"] === "string") {
+    return a["name"];
+  }
+  const tn = a["typeName"];
+  if (tn !== null && typeof tn === "object") {
+    const np = (tn as Record<string, unknown>)["namePath"];
+    if (typeof np === "string") {
+      return np;
+    }
+  }
+  const np = a["namePath"];
+  return typeof np === "string" ? np : null;
+}
+
 function scanForbiddenConstructs(
   body: unknown,
-  opts: { allowSaltOption?: boolean; allowExpectRevert?: boolean } = {},
+  opts: {
+    allowSaltOption?: boolean;
+    allowExpectRevert?: boolean;
+    /** Resolves a `type(X)` local symbol to whether it binds the cited target
+     * (via the same alias/path resolution as `new X`, NOT a textual name match) —
+     * set only by the Tier-2 caller to admit `type(<target>).creationCode`. */
+    isTargetType?: (localSymbol: string) => boolean;
+  } = {},
 ): string | null {
   // First pass: identify variables bound to the canonical `vm` (Vm aliases).
   const vmAliases = new Set<string>();
@@ -2258,7 +2335,18 @@ function scanForbiddenConstructs(
     if (t === "MemberAccess") {
       const m = rec["memberName"];
       if (m === "creationCode" || m === "runtimeCode") {
-        problem = "uses type(X).creationCode/runtimeCode (creation must be `new X`)";
+        // `type(<target>).creationCode` is the mandatory HookMiner input for a
+        // CREATE2-mined Uniswap v4 hook deploy: the bytes only feed HookMiner
+        // (pure address calc) or `new <target>{salt}()` (already target-restricted
+        // by §3.3.A) — inline assembly is hard-banned, so they cannot deploy a
+        // substitute. Target identity is resolved through import aliases + path
+        // (same as `new X`), so an aliased target is admitted and a non-target
+        // imported under the target's local NAME is not. runtimeCode and any
+        // non-target creationCode stay rejected.
+        const sym = typeArgSymbol(rec["expression"]);
+        if (!(m === "creationCode" && sym !== null && opts.isTargetType?.(sym) === true)) {
+          problem = "uses type(X).creationCode/runtimeCode (creation must be `new X`)";
+        }
       }
       // stdstore / checked_write / deal / … anywhere in a member chain — EXCEPT
       // the canonical `vm.<cheat>` surface (vm.deal is allowlisted; the arity/EOA

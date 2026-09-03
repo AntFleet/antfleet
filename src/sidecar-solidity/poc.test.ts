@@ -1446,3 +1446,376 @@ describe("promoteWithPoc truth table", () => {
     ).toBe("PURSUE");
   });
 });
+
+describe("staticGatePoc — real Foundry/Uniswap-v4 layouts (false-positive fixes)", () => {
+  // der-sc-style remappings: forge-std vendored TRANSITIVELY under a dependency,
+  // v4-core/periphery under lib/uniswap-hooks/lib, first-party src/ → src/.
+  const DRM: readonly (readonly [string, string])[] = [
+    ["forge-std/", "lib/uniswap-hooks/lib/forge-std/src/"],
+    ["@uniswap/v4-core/", "lib/uniswap-hooks/lib/v4-core/"],
+    ["@uniswap/v4-periphery/", "lib/uniswap-hooks/lib/v4-periphery/"],
+    ["src/", "src/"],
+  ];
+  const gd = (src: string) =>
+    staticGatePoc(src, { evidence: [] }, TARGET, closure({ "src/Helper.sol": HELPER_SRC }), DRM);
+  const HELPER_SRC = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract Helper { function h() external pure returns (uint256){ return 1; } }
+`;
+  const HDR = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+import {Vault} from "src/Vault.sol";
+`;
+  const withImports = (extraImports: string, setup: string, body: string) =>
+    `${HDR}${extraImports}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); ${setup} }
+    function testAuditPoc() public {
+${body}
+    }
+}
+`;
+
+  it("fix 1: forge-std vendored transitively (lib/<dep>/lib/forge-std) has genuine provenance", () => {
+    const r = gd(
+      withImports("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+  });
+
+  it("fix 1 (neg): a repo-authored src/forge-std/ fake is still rejected", () => {
+    const RM2: readonly (readonly [string, string])[] = [
+      ["forge-std/", "src/forge-std/"],
+      ["@uniswap/v4-core/", "lib/uniswap-hooks/lib/v4-core/"],
+      ["src/", "src/"],
+    ];
+    const r = staticGatePoc(
+      withImports("", "", `        vm.expectRevert(bytes("x"));\n        hook.drain();`),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      RM2,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/forge-std|provenance/i);
+  });
+
+  it("fix 2: a dependency-src type import (v4-core src/libraries) is admitted", () => {
+    const r = gd(
+      withImports(
+        `import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";\n`,
+        "",
+        `        vm.expectRevert(bytes("x"));\n        hook.drain();`,
+      ),
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+  });
+
+  it("fix 2 (neg): a genuine first-party src import (non-target) is still rejected", () => {
+    const r = gd(
+      withImports(
+        `import {Helper} from "src/Helper.sol";\n`,
+        "",
+        `        vm.expectRevert(bytes("x"));\n        hook.drain();`,
+      ),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src/i);
+  });
+
+  it("fix 3: type(<target>).creationCode feeds HookMiner (CREATE2-mined v4 hook deploy)", () => {
+    const r = gd(
+      `${HDR}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public {
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), type(Vault).creationCode, "");
+        hook = new Vault{salt: s}();
+    }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+  });
+
+  it("fix 3 (neg): type(<non-target>).creationCode is still rejected (fabrication)", () => {
+    const r = gd(
+      `${HDR}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public {
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), type(Deployers).creationCode, "");
+        hook = new Vault{salt: s}();
+    }
+    function testAuditPoc() public {
+        vm.expectRevert(bytes("x"));
+        hook.drain();
+    }
+}
+`,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/creationCode/);
+  });
+
+  it("fix 3 (neg): type(<target>).runtimeCode is still rejected (only creationCode carved out)", () => {
+    const r = gd(
+      withImports(
+        "",
+        "bytes memory rc = type(Vault).runtimeCode; rc;",
+        `        vm.expectRevert(bytes("x"));\n        hook.drain();`,
+      ),
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/runtimeCode|creationCode/);
+  });
+});
+
+describe("staticGatePoc — post-audit hardening (dep-import / provenance bypass probes)", () => {
+  const HDR = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+import {Vault} from "src/Vault.sol";
+`;
+  const body = `        vm.expectRevert(bytes("x"));\n        hook.drain();`;
+  const harness = (extraImports: string, setup: string, drive = body) =>
+    `${HDR}${extraImports}contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); ${setup} }
+    function testAuditPoc() public {
+${drive}
+    }
+}
+`;
+
+  it("CRITICAL fix: a repo-authored src/.../node_modules/forge-std/ fake is rejected", () => {
+    const r = staticGatePoc(harness("", ""), { evidence: [] }, TARGET, closure(), [
+      ["forge-std/", "src/node_modules/forge-std/src/"],
+      ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+      ["src/", "src/"],
+    ]);
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/forge-std|provenance/i);
+  });
+
+  it("HIGH fix: an arbitrary dep helper (@dep/src/Boom.sol) cannot serve as the drive", () => {
+    const r = staticGatePoc(
+      harness(
+        `import {Boom} from "@dep/src/Boom.sol";\n`,
+        "",
+        `        vm.expectRevert(bytes("x"));\n        Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@dep/", "lib/dep/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist|drive/i);
+  });
+
+  it("MEDIUM fix: a ./ relative import that normalizes under lib/ is still rejected", () => {
+    const r = staticGatePoc(
+      harness(`import {Hooks} from "./lib/fake/src/libraries/Hooks.sol";\n`, ""),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src/i);
+  });
+
+  it("HIGH fix: a non-target imported under the target's local NAME is not admitted as creationCode", () => {
+    const r = staticGatePoc(
+      `${HDR}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+import {Vault as RealVault} from "src/Vault.sol";
+import {Vault} from "@uniswap/v4-core/src/Vault.sol";
+contract AuditPoc is Test, Deployers {
+    RealVault hook;
+    function setUp() public {
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), type(Vault).creationCode, "");
+        hook = new RealVault{salt: s}();
+    }
+    function testAuditPoc() public { vm.expectRevert(bytes("x")); hook.drain(); }
+}
+`,
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@uniswap/v4-periphery/", "lib/dep/v4-periphery/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/creationCode/);
+  });
+
+  it("MEDIUM fix: an ALIASED target's creationCode IS admitted (no false-positive)", () => {
+    const r = staticGatePoc(
+      `${HDR}import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+import {Vault as Hook} from "src/Vault.sol";
+contract AuditPoc is Test, Deployers {
+    Hook hook;
+    function setUp() public {
+        (, bytes32 s) = HookMiner.find(address(this), uint160(0), type(Hook).creationCode, "");
+        hook = new Hook{salt: s}();
+    }
+    function testAuditPoc() public { vm.expectRevert(bytes("x")); hook.drain(); }
+}
+`,
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@uniswap/v4-periphery/", "lib/dep/v4-periphery/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed, r.reasons.join(" | ")).toBe(true);
+    expect(r.tier).toBe("harness-driven");
+  });
+});
+
+const v4HardeningBase = (imp: string, drive: string) => `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+import {Test} from "forge-std/Test.sol";
+import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
+${imp}import {Vault} from "src/Vault.sol";
+contract AuditPoc is Test, Deployers {
+    Vault hook;
+    function setUp() public { hook = new Vault(); }
+    function testAuditPoc() public { ${drive} }
+}
+`;
+const V4_HARDENING_DRAIN = `vm.expectRevert(bytes("x")); hook.drain();`;
+
+describe("staticGatePoc — round-2 hardening (anchored provenance + allowlist)", () => {
+  const base = v4HardeningBase;
+  const drain = V4_HARDENING_DRAIN;
+
+  it("CRITICAL fix: forge-std under a non-src first-party root (contracts/node_modules) is rejected", () => {
+    const r = staticGatePoc(base("", drain), { evidence: [] }, TARGET, closure(), [
+      ["forge-std/", "contracts/node_modules/forge-std/src/"],
+      ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+      ["src/", "src/"],
+    ]);
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/forge-std|provenance/i);
+  });
+
+  it("CRITICAL fix: forge-std under apps/web/node_modules is rejected", () => {
+    const r = staticGatePoc(base("", drain), { evidence: [] }, TARGET, closure(), [
+      ["forge-std/", "apps/web/node_modules/forge-std/src/"],
+      ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+      ["src/", "src/"],
+    ]);
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/forge-std|provenance/i);
+  });
+
+  it("HIGH fix: a spoofed @dep/v4-core/src/ package cannot become the Tier-2 drive", () => {
+    const r = staticGatePoc(
+      base(
+        `import {Boom} from "@dep/v4-core/src/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["@dep/", "lib/dep/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist/i);
+  });
+
+  it("HIGH fix: a mid-path v4-core/src spoof (evil/v4-core/src) is rejected", () => {
+    const r = staticGatePoc(
+      base(
+        `import {Boom} from "evil/v4-core/src/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["evil/", "lib/evil/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist/i);
+  });
+});
+
+describe("staticGatePoc — round-3 hardening (.. escape + root-anchored vendored path)", () => {
+  it("HIGH fix: a `..` escape in an allowlisted v4 specifier is rejected", () => {
+    const r = staticGatePoc(
+      v4HardeningBase(
+        `import {Boom} from "@uniswap/v4-core/src/../../evil/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/allowlist|repo-src/i);
+  });
+
+  it("HIGH fix: an allowlisted v4 specifier remapped under contracts/node_modules is rejected", () => {
+    const r = staticGatePoc(
+      v4HardeningBase(
+        `import {Boom} from "v4-core/src/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"], // Deployers stays legit
+        ["v4-core/", "contracts/node_modules/v4-core/"], // spoofed drive path
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist/i);
+  });
+});
