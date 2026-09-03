@@ -172,9 +172,11 @@ function build(): Built {
   const inputs: ValidatePocEnablementInputs = {
     executorSourceDigest: "exec-src-digest-v1",
     corpusManifest,
+    corpusResults,
     calibrationReceipts: receipts,
     calibrationSampleManifest: sample,
     activeGeneration: GEN,
+    activeImageDigest: "sha256:img",
   };
 
   const manifest: PocEnablementManifest = {
@@ -187,7 +189,6 @@ function build(): Built {
       corpusManifestDigest: pocDigest(corpusManifest),
       imageDigest: "sha256:img",
       ranAt: "2026-09-03T00:00:00Z",
-      results: corpusResults,
       resultsDigest: pocDigest(corpusResults),
     },
     calibration: {
@@ -204,13 +205,13 @@ function build(): Built {
   return { manifest, inputs, corpusManifest, corpusResults, receipts, sample };
 }
 
-/** Re-pin the calibration digests after mutating receipts/sample (so a test isolates the
- * rule under test rather than tripping a digest mismatch). */
+/** Re-pin the digests after mutating an out-of-band input (so a test isolates the rule
+ * under test rather than tripping a digest mismatch). */
 function repin(b: Built): void {
   b.manifest.calibration.receiptsDigest = pocDigest(b.inputs.calibrationReceipts);
   b.manifest.calibration.sampleManifestDigest = pocDigest(b.inputs.calibrationSampleManifest);
   b.manifest.corpusAttestation.corpusManifestDigest = pocDigest(b.inputs.corpusManifest);
-  b.manifest.corpusAttestation.resultsDigest = pocDigest(b.manifest.corpusAttestation.results);
+  b.manifest.corpusAttestation.resultsDigest = pocDigest(b.inputs.corpusResults);
 }
 
 describe("validatePocEnablement — valid baseline", () => {
@@ -227,9 +228,11 @@ describe("validatePocEnablement — fail-closed on missing inputs", () => {
   for (const key of [
     "executorSourceDigest",
     "corpusManifest",
+    "corpusResults",
     "calibrationReceipts",
     "calibrationSampleManifest",
     "activeGeneration",
+    "activeImageDigest",
   ] as const) {
     it(`disables both tiers when ${key} is unavailable`, () => {
       const b = build();
@@ -282,28 +285,36 @@ describe("validatePocEnablement — digest binding", () => {
 describe("validatePocEnablement — corpus attestation (leg 1)", () => {
   it("disables when a corpus result was skipped", () => {
     const b = build();
-    const r0 = b.manifest.corpusAttestation.results[0];
+    const r0 = b.corpusResults[0];
     if (r0) r0.skipped = true;
-    b.manifest.corpusAttestation.resultsDigest = pocDigest(b.manifest.corpusAttestation.results);
+    repin(b);
     const r = validatePocEnablement(b.manifest, b.inputs);
     expect(r.reasons.join(" ")).toMatch(/skipped/);
   });
 
   it("disables when the results fixtureId set ≠ committed manifest set", () => {
     const b = build();
-    b.manifest.corpusAttestation.results = b.manifest.corpusAttestation.results.slice(0, 4);
-    b.manifest.corpusAttestation.resultsDigest = pocDigest(b.manifest.corpusAttestation.results);
+    b.inputs.corpusResults = b.corpusResults.slice(0, 4);
+    repin(b);
     const r = validatePocEnablement(b.manifest, b.inputs);
     expect(r.reasons.join(" ")).toMatch(/fixtureId set/);
   });
 
   it("disables when a known-false fixture 'promoted' (wrong outcome)", () => {
     const b = build();
-    const taut = b.manifest.corpusAttestation.results.find((x) => x.fixtureId === "f-taut");
+    const taut = b.corpusResults.find((x) => x.fixtureId === "f-taut");
     if (taut) taut.outcome = "promoted";
-    b.manifest.corpusAttestation.resultsDigest = pocDigest(b.manifest.corpusAttestation.results);
+    repin(b);
     const r = validatePocEnablement(b.manifest, b.inputs);
-    expect(r.reasons.join(" ")).toMatch(/outcome/);
+    expect(r.reasons.join(" ")).toMatch(/outcome|promotedTier/);
+  });
+
+  it("disables on image-digest mismatch (active image ≠ attested)", () => {
+    const b = build();
+    b.inputs.activeImageDigest = "sha256:other";
+    const r = validatePocEnablement(b.manifest, b.inputs);
+    expect(r.reasons.join(" ")).toMatch(/image-digest/);
+    expect(r).toMatchObject({ enableStatic: false, enableHarness: false });
   });
 
   it("disables when a corpus fixture lacks provenance/clearance", () => {

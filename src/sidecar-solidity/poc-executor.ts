@@ -17,12 +17,12 @@ import {
   type Dirent,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -180,35 +180,44 @@ export function findTargetDeployment(trace: string, targetSymbol: string): strin
   return addrs.size === 1 ? [...addrs][0]! : null;
 }
 
-/** Whether a non-STATICCALL frame at `targetAddress` appears anywhere in the trace
- * (the coarse `targetFrameObserved`; the exact-span scoping is a §3.4 refinement).
- * A STATICCALL-only appearance does not count. */
+/** Detect a non-static CALL frame into the target (`targetFrameObserved`) and whether
+ * it was a direct top-level drive (`drove`). forge `-vvvv` renders calls by contract
+ * NAME (`Vault::method`), not address (the address appears only on the `new Vault@…`
+ * CREATE line and low-level calls), so we match `<Symbol>::` call frames — EXCLUDING
+ * the constructor `new <Symbol>` line (deployment is not a drive frame) and any
+ * `[staticcall]`. `drove` requires the target call to be a DIRECT child of the test
+ * root (no `│` continuation in its tree prefix); a deeper (callback) frame gives
+ * `observed && !drove`. NOTE (§3.4, deferred — safe while execute-only, REQUIRED before
+ * promotion): this scans the whole trace, not the exact `harnessDriveSpan` subtree, and
+ * does not exclude the `setUp()` subtree; both must be scoped before wiring `activeGo`. */
 export function targetFrameInTrace(
   trace: string,
-  targetAddress: string,
+  targetSymbol: string,
 ): {
   observed: boolean;
   drove: boolean;
 } {
-  if (targetAddress === "") {
+  if (targetSymbol === "") {
     return { observed: false, drove: false };
   }
-  const lower = trace.toLowerCase();
-  const addr = targetAddress.toLowerCase();
+  const esc = escapeRe(targetSymbol);
+  const isConstructor = new RegExp(`new\\s+${esc}[@\\s(]`, "u");
+  const isTargetCall = new RegExp(`\\b${esc}::`, "u");
   let observed = false;
   let drove = false;
-  for (const line of lower.split("\n")) {
-    if (!line.includes(addr)) {
+  for (const line of trace.split("\n")) {
+    if (!isTargetCall.test(line) || isConstructor.test(line)) {
       continue;
     }
-    const isStatic = line.includes("[staticcall]") || line.includes("::staticcall");
-    if (!isStatic) {
-      observed = true;
-      // A direct call rendered with the target address as the callee root (a
-      // top-level `Target::method` in the test body) implies `drove`.
-      if (/\b(call|new)\b/.test(line) || line.includes("::")) {
-        drove = true;
-      }
+    if (/\[staticcall\]/iu.test(line)) {
+      continue;
+    }
+    observed = true;
+    // A direct child of the test root has a `├─`/`└─` branch with NO preceding `│`
+    // continuation column; a nested (callback) frame carries ≥1 `│`.
+    const prefix = line.slice(0, line.search(/[├└]/u) === -1 ? 0 : line.search(/[├└]/u));
+    if (!prefix.includes("│")) {
+      drove = true;
     }
   }
   return { observed, drove };
@@ -292,32 +301,43 @@ function pocSlug(): string {
 
 /** Copy only `.sol` sources + `foundry.toml`/`remappings.txt` from the untrusted repo
  * into a throwaway scratch dir. Non-`.sol` files (`.env*`, keys, `*.json`, `.git`) are
- * NEVER copied — a compiler diagnostic cannot echo their contents (§3.4). */
+ * NEVER copied — a compiler diagnostic cannot echo their contents (§3.4). SYMLINKS are
+ * rejected (via `lstat`, no-follow): a repo `remappings.txt`→host-file symlink would
+ * otherwise be followed by `writeFoundryOverride`/the test write and read/clobber a host
+ * file BEFORE the sandbox starts. `cpSync` copies real files only. */
 export function assembleScratch(targetRoot: string, testContents: string): string {
   const scratch = mkdtempSync(path.join(tmpdir(), "poc-exec-"));
   cpSync(targetRoot, scratch, {
     recursive: true,
+    dereference: false,
     filter: (src) => {
       const base = path.basename(src);
       if (base === ".git" || base === "node_modules" || base === "out" || base === "cache") {
         return false;
       }
-      // directories: allow (so we can descend); files: only .sol + foundry config.
-      let isDir = false;
+      // Reject symlinks outright (no-follow): never copy a link that could redirect a
+      // later host-side read/write outside the scratch.
+      let st: ReturnType<typeof lstatSync>;
       try {
-        isDir = statSync(src).isDirectory();
+        st = lstatSync(src);
       } catch {
         return false;
       }
-      if (isDir) {
-        return true;
+      if (st.isSymbolicLink()) {
+        return false;
+      }
+      if (st.isDirectory()) {
+        return true; // descend into real directories only
       }
       return base.endsWith(".sol") || base === "foundry.toml" || base === "remappings.txt";
     },
   });
   const testDir = path.join(scratch, "test");
   mkdirSync(testDir, { recursive: true });
-  writeFileSync(path.join(testDir, `AuditPoc_${pocSlug()}.t.sol`), testContents, "utf8");
+  // Guard: never write the PoC through a symlink the copy somehow left.
+  const testPath = path.join(testDir, `AuditPoc_${pocSlug()}.t.sol`);
+  rmSync(testPath, { force: true });
+  writeFileSync(testPath, testContents, { encoding: "utf8", flag: "wx" });
   return scratch;
 }
 
@@ -340,11 +360,17 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
       scratch = assembleScratch(args.targetRoot, args.testContents);
       // Force-safe foundry config: ffi off, no fs perms, forge-std from the image.
       writeFoundryOverride(scratch);
-      // The container runs as a non-root uid that does not own the host-created scratch;
-      // make the throwaway tree writable so forge can emit out/cache. Safe: the scratch
-      // holds only copied .sol (no secrets — assembleScratch filtered) and is isolated
-      // (`--network none`, removed in `finally`).
-      spawnSync("chmod", ["-R", "0777", scratch], { timeout: 30_000 });
+      // Run the container as the HOST uid:gid (non-root) so forge can write out/cache to
+      // the host-owned scratch WITHOUT a world-writable `chmod 0777` (which opened a
+      // same-host race). If the sidecar itself runs as root (uid 0), fall back to a fixed
+      // non-root uid + a scoped chmod (the scratch is symlink-free + secret-free, isolated
+      // by `--network none`, and removed in `finally`).
+      const hostUid = typeof process.getuid === "function" ? process.getuid() : 0;
+      const hostGid = typeof process.getgid === "function" ? process.getgid() : 0;
+      const runUser = hostUid > 0 ? `${hostUid}:${hostGid}` : "10001";
+      if (hostUid === 0) {
+        spawnSync("chmod", ["-R", "0777", scratch], { timeout: 30_000 });
+      }
       const testGlob = `test/AuditPoc_${pocSlug()}.t.sol`;
       const run = spawnSync(
         docker,
@@ -354,7 +380,7 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
           "--network",
           "none",
           "--user",
-          "10001",
+          runUser,
           "--cpus=2",
           "--memory=2g",
           "--pids-limit=256",
@@ -399,6 +425,17 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
       }
       const stdout = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
       const summary = parseForgeSummary(stdout);
+      const sawSuiteResult = /Suite result:/iu.test(stdout);
+      // An INFRA failure — a nonzero container exit / kill-signal with NO forge suite
+      // result (missing image, daemon/runtime error, OOM/timeout kill) — is a skip, NOT
+      // a compile/run outcome. Only a run that produced a forge suite result is "executed".
+      if (!sawSuiteResult && (run.status !== 0 || run.signal !== null)) {
+        return NON_EXEC(
+          `executor error: forge produced no suite result (exit ${String(run.status)}${
+            run.signal === null ? "" : `, signal ${run.signal}`
+          }): ${redact(stdout)}`,
+        );
+      }
       if (!summary.compiled) {
         return {
           ...NON_EXEC("deps unavailable / did not compile"),
@@ -412,10 +449,7 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
         return { ...NON_EXEC(cheatReason), executed: true, compiled: true };
       }
       const deployedTargetPath = resolveDeployedTargetPath(scratch, args.pocTarget.symbol);
-      const frame =
-        targetAddr === null
-          ? { observed: false, drove: false }
-          : targetFrameInTrace(stdout, targetAddr);
+      const frame = targetFrameInTrace(stdout, args.pocTarget.symbol);
       const passed =
         summary.passedTests === 1 && summary.failedTests === 0 && summary.skippedTests === 0;
       const driveKind: PocDriveKind | null = frame.observed

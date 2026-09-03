@@ -4,11 +4,13 @@
 # cheat framework ONLY from this image (never the audited repo), so a repo that
 # remaps `forge-std/` to a no-op assertEq cannot mint a hollow verdict (§3.4).
 # SEPARATE from the patch-verifier repro-exec image by spec (§0).
-FROM ghcr.io/foundry-rs/foundry:stable
+FROM ghcr.io/foundry-rs/foundry:stable@sha256:043752653d5be351c71709091b3db97c4421c907eb40ea294195e7f532aadf46
 
 USER root
-# Pinned trusted forge-std at /opt/forge-std (the executor remaps forge-std/ here).
-RUN git clone --depth 1 --branch v1.9.4 https://github.com/foundry-rs/forge-std /opt/forge-std \
+# Pinned trusted forge-std at /opt/forge-std by COMMIT (v1.9.4 = 1eea5bae…), not a
+# mutable tag — the executor remaps forge-std/ here.
+RUN git clone https://github.com/foundry-rs/forge-std /opt/forge-std \
+ && git -C /opt/forge-std checkout 1eea5bae12ae557d589f9f0f0edae2faa47cb262 \
  && rm -rf /opt/forge-std/.git
 
 # Pre-cache solc (network available at build), then relocate the cache to a fixed,

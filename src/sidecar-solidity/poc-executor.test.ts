@@ -71,16 +71,23 @@ describe("findTargetDeployment", () => {
 });
 
 describe("targetFrameInTrace", () => {
-  const addr = "0x5615deb798bb3e4dfa0139dfa1b3d433cc23b72f";
-  it("observes a non-static in-body target frame and marks drove", () => {
-    const r = targetFrameInTrace(PASS_TRACE, addr);
-    // the deposit() call is a non-static frame at the target
+  it("observes a direct non-static in-body target call and marks drove", () => {
+    // the `├─ Vault::deposit(100)` line is a direct child → observed + drove
+    const r = targetFrameInTrace(PASS_TRACE, "Vault");
     expect(r.observed).toBe(true);
     expect(r.drove).toBe(true);
   });
+  it("does NOT count the constructor `new Vault@…` line as a drive frame", () => {
+    const deployOnly = `  [152291] AuditPoc::testAuditPoc()\n    ├─ [92539] → new Vault@0x5615\n    └─ ← [Stop]`;
+    expect(targetFrameInTrace(deployOnly, "Vault")).toEqual({ observed: false, drove: false });
+  });
   it("does not observe a STATICCALL-only target frame", () => {
-    const staticOnly = `  [424] Vault::balance() [staticcall] ${addr}`;
-    expect(targetFrameInTrace(staticOnly, addr).observed).toBe(false);
+    const staticOnly = `    ├─ [424] Vault::balance() [staticcall]`;
+    expect(targetFrameInTrace(staticOnly, "Vault").observed).toBe(false);
+  });
+  it("a nested (callback) target frame is observed but not drove", () => {
+    const cb = `  [x] AuditPoc::testAuditPoc()\n    ├─ [y] Router::swap()\n    │   └─ [z] Vault::beforeSwap()\n    └─ ← [Stop]`;
+    expect(targetFrameInTrace(cb, "Vault")).toEqual({ observed: true, drove: false });
   });
 });
 

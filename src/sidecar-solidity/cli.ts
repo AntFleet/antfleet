@@ -135,10 +135,13 @@ the independent adversarial refuter (gpt-5.5) through the codex CLI on your
 ChatGPT subscription — no API key, but slow. Set SIDECAR_TRANSPORT=http (with
 OPENROUTER_API_KEY / SIDECAR_API_KEY) to use OpenRouter instead. Override models
 with SIDECAR_FINDER_MODEL / SIDECAR_CONFIRM_MODEL / SIDECAR_REFUTER_MODEL.
---poc (with --live) runs the post-PURSUE PoC GENERATION stage (§7 Phase 1): a
-local-deploy Foundry PoC is generated + statically gated per PURSUE finding and
-attached as a CANDIDATE (verdict does NOT move — the executor is Phase 3, gated
-behind the generation spike). SIDECAR_POC_MODEL overrides the generation model.`);
+--poc (with --live) runs the post-PURSUE PoC GENERATION stage: a local-deploy
+Foundry PoC is generated + statically gated per PURSUE finding and attached as a
+CANDIDATE. SIDECAR_POC_MODEL overrides the generation model.
+--poc-exec (implies --poc; with --live) also EXECUTES each gate-passing PoC in a
+Docker sandbox (§3.4) and attaches the runtime evidence. Execute-only until an
+enablement manifest is wired: the verdict does NOT move (executed CANDIDATE).
+SIDECAR_POC_EXEC=1 / SIDECAR_POC_IMAGE=<img> are equivalent env controls.`);
   process.exit(2);
 }
 

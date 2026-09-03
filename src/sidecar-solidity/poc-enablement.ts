@@ -64,7 +64,9 @@ export type CorpusAttestation = {
   corpusManifestDigest: string;
   imageDigest: string;
   ranAt: string;
-  results: CorpusResult[];
+  /** The raw `results` are NOT inlined here — they are an OUT-OF-BAND validator input
+   * (`corpusResults`) recomputed against this digest, so a hand-edited manifest cannot
+   * both claim a promotion and update the hash it is checked against (self-attestation). */
   resultsDigest: string;
 };
 
@@ -117,12 +119,19 @@ export type ValidatePocEnablementInputs = {
   executorSourceDigest: string | null;
   /** The committed corpus fixture manifest (ground truth). */
   corpusManifest: CorpusFixture[] | null;
+  /** The corpus-run results, out-of-band (a CI artifact), recomputed against
+   * `corpusAttestation.resultsDigest` — never read from the manifest itself. */
+  corpusResults: CorpusResult[] | null;
   /** The out-of-tree (`.omc/`) raw calibration receipts. */
   calibrationReceipts: CalibrationReceipt[] | null;
   /** The out-of-tree pre-registered calibration sample manifest. */
   calibrationSampleManifest: SampleManifestEntry[] | null;
   /** The current run's generator identity (leg-3). */
   activeGeneration: GenerationBinding | null;
+  /** The digest of the executor image the CURRENT run uses; must match the attested
+   * corpus + calibration `imageDigest` (a tier calibrated on one image can't license
+   * another). */
+  activeImageDigest: string | null;
 };
 
 /** Per-tier enablement — the shape threaded into `promoteWithPoc` as `activeGo`. */
@@ -172,18 +181,22 @@ export function validatePocEnablement(
   const {
     executorSourceDigest,
     corpusManifest,
+    corpusResults,
     calibrationReceipts,
     calibrationSampleManifest,
     activeGeneration,
+    activeImageDigest,
   } = inputs;
 
   // Fail closed if any evidence input is unavailable (installed pkg / CI / no repo).
   if (
     executorSourceDigest === null ||
     corpusManifest === null ||
+    corpusResults === null ||
     calibrationReceipts === null ||
     calibrationSampleManifest === null ||
-    activeGeneration === null
+    activeGeneration === null ||
+    activeImageDigest === null
   ) {
     return DISABLED(["fail-closed: a validator evidence input is unavailable"]);
   }
@@ -197,14 +210,22 @@ export function validatePocEnablement(
     return DISABLED(["generation-binding mismatch: active generator ≠ calibrated generator"]);
   }
 
-  // --- Digest binding -------------------------------------------------------
+  // --- Image binding: the run's image must match the attested corpus + calibration image.
+  if (
+    activeImageDigest !== manifest.corpusAttestation.imageDigest ||
+    activeImageDigest !== manifest.calibration.imageDigest
+  ) {
+    return DISABLED(["image-digest mismatch: active executor image ≠ attested image"]);
+  }
+
+  // --- Digest binding (recompute from the OUT-OF-BAND inputs, never the manifest) ---
   if (executorSourceDigest !== manifest.executorSourceDigest) {
     return DISABLED(["executorSourceDigest mismatch"]);
   }
   if (pocDigest(corpusManifest) !== manifest.corpusAttestation.corpusManifestDigest) {
     return DISABLED(["corpusManifestDigest mismatch"]);
   }
-  if (pocDigest(manifest.corpusAttestation.results) !== manifest.corpusAttestation.resultsDigest) {
+  if (pocDigest(corpusResults) !== manifest.corpusAttestation.resultsDigest) {
     return DISABLED(["resultsDigest mismatch"]);
   }
   if (pocDigest(calibrationReceipts) !== manifest.calibration.receiptsDigest) {
@@ -214,8 +235,8 @@ export function validatePocEnablement(
     return DISABLED(["sampleManifestDigest mismatch"]);
   }
 
-  // --- Leg 1: corpus attestation (machine/CI-verified) ----------------------
-  const corpusReasons = validateCorpus(corpusManifest, manifest.corpusAttestation.results);
+  // --- Leg 1: corpus attestation (machine/CI-verified out-of-band results) ---
+  const corpusReasons = validateCorpus(corpusManifest, corpusResults);
   if (corpusReasons.length > 0) {
     return DISABLED(corpusReasons);
   }
@@ -230,8 +251,7 @@ export function validatePocEnablement(
   // Tier-1 (CONFIRMED): ≥1 genuine Tier-1 known-true corpus member.
   const staticCorpusPositive = corpusManifest.some(
     (f) =>
-      f.kind === "known-true" &&
-      byId(manifest.corpusAttestation.results, f.fixtureId)?.promotedTier === "static-bound",
+      f.kind === "known-true" && byId(corpusResults, f.fixtureId)?.promotedTier === "static-bound",
   );
   // Tier-2 (POC_EXECUTED): ≥1 genuine CALLBACK known-true, AND ≥1 on a NON-der-sc target
   // (anti-overfit floor).
@@ -239,7 +259,7 @@ export function validatePocEnablement(
     (f) =>
       f.kind === "known-true" &&
       f.driveKind === "callback" &&
-      byId(manifest.corpusAttestation.results, f.fixtureId)?.promotedTier === "harness-driven",
+      byId(corpusResults, f.fixtureId)?.promotedTier === "harness-driven",
   );
   // `.some` is false for an empty list, so this also requires ≥1 callback known-true.
   const harnessCorpusPositive = harnessKnownTrue.some((f) => !f.isDerSc);
@@ -297,6 +317,21 @@ function validateCorpus(manifest: CorpusFixture[], results: CorpusResult[]): str
     if (r.outcome !== expected) {
       reasons.push(`corpus fixture ${f.fixtureId} outcome ${r.outcome} ≠ expected ${expected}`);
     }
+    // Per-row tier soundness: a rejected known-false must have promotedTier null; a
+    // promoted known-true must have a non-null promotedTier consistent with its driveKind
+    // (a callback fixture promotes harness-driven, a direct-drive fixture static-bound).
+    if (f.kind === "known-false" && r.promotedTier !== null) {
+      reasons.push(`corpus known-false ${f.fixtureId} carries a promotedTier`);
+    }
+    if (f.kind === "known-true") {
+      if (r.promotedTier === null) {
+        reasons.push(`corpus known-true ${f.fixtureId} has no promotedTier`);
+      } else if (f.driveKind === "callback" && r.promotedTier !== "harness-driven") {
+        reasons.push(`corpus callback fixture ${f.fixtureId} did not promote harness-driven`);
+      } else if (f.driveKind === "direct-revert" && r.promotedTier !== "static-bound") {
+        reasons.push(`corpus direct-drive fixture ${f.fixtureId} did not promote static-bound`);
+      }
+    }
   }
   return reasons;
 }
@@ -318,13 +353,18 @@ function validateCalibration(
   if (receiptIds.size !== receipts.length) {
     reasons.push("calibration receipts have duplicate findingIds");
   }
-  // Bijection: every drawn id has exactly one receipt and vice versa.
+  // Bijection over (findingId, targetId): every drawn id has exactly one receipt and
+  // vice versa, AND the receipt's targetId matches the drawn row's targetId (else a
+  // receipt could reuse a drawn id but swap targets, gaming the diversity denominator).
+  const sampleTargetById = new Map(sample.map((s) => [s.findingId, s.targetId]));
   if (
     sampleIds.size !== receiptIds.size ||
     [...sampleIds].some((id) => !receiptIds.has(id)) ||
     [...receiptIds].some((id) => !sampleIds.has(id))
   ) {
     reasons.push("calibration receipts are not a bijection over the sample manifest");
+  } else if (receipts.some((r) => sampleTargetById.get(r.findingId) !== r.targetId)) {
+    reasons.push("a calibration receipt's targetId does not match its drawn sample row");
   }
 
   // Denominator from the PINNED sample manifest, never receipts.length.
