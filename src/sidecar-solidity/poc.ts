@@ -706,13 +706,26 @@ function specifierIsVendored(
   if (!matched) {
     return false;
   }
+  // Reject a `..` escape in the ORIGINAL specifier: it can satisfy an anchored
+  // allowlist prefix yet resolve OUTSIDE the intended package
+  // (`@uniswap/v4-core/src/../../evil/Boom.sol` → `lib/dep/evil/Boom.sol`).
+  if (importPath.split("/").includes("..")) {
+    return false;
+  }
   if (isForgeStdProvenance(importPath, remappings)) {
     return true;
   }
   const normalized = posixNormalize(applyRemappings(importPath, remappings));
-  // Non-forge-std vendored scaffolding MUST resolve to a proven lib/node_modules
-  // ROOT (a remap into repo vendor/src, or a `../`-escape, is rejected).
-  return isRealDepRoot(normalized);
+  // Non-forge-std vendored scaffolding MUST resolve to a ROOT-ANCHORED real
+  // dependency root (`^lib/` or `^node_modules/`). `isRealDepRoot` alone accepts a
+  // mid-path `/node_modules/` under a first-party tree
+  // (`contracts/node_modules/@uniswap/v4-core/`, `apps/web/node_modules/…`); the
+  // extra root anchor rejects those repo-authored landings. The IRREDUCIBLE
+  // residual — a repo that places a fake under a real-LOOKING top-level dep root
+  // (`lib/fake/v4-core/…`) — is path-indistinguishable from a genuine dependency
+  // and is the documented best-effort boundary (backstopped at runtime by the
+  // executor target-frame trace + human review; a PoC never auto-promotes here).
+  return isRealDepRoot(normalized) && /^(lib|node_modules)\//u.test(normalized);
 }
 
 /** Genuine forge-std provenance: the CANONICAL `forge-std/...` specifier, or a

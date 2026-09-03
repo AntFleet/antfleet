@@ -1701,8 +1701,7 @@ contract AuditPoc is Test, Deployers {
   });
 });
 
-describe("staticGatePoc — round-2 hardening (anchored provenance + allowlist)", () => {
-  const base = (imp: string, drive: string) => `// SPDX-License-Identifier: MIT
+const v4HardeningBase = (imp: string, drive: string) => `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import {Test} from "forge-std/Test.sol";
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
@@ -1713,7 +1712,11 @@ contract AuditPoc is Test, Deployers {
     function testAuditPoc() public { ${drive} }
 }
 `;
-  const drain = `vm.expectRevert(bytes("x")); hook.drain();`;
+const V4_HARDENING_DRAIN = `vm.expectRevert(bytes("x")); hook.drain();`;
+
+describe("staticGatePoc — round-2 hardening (anchored provenance + allowlist)", () => {
+  const base = v4HardeningBase;
+  const drain = V4_HARDENING_DRAIN;
 
   it("CRITICAL fix: forge-std under a non-src first-party root (contracts/node_modules) is rejected", () => {
     const r = staticGatePoc(base("", drain), { evidence: [] }, TARGET, closure(), [
@@ -1768,6 +1771,47 @@ contract AuditPoc is Test, Deployers {
         ["forge-std/", "lib/forge-std/src/"],
         ["@uniswap/v4-core/", "lib/dep/v4-core/"],
         ["evil/", "lib/evil/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/repo-src|allowlist/i);
+  });
+});
+
+describe("staticGatePoc — round-3 hardening (.. escape + root-anchored vendored path)", () => {
+  it("HIGH fix: a `..` escape in an allowlisted v4 specifier is rejected", () => {
+    const r = staticGatePoc(
+      v4HardeningBase(
+        `import {Boom} from "@uniswap/v4-core/src/../../evil/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"],
+        ["src/", "src/"],
+      ],
+    );
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(/allowlist|repo-src/i);
+  });
+
+  it("HIGH fix: an allowlisted v4 specifier remapped under contracts/node_modules is rejected", () => {
+    const r = staticGatePoc(
+      v4HardeningBase(
+        `import {Boom} from "v4-core/src/Boom.sol";\n`,
+        `vm.expectRevert(bytes("x")); Boom(address(1)).go();`,
+      ),
+      { evidence: [] },
+      TARGET,
+      closure(),
+      [
+        ["forge-std/", "lib/forge-std/src/"],
+        ["@uniswap/v4-core/", "lib/dep/v4-core/"], // Deployers stays legit
+        ["v4-core/", "contracts/node_modules/v4-core/"], // spoofed drive path
         ["src/", "src/"],
       ],
     );
