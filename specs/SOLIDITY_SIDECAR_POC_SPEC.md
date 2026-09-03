@@ -363,12 +363,17 @@ but stays PURSUE), `target {path,symbol,kind:"contract",derivation}`, `binding` 
 `harnessDriveSpan` (§3.3.B B5 — the AST span of the single top-level drive call, emitted for
 `tier==="harness-driven"` (else `undefined`) and passed to the executor to scope
 `targetFrameObserved`; both `staticGatePoc`'s return and the serialized `poc` carry it),
-`testPath`, `testContents`, `staticGate {passed,reasons}`, `executed`, `execution
-{ranTests,passedTests,failedTests,skippedTests,compiled,passed,exitCode,summary,reason,
-deployedTargetPath, drove, targetFrameObserved}`, `humanGated`, `runSpecific`, and — on a
+`testPath`, `testContents`, `staticGate {passed,reasons}`, `execution
+{executed,ranTests,passedTests,failedTests,skippedTests,compiled,passed,exitCode,summary,reason,
+deployedTargetPath, drove, targetFrameObserved} | null`, `humanGated`, `runSpecific`, and — on a
 **terminal** `CONFIRMED`/`POC_EXECUTED` record only — `enablement {manifestDigest, approver,
-auditRef}` co-carried so a public receipt is self-auditable (which enablement manifest + approver
-+ audit authorized minting this tier); `humanGated:true` is a caveat, this is the provenance.
+auditRef, humanReview:{reviewer, reviewedAt, decision}}` co-carried so a public receipt is
+**manifest-traceable** (which enablement manifest + approver + audit + the per-finding human review
+authorized minting this tier — NOT publicly recomputable, since raw calibration receipts stay
+out-of-tree by disclosure design); `humanGated:true` says review is required, `enablement.humanReview`
+records that it occurred. **`executed` is `execution?.executed === true`** — the single canonical
+per-PoC boolean is `execution.executed` (`execution` is `null` when not run); any top-level
+`poc.executed` is a derived mirror of it, and renderers/consumers key on `execution?.executed`.
 `targetFrameObserved` is the §3.4 trace proof that a call frame executed at the deployed
 target's address **within the `testAuditPoc()` drive subtree** — **required truthy for
 `POC_EXECUTED`**; the executor upholds `drove === true ⇒ targetFrameObserved === true` (Tier 1's
@@ -467,9 +472,11 @@ reacher → **decline** ("no unique concrete deployable target"). Rule-2 label r
 `blockDeclaresSymbol` from `run.ts`.)
 
 **`staticGatePoc(testAst, finding, pocTarget, closureAstByPath, remappings, testPath) →
-{passed, reasons, tier?, binding?}`** — on pass returns `tier ∈ {"static-bound",
-"harness-driven"}`, and (static-bound only) a `PocBinding {targetSymbol, targetPath,
-deployedVar, constructorSpan, driveSpan, assertSpan}` consumed by the executor. It tries
+{passed, reasons, tier?, assertionForm?, binding?, harnessDriveSpan?}`** — on pass returns
+`tier ∈ {"static-bound", "harness-driven"}`, `assertionForm ∈ {"target-read","revert","no-revert","none"}`,
+and either (static-bound) a `PocBinding {targetSymbol, targetPath, deployedVar, constructorSpan,
+driveSpan, assertSpan}` **or** (harness-driven) `harnessDriveSpan` (§3.3.B B5) — both consumed by
+the executor and both carried onto the serialized `ScoredFinding.poc` (§3.1). It tries
 the **Tier-1 static-bound path (gates 1–8)** first; if the PoC fails Tier-1 *only* because
 it is harness-shaped (multi-function/`setUp`, control flow in setup, indirect drive, salted
 target deploy, a revert-assertion, **or it instantiates any §3.3.A vendored scaffolding —
@@ -914,39 +921,63 @@ generation failure (never a crash that loses the finding — §4).
   terminal-evidence object** `wouldPromotePoc` consumes:
   `{ findingId, targetId, executeOnly:true, poc: { tier, assertionForm, staticGate:{passed},
   target:{path,symbol}, execution:{executed,compiled,passed,deployedTargetPath,drove,targetFrameObserved}|null },
-  humanGenuine: boolean }` — **`humanGenuine` is NOT nullable for any would-promote row** (see the
-  invariant below). `validatePocEnablement(manifest, { executorTree, corpusManifest, calibrationReceipts })
+  humanGenuine: boolean | null }` — `humanGenuine` may be `null` ONLY for a NON-would-promote row;
+  it is **rejected as null on any would-promote row** (the blind-grade invariant below). Alongside
+  the receipts, an out-of-tree **calibration sample manifest** pins the drawn sample:
+  `[{ findingId, targetId }]` (the exact unfiltered PURSUE ids drawn, distinct), whose digest is the
+  public `sampleManifestDigest`. `validatePocEnablement(manifest, { executorTree, corpusManifest,
+  calibrationReceipts, calibrationSampleManifest, activeGeneration })
   → { enableStatic, enableHarness }` **recomputes** each tier's enablement and NEVER trusts the raw
   `enable*` booleans (rejects a manifest whose recorded flag disagrees), and **fails closed (both
-  tiers disabled) if any input (executorTree / corpusManifest / calibrationReceipts) is
-  unavailable** at the CLI boundary (e.g. an installed package with no repo).
+  tiers disabled) if any input is unavailable** at the CLI boundary (e.g. an installed package with
+  no repo). `activeGeneration` is the current run's `{modelId, promptDigest, configDigest}` (leg-3).
   **Trust model, stated precisely** (three legs, three different guarantees):
   1. **Corpus attestation — machine-verified + CI-enforced.** Validate `executorSourceDigest`
      (a digest of the executor SOURCE subtree, NOT the tip commit — stable across committing the
      manifest itself), `corpusAttestation.corpusCommit`/`imageDigest`, that `corpusManifestDigest`
      matches the committed corpus fixture manifest (whose schema §5 test 9 pins:
      `{fixtureId, kind:"known-true"|"known-false", driveKind, targetId, structuralClass, isDerSc,
-     provenance/clearance}`), that every `results[]` row is `skipped:false`, that the `fixtureId`
+     provenance}` — `provenance` carries the public-repo clearance), that every `results[]` row is
+     `skipped:false`, that the `fixtureId`
      set equals the manifest set, that outcomes match, and `resultsDigest`. The docker+forge corpus
      job is a **REQUIRED status check** on any PR touching `poc-enablement.json` (§0) — enablement
      integrity DEPENDS on that check being configured; the runtime evidence + mandatory human review
      are the bounded backstop if it is not.
   2. **Calibration receipts — operator-attested (NOT CI-re-run), digest-pinned, validator-recomputed.**
-     The validator recomputes from the out-of-tree receipts (verifying `receiptsDigest`/`sampleManifestDigest`
-     match the public manifest): `pursueSampled = receipts.length` (≥20 over ≥2 distinct `targetId`s),
-     `executeOnly` true on every row, and — the corrected definitions —
-     `acceptedHollow = count(f where wouldPromotePoc(f.poc, f.poc.execution) !== null ∧ f.humanGenuine === false)`
-     (over would-promote rows only, resolving the §4/§5 inconsistency). **Invariant ported from the
-     removed spike (`promoted ⇒ humanConfirmedGenuine XOR acceptedHollow`): reject the manifest if
-     any `wouldPromotePoc(f.poc, …) !== null` row has `humanGenuine === null`** — every would-promote
-     receipt MUST be blind-graded. The execution transcripts themselves are operator-attested (the
-     validator recomputes aggregates FROM them but cannot re-run them locally); the per-finding
-     `humanGenuine` blind grade is irreducibly human, trust-anchored by `approver` + `audit.ref` +
-     review.
+     The validator verifies `receiptsDigest`/`sampleManifestDigest` match the public manifest, then —
+     **completeness invariant, ported from the removed spike's bijection (this was the second spike
+     invariant; dropping it would let an operator OMIT a hollow would-promote receipt to flip
+     `acceptedHollow` 1→0)** — enforces a **bijection between `calibrationSampleManifest` and
+     `calibrationReceipts`**: every drawn `findingId` has exactly one receipt and every receipt maps
+     to exactly one drawn id, all ids distinct. `pursueSampled` is derived from the **pinned sample
+     manifest**, NOT `receipts.length` (≥20 over ≥2 distinct `targetId`s). Then, over the complete
+     set: `executeOnly` true on every row; **reject the manifest if any `wouldPromotePoc(f.poc,
+     f.poc.execution) !== null` row has `humanGenuine === null`** (blind-grade invariant — every
+     would-promote receipt MUST be blind-graded); and — the single corrected definition (identical in
+     §5) — `acceptedHollow = count(f where wouldPromotePoc(f.poc, f.poc.execution) !== null ∧
+     f.humanGenuine === false)`. In the recompute `wouldPromotePoc`'s `pocTarget` resolves to
+     `f.poc.target`, and `wouldPromotePoc(poc, null)` (a non-executed receipt) returns `null` (not a
+     throw). The execution transcripts themselves are operator-attested (the validator recomputes
+     aggregates FROM them but cannot re-run them locally); the per-finding `humanGenuine` blind grade
+     is irreducibly human, trust-anchored by `approver` + `audit.ref` + review. So the public
+     `receiptsDigest` is **manifest-traceable / operator-attested, NOT third-party-recomputable** —
+     an external party can recompute leg-1 (corpus) and verify all digests match, but leg-2's raw
+     receipts are operator-local by disclosure design (§3.1 `enablement` is provenance-identifying,
+     not a public recomputation).
   3. **Generation binding.** `generation.{modelId,promptDigest,configDigest}` pins WHICH generator
      the calibration measured; a run whose active generation model/prompt/config (incl. any
      `SIDECAR_POC_MODEL` override) does not match the manifest's `generation` → both tiers disabled
-     (calibration from one generator cannot license another).
+     (calibration from one generator cannot license another). **`promptDigest`/`configDigest` hash
+     the generation TEMPLATE + model config (the stable `poc-prompt.ts` template + decoding params),
+     NOT the per-finding rendered prompt** (which includes nonce-fenced files + finding fields and
+     changes every run — hashing that would make every run mismatch and permanently disable
+     promotion).
+  Promotion is therefore **inherently operator-local**: `validatePocEnablement` recomputes leg-2 from
+  the out-of-tree `.omc/` receipts and fails closed when they are absent, so a tier can only be
+  minted in an operator environment holding those receipts — never in CI or an installed package.
+  (`activeGo` is a **retained field name** for these per-tier promotion-enable flags, NOT a reference
+  to the removed spike "GO artifact"; disabled tiers are `false` booleans on a present object, not an
+  absent object.)
   A tier is enabled only if ALL hold: leg-1 corpus attestation validates; `acceptedHollow === 0`;
   **the calibration produced ≥3 would-promote receipts OF THAT TIER with `humanGenuine === true`**
   (the per-tier minimum genuine-accept floor — counting only human-confirmed-genuine accepts, so
@@ -1134,8 +1165,8 @@ generation failure (never a crash that loses the finding — §4).
 9. **Executor acceptance corpus — the non-circular executor-CORRECTNESS gate** (committed; runs
    in a **dedicated docker+forge-provisioned CI job that FAILS, never skips, when the toolchain is
    absent** — the default `ci.yml` lane may `skipIf`, but the enablement-gating job must not, and
-   `validatePocEnablement` rejects an attestation whose `fixtureCount` is below the committed
-   corpus manifest, so a skipped run can never read as green — §0/§4). A fixed set of PoCs with
+   `validatePocEnablement` rejects an attestation whose `results[]` `fixtureId` set is not equal to
+   the committed corpus manifest set (a skipped/short run can never read as green) — §0/§4). A fixed set of PoCs with
    KNOWN ground truth, asserting the executor promotes exactly the genuine ones and no others.
    **This gate proves executor CORRECTNESS (does it promote genuine PoCs and reject anticipated
    hollows) — it is NOT a soundness bound on unanticipated hollows on real model output; that is
@@ -1210,21 +1241,26 @@ generation failure (never a crash that loses the finding — §4).
     target:{path,symbol}, execution:{executed,compiled,passed,deployedTargetPath,drove,
     targetFrameObserved}}, humanGenuine}`) — enough for `validatePocEnablement` to actually
     **recompute** `wouldPromotePoc(poc, poc.execution)` rather than trust a recorded `tier`.
-    `validatePocEnablement` recomputes `pursueSampled`/diversity/`acceptedHollow` (never a trusted
-    scalar; verifying `receiptsDigest`) and enables a tier T only if: **every would-promote row is
-    blind-graded** (`wouldPromotePoc(poc,…) !== null ⇒ humanGenuine !== null`, else reject);
+    `validatePocEnablement` (verifying `receiptsDigest` + `sampleManifestDigest`) enforces a
+    **bijection between the pinned `calibrationSampleManifest` and the receipts** (every drawn
+    `findingId` ↔ exactly one receipt; ids distinct — so a hollow would-promote row cannot be omitted
+    to shrink the denominator), derives `pursueSampled`/diversity **from the sample manifest** (NOT
+    `receipts.length`), and enables a tier T only if: **every would-promote row is blind-graded**
+    (`wouldPromotePoc(f.poc, f.poc.execution) !== null ⇒ humanGenuine !== null`, else reject);
     `acceptedHollow === 0` where
-    `acceptedHollow = count(wouldPromotePoc(poc,…) !== null ∧ humanGenuine === false)`; **AND the
-    sample produced ≥3 would-promote receipts of tier T with `humanGenuine === true`** (the per-tier
-    minimum GENUINE-accept floor, so `acceptedHollow===0` bounds the true false-accept rate at
+    `acceptedHollow = count(wouldPromotePoc(f.poc, f.poc.execution) !== null ∧ humanGenuine === false)`;
+    **AND the sample produced ≥3 would-promote receipts of tier T with `humanGenuine === true`** (the
+    per-tier minimum GENUINE-accept floor, so `acceptedHollow===0` bounds the true false-accept rate at
     ~3/n rather than being vacuous on a zero/near-zero/ungraded accept set; short → expand the
-    sample or the tier stays disabled). Tests: 0 genuine tier-T accepts → tier T disabled (vacuity
-    floor); a would-promote row with `humanGenuine:null` → **rejected** (blind-grade invariant); a
-    would-promote row with `humanGenuine:false` → `acceptedHollow>0` → disabled; recomputed
-    `pursueSampled`/diversity below threshold → disabled; a receipt whose recorded `tier` disagrees
-    with the recomputed `wouldPromotePoc` → the recompute wins. This measures the false-accept rate
-    on the real model-generated distribution (which a fixed corpus cannot), and is reviewed
-    alongside the cross-model executor audit before the manifest is committed.
+    sample or the tier stays disabled). Tests: a receipt array missing one drawn `findingId`, or
+    padded with an id absent from the sample manifest → **both disabled** (bijection); 0 genuine
+    tier-T accepts → tier T disabled (vacuity floor); a would-promote row with `humanGenuine:null` →
+    **rejected** (blind-grade invariant); a would-promote row with `humanGenuine:false` →
+    `acceptedHollow>0` → disabled; recomputed `pursueSampled`/diversity below threshold → disabled; a
+    receipt whose recorded `tier` disagrees with the recomputed `wouldPromotePoc` → the recompute
+    wins. This measures the false-accept rate on the real model-generated distribution (which a fixed
+    corpus cannot), and is reviewed alongside the cross-model executor audit before the manifest is
+    committed.
 
 ## §6 Risks & honest limits
 
