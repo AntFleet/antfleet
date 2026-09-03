@@ -91,26 +91,9 @@ const FABRICATION_CHEATS = new Set([
   "setEnv",
 ]);
 
-/** Cap on the assembled scratch tree (a bounded `.sol` copy from an untrusted repo). */
+/** Cap on the assembled scratch tree (a bounded `.sol` copy from an untrusted repo),
+ * enforced DURING the copy in `assembleScratch`. */
 const SCRATCH_MAX_BYTES = 200 * 1024 * 1024;
-
-/** Total byte size of a directory tree (best-effort; unreadable entries skipped). */
-function dirSizeBytes(dir: string): number {
-  let total = 0;
-  for (const entry of safeReaddir(dir)) {
-    const full = path.join(dir, entry.name);
-    try {
-      if (entry.isDirectory()) {
-        total += dirSizeBytes(full);
-      } else if (entry.isFile()) {
-        total += lstatSync(full).size;
-      }
-    } catch {
-      /* skip */
-    }
-  }
-  return total;
-}
 
 const NON_EXEC = (reason: string): PocExecution => ({
   executed: false,
@@ -328,6 +311,11 @@ function pocSlug(): string {
  * file BEFORE the sandbox starts. `cpSync` copies real files only. */
 export function assembleScratch(targetRoot: string, testContents: string): string {
   const scratch = mkdtempSync(path.join(tmpdir(), "poc-exec-"));
+  // Enforce the byte budget DURING the copy (in the filter), not after — a hostile repo
+  // must not be able to fill host `/tmp` before a post-copy check trips. Once the budget
+  // is exhausted, remaining files are skipped → a truncated project → forge compile fails
+  // → PURSUE (safe: never a false pass).
+  let remainingBytes = SCRATCH_MAX_BYTES;
   cpSync(targetRoot, scratch, {
     recursive: true,
     dereference: false,
@@ -358,7 +346,13 @@ export function assembleScratch(targetRoot: string, testContents: string): strin
       if (st.isDirectory()) {
         return true; // descend into real directories only
       }
-      return base.endsWith(".sol") || base === "foundry.toml" || base === "remappings.txt";
+      const admit = base.endsWith(".sol") || base === "foundry.toml" || base === "remappings.txt";
+      if (!admit) {
+        return false;
+      }
+      // Budget check BEFORE the write: stop admitting files once the cap is exhausted.
+      remainingBytes -= st.size;
+      return remainingBytes >= 0;
     },
   });
   const testDir = path.join(scratch, "test");
@@ -386,13 +380,9 @@ export function dockerPocExecutor(opts: DockerPocExecutorOptions): PocExecutor {
   return (args: PocExecArgs): PocExecution => {
     let scratch: string | null = null;
     try {
+      // `assembleScratch` bounds the copied set to SCRATCH_MAX_BYTES DURING the copy
+      // (a hostile/huge repo cannot exceed it — see there), so no post-copy size check.
       scratch = assembleScratch(args.targetRoot, args.testContents);
-      // Bound the copied set: a broad `.sol` copy from a hostile/huge repo could DoS
-      // the host on disk/compile time. Over the cap → skip (not a compile "result").
-      const bytes = dirSizeBytes(scratch);
-      if (bytes > SCRATCH_MAX_BYTES) {
-        return NON_EXEC(`scratch copy too large (${bytes} > ${SCRATCH_MAX_BYTES} bytes)`);
-      }
       // Force-safe foundry config: ffi off, no fs perms, forge-std from the image.
       writeFoundryOverride(scratch);
       // Run the container as the HOST uid:gid (non-root) so forge can write out/cache to
