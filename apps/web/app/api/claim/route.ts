@@ -1,11 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { Pool } from "@neondatabase/serverless";
-import { Octokit } from "@octokit/rest";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-serverless";
-import { nanoid } from "nanoid";
-import { recoverMessageAddress as viemRecoverMessageAddress } from "viem";
 import { z } from "zod";
 import { agentClaims, factoryLaunches } from "@/db/schema";
 import { logError, logInfo, logWarn } from "@/lib/log";
@@ -51,35 +47,18 @@ export type ClaimDeps = {
   now: () => Date;
 };
 
-const DEFAULT_DEPS_WITHOUT_DB: Omit<ClaimDeps, "db"> = {
-  octokit: new Octokit({
-    auth: process.env["ROAST_GH_TOKEN"] ?? process.env["GITHUB_TOKEN"] ?? undefined,
-    userAgent: "antfleet-claim-api",
-  }),
-  recoverMessageAddress: viemRecoverMessageAddress,
-  isPublicRepo,
-  createClaimId: nanoid,
-  now: () => new Date(),
-};
-
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  const databaseUrl = process.env["DATABASE_URL"];
-  if (databaseUrl === undefined || databaseUrl.length === 0) {
-    logError("claim.internal", { message: "DATABASE_URL is unset" });
-    return NextResponse.json(
-      { error: "internal" },
-      { status: 500, headers: { "Cache-Control": "no-store" } },
-    );
-  }
-  const pool = new Pool({ connectionString: databaseUrl });
-  try {
-    return await handleClaim(req, {
-      ...DEFAULT_DEPS_WITHOUT_DB,
-      db: drizzle(pool, { schema: claimSchema }),
-    });
-  } finally {
-    await pool.end();
-  }
+export async function POST(_req: NextRequest): Promise<NextResponse> {
+  // Neon DB access is intentionally disabled: see apps/web/db/index.ts for
+  // why. This route opened its own per-request Pool (bypassing that guard),
+  // so it needs the same short-circuit to keep it from ever reaching Neon.
+  // `handleClaim` below is left intact (and still unit-testable via injected
+  // deps) — only this live entry point is short-circuited.
+  // Revert this commit to restore live DB access.
+  logError("claim.internal", { message: "Neon DB access is disabled" });
+  return NextResponse.json(
+    { error: "internal" },
+    { status: 500, headers: { "Cache-Control": "no-store" } },
+  );
 }
 
 export async function handleClaim(req: NextRequest, deps: ClaimDeps): Promise<NextResponse> {
