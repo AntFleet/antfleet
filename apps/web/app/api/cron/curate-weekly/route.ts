@@ -1,9 +1,7 @@
-import { Pool } from "@neondatabase/serverless";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { requireCronAuth } from "@/lib/cron-auth";
-import { curateWeekly } from "@/lib/curate-weekly";
-import { logError, logInfo, messageOf } from "@/lib/log";
+import { logError } from "@/lib/log";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -15,24 +13,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   });
   if (auth !== null) return auth;
 
-  const databaseUrl = process.env["DATABASE_URL"];
-  if (databaseUrl === undefined || databaseUrl.length === 0) {
-    logError("curate_weekly_cron.misconfigured", { reason: "DATABASE_URL missing" });
-    return new NextResponse("server misconfigured", { status: 500 });
-  }
-
-  const pool = new Pool({ connectionString: databaseUrl });
-  const t0 = Date.now();
-  try {
-    const result = await curateWeekly({ pool, apply: true });
-    const elapsedMs = Date.now() - t0;
-    logInfo("curate_weekly_cron.complete", { ...result, elapsedMs });
-    return NextResponse.json({ ...result, elapsedMs });
-  } catch (err) {
-    const message = messageOf(err);
-    logError("curate_weekly_cron.failed", { message });
-    return NextResponse.json({ message }, { status: 500 });
-  } finally {
-    await pool.end();
-  }
+  // Neon DB access is intentionally disabled: see apps/web/db/index.ts for
+  // why. This route opened its own per-request Pool (bypassing that guard),
+  // so it needs the same short-circuit to keep it from ever reaching Neon.
+  // Revert this commit to restore live DB access.
+  logError("curate_weekly_cron.misconfigured", { reason: "Neon DB access is disabled" });
+  return new NextResponse("server misconfigured", { status: 500 });
 }
